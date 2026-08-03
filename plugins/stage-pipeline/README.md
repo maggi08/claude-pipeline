@@ -7,11 +7,13 @@
 ## Установка
 
 ```bash
-claude plugin marketplace add ~/programming/claude-pipeline   # или maggi08/claude-pipeline
+claude plugin marketplace add git@github.com:maggi08/claude-pipeline.git
 claude plugin install stage-pipeline@magzhan
 ```
 
 Без `--scope` попадает в `~/.claude/settings.json` и включается во всех репозиториях. Нужен только в одном репо — те же команды с `--scope project`. После установки — перезапуск Claude Code.
+
+Репо приватное: машине нужен SSH-ключ в GitHub либо `gh auth login && gh auth setup-git`. Вариант «маркетплейс из локального клона» (для машины, где плагин правится) — в [README маркетплейса](../../README.md).
 
 Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma) и `chrome-devtools` — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**.
 
