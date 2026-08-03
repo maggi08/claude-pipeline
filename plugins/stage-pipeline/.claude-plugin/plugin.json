@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "stage-pipeline",
+  "version": "0.1.0",
+  "description": "Поэтапный maker/checker-workflow для крупных UI-задач: разбивка на этапы, спека из дизайна, проверки субагентами (Figma/прототип, рантайм, код-ревью), журнал состояния в файлах",
+  "author": {
+    "name": "Magzhan Mussaiyn"
+  },
+  "keywords": [
+    "workflow",
+    "code-review",
+    "figma",
+    "design-system",
+    "frontend"
+  ]
+}

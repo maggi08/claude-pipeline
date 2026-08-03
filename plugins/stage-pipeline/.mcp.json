@@ -1,0 +1,12 @@
+{
+  "figma": {
+    "type": "http",
+    "url": "http://127.0.0.1:3845/mcp"
+  },
+  "chrome-devtools": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "chrome-devtools-mcp@1.6.0"],
+    "env": {}
+  }
+}

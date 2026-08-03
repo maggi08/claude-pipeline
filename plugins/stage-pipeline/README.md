@@ -1,0 +1,85 @@
+# stage-pipeline
+
+Поэтапный workflow для крупных задач с многоэкранным дизайном (редизайны, большие фичи): maker/checker с чистым контекстом у проверяющих, состояние — в файлах, гигиена контекста.
+
+Скиллы и агенты приезжают плагином и работают в любом репозитории; специфика проекта живёт в `<repo>/.claude/pipeline.config.md`, который генерит `/pipeline-init`.
+
+## Установка
+
+```bash
+claude plugin marketplace add ~/programming/claude-pipeline   # или maggi08/claude-pipeline
+claude plugin install stage-pipeline@magzhan
+```
+
+Без `--scope` попадает в `~/.claude/settings.json` и включается во всех репозиториях. Нужен только в одном репо — те же команды с `--scope project`. После установки — перезапуск Claude Code.
+
+Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma) и `chrome-devtools` — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**.
+
+Проверить окружение: `/pipeline-doctor`.
+
+## 0. Один раз на репозиторий — `/pipeline-init`
+
+Изучает проект и создаёт `<repo>/.claude/pipeline.config.md` (пути, команды, dev-URL, дизайн-источники, раскладку кода, платформы, `task_path`/`memory_path`). Нет `CLAUDE.md` — предложит `/init`.
+
+## 1. Один раз на задачу
+
+1. **`/feature-checker <тикет/фича>`** → `FEATURE-MAP.md` — карта того, что уже есть (переиспользовать vs писать с нуля). Нужен для планирования.
+2. **`/stage-plan`** → `STAGES.md` — разбивка на этапы (1 экран + его стейты = 1 этап), критерии приёмки WHEN/THEN, порядок. Требует FEATURE-MAP.
+
+## 2. Цикл КАЖДОГО этапа
+
+```
+/stage-kickoff   → показать план этапа + свести с накопленным (TODO/DESIGN-QUESTIONS/
+                   решения) + собрать бизнес-ввод + sign-off  → запускает figma-spec (спека)
+   implement     → писать код (переиспользуя, что нашёл feature-checker)
+   checkers      → параллельно: figma-compare ∥ pro-review (статические, субагенты)
+                   + devtools-verify (рантайм, субагент; dev-сервер держит оркестратор)
+   fix-loop ≤2   → чинить подтверждённое, точечно перепроверять
+   user-review   → показать пользователю, ждать одобрения (обязательно)
+/stage-check     → журнал в STAGES.md + предложить коммит
+   /compact      → вымыть тяжёлые артефакты; состояние осталось в файлах
+```
+
+Правило: не начинать implement без sign-off (kickoff); не отмечать этап done с critical-находками, вердиктом pro-review = Request changes или открытыми эскалациями.
+
+## 3. Финал задачи
+
+- Полный `/pro-review` по всему бранчу (не только диф этапа).
+- security-review, metrics-guard (по STAGES «Финальные проверки»).
+- Легаси-выпил / чистка — отдельным финальным этапом.
+
+## Скиллы и агенты
+
+| Инструмент | Роль |
+|---|---|
+| `/pipeline-init` (skill) | конфиг проекта |
+| `/pipeline-doctor` (skill) | диагностика окружения (MCP, соседние репо, dev-сервер, baseline) |
+| `/feature-checker` (skill) | карта существующей фичи → FEATURE-MAP.md |
+| `/stage-plan` (skill) | разбивка на этапы → STAGES.md |
+| `/stage-kickoff` (skill) | открыть этап: план + бизнес-ввод + sign-off |
+| `figma-spec` (агент) | компактная спека из Figma (в чистом контексте) |
+| `figma-compare` (агент) | сверка кода с Figma |
+| `proto-spec` (агент) | как figma-spec, но из репо HTML-прототипов («наша Figma» в проектах без Figma) |
+| `proto-compare` (агент) | как figma-compare, но против HTML-прототипа + SPEC.md |
+| `devtools-verify` (агент) | рантайм-проверка через Chrome DevTools |
+| `pro-review` (агент) | senior код-ревью дифа этапа |
+| `/ds-parity` (skill) | дубли с дизайн-системой: что заменить китовым компонентом, что вынести В кит |
+| `/stage-check` (skill) | закрыть этап: fix-loop + журнал + коммит |
+
+**Подмена чекеров под репо.** Дизайн-источник не Figma, а файловый (репо HTML-прототипов от AI-дизайнеров): `pipeline.config.md` секцией «Checker overrides» объявляет `figma-spec → proto-spec`, `figma-compare → proto-compare` — оркестраторы kickoff/check читают конфиг и берут указанных агентов. Остальной цикл без изменений; Figma MCP такому репо не нужен.
+
+## Файлы (в репо — `<repo>/.claude/`)
+
+- `pipeline.config.md` — профиль проекта (читают все скиллы).
+- `tasks/<ТИКЕТ>/` — `STAGES.md` (журнал: что/когда/зачем/итог), `specs/`, `checks/`, `DESIGN-QUESTIONS.md`.
+- `memory/` — проектная память (решения/грабли этого репо).
+
+Проектные чек-листы ревью держи в `CLAUDE.md` или в `pipeline.config.md → Conventions`, НЕ в скиллах плагина: плагин читается во всех репозиториях, чужая рубрика даёт ложные Major.
+
+## Гигиена контекста (главный рычаг расхода)
+
+- Проверки — субагентами (тяжёлые Figma-дампы/снапшоты/дифы не оседают в главном контексте).
+- `/compact` после закрытия этапа и после прямых chrome-devtools вызовов; `/clear` при смене задачи.
+- `evaluate_script` (числа) вместо скриншотов для замеров; `take_snapshot` — только ради uid.
+- Text-fidelity: плейсхолдер vs динамика, точные символы (—/₸/«»/nbsp), i18n против разрезолвленной локали.
+- Большие трекеры (STAGES.md) читать точечно (offset/grep).
