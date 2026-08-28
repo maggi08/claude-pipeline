@@ -1,0 +1,173 @@
+{
+  "$comment": "Профиль разрешений stage-pipeline. Читает scripts/permissions.mjs. Записи Skill(...) и mcp__* не перечислены — они генерируются из самого плагина (skills/*, .mcp.json), поэтому новый скилл не надо дописывать сюда руками.",
+  "defaultGroups": ["pipeline", "fs-read", "fs-write", "vcs", "js-toolchain", "devserver"],
+  "groups": {
+    "pipeline": {
+      "title": "Скиллы и MCP плагина",
+      "why": "Без этого каждый чекер на каждом этапе спрашивает подтверждение — самый частый источник простоя",
+      "generated": "skills + mcp",
+      "allow": []
+    },
+    "fs-read": {
+      "title": "Чтение и поиск",
+      "why": "Чекеры и спека-агенты читают репо целиком; подтверждение на каждый файл делает прогон неработоспособным",
+      "allow": [
+        "Read(**)",
+        "Bash(ls *)",
+        "Bash(cat *)",
+        "Bash(head *)",
+        "Bash(tail *)",
+        "Bash(wc *)",
+        "Bash(file *)",
+        "Bash(stat *)",
+        "Bash(pwd)",
+        "Bash(realpath *)",
+        "Bash(readlink *)",
+        "Bash(basename *)",
+        "Bash(dirname *)",
+        "Bash(find *)",
+        "Bash(grep *)",
+        "Bash(rg *)",
+        "Bash(sed *)",
+        "Bash(awk *)",
+        "Bash(sort *)",
+        "Bash(uniq *)",
+        "Bash(cut *)",
+        "Bash(tr *)",
+        "Bash(diff *)",
+        "Bash(jq *)",
+        "Bash(xargs *)",
+        "Bash(echo *)",
+        "Bash(printf *)",
+        "Bash(date *)",
+        "Bash(which *)",
+        "Bash(command -v *)",
+        "Bash(test *)"
+      ]
+    },
+    "fs-write": {
+      "title": "Правка файлов и чистка артефактов сборки",
+      "why": "Реализация этапа и fix-loop пишут код; удаление ограничено артефактами сборки",
+      "allow": [
+        "Edit(**)",
+        "Write(**)",
+        "Bash(mkdir -p *)",
+        "Bash(touch *)",
+        "Bash(cp *)",
+        "Bash(mv *)",
+        "Bash(chmod +x *)",
+        "Bash(rm -f *)",
+        "Bash(rm -rf .next *)",
+        "Bash(rm -rf out *)",
+        "Bash(rm -rf dist *)",
+        "Bash(rm -rf node_modules *)",
+        "Bash(rm -rf tsconfig.tsbuildinfo)"
+      ]
+    },
+    "vcs": {
+      "title": "Git (кроме публикующих команд)",
+      "why": "Диф этапа, merge-base, stash для замера baseline, коммит этапа. push / reset --hard / clean остаются в ask, force-push — в deny",
+      "allow": ["Bash(git *)"]
+    },
+    "js-toolchain": {
+      "title": "Пакетные менеджеры и локальные бинарники",
+      "why": "lint / type-check / тесты / сборка гоняются на каждом этапе и в чекерах",
+      "allow": [
+        "Bash(yarn *)",
+        "Bash(npm *)",
+        "Bash(npx *)",
+        "Bash(pnpm *)",
+        "Bash(node *)",
+        "Bash(corepack *)",
+        "Bash(python3 *)",
+        "Bash(./node_modules/.bin/tsc *)",
+        "Bash(./node_modules/.bin/eslint *)",
+        "Bash(./node_modules/.bin/prettier *)",
+        "Bash(./node_modules/.bin/jest *)",
+        "Bash(./node_modules/.bin/vitest *)",
+        "Bash(./node_modules/.bin/next *)",
+        "Bash(node_modules/.bin/tsc *)",
+        "Bash(node_modules/.bin/eslint *)",
+        "Bash(node_modules/.bin/prettier *)",
+        "Bash(node_modules/.bin/jest *)",
+        "Bash(node_modules/.bin/vitest *)",
+        "Bash(node_modules/.bin/next *)"
+      ]
+    },
+    "devserver": {
+      "title": "Dev-сервер и локальные порты",
+      "why": "devtools-verify требует живого сервера: найти процесс, проверить порт, снять свой инстанс. Только localhost",
+      "allow": [
+        "Bash(lsof *)",
+        "Bash(ps *)",
+        "Bash(kill *)",
+        "Bash(pkill -f *)",
+        "Bash(curl -s http://localhost *)",
+        "Bash(curl -sI http://localhost *)",
+        "Bash(curl -s http://127.0.0.1 *)",
+        "Bash(curl -sI http://127.0.0.1 *)",
+        "Bash(curl -sk https://localhost *)",
+        "Bash(curl -sk https://127.0.0.1 *)",
+        "Bash(du *)",
+        "Bash(tar *)",
+        "Bash(gzip *)"
+      ]
+    },
+    "docker": {
+      "title": "Docker (опционально)",
+      "why": "Нужен только проектам, у которых dev-окружение поднимается контейнерами",
+      "allow": [
+        "Bash(docker compose *)",
+        "Bash(docker ps *)",
+        "Bash(docker logs *)",
+        "Bash(docker build *)",
+        "Bash(docker run *)",
+        "Bash(docker stop *)",
+        "Bash(docker exec *)",
+        "Bash(docker rm *)",
+        "Bash(docker rmi *)",
+        "Bash(docker image *)",
+        "Bash(docker images *)"
+      ]
+    },
+    "web": {
+      "title": "Поиск и доки (опционально)",
+      "why": "Сверка с документацией фреймворка во время ревью; список доменов узкий",
+      "allow": [
+        "WebSearch",
+        "WebFetch(domain:developer.mozilla.org)",
+        "WebFetch(domain:github.com)",
+        "WebFetch(domain:raw.githubusercontent.com)",
+        "WebFetch(domain:nextjs.org)",
+        "WebFetch(domain:react.dev)",
+        "WebFetch(domain:vuejs.org)",
+        "WebFetch(domain:nuxt.com)",
+        "WebFetch(domain:tailwindcss.com)"
+      ]
+    }
+  },
+  "ask": [
+    "Bash(git push *)",
+    "Bash(git reset --hard *)",
+    "Bash(git clean *)",
+    "Bash(gh *)"
+  ],
+  "deny": [
+    "Bash(sudo *)",
+    "Bash(rm -rf / *)",
+    "Bash(rm -rf ~ *)",
+    "Bash(git push --force *)",
+    "Bash(git push -f *)",
+    "Bash(git rebase --onto *)",
+    "Bash(npm publish *)",
+    "Bash(yarn publish *)",
+    "Bash(npm run deploy *)",
+    "Bash(yarn deploy *)",
+    "Bash(ssh *)",
+    "Bash(scp *)",
+    "Bash(rsync *)",
+    "Read(~/.ssh/**)",
+    "Read(~/.aws/**)",
+    "Read(~/.claude/.credentials.json)"
+  ]
+}

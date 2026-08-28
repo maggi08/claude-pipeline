@@ -17,11 +17,27 @@ claude plugin install stage-pipeline@magzhan
 
 Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma) и `chrome-devtools` — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**.
 
+### Разрешения
+
+Чтобы чекеры не спрашивали подтверждение на каждом шаге, у плагина есть готовый профиль разрешений (`permissions/base.json`) и скрипт, который доливает его в settings:
+
+```bash
+PERMS=$(ls -d ~/.claude/plugins/cache/*/stage-pipeline/*/scripts/permissions.mjs | sort -V | tail -1)
+node "$PERMS"           # что добавится (ничего не пишет)
+node "$PERMS" --apply   # дописать в ~/.claude/settings.json
+```
+
+(из сессии Claude Code путь короче — `${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs`; кэш плагина версионированный, поэтому в шелле берём последнюю версию)
+
+Записи `Skill(stage-pipeline:*)` и `mcp__*` генерируются из самого плагина, поэтому новый скилл появляется в разрешениях сам. Скрипт только доливает недостающее: чужие записи не трогает, `allow` не ставит поверх уже стоящих `deny`/`ask`, перед записью делает бэкап. Профиль везёт с собой и запреты, на которых стоит `/stage-force`: `push`/`reset --hard`/`clean`/`gh` — в `ask`, force-push, публикация и деплой — в `deny`. Не нужен широкий Bash-аллоулист — `--minimal` разрешит только скиллы и MCP. Пути соседних репо — отдельно, в project-скоуп: `--scope project --apply --dirs ../ui-lib,../prototypes`.
+
+Это же делает `/pipeline-init` при инициализации проекта (с показом списка и подтверждением), а `/pipeline-doctor` проверяет через `--check`.
+
 Проверить окружение: `/pipeline-doctor`.
 
 ## 0. Один раз на репозиторий — `/pipeline-init`
 
-Изучает проект и создаёт `<repo>/.claude/pipeline.config.md` (пути, команды, dev-URL, дизайн-источники, раскладку кода, платформы, `task_path`/`memory_path`). Нет `CLAUDE.md` — предложит `/init`.
+Изучает проект и создаёт `<repo>/.claude/pipeline.config.md` (пути, команды, dev-URL, дизайн-источники, раскладку кода, платформы, `task_path`/`memory_path`). Нет `CLAUDE.md` — предложит `/init`. Заодно предлагает разложить разрешения пайплайна в user-скоуп (см. «Разрешения» выше) — один раз на машину, а не в каждом репозитории.
 
 ## 1. Один раз на задачу
 

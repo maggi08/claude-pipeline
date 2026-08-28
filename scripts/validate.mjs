@@ -96,6 +96,7 @@ function validatePluginTree(pluginDir) {
   }
 
   validateMcp(pluginDir)
+  validatePermissions(pluginDir)
   validateNoHomePaths(pluginDir)
 }
 
@@ -109,6 +110,43 @@ function validateMcp(pluginDir) {
   }
   if (/_authToken|API_KEY|SECRET|PASSWORD|Bearer /i.test(raw)) {
     fail(rel, 'похоже на секрет — .mcp.json уезжает всей команде')
+  }
+}
+
+/**
+ * Профиль разрешений: ошибка здесь тихо оставляет чекеры без прав,
+ * и это видно только по возвращающимся подтверждениям на каждом этапе.
+ */
+function validatePermissions(pluginDir) {
+  const rel = `${pluginDir}/permissions/base.json`
+  if (!existsSync(join(ROOT, rel))) return
+
+  if (!existsSync(join(ROOT, pluginDir, 'scripts/permissions.mjs'))) {
+    fail(rel, 'есть профиль, но нет scripts/permissions.mjs — применять его нечем')
+  }
+
+  const profile = readJson(rel)
+  if (!profile) return
+
+  const groups = profile.groups ?? {}
+  for (const name of profile.defaultGroups ?? []) {
+    if (!groups[name]) fail(rel, `defaultGroups ссылается на несуществующую группу "${name}"`)
+  }
+  for (const [name, group] of Object.entries(groups)) {
+    if (!Array.isArray(group.allow)) fail(rel, `группа "${name}": allow должен быть массивом`)
+    if (!group.title || !group.why) fail(rel, `группа "${name}": нужны title и why — иначе непонятно, что подписывает пользователь`)
+    if (!group.generated && !group.allow?.length) fail(rel, `группа "${name}": пустая и не помечена generated`)
+  }
+
+  const allowed = new Set(Object.values(groups).flatMap((group) => group.allow ?? []))
+  for (const key of ['ask', 'deny']) {
+    if (!Array.isArray(profile[key])) {
+      fail(rel, `нет массива ${key} — правила /stage-force держатся именно на нём`)
+      continue
+    }
+    for (const entry of profile[key]) {
+      if (allowed.has(entry)) fail(rel, `"${entry}" одновременно в allow и в ${key}`)
+    }
   }
 }
 
