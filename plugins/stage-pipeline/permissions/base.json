@@ -1,6 +1,14 @@
 {
-  "$comment": "Профиль разрешений stage-pipeline. Читает scripts/permissions.mjs. Записи Skill(...) и mcp__* не перечислены — они генерируются из самого плагина (skills/*, .mcp.json), поэтому новый скилл не надо дописывать сюда руками.",
-  "defaultGroups": ["pipeline", "fs-read", "fs-write", "vcs", "js-toolchain", "devserver"],
+  "$comment": "Профиль разрешений stage-pipeline. Читает scripts/permissions.mjs. Записи Skill(...) и mcp__* не перечислены — они генерируются из самого плагина (skills/*, .mcp.json), поэтому новый скилл не надо дописывать сюда руками. Bash(...) — ПРЕФИКСНОЕ совпадение: пробел перед * литеральный, поэтому «Bash(rm -rf dist *)» не покрывает «rm -rf dist», а «Bash(curl -s http://localhost *)» не покрывает «curl -s http://localhost:3000/». deny здесь — защита от случайности, а не граница безопасности: профиль разрешает node/npx/python3, то есть произвольное исполнение, и обойти любой запрет из него тривиально.",
+  "defaultGroups": [
+    "pipeline",
+    "fs-read",
+    "shell-tools",
+    "fs-write",
+    "vcs",
+    "js-toolchain",
+    "devserver"
+  ],
   "groups": {
     "pipeline": {
       "title": "Скиллы и MCP плагина",
@@ -10,7 +18,7 @@
     },
     "fs-read": {
       "title": "Чтение и поиск",
-      "why": "Чекеры и спека-агенты читают репо целиком; подтверждение на каждый файл делает прогон неработоспособным",
+      "why": "Чекеры и спека-агенты читают репо целиком; подтверждение на каждый файл делает прогон неработоспособным. В группе только то, что не пишет и не запускает чужие команды",
       "allow": [
         "Read(**)",
         "Bash(ls *)",
@@ -25,29 +33,36 @@
         "Bash(readlink *)",
         "Bash(basename *)",
         "Bash(dirname *)",
-        "Bash(find *)",
         "Bash(grep *)",
         "Bash(rg *)",
-        "Bash(sed *)",
-        "Bash(awk *)",
         "Bash(sort *)",
         "Bash(uniq *)",
         "Bash(cut *)",
         "Bash(tr *)",
         "Bash(diff *)",
         "Bash(jq *)",
-        "Bash(xargs *)",
         "Bash(echo *)",
         "Bash(printf *)",
         "Bash(date *)",
         "Bash(which *)",
         "Bash(command -v *)",
-        "Bash(test *)"
+        "Bash(test *)",
+        "Bash(du *)"
+      ]
+    },
+    "shell-tools": {
+      "title": "Обработка текста и обход дерева (пишут и запускают)",
+      "why": "Нужны чекерам для поиска и правок, но это НЕ read-only: sed -i пишет файл, find -exec / xargs / awk system() запускают произвольную команду. Отдельная группа, чтобы --groups без неё давал честно read-only набор",
+      "allow": [
+        "Bash(sed *)",
+        "Bash(awk *)",
+        "Bash(xargs *)",
+        "Bash(find *)"
       ]
     },
     "fs-write": {
       "title": "Правка файлов и чистка артефактов сборки",
-      "why": "Реализация этапа и fix-loop пишут код; удаление ограничено артефактами сборки",
+      "why": "Реализация этапа и fix-loop пишут код; удаление — только перечисленные артефакты сборки по точному имени. Голого «rm -f *» здесь быть не должно: префиксное совпадение пропустило бы «rm -f -r <любой путь>»",
       "allow": [
         "Edit(**)",
         "Write(**)",
@@ -56,18 +71,25 @@
         "Bash(cp *)",
         "Bash(mv *)",
         "Bash(chmod +x *)",
-        "Bash(rm -f *)",
-        "Bash(rm -rf .next *)",
-        "Bash(rm -rf out *)",
-        "Bash(rm -rf dist *)",
-        "Bash(rm -rf node_modules *)",
-        "Bash(rm -rf tsconfig.tsbuildinfo)"
+        "Bash(rm -rf .next)",
+        "Bash(rm -rf .nuxt)",
+        "Bash(rm -rf .turbo)",
+        "Bash(rm -rf out)",
+        "Bash(rm -rf dist)",
+        "Bash(rm -rf build)",
+        "Bash(rm -rf node_modules)",
+        "Bash(rm -rf coverage)",
+        "Bash(rm -f tsconfig.tsbuildinfo)",
+        "Bash(tar *)",
+        "Bash(gzip *)"
       ]
     },
     "vcs": {
       "title": "Git (кроме публикующих команд)",
       "why": "Диф этапа, merge-base, stash для замера baseline, коммит этапа. push / reset --hard / clean остаются в ask, force-push — в deny",
-      "allow": ["Bash(git *)"]
+      "allow": [
+        "Bash(git *)"
+      ]
     },
     "js-toolchain": {
       "title": "Пакетные менеджеры и локальные бинарники",
@@ -96,21 +118,17 @@
     },
     "devserver": {
       "title": "Dev-сервер и локальные порты",
-      "why": "devtools-verify требует живого сервера: найти процесс, проверить порт, снять свой инстанс. Только localhost",
+      "why": "devtools-verify требует живого сервера: найти процесс, проверить порт, снять свой инстанс. curl — только на localhost/127.0.0.1; pkill по маске в ask, он снимает не только своё",
       "allow": [
         "Bash(lsof *)",
         "Bash(ps *)",
         "Bash(kill *)",
-        "Bash(pkill -f *)",
-        "Bash(curl -s http://localhost *)",
-        "Bash(curl -sI http://localhost *)",
-        "Bash(curl -s http://127.0.0.1 *)",
-        "Bash(curl -sI http://127.0.0.1 *)",
-        "Bash(curl -sk https://localhost *)",
-        "Bash(curl -sk https://127.0.0.1 *)",
-        "Bash(du *)",
-        "Bash(tar *)",
-        "Bash(gzip *)"
+        "Bash(curl -s http://localhost*)",
+        "Bash(curl -sI http://localhost*)",
+        "Bash(curl -s http://127.0.0.1*)",
+        "Bash(curl -sI http://127.0.0.1*)",
+        "Bash(curl -sk https://localhost*)",
+        "Bash(curl -sk https://127.0.0.1*)"
       ]
     },
     "docker": {
@@ -150,24 +168,46 @@
     "Bash(git push *)",
     "Bash(git reset --hard *)",
     "Bash(git clean *)",
-    "Bash(gh *)"
+    "Bash(gh *)",
+    "Bash(pkill *)",
+    "Read(**/.env)",
+    "Read(**/.env.*)"
   ],
   "deny": [
     "Bash(sudo *)",
-    "Bash(rm -rf / *)",
-    "Bash(rm -rf ~ *)",
-    "Bash(git push --force *)",
+    "Bash(rm -rf /*)",
+    "Bash(rm -rf ~/*)",
+    "Bash(rm -rf $HOME*)",
+    "Bash(git push --force*)",
     "Bash(git push -f *)",
     "Bash(git rebase --onto *)",
-    "Bash(npm publish *)",
-    "Bash(yarn publish *)",
-    "Bash(npm run deploy *)",
-    "Bash(yarn deploy *)",
+    "Bash(npm publish*)",
+    "Bash(yarn publish*)",
+    "Bash(npm run deploy*)",
+    "Bash(yarn deploy*)",
     "Bash(ssh *)",
     "Bash(scp *)",
     "Bash(rsync *)",
     "Read(~/.ssh/**)",
     "Read(~/.aws/**)",
-    "Read(~/.claude/.credentials.json)"
-  ]
+    "Read(~/.claude/.credentials.json)",
+    "Bash(cat ~/.ssh/*)",
+    "Bash(cat ~/.aws/*)"
+  ],
+  "retired": {
+    "$comment": "Записи, которые профиль раздавал раньше и которые скрипт удалять не имеет права (settings принадлежат пользователю). Он их находит и объясняет, почему стоит снять руками.",
+    "Bash(rm -f *)": "разрешает «rm -f -r <любой путь>»: префиксное совпадение не смотрит на порядок флагов",
+    "Bash(rm -rf .next *)": "требует аргумента ПОСЛЕ .next — не покрывает «rm -rf .next», зато покрывает «rm -rf .next /чужой/путь»",
+    "Bash(rm -rf out *)": "то же самое",
+    "Bash(rm -rf dist *)": "то же самое",
+    "Bash(rm -rf node_modules *)": "то же самое",
+    "Bash(rm -rf tsconfig.tsbuildinfo)": "заменено на «rm -f tsconfig.tsbuildinfo»",
+    "Bash(pkill -f *)": "переехало в ask: маска снимает не только свой dev-сервер",
+    "Bash(curl -s http://localhost *)": "пробел перед * литеральный — не покрывает «curl -s http://localhost:3000/»",
+    "Bash(curl -sI http://localhost *)": "то же самое",
+    "Bash(curl -s http://127.0.0.1 *)": "то же самое",
+    "Bash(curl -sI http://127.0.0.1 *)": "то же самое",
+    "Bash(curl -sk https://localhost *)": "то же самое",
+    "Bash(curl -sk https://127.0.0.1 *)": "то же самое"
+  }
 }

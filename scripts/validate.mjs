@@ -98,6 +98,7 @@ function validatePluginTree(pluginDir) {
   validateMcp(pluginDir)
   validatePermissions(pluginDir)
   validateNoHomePaths(pluginDir)
+  validateDeclaredCounts(pluginDir)
 }
 
 function validateMcp(pluginDir) {
@@ -139,6 +140,10 @@ function validatePermissions(pluginDir) {
   }
 
   const allowed = new Set(Object.values(groups).flatMap((group) => group.allow ?? []))
+  for (const entry of Object.keys(profile.retired ?? {})) {
+    if (entry === '$comment') continue
+    if (allowed.has(entry)) fail(rel, `"${entry}" помечена retired и одновременно раздаётся из allow`)
+  }
   for (const key of ['ask', 'deny']) {
     if (!Array.isArray(profile[key])) {
       fail(rel, `нет массива ${key} — правила /stage-force держатся именно на нём`)
@@ -147,6 +152,47 @@ function validatePermissions(pluginDir) {
     for (const entry of profile[key]) {
       if (allowed.has(entry)) fail(rel, `"${entry}" одновременно в allow и в ${key}`)
     }
+  }
+}
+
+/**
+ * «Должен показать N скиллов, M агентов» и версия в прозе — числа, которые
+ * протухают ровно в том коммите, где добавили скилл: сам он проходит, а README,
+ * чит-шит и дек начинают врать о содержимом плагина. Пусть врут заметно.
+ */
+function validateDeclaredCounts(pluginDir) {
+  const manifest = readJson(`${pluginDir}/.claude-plugin/plugin.json`)
+  const count = (sub, isReal) => {
+    const abs = join(ROOT, pluginDir, sub)
+    return existsSync(abs) ? readdirSync(abs).filter(isReal).length : 0
+  }
+  // «скиллов»/«агентов» — родительный множественного: так пишут счёт.
+  // «Шаг 4 скилла» под правило не попадает и не должно.
+  const declared = {
+    'скиллов': count('skills', (name) => existsSync(join(ROOT, pluginDir, 'skills', name, 'SKILL.md'))),
+    'агентов': count('agents', (name) => name.endsWith('.md')),
+  }
+
+  // Витрины плагина: их читают вместо содержимого, поэтому числа в них должны сходиться.
+  const surfaces = ['README.md', `${pluginDir}/README.md`]
+  const presentation = join(ROOT, 'presentation')
+  if (existsSync(presentation)) {
+    for (const name of readdirSync(presentation)) surfaces.push(`presentation/${name}`)
+  }
+
+  for (const rel of surfaces) {
+    const abs = join(ROOT, rel)
+    if (!existsSync(abs) || statSync(abs).isDirectory()) continue
+    readFileSync(abs, 'utf8').split('\n').forEach((line, i) => {
+      for (const [word, actual] of Object.entries(declared)) {
+        const match = line.match(new RegExp(`(\\d+) ${word}`))
+        if (match && Number(match[1]) !== actual) fail(`${rel}:${i + 1}`, `сказано «${match[0]}», в плагине ${actual}`)
+      }
+      const version = line.match(/\bv(\d+\.\d+\.\d+)\b/)
+      if (version && manifest?.version && version[1] !== manifest.version) {
+        fail(`${rel}:${i + 1}`, `версия ${version[0]} расходится с plugin.json (${manifest.version})`)
+      }
+    })
   }
 }
 

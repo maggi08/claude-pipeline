@@ -439,8 +439,8 @@
       <span class="pill">3 проекта</span>
       <span class="pill">16 задач</span>
       <span class="pill">161 отчёт чекеров</span>
-      <span class="pill">16 скиллов · 9 агентов</span>
-      <span class="pill">v0.3.0</span>
+      <span class="pill">17 скиллов · 10 агентов</span>
+      <span class="pill">v0.5.0</span>
     </div>
     <div class="sig">Магжан Мусаин · 21.07 → 21.08.2026 · плагин <b>stage-pipeline@magzhan</b></div>
   </section>
@@ -764,7 +764,7 @@
 
   <!-- 7 -->
   <section class="slide" aria-label="Каталог скиллов">
-    <div class="eyebrow"><span class="num">06</span><span>Каталог</span><span class="spacer"></span><span>16 скиллов</span></div>
+    <div class="eyebrow"><span class="num">06</span><span>Каталог</span><span class="spacer"></span><span>17 скиллов</span></div>
     <h2>Скиллы: команды, которые вы набираете руками</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -783,6 +783,7 @@
             <tr><td class="name">/devtools-verify</td><td>рантайм-проверка в браузере</td><td class="when">вручную</td></tr>
             <tr><td class="name">/dead-code · /i18n-sweep · /deps-audit</td><td>узкие проходы: мусор от задачи, интернационализация, зависимости</td><td class="when">вручную</td></tr>
             <tr><td class="name">/ds-parity</td><td>дубли с дизайн-системой: что заменить китовым компонентом, что вынести В кит</td><td class="when">перед PR</td></tr>
+            <tr><td class="name">/task-converge</td><td>код на HEAD против намерения всей задачи: что из обещанного не сделано и что сделано, но не просили</td><td class="when">перед PR</td></tr>
             <tr><td class="name">/task-wrapup</td><td>сводит журнал всех этапов в <code>PR.md</code>: что и зачем, как проверить, слепые зоны</td><td class="when">финал задачи</td></tr>
           </tbody>
         </table>
@@ -799,7 +800,7 @@
 
   <!-- 8 -->
   <section class="slide" aria-label="Каталог агентов">
-    <div class="eyebrow"><span class="num">07</span><span>Каталог</span><span class="spacer"></span><span>9 агентов-чекеров</span></div>
+    <div class="eyebrow"><span class="num">07</span><span>Каталог</span><span class="spacer"></span><span>10 агентов-чекеров</span></div>
     <h2>Агенты: субагенты, которых оркестратор запускает сам</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -815,6 +816,7 @@
             <tr><td class="name">dead-code</td><td>что осиротело <b>из-за этого дифа</b>: символы, файлы, ключи локалей, ассеты</td><td class="when">что-то удалялось</td></tr>
             <tr><td class="name">i18n-sweep</td><td>хардкод пользовательского текста, неполные локали, склеенные ключи, формат чисел и дат без локали</td><td class="when">появился текст</td></tr>
             <tr><td class="name">deps-audit</td><td>новые зависимости и ассеты: оправданность, эквивалент в репо, раздел манифеста, вес</td><td class="when">тронут манифест</td></tr>
+            <tr><td class="name">task-converge</td><td>единственный, кто не смотрит в диф: сверяет состояние кода с критериями всех этапов — <code>missing</code> / <code>partial</code> / <code>contradicts</code> / <code>unrequested</code></td><td class="when">перед PR</td></tr>
           </tbody>
         </table>
       </div>
@@ -823,11 +825,18 @@
           Три узких чекера намеренно не пересекаются с pro-review: тот отвечает за корректность, эти — каждый за свой класс мусора.</p>
         <p class="footnote"><b>Подмена под проект.</b> Секция «Checker overrides» в конфиге меняет
           <code>figma-*</code> на <code>proto-*</code> — остальной цикл не меняется, Figma MCP такому репо не нужен вообще.</p>
+        <p class="footnote"><b>Почему <code>task-converge</code> отдельно.</b> Все остальные смотрят в диф и отвечают
+          на «правильно ли сделано сделанное». Критерий, который не взял на себя ни один этап, в дифе не появляется —
+          его отсутствие невидимо по определению, и ловит его только сверка с намерением.</p>
       </div>
     </div>
   </section>
   <div class="notes">
     <span class="label">Заметки</span>
+    Каждый критерий приёмки в <code>STAGES.md</code> несёт номер (<code>AC-2.4</code>) и тег того, кто способен его проверить.
+    Из этого получается три вещи: отчёт чекера ссылается на ID, а не пересказывает критерий своими словами; этап нельзя
+    закрыть с критерием без исхода; <code>TEST-PLAN.md</code> собирается механически, а не перечитыванием всех этапов.
+    Критерий, который проверить нечем, — дефект плана, и он ловится на kickoff, а не после PR.
     Главное про <b>pro-review</b>: он не выдаёт список подозрений. Каждый finding он потом пытается опровергнуть сам
     и оставляет только то, для чего смог написать сценарий вход → дефект. Поэтому его вердикт можно читать как ревью коллеги,
     а не как линтер.
@@ -865,6 +874,13 @@ claude plugin details stage-pipeline
             <h3>Напишите мне за доступом</h3>
             <p>Маркетплейс приватный: пришлите ник на GitHub — добавлю. На машине должен работать
               <code>ssh -T git@github.com</code> или <code>gh auth login</code>.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Разрешения</span>
+            <h3>Один раз на машину</h3>
+            <p><code>/pipeline-init</code> предложит разложить профиль разрешений плагина — иначе каждый чекер
+              на каждом этапе спрашивает подтверждение. Скрипт только доливает недостающее и показывает список
+              до записи; <code>/pipeline-doctor</code> потом проверяет его через <code>--check</code>.</p>
           </div>
           <div class="card">
             <span class="kicker">Требуется</span>

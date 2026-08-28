@@ -36,7 +36,7 @@ claude plugin marketplace add maggi08/claude-pipeline
 
 Это `~/.claude/settings.json` — плагин включён во всех репозиториях. Нужен только в одном — те же команды с `--scope project`, попадут в `<repo>/.claude/settings.json`; тогда убедись, что `.gitignore` не глотает `.claude/` целиком: `.claude/*` + `!.claude/settings.json`.
 
-Обновление: `claude plugin update stage-pipeline` (подтянет свежий `main`). После установки и обновления — перезапуск Claude Code.
+Обновление: `claude plugin update stage-pipeline` (подтянет свежий `main`). После установки и обновления — перезапуск Claude Code. Что изменилось между версиями и что нужно сделать руками на апгрейде — в [CHANGELOG.md](CHANGELOG.md).
 
 Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 17 скиллов, 10 агентов, 2 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
 

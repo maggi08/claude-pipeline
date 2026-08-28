@@ -7,7 +7,7 @@
  *
  *   node permissions.mjs                     отчёт: чего не хватает (ничего не пишет)
  *   node permissions.mjs --apply             дописать в ~/.claude/settings.json
- *   node permissions.mjs --check             код возврата 1, если чего-то не хватает
+ *   node permissions.mjs --check             код возврата 1, если чего-то не хватает или перекрыто
  *   node permissions.mjs --scope project     цель — <cwd>/.claude/settings.local.json
  *   node permissions.mjs --groups pipeline,vcs | --all | --minimal
  *   node permissions.mjs --dirs ../ui-lib,../prototypes --scope project --apply
@@ -32,6 +32,8 @@ const die = (message) => {
   console.error(`✘ ${message}`)
   process.exit(2)
 }
+
+if (has('--check') && has('--apply')) die('--check и --apply вместе не работают: --check только отчитывается, --apply пишет')
 
 const scope = valueOf('--scope') ?? 'user'
 if (!['user', 'project'].includes(scope)) die('--scope: user | project')
@@ -85,7 +87,15 @@ for (const group of groups) {
   if (profile.groups[group].generated) wanted.allow.push(...generated())
 }
 
-const settings = existsSync(target) ? JSON.parse(readFileSync(target, 'utf8')) : {}
+const readSettings = () => {
+  if (!existsSync(target)) return {}
+  try {
+    return JSON.parse(readFileSync(target, 'utf8'))
+  } catch (error) {
+    die(`${target} не парсится как JSON (${error.message}). Почини файл или восстанови из .bak-* рядом — трогать его вслепую скрипт не будет`)
+  }
+}
+const settings = readSettings()
 const current = settings.permissions ?? {}
 const listOf = (key) => (Array.isArray(current[key]) ? current[key] : [])
 
@@ -126,12 +136,23 @@ if (staleSkills.length) {
   )
 }
 
+// профиль раздавал эти записи раньше; удалять чужой settings скрипт не вправе, но молчать о них — тоже
+const retired = Object.entries(profile.retired ?? {}).filter(([entry]) => entry !== '$comment')
+for (const [entry, why] of retired) {
+  if (listOf('allow').includes(entry)) notes.push(`устаревшая запись "${entry}" — ${why}; сними её руками`)
+}
+
 const dirsRaw = valueOf('--dirs')
 const wantedDirs = dirsRaw ? dirsRaw.split(',').map((d) => resolve(d.trim())).filter(Boolean) : []
 const missingDirs = wantedDirs.filter((dir) => !(current.additionalDirectories ?? []).includes(dir))
 const notOnDisk = wantedDirs.filter((dir) => !existsSync(dir))
 
 const missingTotal = report.allow.length + report.ask.length + report.deny.length + missingDirs.length
+// конфликт — это тоже отсутствующее разрешение: дописать его нельзя, и на нём будут спрашивать.
+// Считать «на месте» окружение, где нужная запись перекрыта своим deny, — ровно тот ложный зелёный,
+// ради которого /pipeline-doctor и вызывает --check.
+const blockedTotal = conflicts.length
+const notReadyTotal = missingTotal + blockedTotal
 
 console.log(`stage-pipeline permissions → ${target} (scope ${scope})`)
 console.log(`Группы: ${groups.join(', ')}${groups.length < allGroups.length ? `  |  ещё есть: ${allGroups.filter((g) => !groups.includes(g)).join(', ')}` : ''}`)
@@ -150,20 +171,27 @@ for (const note of notes) console.log(`⚠ ${note}`)
 for (const dir of notOnDisk) console.log(`⚠ пути нет на диске: ${dir}`)
 
 if (has('--check')) {
+  const problems = []
+  if (missingTotal) problems.push(`не хватает записей: ${missingTotal}`)
+  if (blockedTotal) problems.push(`перекрыто своими deny/ask: ${blockedTotal} (дописать нельзя — решает пользователь)`)
   console.log('')
-  console.log(missingTotal === 0 ? '✔ разрешения на месте' : `✘ не хватает записей: ${missingTotal}`)
-  process.exit(missingTotal === 0 ? 0 : 1)
+  console.log(notReadyTotal === 0 ? '✔ разрешения на месте' : `✘ ${problems.join('; ')}`)
+  process.exit(notReadyTotal === 0 ? 0 : 1)
 }
+
+const blockedNote = blockedTotal
+  ? `\n  ${blockedTotal} запис${blockedTotal === 1 ? 'ь перекрыта' : 'ей перекрыто'} собственными deny/ask — скрипт их не трогает, сними или оставь осознанно (см. «конфликт» выше)`
+  : ''
 
 if (!has('--apply')) {
   console.log('')
-  console.log(missingTotal === 0 ? '✔ всё уже стоит, писать нечего' : `Ничего не записано. Применить: node ${join(PLUGIN_ROOT, 'scripts', 'permissions.mjs')} --apply${scope === 'project' ? ' --scope project' : ''}`)
+  console.log(missingTotal === 0 ? `✔ всё уже стоит, писать нечего${blockedNote}` : `Ничего не записано. Применить: node ${join(PLUGIN_ROOT, 'scripts', 'permissions.mjs')} --apply${scope === 'project' ? ' --scope project' : ''}${blockedNote}`)
   process.exit(0)
 }
 
 if (missingTotal === 0) {
   console.log('')
-  console.log('✔ всё уже стоит, файл не тронут')
+  console.log(`✔ всё уже стоит, файл не тронут${blockedNote}`)
   process.exit(0)
 }
 
@@ -185,6 +213,6 @@ if (missingDirs.length) current.additionalDirectories = [...(current.additionalD
 writeFileSync(target, `${JSON.stringify(settings, null, 2)}\n`)
 
 console.log('')
-console.log(`✔ дописано записей: ${missingTotal} → ${target}`)
+console.log(`✔ дописано записей: ${missingTotal} → ${target}${blockedNote}`)
 if (backup) console.log(`  бэкап: ${backup}`)
 console.log('  разрешения читаются при старте сессии — перезапусти Claude Code, иначе подтверждения продолжат спрашиваться')

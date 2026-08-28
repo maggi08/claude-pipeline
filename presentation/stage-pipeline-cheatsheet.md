@@ -1,6 +1,6 @@
 # Stage Pipeline · шпаргалка
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.3.1 — 16 скиллов, 9 агентов.
+Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.5.0 — 17 скиллов, 10 агентов.
 
 ---
 
@@ -10,12 +10,17 @@
 claude plugin marketplace add git@github.com:maggi08/claude-pipeline.git
 claude plugin install stage-pipeline@magzhan
 # перезапустить Claude Code
-claude plugin details stage-pipeline   # проверка: 16 скиллов, 9 агентов, 2 MCP
+claude plugin details stage-pipeline   # проверка: 17 скиллов, 10 агентов, 2 MCP
 ```
 
 Репозиторий приватный — нужен доступ (напишите Магжану ник на GitHub) и рабочий `ssh -T git@github.com` либо `gh auth login && gh auth setup-git`.
 
 Обновление: `claude plugin update stage-pipeline` + перезапуск.
+
+**Разрешения** — иначе каждый чекер на каждом этапе спрашивает подтверждение. `/pipeline-init` предложит
+разложить профиль сам; вручную: `node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs` (отчёт) →
+`--apply` (запись в `~/.claude/settings.json`, с бэкапом). `/pipeline-doctor` проверяет через `--check`.
+Не нужен широкий Bash-аллоулист — `--minimal` разрешит только скиллы и MCP.
 
 ## Один раз на репозиторий
 
@@ -59,6 +64,9 @@ claude plugin details stage-pipeline   # проверка: 16 скиллов, 9 
 /pro-review        весь бранч относительно main
 /ds-parity         дубли с дизайн-системой: что заменить китом, что вынести В кит
 /dead-code         что осиротело из-за задачи
+/task-converge     код на HEAD против намерения задачи: что из обещанного не сделано
+                   и что сделано, но не просили. Находки → блок «Догон» в STAGES.md,
+                   прогонять до «сошлось»
 /task-wrapup       → PR.md: что и зачем, как проверить, слепые зоны, открытые вопросы
 ```
 
@@ -80,6 +88,7 @@ claude plugin details stage-pipeline   # проверка: 16 скиллов, 9 
 | `/devtools-verify` | рантайм-проверка в браузере |
 | `/dead-code`, `/i18n-sweep`, `/deps-audit` | узкие проходы: мусор от задачи, i18n, зависимости |
 | `/ds-parity` | паритет с дизайн-системой перед PR |
+| `/task-converge` | код на HEAD против намерения всей задачи: непокрытый критерий, тихо расширенный скоуп |
 | `/task-wrapup` | описание MR из журнала задачи → `PR.md` |
 
 ## Агенты-чекеры
@@ -97,8 +106,16 @@ claude plugin details stage-pipeline   # проверка: 16 скиллов, 9 
 | `dead-code` | что осиротело из-за дифа: символы, файлы, ключи локалей, ассеты | что-то удалялось |
 | `i18n-sweep` | хардкод текста, неполные локали, склеенные ключи, формат без локали | появился текст |
 | `deps-audit` | новые зависимости и ассеты: оправданность, эквивалент в репо, вес | тронут манифест |
+| `task-converge` | единственный, кто не смотрит в диф: `missing` / `partial` / `contradicts` / `unrequested` | перед PR |
 
 Признака нет → `[skip: нет признака]`, субагент не тратится.
+
+**Критерии приёмки нумеруются.** `AC-<этап>.<n>` + тег того, кто способен проверить
+(`[verify: figma-compare]`, `[verify: devtools-verify]`, `[verify: pro-review]`,
+`[verify: user-review]`, `[live: user-side]`). Отчёты чекеров ссылаются на ID, а не
+пересказывают критерий; этап не закрывается с критерием без исхода; `TEST-PLAN.md`
+собирается по ID механически. Критерий, который проверить нечем, — дефект плана,
+и ловится он на kickoff, а не после PR.
 
 ---
 
