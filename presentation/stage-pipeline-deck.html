@@ -1,0 +1,1377 @@
+<title>Stage Pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --ground: #eef0f6;
+    --surface: #ffffff;
+    --surface-2: #f5f6fa;
+    --ink: #11131b;
+    --ink-2: #3a4054;
+    --muted: #626a80;
+    --rule: #dadeea;
+    --rule-strong: #b9c0d4;
+    --accent: #263ad7;
+    --accent-ink: #263ad7;
+    --accent-soft: #e6e9fb;
+    --critical: #b8332b;
+    --major: #9a6410;
+    --minor: #626a80;
+    --ok: #16704b;
+    --shadow: 0 1px 2px rgba(17, 19, 27, .05), 0 18px 44px rgba(17, 19, 27, .10);
+
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --cond: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0b0d13;
+      --surface: #14171f;
+      --surface-2: #1a1e28;
+      --ink: #e9ebf2;
+      --ink-2: #c2c7d6;
+      --muted: #939bb0;
+      --rule: #272d3a;
+      --rule-strong: #3a4254;
+      --accent: #8b98ff;
+      --accent-ink: #a3adff;
+      --accent-soft: #1c2246;
+      --critical: #f0837a;
+      --major: #e0a852;
+      --minor: #939bb0;
+      --ok: #56c795;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 18px 44px rgba(0, 0, 0, .45);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0b0d13;
+    --surface: #14171f;
+    --surface-2: #1a1e28;
+    --ink: #e9ebf2;
+    --ink-2: #c2c7d6;
+    --muted: #939bb0;
+    --rule: #272d3a;
+    --rule-strong: #3a4254;
+    --accent: #8b98ff;
+    --accent-ink: #a3adff;
+    --accent-soft: #1c2246;
+    --critical: #f0837a;
+    --major: #e0a852;
+    --minor: #939bb0;
+    --ok: #56c795;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 18px 44px rgba(0, 0, 0, .45);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .deck {
+    width: min(1240px, 100%);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .slide {
+    display: none;
+    position: relative;
+    aspect-ratio: 16 / 9;
+    max-height: 82vh;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+    padding: 2.9em 3.2em 2.6em;
+    font-size: clamp(9px, min(1.12vw, 1.95vh), 16px);
+    overflow: hidden;
+  }
+
+  .slide.is-active { display: flex; flex-direction: column; }
+
+  /* ---------- slide chrome ---------- */
+
+  .eyebrow {
+    display: flex;
+    align-items: baseline;
+    gap: .9em;
+    font-family: var(--mono);
+    font-size: .82em;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: .8em;
+    border-bottom: 1px solid var(--rule);
+    flex: none;
+  }
+
+  .eyebrow .num { color: var(--accent-ink); font-weight: 600; }
+  .eyebrow .spacer { flex: 1; }
+
+  h1 {
+    font-family: var(--cond);
+    font-weight: 700;
+    font-size: 4.6em;
+    line-height: .96;
+    letter-spacing: -.02em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h2 {
+    font-family: var(--cond);
+    font-weight: 700;
+    font-size: 2.18em;
+    line-height: 1.06;
+    letter-spacing: -.015em;
+    margin: .5em 0 .1em;
+    text-wrap: balance;
+    flex: none;
+  }
+
+  .dek {
+    font-size: 1.02em;
+    line-height: 1.45;
+    color: var(--muted);
+    margin: .55em 0 0;
+    max-width: 62ch;
+    flex: none;
+  }
+
+  .body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .95em;
+    margin-top: 1.15em;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  /* ---------- generic pieces ---------- */
+
+  .cols { display: grid; gap: .9em; align-items: start; }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .cols-2-1 { grid-template-columns: 1.32fr 1fr; }
+  .cols-1-2 { grid-template-columns: 1fr 1.5fr; }
+
+  .grid-5 { display: grid; grid-template-columns: repeat(6, 1fr); gap: .9em; }
+  .grid-5 > .card:nth-child(-n+3) { grid-column: span 2; }
+  .grid-5 > .card:nth-child(n+4) { grid-column: span 3; }
+
+  .card {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--surface-2);
+    padding: .95em 1.05em;
+    display: flex;
+    flex-direction: column;
+    gap: .38em;
+  }
+
+  .card h3 {
+    font-family: var(--cond);
+    font-size: 1.24em;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    margin: 0;
+    line-height: 1.15;
+  }
+
+  .card p { margin: 0; font-size: .95em; line-height: 1.42; color: var(--ink-2); }
+
+  .kicker {
+    font-family: var(--mono);
+    font-size: .74em;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    font-weight: 600;
+  }
+
+  ul.plain { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .5em; }
+  ul.plain > li { font-size: .98em; line-height: 1.42; color: var(--ink-2); display: flex; gap: .7em; }
+  ul.plain > li::before {
+    content: "";
+    flex: none;
+    width: .42em; height: .42em;
+    margin-top: .58em;
+    border-radius: 50%;
+    background: var(--rule-strong);
+  }
+  ul.plain > li b, ul.plain > li strong { color: var(--ink); font-weight: 600; }
+
+  code, .mono { font-family: var(--mono); font-size: .93em; }
+  code { background: var(--accent-soft); color: var(--accent-ink); padding: .08em .32em; border-radius: 2px; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: .88em;
+    line-height: 1.5;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-left: 2px solid var(--accent);
+    border-radius: 3px;
+    padding: .85em 1em;
+    margin: 0;
+    overflow-x: auto;
+    color: var(--ink-2);
+    white-space: pre;
+    tab-size: 2;
+  }
+  pre b { color: var(--ink); font-weight: 600; }
+  pre .cm { color: var(--muted); }
+
+  table { border-collapse: collapse; width: 100%; font-size: .93em; }
+  th, td { text-align: left; padding: .42em .7em; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.36; }
+  th {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: .82em;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom-color: var(--rule-strong);
+    white-space: nowrap;
+  }
+  td.name { font-family: var(--mono); color: var(--ink); white-space: nowrap; font-size: .95em; }
+  td.when { color: var(--muted); white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; overflow-y: auto; min-height: 0; }
+  .dense table { font-size: .87em; }
+  .dense td, .dense th { padding: .34em .6em; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: .9em; }
+  .stat {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .9em 1em;
+    background: var(--surface-2);
+    display: flex;
+    flex-direction: column;
+    gap: .2em;
+  }
+  .stat .n {
+    font-family: var(--cond);
+    font-weight: 700;
+    font-size: 2.5em;
+    line-height: 1;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .l { font-size: .86em; color: var(--muted); line-height: 1.32; }
+  .stat.hero { background: var(--accent-soft); border-color: var(--accent); }
+  .stat.hero .n { color: var(--accent-ink); }
+  .stat.hero .l { color: var(--ink-2); }
+
+  .sev { font-family: var(--mono); font-weight: 600; font-size: .9em; }
+  .sev.c { color: var(--critical); }
+  .sev.m { color: var(--major); }
+  .sev.n { color: var(--minor); }
+  .sev.o { color: var(--ok); }
+
+  .pill {
+    display: inline-flex;
+    align-items: baseline;
+    gap: .4em;
+    font-family: var(--mono);
+    font-size: .8em;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: .2em .55em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  figure { margin: 0; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: .6em; }
+  figure .svg-fit { flex: 1; min-height: 0; display: flex; }
+  figure .svg-fit > svg { width: 100%; height: 100%; color: var(--ink-2); }
+  .cols.fill { grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+  .cols.fill > * { min-height: 0; height: 100%; }
+  figcaption { font-size: .88em; color: var(--muted); line-height: 1.4; }
+
+  .quote {
+    border-left: 2px solid var(--accent);
+    padding-left: 1em;
+    font-size: .98em;
+    line-height: 1.45;
+    color: var(--ink-2);
+  }
+  .quote em { font-style: normal; color: var(--ink); }
+  .quote .src { display: block; font-family: var(--mono); font-size: .8em; color: var(--muted); margin-top: .4em; }
+
+  .timeline { display: flex; flex-direction: column; gap: .4em; }
+  .tl-row { display: grid; grid-template-columns: 3.2em 3.9em 1fr; gap: .8em; align-items: baseline; padding-bottom: .4em; border-bottom: 1px solid var(--rule); }
+  .tl-row:last-child { border-bottom: none; }
+  .tl-row .v { font-family: var(--mono); font-weight: 600; color: var(--accent-ink); font-size: .92em; }
+  .tl-row .d { font-family: var(--mono); font-size: .84em; color: var(--muted); }
+  .tl-row .t { font-size: .92em; line-height: 1.38; color: var(--ink-2); }
+  .tl-row .t b { color: var(--ink); font-weight: 600; }
+
+  .footnote { font-size: .86em; color: var(--muted); line-height: 1.4; flex: none; }
+
+  /* ---------- title slide ---------- */
+
+  .slide.title-slide { justify-content: center; gap: 0; }
+  .title-slide .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5em .8em;
+    margin-top: 2.2em;
+    padding-top: 1.4em;
+    border-top: 1px solid var(--rule);
+  }
+  .title-slide .sig { font-family: var(--mono); font-size: .86em; color: var(--muted); margin-top: 1.6em; }
+  .rule-accent { width: 3.4em; height: 3px; background: var(--accent); margin-bottom: 1.6em; }
+
+  /* ---------- notes + controls ---------- */
+
+  .notes {
+    display: none;
+    width: min(1240px, 100%);
+    border: 1px solid var(--rule);
+    border-left: 2px solid var(--accent);
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 12px 16px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+  body.notes-on .notes.is-active { display: block; }
+  .notes b { color: var(--ink); }
+  .notes .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .bar {
+    width: min(1240px, 100%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .ticks { flex: 1; display: flex; gap: 3px; }
+  .ticks span { flex: 1; height: 3px; background: var(--rule-strong); border-radius: 1px; transition: background .18s ease; }
+  .ticks span.done { background: var(--accent); }
+
+  .bar .count {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  button {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-2);
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: 5px 10px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent-ink); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+
+  @media (max-width: 760px) {
+    body { justify-content: flex-start; }
+    .slide {
+      aspect-ratio: auto;
+      max-height: none;
+      min-height: 70vh;
+      font-size: 13px;
+      padding: 2.2em 1.6em 2em;
+      overflow-y: auto;
+    }
+    .cols-2, .cols-3, .cols-2-1, .cols-1-2, .grid-5 { grid-template-columns: 1fr; }
+    .grid-5 > .card { grid-column: auto; }
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+    h1 { font-size: 3.2em; }
+    .body { overflow: visible; }
+  }
+</style>
+
+<div class="deck">
+
+  <!-- 1 -->
+  <section class="slide title-slide is-active" aria-label="Титул">
+    <div class="rule-accent"></div>
+    <h1>stage-pipeline</h1>
+    <p class="dek" style="font-size:1.32em;color:var(--ink-2);max-width:44ch;margin-top:.7em">
+      Поэтапный maker/checker-воркфлоу для Claude Code. Про то, как перестать отдавать на ревью то,
+      что ещё не готово — и почему это ловит не человек.
+    </p>
+    <div class="meta">
+      <span class="pill">3 проекта</span>
+      <span class="pill">16 задач</span>
+      <span class="pill">161 отчёт чекеров</span>
+      <span class="pill">16 скиллов · 9 агентов</span>
+      <span class="pill">v0.3.0</span>
+    </div>
+    <div class="sig">Магжан Мусаин · 21.07 → 21.08.2026 · плагин <b>stage-pipeline@magzhan</b></div>
+  </section>
+  <div class="notes is-active">
+    <span class="label">Заметки</span>
+    Заход: «месяц назад я начал делать десктоп-редизайн создания объявления и понял, что задача физически не влезает ни в один контекст.
+    Из попытки это обойти вырос инструмент, который с тех пор прошёл три проекта». Сразу сказать, что в конце будет
+    инструкция по установке и шпаргалка. Клавиши: ←/→ листать, <b>S</b> — заметки.
+  </div>
+
+  <!-- 2 -->
+  <section class="slide" aria-label="Проблема">
+    <div class="eyebrow"><span class="num">01</span><span>Проблема</span><span class="spacer"></span><span>зачем это вообще</span></div>
+    <h2>Пять болей, которые повторяются на каждой большой задаче</h2>
+    <div class="body">
+      <div class="grid-5" style="flex:1;min-height:0;grid-auto-rows:minmax(0,1fr)">
+        <div class="card">
+          <span class="kicker">Контекст</span>
+          <h3>Задача не влезает в одну сессию</h3>
+          <p>Многоэкранный редизайн — это десятки сессий за недели. Модель не помнит вчерашнее, человек пересказывает
+            одно и то же, решения принимаются заново и по-другому.</p>
+        </div>
+        <div class="card">
+          <span class="kicker">Нарезка</span>
+          <h3>Дизайн подаём по кусочкам вручную</h3>
+          <p>«Вот этот компонент. Теперь этот экран. Теперь его состояние». Нарезать многоэкранный макет на посильные
+            куски и следить за порядком — работа человека, и она повторяется на каждой задаче.</p>
+        </div>
+        <div class="card">
+          <span class="kicker">Качество</span>
+          <h3>«Готово» ≠ готово</h3>
+          <p>Отступ уехал на 6px, hydration сломался, тосты немые, драфт не восстановился. Находит это ревьюер,
+            тестировщик или прод — то есть в самый дорогой момент.</p>
+        </div>
+        <div class="card">
+          <span class="kicker">Ритм работы</span>
+          <h3>Бесконечный промптинг по кругу</h3>
+          <p>«Сделай это. Теперь вот это. Нет, поправь предыдущее. А верни как было». Каждый круг ложится новым дифом
+            поверх непроверенного старого: ни один кусок не закрыт, к вечеру неясно, что из сделанного ещё верно,
+            и задача не заканчивается — она затухает.</p>
+        </div>
+        <div class="card">
+          <span class="kicker">Знание</span>
+          <h3>Почему так сделано — нигде</h3>
+          <p>Через две недели ни автор, ни ревьюер не помнят, какая была развилка и почему выбрали этот вариант.
+            На ревью всё объясняется устно и заново.</p>
+        </div>
+      </div>
+      <p class="footnote">Ни одна из пяти не про «модель плохо пишет код» — все пять про процесс вокруг написания кода.
+        Теперь на вход достаточно отдать ссылку на <b>целую страницу Figma</b>: фреймы инвентаризируются сами, раскладываются
+        по этапам, и каждый этап отдельно реализуется и проверяется.</p>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Здесь важно поймать кивки: спросить у зала, у кого на ревью прилетало «а почему тут 16 вместо 10».
+    Подчеркнуть последний тезис — это водораздел: пайплайн не улучшает генерацию кода, он меняет то, что происходит до и после неё.
+  </div>
+
+  <!-- 3 -->
+  <section class="slide" aria-label="Идея">
+    <div class="eyebrow"><span class="num">02</span><span>Идея</span><span class="spacer"></span><span>loop engineering</span></div>
+    <h2>Три принципа, из которых собрано всё остальное</h2>
+    <div class="body">
+      <div class="cols cols-3" style="flex:1">
+        <div class="card" style="height:100%">
+          <span class="kicker">01 — Разделение ролей</span>
+          <h3>Мейкер и чекер — разные контексты</h3>
+          <p>Тот, кто писал код, не проверит его непредвзято: он видит свой замысел, а не то, что получилось.
+            Каждый чекер — отдельный субагент с <b>чистым контекстом</b>: он не участвовал в реализации и не знает, чем её оправдывали.</p>
+          <p style="color:var(--muted)">Побочный эффект оказался важнее экономии контекста, ради которой это делалось.</p>
+        </div>
+        <div class="card" style="height:100%">
+          <span class="kicker">02 — Состояние</span>
+          <h3>Память задачи живёт в файлах</h3>
+          <p><code>STAGES.md</code> переживает <code>/clear</code>, смену сессии и месяц работы. План, решения,
+            статусы этапов, ссылки на отчёты — на диске, а не в контексте.</p>
+          <p style="color:var(--muted)">KC-463 прожила 42 этапа и 76 коммитов. Ни одна сессия не помнила предыдущую — и это не мешало.</p>
+        </div>
+        <div class="card" style="height:100%">
+          <span class="kicker">03 — Квант работы</span>
+          <h3>Этап = экран и все его стейты</h3>
+          <p>Не «сделать фичу», а «сделать шаг VIN: дефолт, загрузка, ошибка, успех». Этап открывается планом
+            и sign-off, закрывается чекерами и коммитом.</p>
+          <p style="color:var(--muted)">Единица, которая помещается в контекст целиком и проверяется целиком.</p>
+        </div>
+      </div>
+      <p class="footnote">Источник подхода — статья Cobus Greyling «Loop Engineering». Всё остальное — наши грабли, разложенные по скиллам.</p>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Ключевая фраза для зала: «чекер с чистым контекстом не заражён решениями мейкера». Мы пришли к субагентам ради экономии
+    токенов, а получили другое качество находок. Если спросят про «а не проще ли попросить модель перепроверить себя» —
+    ответ: пробовали, она защищает своё решение; отдельный агент без истории спорит с кодом, а не с собой.
+  </div>
+
+  <!-- 4 -->
+  <section class="slide" aria-label="Цикл этапа">
+    <div class="eyebrow"><span class="num">03</span><span>Механика</span><span class="spacer"></span><span>цикл одного этапа</span></div>
+    <h2>Как проходит один этап</h2>
+    <div class="body">
+      <figure>
+        <div class="svg-fit"><svg viewBox="0 0 980 596" role="img" aria-label="Схема цикла этапа: kickoff, спека, реализация, три параллельных чекера, fix-loop с возвратом в реализацию, user-review, коммит и очистка контекста" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+            </marker>
+          </defs>
+
+          <g fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)">
+            <line x1="490" y1="58" x2="490" y2="92"></line>
+            <line x1="490" y1="150" x2="490" y2="184"></line>
+            <line x1="490" y1="242" x2="490" y2="276"></line>
+            <line x1="170" y1="242" x2="170" y2="276"></line>
+            <line x1="810" y1="242" x2="810" y2="276"></line>
+            <line x1="490" y1="380" x2="490" y2="414"></line>
+            <line x1="490" y1="472" x2="490" y2="506"></line>
+          </g>
+          <g fill="none" stroke="currentColor" stroke-width="1.4">
+            <line x1="170" y1="242" x2="810" y2="242" stroke-width="1.1"></line>
+            <line x1="170" y1="332" x2="170" y2="380"></line>
+            <line x1="810" y1="332" x2="810" y2="380"></line>
+            <line x1="170" y1="380" x2="810" y2="380" stroke-width="1.1"></line>
+          </g>
+
+          <rect x="250" y="14" width="480" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+          <text x="490" y="41" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">/stage-kickoff — план, решения, sign-off</text>
+
+          <rect x="250" y="106" width="480" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+          <text x="490" y="133" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">figma-spec | proto-spec — спека экрана</text>
+
+          <rect x="250" y="198" width="480" height="44" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.6"></rect>
+          <text x="490" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" fill="var(--accent-ink)">implement — код по спеке</text>
+
+          <rect x="40" y="276" width="260" height="56" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+          <text x="170" y="299" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="15" fill="currentColor">figma-compare</text>
+          <text x="170" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">макет ↔ код</text>
+
+          <rect x="360" y="276" width="260" height="56" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+          <text x="490" y="299" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="15" fill="currentColor">pro-review</text>
+          <text x="490" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">корректность и конвенции</text>
+
+          <rect x="680" y="276" width="260" height="56" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+          <text x="810" y="299" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="15" fill="currentColor">devtools-verify</text>
+          <text x="810" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">рантайм в браузере</text>
+
+          <text x="490" y="360" text-anchor="middle" font-size="13.5" fill="var(--muted)">+ по признаку: dead-code · i18n-sweep · deps-audit</text>
+
+          <rect x="330" y="414" width="320" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+          <text x="490" y="441" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">fix-loop ≤ 2 итерации</text>
+
+          <path d="M 650 436 L 958 436 L 958 220 L 734 220" fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ar)" color="var(--accent)"></path>
+          <text x="846" y="209" text-anchor="middle" font-size="13.5" fill="var(--accent-ink)" font-family="IBM Plex Mono, monospace">чиним</text>
+
+          <rect x="330" y="506" width="320" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+          <text x="490" y="533" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">user-review — человек смотрит</text>
+
+          <text x="672" y="533" text-anchor="start" font-size="14.5" fill="var(--muted)">→ <tspan font-family="IBM Plex Mono, monospace" fill="currentColor">/stage-check</tspan></text>
+          <text x="672" y="552" text-anchor="start" font-size="13.5" fill="var(--muted)">журнал + коммит + /clear</text>
+
+          <text x="500" y="80" text-anchor="start" font-size="13.5" fill="var(--muted)">этап открыт</text>
+          <text x="500" y="172" text-anchor="start" font-size="13.5" fill="var(--muted)">токены, размеры, копия</text>
+          <text x="500" y="264" text-anchor="start" font-size="13.5" fill="var(--muted)">диф этапа</text>
+          <text x="500" y="402" text-anchor="start" font-size="13.5" fill="var(--muted)">подтверждённые находки</text>
+          <text x="500" y="494" text-anchor="start" font-size="13.5" fill="var(--muted)">осталось только то, что видно глазами</text>
+        </svg></div>
+        <figcaption>Три чекера идут параллельно и независимо. Этап не закрывается, пока есть critical или вердикт <b>Request changes</b>.</figcaption>
+      </figure>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Проговорить два жёстких правила цикла: <b>не начинать implement без sign-off</b> (иначе правки прилетят в середине)
+    и <b>не закрывать этап с critical</b>. Fix-loop ограничен двумя итерациями специально: если за два прохода не сошлось —
+    это не баг реализации, а расхождение в требованиях, и его несут человеку.
+  </div>
+
+  <!-- 5 -->
+  <section class="slide" aria-label="Что использует">
+    <div class="eyebrow"><span class="num">04</span><span>Механика</span><span class="spacer"></span><span>входы и гигиена контекста</span></div>
+    <h2>Что пайплайн использует — и почему тяжёлое не попадает в главный контекст</h2>
+    <div class="body">
+      <div class="cols cols-1-2 fill" style="flex:1;min-height:0;grid-template-columns:1fr 1.28fr">
+        <div style="display:flex;flex-direction:column;gap:.7em">
+          <ul class="plain">
+            <li><b>Figma Dev Mode MCP</b> — токены, координаты нод, скриншоты</li>
+            <li><b>Chrome DevTools MCP</b> — консоль, живая страница, замеры</li>
+            <li><b>git</b> — диф этапа и диф всего бранча</li>
+            <li><b>pipeline.config.md</b> — профиль проекта: пути, команды, dev-URL, брейкпоинты, baseline</li>
+            <li><b>CLAUDE.md</b> — конвенции репо; рубрика ревью живёт здесь, не в плагине</li>
+            <li><b>AskUserQuestion</b> — развилки задаются батчем</li>
+          </ul>
+        </div>
+        <figure>
+          <div class="svg-fit"><svg viewBox="0 0 700 430" role="img" aria-label="Схема: тяжёлые данные из MCP и git попадают только в субагентов, наружу выходят компактные отчёты в файлы и сводка оркестратору" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+              </marker>
+            </defs>
+
+            <text x="14" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">ИСТОЧНИК</text>
+            <text x="250" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">СУБАГЕНТ · свой контекст</text>
+            <text x="556" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">НАРУЖУ</text>
+
+            <g font-size="13" fill="currentColor" font-family="IBM Plex Mono, monospace">
+              <rect x="14" y="52" width="150" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+              <text x="89" y="77" text-anchor="middle">Figma MCP</text>
+              <rect x="14" y="148" width="150" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+              <text x="89" y="173" text-anchor="middle">DevTools MCP</text>
+              <rect x="14" y="244" width="150" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+              <text x="89" y="269" text-anchor="middle">git diff</text>
+            </g>
+
+            <g fill="none" stroke="currentColor" stroke-width="2.4" marker-end="url(#ar2)">
+              <line x1="164" y1="72" x2="246" y2="72"></line>
+              <line x1="164" y1="168" x2="246" y2="168"></line>
+              <line x1="164" y1="264" x2="246" y2="264"></line>
+            </g>
+            <text x="176" y="62" font-size="11.5" fill="var(--muted)">дамп нод</text>
+            <text x="176" y="158" font-size="11.5" fill="var(--muted)">снапшоты</text>
+            <text x="176" y="254" font-size="11.5" fill="var(--muted)">весь диф</text>
+
+            <g font-size="13" fill="currentColor" font-family="IBM Plex Mono, monospace">
+              <rect x="248" y="52" width="200" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 3"></rect>
+              <text x="348" y="77" text-anchor="middle">figma-compare</text>
+              <rect x="248" y="148" width="200" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 3"></rect>
+              <text x="348" y="173" text-anchor="middle">devtools-verify</text>
+              <rect x="248" y="244" width="200" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 3"></rect>
+              <text x="348" y="269" text-anchor="middle">pro-review</text>
+            </g>
+
+            <g fill="none" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#ar2)" color="var(--accent)">
+              <line x1="448" y1="72" x2="552" y2="120"></line>
+              <line x1="448" y1="168" x2="552" y2="140"></line>
+              <line x1="448" y1="264" x2="552" y2="160"></line>
+            </g>
+
+            <rect x="554" y="96" width="132" height="76" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.4"></rect>
+            <text x="620" y="126" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="var(--accent-ink)">checks/*.md</text>
+            <text x="620" y="146" text-anchor="middle" font-size="11.5" fill="var(--muted)">компактный</text>
+            <text x="620" y="162" text-anchor="middle" font-size="11.5" fill="var(--muted)">отчёт</text>
+
+            <rect x="248" y="330" width="438" height="52" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
+            <text x="467" y="352" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="currentColor">главный контекст (оркестратор)</text>
+            <text x="467" y="371" text-anchor="middle" font-size="12" fill="var(--muted)">видит только сводку и список находок — не сырые данные</text>
+
+            <g fill="none" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#ar2)" color="var(--accent)">
+              <path d="M 620 172 L 620 300 L 467 300 L 467 328"></path>
+            </g>
+
+            <line x1="14" y1="404" x2="34" y2="404" stroke="currentColor" stroke-width="2.4"></line>
+            <text x="42" y="408" font-size="11.5" fill="var(--muted)">тяжёлые данные (десятки тысяч токенов)</text>
+            <line x1="330" y1="404" x2="350" y2="404" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="5 4"></line>
+            <text x="358" y="408" font-size="11.5" fill="var(--muted)">компактный вывод (сотни токенов)</text>
+          </svg></div>
+          <figcaption>Замеры <code>/usage</code>: Figma MCP съедал 33% контекста, chrome-devtools — 49% за день. После переноса в субагентов — ~2% и ~0%.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Это ответ на вопрос «а не сожрёт ли пайплайн лимиты». Наоборот: субагенты стоят ~2–3% расхода, а дорогое — длинные
+    сессии и распухшие файлы. Правила гигиены: <code>/clear</code> после коммита этапа, архивация журнала, <code>evaluate_script</code>
+    вместо скриншотов для замеров.
+  </div>
+
+  <!-- 6 -->
+  <section class="slide" aria-label="Структура файлов">
+    <div class="eyebrow"><span class="num">05</span><span>Механика</span><span class="spacer"></span><span>что где лежит</span></div>
+    <h2>Структура: плагин снаружи, состояние задачи внутри репо</h2>
+    <div class="body">
+      <div class="cols cols-2-1" style="flex:1;min-height:0">
+        <pre>
+<span class="cm"># ставится один раз, работает во всех репо</span>
+<b>stage-pipeline@magzhan</b>
+├── skills/     16 команд
+├── agents/      9 чекеров
+└── .mcp.json    figma · chrome-devtools
+
+<span class="cm"># в проекте, создаёт /pipeline-init</span>
+<b>&lt;repo&gt;/.claude/</b>
+├── <b>pipeline.config.md</b>  <span class="cm">профиль проекта:</span>
+│      <span class="cm">пути · команды · dev-URL · baseline</span>
+└── <b>tasks/&lt;ТИКЕТ&gt;/</b>
+    ├── FEATURE-MAP.md      <span class="cm">что уже есть</span>
+    ├── <b>STAGES.md</b>           <span class="cm">план и журнал</span>
+    ├── specs/              <span class="cm">спека экрана</span>
+    ├── checks/             <span class="cm">отчёты чекеров</span>
+    ├── DESIGN-QUESTIONS.md <span class="cm">дизайнеру</span>
+    └── PR.md               <span class="cm">описание MR</span></pre>
+        <div style="display:flex;flex-direction:column;gap:.9em">
+          <div class="card">
+            <span class="kicker">Граница</span>
+            <h3>Что нельзя класть в плагин</h3>
+            <p>Рубрика одного проекта в общем скилле давала ложные Major в другом. Проектные правила — в
+              <code>CLAUDE.md</code> и <code>pipeline.config.md</code>.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Приватность</span>
+            <h3>Журналы задач не коммитятся</h3>
+            <p><code>tasks/</code> в gitignore: это рабочая память разработчика. Наружу выходит только <code>PR.md</code>.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Переносимость</span>
+            <h3>Один конфиг — любой стек</h3>
+            <p>Три разных стека работают на одних скиллах. Отличие — только <code>pipeline.config.md</code>,
+              который генерит <code>/pipeline-init</code>.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Если спросят «а почему journal не в репо» — история: мы пробовали хранить весь пайплайн в <code>.claude/</code> репозитория,
+    коммит не влили в dev, <code>.gitignore</code> гасил папку целиком, и <code>git clean</code> снёс всё дважды. Отсюда плагин.
+  </div>
+
+  <!-- 7 -->
+  <section class="slide" aria-label="Каталог скиллов">
+    <div class="eyebrow"><span class="num">06</span><span>Каталог</span><span class="spacer"></span><span>16 скиллов</span></div>
+    <h2>Скиллы: команды, которые вы набираете руками</h2>
+    <div class="body">
+      <div class="table-wrap" style="flex:1">
+        <table>
+          <thead><tr><th>Команда</th><th>Что делает</th><th>Когда</th></tr></thead>
+          <tbody>
+            <tr><td class="name">/pipeline-init</td><td>изучает репо и генерит <code>pipeline.config.md</code>, из которого читают все остальные</td><td class="when">1 раз на репо</td></tr>
+            <tr><td class="name">/pipeline-doctor</td><td>проверяет окружение: MCP, соседние репо, dev-сервер, type-check baseline</td><td class="when">при сбоях</td></tr>
+            <tr><td class="name">/feature-checker</td><td>карта существующей фичи по всем платформам → <code>FEATURE-MAP.md</code>: что переиспользовать, что писать</td><td class="when">старт задачи</td></tr>
+            <tr><td class="name">/stage-plan</td><td>режет задачу на этапы (экран + стейты = этап), критерии приёмки WHEN/THEN → <code>STAGES.md</code></td><td class="when">старт задачи</td></tr>
+            <tr><td class="name">/stage-kickoff</td><td>открывает этап: план, накопленные TODO и вопросы, бизнес-ввод, sign-off перед кодом</td><td class="when">начало этапа</td></tr>
+            <tr><td class="name">/stage-check</td><td>закрывает этап: запускает чекеров, гоняет fix-loop ≤2, пишет журнал, готовит текст коммита</td><td class="when">конец этапа</td></tr>
+            <tr><td class="name">/stage-force</td><td>автономный прогон всей задачи: вопросы одним батчем на старте, дальше без остановок</td><td class="when">вместо цикла</td></tr>
+            <tr><td class="name">/pro-review</td><td>senior-ревью — по умолчанию весь бранч относительно main</td><td class="when">вручную</td></tr>
+            <tr><td class="name">/figma-compare · /proto-compare</td><td>сверка кода с макетом или с HTML-прототипом</td><td class="when">вручную</td></tr>
+            <tr><td class="name">/devtools-verify</td><td>рантайм-проверка в браузере</td><td class="when">вручную</td></tr>
+            <tr><td class="name">/dead-code · /i18n-sweep · /deps-audit</td><td>узкие проходы: мусор от задачи, интернационализация, зависимости</td><td class="when">вручную</td></tr>
+            <tr><td class="name">/ds-parity</td><td>дубли с дизайн-системой: что заменить китовым компонентом, что вынести В кит</td><td class="when">перед PR</td></tr>
+            <tr><td class="name">/task-wrapup</td><td>сводит журнал всех этапов в <code>PR.md</code>: что и зачем, как проверить, слепые зоны</td><td class="when">финал задачи</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">Проверки продублированы скиллами намеренно: в цикле их вызывает оркестратор сам, но любую можно дёрнуть руками вне пайплайна.</p>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Не зачитывать таблицу целиком. Сказать: «запоминать надо четыре — <b>/feature-checker</b>, <b>/stage-plan</b>,
+    <b>/stage-kickoff</b>, <b>/stage-check</b>. Остальное вызывается само или лежит на всякий случай».
+    Отдельно отметить <code>/pro-review</code>: его можно взять как самостоятельный инструмент, даже не заводя весь пайплайн.
+  </div>
+
+  <!-- 8 -->
+  <section class="slide" aria-label="Каталог агентов">
+    <div class="eyebrow"><span class="num">07</span><span>Каталог</span><span class="spacer"></span><span>9 агентов-чекеров</span></div>
+    <h2>Агенты: субагенты, которых оркестратор запускает сам</h2>
+    <div class="body">
+      <div class="table-wrap" style="flex:1">
+        <table>
+          <thead><tr><th>Агент</th><th>Что делает</th><th>Запуск</th></tr></thead>
+          <tbody>
+            <tr><td class="name">figma-spec</td><td>вытаскивает из Figma компактную спеку экрана: токены, размеры, копия, стейты</td><td class="when">до кода</td></tr>
+            <tr><td class="name">proto-spec</td><td>то же из HTML-прототипа + SPEC.md — для проектов без Figma</td><td class="when">до кода</td></tr>
+            <tr><td class="name">figma-compare</td><td>pixel-perfect сверка кода с макетом: цвета, отступы, радиусы, тени, типографика, структура</td><td class="when">после кода</td></tr>
+            <tr><td class="name">proto-compare</td><td>то же против прототипа, плюс поведение по SPEC.md (переходы, CTA, guard'ы)</td><td class="when">после кода</td></tr>
+            <tr><td class="name">devtools-verify</td><td>рантайм: консоль и hydration, light/dark, ширины 1440/1280/1024, живое состояние</td><td class="when">после кода</td></tr>
+            <tr><td class="name">pro-review</td><td>корректность, безопасность, конвенции репо, дубли, нейминг — с адверсариальной перепроверкой каждого finding</td><td class="when">всегда</td></tr>
+            <tr><td class="name">dead-code</td><td>что осиротело <b>из-за этого дифа</b>: символы, файлы, ключи локалей, ассеты</td><td class="when">что-то удалялось</td></tr>
+            <tr><td class="name">i18n-sweep</td><td>хардкод пользовательского текста, неполные локали, склеенные ключи, формат чисел и дат без локали</td><td class="when">появился текст</td></tr>
+            <tr><td class="name">deps-audit</td><td>новые зависимости и ассеты: оправданность, эквивалент в репо, раздел манифеста, вес</td><td class="when">тронут манифест</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="cols cols-2" style="flex:none">
+        <p class="footnote"><b>Запуск по признаку.</b> Нет признака — <code>[skip: нет признака]</code>, субагент не тратится.
+          Три узких чекера намеренно не пересекаются с pro-review: тот отвечает за корректность, эти — каждый за свой класс мусора.</p>
+        <p class="footnote"><b>Подмена под проект.</b> Секция «Checker overrides» в конфиге меняет
+          <code>figma-*</code> на <code>proto-*</code> — остальной цикл не меняется, Figma MCP такому репо не нужен вообще.</p>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Главное про <b>pro-review</b>: он не выдаёт список подозрений. Каждый finding он потом пытается опровергнуть сам
+    и оставляет только то, для чего смог написать сценарий вход → дефект. Поэтому его вердикт можно читать как ревью коллеги,
+    а не как линтер.
+  </div>
+
+  <!-- 9 -->
+  <section class="slide" aria-label="Как начать">
+    <div class="eyebrow"><span class="num">08</span><span>Практика</span><span class="spacer"></span><span>установка за 5 минут</span></div>
+    <h2>Как начать у себя</h2>
+    <div class="body">
+      <div class="cols cols-2-1" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:1em">
+          <pre>
+<span class="cm"># 1. подключить маркетплейс и поставить плагин</span>
+claude plugin marketplace add \
+  git@github.com:maggi08/claude-pipeline.git
+claude plugin install stage-pipeline@magzhan
+
+<span class="cm"># 2. перезапустить Claude Code и проверить</span>
+claude plugin details stage-pipeline
+
+<span class="cm"># 3. в целевом репозитории</span>
+/pipeline-doctor   <span class="cm">← окружение</span>
+/pipeline-init     <span class="cm">← конфиг проекта</span>
+
+<span class="cm"># 4. первая задача</span>
+/feature-checker KC-000   <span class="cm">→ FEATURE-MAP</span>
+/stage-plan               <span class="cm">→ STAGES.md</span>
+/stage-kickoff            <span class="cm">→ поехали</span></pre>
+          <p class="footnote">Обновление — <code>claude plugin update stage-pipeline</code> и перезапуск.</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.9em">
+          <div class="card">
+            <span class="kicker">Доступ</span>
+            <h3>Напишите мне за доступом</h3>
+            <p>Маркетплейс приватный: пришлите ник на GitHub — добавлю. На машине должен работать
+              <code>ssh -T git@github.com</code> или <code>gh auth login</code>.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Требуется</span>
+            <h3>Что нужно для чекеров</h3>
+            <p><code>figma-*</code> — Figma desktop с <b>Enable Dev Mode MCP Server</b> и открытым файлом.
+              <code>devtools-verify</code> — живой dev-сервер. Оба MCP приезжают с плагином.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Минимальный вход</span>
+            <h3>Можно не всё сразу</h3>
+            <p>Не нужен весь цикл — берите <code>/feature-checker</code> перед задачей и <code>/pro-review</code> перед MR:
+              работает без конфига и без Figma.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Здесь можно предложить прямо на встрече: «скиньте мне ники в GitHub, к вечеру у всех будет доступ».
+    Если зал холодный — сделать упор на последнюю карточку: порог входа в два скилла, конфиг не обязателен.
+  </div>
+
+  <!-- 10 -->
+  <section class="slide" aria-label="Два режима">
+    <div class="eyebrow"><span class="num">09</span><span>Практика</span><span class="spacer"></span><span>ручной режим и force</span></div>
+    <h2>Два режима: где вы в цикле и где вас нет</h2>
+    <div class="body">
+      <div class="cols cols-2" style="flex:1;min-height:0">
+        <div class="card" style="height:100%">
+          <span class="kicker">Обычный режим</span>
+          <h3>Две остановки на каждом этапе</h3>
+          <ul class="plain" style="margin-top:.4em">
+            <li><b>Kickoff:</b> агент показывает план этапа и накопленные вопросы — вы принимаете решения и даёте sign-off</li>
+            <li><b>User-review:</b> смотрите результат глазами до коммита</li>
+            <li>Всё между этим — реализация, чекеры, фиксы — идёт само</li>
+          </ul>
+          <p style="margin-top:.5em;color:var(--muted)">Подходит, когда развилки дорогие: новый флоу, спорный UX, чужая зона кода.</p>
+        </div>
+        <div class="card" style="height:100%">
+          <span class="kicker">/stage-force</span>
+          <h3>Остановки перенесены в начало</h3>
+          <ul class="plain" style="margin-top:.4em">
+            <li>Все вопросы по всем этапам — <b>одним батчем на старте</b></li>
+            <li>Что осталось — оформляется допущением: «принято X, потому что Y, обратимо через Z»</li>
+            <li>Дальше реализация, чекеры, фиксы, коммиты — до конца задачи</li>
+            <li><b>Всегда запрещено:</b> <code>git push</code>, создание PR, деплой</li>
+            <li><b>Всё равно остановится:</b> необратимая развилка, исчерпан fix-loop, красная сборка, конфликт источников правды</li>
+          </ul>
+          <p style="margin-top:.5em;color:var(--muted)">Первый реальный прогон — KC-493: 7 решений собраны двумя батчами, 6 допущений с откатом, 6 коммитов.</p>
+        </div>
+      </div>
+      <p class="footnote">Force придумался не от удобства, а по замеру: ожидание на остановках занимало больше времени, чем сами этапы.</p>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Force — самая рискованная часть, поэтому честно: он не убирает контроль, он переносит его. Запреты жёсткие
+    (никакого push и PR), а всё принятое самостоятельно записано в журнал с путём отката, так что развернуть можно любое решение.
+  </div>
+
+  <!-- 11 -->
+  <section class="slide" aria-label="Демо">
+    <div class="eyebrow"><span class="num">10</span><span>Демо</span><span class="spacer"></span><span>5 минут вживую</span></div>
+    <h2>Демо: показываю на реальной задаче</h2>
+    <div class="body">
+      <div class="cols cols-2" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:.85em">
+          <div class="card">
+            <span class="kicker">01</span>
+            <h3>Память задачи</h3>
+            <p><code>tasks/KC-494/STAGES.md</code> — решения с обоснованиями, этапы со статусами, контракты слоёв.
+              С этого стартует любая новая сессия.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">02</span>
+            <h3>Запуск проверки</h3>
+            <p><code>/stage-check</code> на живом дифе: видно, как расходятся субагенты и каждый пишет свой файл в <code>checks/</code>.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">03</span>
+            <h3>Выхлоп</h3>
+            <p><code>checks/pro-review.md</code> и <code>figma-compare.md</code> — находки с точностью до
+              <code>файл:строка</code> и то, что признано не находкой.</p>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.85em">
+          <div class="card">
+            <span class="kicker">04</span>
+            <h3>Готовое описание MR</h3>
+            <p><code>PR.md</code> от <code>/task-wrapup</code>: что и зачем, как проверить, слепые зоны, открытые вопросы.</p>
+          </div>
+          <div class="card" style="border-style:dashed">
+            <span class="kicker">Запасной путь</span>
+            <h3>Если MCP не поднялся</h3>
+            <p>Показываю готовые отчёты из <code>checks/</code> — их 161, читаются так же, как живой прогон.</p>
+          </div>
+          <p class="footnote">Демо-задача: KC-494 — распознавание VIN по фото, три контекста (desktop / adaptive / webview), 20 файлов дифа.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Перед встречей: открыть Figma desktop с нужным файлом, поднять dev-сервер, заранее сделать <code>/clear</code>.
+    Не запускать полный <code>/stage-check</code> целиком, если время поджимает — достаточно показать старт и уйти в готовый отчёт.
+  </div>
+
+  <!-- 12 -->
+  <section class="slide" aria-label="Пример отчёта">
+    <div class="eyebrow"><span class="num">11</span><span>Демо</span><span class="spacer"></span><span>как выглядит находка</span></div>
+    <h2>Реальный отчёт: pro-review по ветке KC-494</h2>
+    <div class="body">
+      <div class="cols cols-2-1" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:.8em;min-height:0">
+          <div style="display:flex;gap:.6em;flex-wrap:wrap">
+            <span class="pill"><span class="sev o">0</span> critical</span>
+            <span class="pill"><span class="sev m">4</span> major</span>
+            <span class="pill"><span class="sev n">1</span> minor</span>
+            <span class="pill" style="border-color:var(--major);color:var(--major)">вердикт: Request changes</span>
+          </div>
+          <div class="card" style="min-height:0;overflow:auto">
+            <span class="kicker" style="color:var(--major)">🟠 major</span>
+            <h3 style="font-family:var(--mono);font-size:1em;font-weight:500">composables/create-announcement/useVinCodeScan.ts:112</h3>
+            <p><code>isScanning</code> — только <code>pending</code> сетевого запроса: ожидание нативного экрана оно не покрывает,
+              и кнопка остаётся активной. Повторный тап запускает второй <code>scan()</code> — второй вызов бриджа и второй
+              набор слушателей. Натив пришлёт одно событие, получат его оба → два тоста и две отправки аналитики.</p>
+            <p><b>Фикс:</b> busy-флаг на всю <code>scan()</code> (guard + finally), <code>isScanning = isBusy || pending</code>.</p>
+          </div>
+          <p class="footnote">Ещё в этом прогоне: утечка камеры при закрытии до резолва <code>getUserMedia</code>;
+            тело запроса читается в память до проверки размера; протечка слоя между модулями.</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.9em">
+          <div class="card">
+            <span class="kicker">Что было проверено</span>
+            <p>20 файлов целиком, а не хунки. <code>type-check</code> — 218, совпадает с baseline. <code>lint</code> чисто.
+              Каждый finding перепроверен сценарием вход → дефект.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Чего не было</span>
+            <p>Отдельный блок: что агент осознанно <b>не</b> флагует и почему — вне скоупа, решено пользователем,
+              ждёт бэкенд. Экономит спор на ревью.</p>
+          </div>
+          <div class="card" style="background:var(--accent-soft);border-color:var(--accent)">
+            <span class="kicker">Смысл</span>
+            <p>Все четыре major находятся человеком тоже — но на ревью, через день, когда переключение контекста уже стоит дорого.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Обратить внимание на конкретику: не «возможна гонка», а точный сценарий — два тапа, два слушателя, два тоста,
+    и сразу предложенный фикс. Это разница между линтером и ревьюером. И на секцию «не флагую» — агент показывает
+    границы своей ответственности сам.
+  </div>
+
+  <!-- 13 -->
+  <section class="slide" aria-label="Результаты">
+    <div class="eyebrow"><span class="num">12</span><span>Итоги</span><span class="spacer"></span><span>месяц работы, три проекта</span></div>
+    <h2>Что получилось в цифрах</h2>
+    <div class="body">
+      <div class="stat-grid">
+        <div class="stat"><span class="n">3</span><span class="l">проекта на разных стеках</span></div>
+        <div class="stat"><span class="n">16</span><span class="l">задач прошло через пайплайн</span></div>
+        <div class="stat"><span class="n">161</span><span class="l">отчёт чекеров в <code>checks/</code></span></div>
+        <div class="stat"><span class="n">193</span><span class="l">находки с числовым вердиктом</span></div>
+      </div>
+      <div class="cols cols-2-1 fill" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:.8em;min-height:0;justify-content:space-between">
+          <span class="kicker">68 прогонов чекеров с числовым вердиктом</span>
+          <div class="cols cols-3" style="gap:.7em">
+            <div class="stat"><span class="n" style="color:var(--critical)">23</span><span class="l">critical</span></div>
+            <div class="stat"><span class="n" style="color:var(--major)">101</span><span class="l">major</span></div>
+            <div class="stat"><span class="n" style="color:var(--minor)">69</span><span class="l">minor</span></div>
+          </div>
+          <div class="card">
+            <span class="kicker">pro-review · 56 прогонов</span>
+            <p>15 Approve · 19 Approve with comments · <b style="color:var(--major)">22 Request changes</b></p>
+          </div>
+          <p class="footnote">Контекст в главном окне: Figma MCP 33% → ~2%, chrome-devtools 49% → ~0%.
+            Субагенты при этом стоят ~3% расхода.</p>
+        </div>
+        <div class="stat hero" style="justify-content:center">
+          <span class="n">39%</span>
+          <span class="l" style="font-size:1em;line-height:1.4">этапов не были готовы в тот момент, когда мейкер считал их готовыми.<br><br>
+            Это самая честная цифра пайплайна: она измеряет не качество кода, а разрыв между «я закончил» и «это можно показывать».</span>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Ударная цифра — 39%. Если спросят «а это не потому, что агент придирается» — ответ: каждый finding перепроверяется
+    адверсариально, и в отчётах есть отдельный раздел про то, что признано <b>не</b> находкой. Плюс i18n-sweep однажды
+    честно пометил ключи Amplitude как «не пользовательский текст» — узкий чекер умеет не создавать лишнюю работу.
+  </div>
+
+  <!-- 14 -->
+  <section class="slide" aria-label="Находки">
+    <div class="eyebrow"><span class="num">13</span><span>Итоги</span><span class="spacer"></span><span>что ловилось на самом деле</span></div>
+    <h2>Что бы уехало в прод без чекеров</h2>
+    <div class="body">
+      <div class="cols cols-3" style="flex:1;min-height:0">
+        <div class="card" style="height:100%">
+          <span class="kicker" style="color:var(--critical)">devtools-verify · рантайм</span>
+          <ul class="plain" style="margin-top:.3em">
+            <li>hydration mismatch из-за двух корневых <code>ClientOnly</code></li>
+            <li>драфт из localStorage молча перетирался SSR-стором</li>
+            <li>превью фото пропадали при перезагрузке</li>
+            <li>layout не монтировал Toast — <b>все тосты нового флоу были немыми</b></li>
+            <li>прогресс-бар схлопывался на 1024px</li>
+          </ul>
+        </div>
+        <div class="card" style="height:100%">
+          <span class="kicker" style="color:var(--major)">pro-review · код</span>
+          <ul class="plain" style="margin-top:.3em">
+            <li>двойной Enter в окне перехода 120 мс → дубль события аналитики</li>
+            <li>Enter мёртв на пустом шаге «Фото»</li>
+            <li><code>uploadVideo</code> написан на деприкейтнутом <code>$http</code> вместо <code>$api</code></li>
+            <li>видео на позиции обложки ломало инвариант «главное фото первым»</li>
+          </ul>
+        </div>
+        <div class="card" style="height:100%">
+          <span class="kicker">figma-compare · макет</span>
+          <ul class="plain" style="margin-top:.3em">
+            <li>~50 расхождений за задачу, все закрыты до показа человеку</li>
+            <li>самодельный SVG-спиннер вместо компонента кита</li>
+            <li>межряд 36px у цветов, padding иконка-текст 16px, row-gap сеток</li>
+            <li>единый <code>gap-4</code> там, где в макете два разных зазора: 16 и 10</li>
+          </ul>
+        </div>
+      </div>
+      <p class="footnote">Побочный эффект дедуп-правила: 11 общих composables между десктопом и адаптивом,
+        один скрипт ужался с 285 строк до 55.</p>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Слайд для тех, кто скептичен: это не абстрактные «улучшения качества», а список конкретных багов с адресами.
+    Немые тосты — любимый пример: фича формально работала, а пользователь не видел ни одного подтверждения.
+  </div>
+
+  <!-- 15 -->
+  <section class="slide" aria-label="Как строили">
+    <div class="eyebrow"><span class="num">14</span><span>Процесс</span><span class="spacer"></span><span>v0 → v8 за месяц</span></div>
+    <h2>Как это строилось: каждая версия — реакция на замер или на провал</h2>
+    <div class="body">
+      <div class="timeline" style="flex:1;min-height:0;overflow:auto">
+        <div class="tl-row"><span class="v">v0</span><span class="d">21.07</span><span class="t">Утренний промпт «проанализируй мои промпты за прошлые дни» + статья про loop engineering → за одно утро спроектированы <b>feature-checker, figma-compare, stage-plan, stage-check</b>. К обеду — первый план по реальной Figma.</span></div>
+        <div class="tl-row"><span class="v">v1</span><span class="d">22.07</span><span class="t"><b>Замер:</b> Figma MCP съедает 33% контекста → спека и сверка стали субагентами. Побочный эффект оказался ценнее: чистый контекст находит больше.</span></div>
+        <div class="tl-row"><span class="v">v2</span><span class="d">24.07</span><span class="t"><b>Замер:</b> chrome-devtools — 49% дневного расхода → рантайм-проверка тоже в субагента; <code>evaluate_script</code> вместо скриншотов; правила text-fidelity против ложных находок на плейсхолдерах.</span></div>
+        <div class="tl-row"><span class="v">v3</span><span class="d">24.07</span><span class="t"><b>Боль:</b> решения прилетали в середине этапа → <b>stage-kickoff</b> (sign-off до кода) и <b>pro-review</b> в цикл. Тогда же вся специфика проекта вынесена в <code>pipeline.config.md</code>.</span></div>
+        <div class="tl-row"><span class="v">v4</span><span class="d">27.07</span><span class="t">Попытка раздать команде через <code>.claude/</code> в репозитории: канонический <code>.mcp.json</code>, <code>/pipeline-doctor</code>, плейбук.</span></div>
+        <div class="tl-row"><span class="v">v5</span><span class="d">29.07</span><span class="t"><b>Замер:</b> 177M cache-read за 4 дня, средний контекст 234k → архивация журнала (150KB → 43KB), <code>/clear</code> вместо <code>/compact</code>, метка <code>logic-only</code> — она открыла пайплайну аналитику и баг-фиксы.</span></div>
+        <div class="tl-row"><span class="v">v6</span><span class="d">03.08</span><span class="t"><b>Провал:</b> раздача через репо не сработала — коммит не влит в dev, <code>.gitignore</code> гасил папку, <code>git clean</code> снёс всё дважды → <b>плагин и личный маркетплейс</b>, не зависящие от чужого <code>.gitignore</code>.</span></div>
+        <div class="tl-row"><span class="v">v7</span><span class="d">04.08</span><span class="t"><b>Ретро двух задач:</b> прототип рендерит несколько скинов из одного файла, нерешённый каскад давал и ложные critical, и пропуск целого скина → правило «определи вариант до чтения CSS», инвентарь элементов в обе стороны.</span></div>
+        <div class="tl-row"><span class="v">v8</span><span class="d">16.08</span><span class="t"><b>Замер:</b> ожидание на остановках — основная часть простоя → <b>/stage-force</b>, три узких чекера с запуском по признаку, <b>/task-wrapup</b> → PR.md.</span></div>
+      </div>
+      <p class="footnote">Ни одна версия не выросла из «а давайте добавим фичу». Все девять — из числа, жалобы или потери.</p>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Это самый переносимый слайд: метод построения важнее самого инструмента. Схема простая — замерить <code>/usage</code>,
+    найти, что дороже всего, вынести это из главного контекста; после каждой задачи спросить «что пошло не так и какое правило
+    это чинит». Так же можно строить любой свой скилл.
+  </div>
+
+  <!-- 16 -->
+  <section class="slide" aria-label="Промпты">
+    <div class="eyebrow"><span class="num">15</span><span>Процесс</span><span class="spacer"></span><span>что говорить агенту</span></div>
+    <h2>Промпты, которые реально двигали процесс</h2>
+    <div class="body">
+      <div class="cols cols-3" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:.7em">
+          <span class="kicker">Тип 1 — принести факт снаружи</span>
+          <div class="quote"><em>«вот это то что команда usage отдала, нам нужно что либо улучшить здесь?»</em><span class="src">22.07 → чекеры стали субагентами</span></div>
+          <div class="quote"><em>«у других разработчиков может отличаться название mcp figma и devtools»</em><span class="src">27.07 → канонический .mcp.json + /pipeline-doctor</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.7em">
+          <span class="kicker">Тип 2 — проверить до реализации</span>
+          <div class="quote"><em>«давай сначала проверим есть ли delete метод»</em><span class="src">27.07 → метода не оказалось, код не написали зря</span></div>
+          <div class="quote"><em>«проверяешь ли ты все файлы на дубликацию логики с тем что мы используем в classified»</em><span class="src">22.07 → дедуп стал шагом каждого этапа, 11 общих composables</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.7em">
+          <span class="kicker">Тип 3 — посмотреть на сам процесс</span>
+          <div class="quote"><em>«Analyze my day by day work prompts and which kind of problems we are solving every day… And how we can automatize our work?»</em><span class="src">21.07, 05:07 → из этого промпта вырос весь пайплайн</span></div>
+          <div class="quote"><em>«давай проанализируем что было сделано и что было не учтено»</em><span class="src">22.07 → ретро на второй день работы</span></div>
+        </div>
+      </div>
+      <div class="card" style="flex:none;background:var(--accent-soft);border-color:var(--accent)">
+        <p><b>Что изменилось во втором периоде.</b> Когда пайплайн научился быстро производить работу, узким местом стало не «как сделать»,
+          а «чего не делать». Самыми ценными стали решения, сужающие скоуп: <em>«не будем делать»</em>, <em>«вынести в отдельную задачу»</em>,
+          <em>«границы: явно НЕ делаем»</em>.</p>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Третий тип — самый редкий и самый ценный: попросить агента посмотреть на вашу собственную работу.
+    Предложить залу попробовать буквально этот промпт на своей неделе — у каждого найдётся свой повторяющийся шаг,
+    который просится в скилл.
+  </div>
+
+  <!-- 17 -->
+  <section class="slide" aria-label="Ограничения">
+    <div class="eyebrow"><span class="num">16</span><span>Честно</span><span class="spacer"></span><span>слабые места и грабли</span></div>
+    <h2>Где это не работает и что стоило дороже всего</h2>
+    <div class="body">
+      <div class="cols cols-2" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:.85em">
+          <div class="card" style="border-left:2px solid var(--critical)">
+            <span class="kicker" style="color:var(--critical)">Потеря покрытия</span>
+            <h3>Рантайм-чекер в core выключен</h3>
+            <p>Конфликтует с живым dev-сервером, поэтому проверяю руками. Компенсация — lint, type-check против baseline,
+              тесты, прод-сборка. Работает, но <b>это потеря покрытия, а не улучшение</b>.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Не построено</span>
+            <h3>a11y-чекера нет</h3>
+            <p>В бэклоге с 24.07, приоритет так и не поднялся. Появится требование — сделаем.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Граница</span>
+            <h3>Общий инструмент ≠ проектная норма</h3>
+            <p>Рубрика одного проекта в скилле плагина даёт ложные Major в другом. Проектные правила — только
+              в <code>CLAUDE.md</code>.</p>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.6em">
+          <span class="kicker">Окружение стоило дороже, чем ошибки модели</span>
+          <ul class="plain">
+            <li><b>dev-URL был записан неверно</b> — <code>:3001</code> вместо <code>:3000</code>; чекер месяц мог ходить в мёртвый адрес</li>
+            <li><b>«✓ Connected» не значит «тулы доступны»</b> — Figma MCP молчит без открытого файла; лечится перезапуском сессии, а не сервера</li>
+            <li><b>Соседний чекаут ≠ установленный пакет</b> — 0.0.147 в чекауте против 0.0.151 в <code>node_modules</code>: два <code>:deep()</code>-override не матчили ничего</li>
+            <li><b><code>yarn build</code> при живом <code>yarn dev</code> роняет dev-сервер</b>; у Vite умирает esbuild-воркер — все страницы 500 до рестарта</li>
+            <li><b>type-check baseline дрейфует</b> — 215 → 216 → 218; мерить на <code>git stash</code>, а не верить записанному</li>
+          </ul>
+          <p class="footnote">Каждый пункт стоил минимум одного испорченного прогона — все они теперь в чек-листе <code>/pipeline-doctor</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Этот слайд повышает доверие к остальным. Не защищаться: сказать прямо, что главный добытчик critical-багов в core
+    сейчас не работает, и это открытый вопрос — либо отдельный профиль и порт под чекер, либо честно закрепить ручную проверку в конфиге.
+  </div>
+
+  <!-- 18 -->
+  <section class="slide" aria-label="Что дальше">
+    <div class="eyebrow"><span class="num">17</span><span>Дальше</span><span class="spacer"></span><span>что нужно от команды</span></div>
+    <h2>Что дальше</h2>
+    <div class="body">
+      <div class="cols cols-2" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:.85em">
+          <div class="card" style="background:var(--accent-soft);border-color:var(--accent)">
+            <span class="kicker">Шаг 1 — от вас</span>
+            <h3>Поставить и прогнать одну задачу целиком</h3>
+            <p>Лучше всего заходит редизайн или многоэкранная фича. Пришлите ник на GitHub — открою доступ сегодня.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Шаг 2 — от вас</span>
+            <h3>Сказать, где не подошло</h3>
+            <p>Скиллы — обычные markdown-файлы, правки принимаются PR-ом. Свои проектные правила — в <code>CLAUDE.md</code>.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Шаг 3 — общее</span>
+            <h3>Собрать общие грабли</h3>
+            <p>Одна и та же находка в нескольких проектах — кандидат в новый узкий чекер, как было с <code>dead-code</code>.</p>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.85em">
+          <span class="kicker">Открытые вопросы — их решаем вместе</span>
+          <ul class="plain">
+            <li><b>Дистрибуция.</b> Маркетплейс — приватный GitHub. Переносить ли в корпоративный GitLab?</li>
+            <li><b>Рантайм-проверка.</b> Отдельный профиль Chrome и порт под чекер — или оставить ручной?</li>
+            <li><b>a11y-чекер.</b> Обязательный шаг или по требованию?</li>
+            <li><b>Общая рубрика ревью.</b> Что закрепить в <code>CLAUDE.md</code> всех фронтовых репо?</li>
+          </ul>
+          <div class="card" style="margin-top:auto">
+            <span class="kicker">Материалы</span>
+            <p>История метода со всеми замерами — <code>PIPELINE-HISTORY.md</code>. Шпаргалка по командам — следующий слайд
+              и отдельная страница.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Закрыть встречу конкретным действием, а не «пользуйтесь»: собрать ники на GitHub прямо в чате
+    и договориться о дате, к которой каждый прогонит одну задачу. Без этого инструмент останется личным — так уже было один раз.
+  </div>
+
+  <!-- 19 -->
+  <section class="slide" aria-label="Шпаргалка">
+    <div class="eyebrow"><span class="num">18</span><span>Шпаргалка</span><span class="spacer"></span><span>одна страница</span></div>
+    <h2>Шпаргалка</h2>
+    <div class="body">
+      <div class="cols cols-3" style="flex:1;min-height:0">
+        <div style="display:flex;flex-direction:column;gap:.7em">
+          <span class="kicker">Один раз</span>
+          <pre style="font-size:.82em">claude plugin marketplace add \
+  git@github.com:maggi08/claude-pipeline.git
+claude plugin install stage-pipeline@magzhan
+<span class="cm"># рестарт Claude Code</span>
+/pipeline-doctor
+/pipeline-init</pre>
+          <span class="kicker">На задачу</span>
+          <pre style="font-size:.82em">/feature-checker &lt;тикет&gt;   <span class="cm">FEATURE-MAP</span>
+/stage-plan                <span class="cm">STAGES.md</span></pre>
+          <span class="kicker">На этап</span>
+          <pre style="font-size:.82em">/stage-kickoff   <span class="cm">план + sign-off</span>
+<span class="cm">… реализация …</span>
+/stage-check     <span class="cm">чекеры + коммит</span>
+/clear</pre>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.7em">
+          <span class="kicker">Автономно</span>
+          <pre style="font-size:.82em">/stage-force   <span class="cm">вопросы батчем,</span>
+               <span class="cm">дальше без остановок</span>
+               <span class="cm">push и PR запрещены</span></pre>
+          <span class="kicker">Перед MR</span>
+          <pre style="font-size:.82em">/pro-review     <span class="cm">весь бранч</span>
+/ds-parity      <span class="cm">дубли с китом</span>
+/dead-code      <span class="cm">мусор от задачи</span>
+/task-wrapup    <span class="cm">→ PR.md</span></pre>
+          <span class="kicker">Если чекеры молчат</span>
+          <pre style="font-size:.82em">/pipeline-doctor
+<span class="cm"># Figma: открыть нужный файл</span>
+<span class="cm"># и перезапустить сессию</span></pre>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.7em">
+          <span class="kicker">Правила, которые экономят время</span>
+          <ul class="plain" style="font-size:.94em">
+            <li>1 экран + все его стейты = 1 этап</li>
+            <li>Не начинать код без sign-off на kickoff</li>
+            <li>Не закрывать этап с critical или вердиктом Request changes</li>
+            <li>Вопросы дизайнеру копить в <code>DESIGN-QUESTIONS.md</code> и закрывать батчем</li>
+            <li>Идею не по теме этапа — в TODO журнала, а не в текущий диф</li>
+            <li>После коммита этапа — <code>/clear</code>: состояние уже в файлах</li>
+            <li>Проектные правила ревью — в <code>CLAUDE.md</code>, не в скилл</li>
+            <li>Сообщение коммита — по сути изменения, без «этап N»</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Заметки</span>
+    Сказать, что эта страница есть отдельной ссылкой — её можно закрепить в рабочем чате.
+    На этом слайде можно стоять, пока идут вопросы.
+  </div>
+
+</div>
+
+<div class="bar">
+  <button id="prev" aria-label="Предыдущий слайд">←</button>
+  <button id="next" aria-label="Следующий слайд">→</button>
+  <div class="ticks" id="ticks" aria-hidden="true"></div>
+  <button id="notesBtn" aria-label="Показать заметки докладчика">заметки · S</button>
+  <span class="count" id="count">1 / 19</span>
+</div>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var notes = Array.prototype.slice.call(document.querySelectorAll('.notes'));
+    var ticks = document.getElementById('ticks');
+    var count = document.getElementById('count');
+    var i = 0;
+
+    slides.forEach(function (_, k) {
+      var t = document.createElement('span');
+      t.addEventListener('click', function () { go(k); });
+      ticks.appendChild(t);
+    });
+    var tickEls = Array.prototype.slice.call(ticks.children);
+
+    function go(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach(function (s, k) { s.classList.toggle('is-active', k === i); });
+      notes.forEach(function (s, k) { s.classList.toggle('is-active', k === i); });
+      tickEls.forEach(function (t, k) { t.classList.toggle('done', k <= i); });
+      count.textContent = (i + 1) + ' / ' + slides.length;
+      if (history.replaceState) history.replaceState(null, '', '#' + (i + 1));
+      window.scrollTo(0, 0);
+    }
+
+    document.getElementById('prev').addEventListener('click', function () { go(i - 1); });
+    document.getElementById('next').addEventListener('click', function () { go(i + 1); });
+    document.getElementById('notesBtn').addEventListener('click', function () {
+      document.body.classList.toggle('notes-on');
+    });
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(i + 1); }
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(i - 1); }
+      else if (e.key === 'Home') { go(0); }
+      else if (e.key === 'End') { go(slides.length - 1); }
+      else if (e.key === 's' || e.key === 'S' || e.key === 'ы' || e.key === 'Ы') { document.body.classList.toggle('notes-on'); }
+    });
+
+    var start = parseInt((location.hash || '').replace('#', ''), 10);
+    go(isNaN(start) ? 0 : start - 1);
+  })();
+</script>
