@@ -1,6 +1,6 @@
 # Stage Pipeline · шпаргалка
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.5.0 — 17 скиллов, 10 агентов.
+Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.7.0 — 18 скиллов, 10 агентов.
 
 ---
 
@@ -10,7 +10,7 @@
 claude plugin marketplace add git@github.com:maggi08/claude-pipeline.git
 claude plugin install stage-pipeline@magzhan
 # перезапустить Claude Code
-claude plugin details stage-pipeline   # проверка: 17 скиллов, 10 агентов, 2 MCP
+claude plugin details stage-pipeline   # проверка: 18 скиллов, 10 агентов, 2 MCP
 ```
 
 Репозиторий приватный — нужен доступ (напишите Магжану ник на GitHub) и рабочий `ssh -T git@github.com` либо `gh auth login && gh auth setup-git`.
@@ -86,6 +86,7 @@ claude plugin details stage-pipeline   # проверка: 17 скиллов, 10
 | `/pro-review` | senior-ревью, по умолчанию весь бранч |
 | `/figma-compare`, `/proto-compare` | сверка кода с макетом или HTML-прототипом |
 | `/devtools-verify` | рантайм-проверка в браузере |
+| `/root-cause` | отладка до причины: фикс не сработал, симптом без объяснения |
 | `/dead-code`, `/i18n-sweep`, `/deps-audit` | узкие проходы: мусор от задачи, i18n, зависимости |
 | `/ds-parity` | паритет с дизайн-системой перед PR |
 | `/task-converge` | код на HEAD против намерения всей задачи: непокрытый критерий, тихо расширенный скоуп |

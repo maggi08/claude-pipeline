@@ -38,7 +38,7 @@ claude plugin marketplace add maggi08/claude-pipeline
 
 Обновление: `claude plugin update stage-pipeline` (подтянет свежий `main`). После установки и обновления — перезапуск Claude Code. Что изменилось между версиями и что нужно сделать руками на апгрейде — в [CHANGELOG.md](CHANGELOG.md).
 
-Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 17 скиллов, 10 агентов, 2 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
+Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 18 скиллов, 10 агентов, 2 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
 
 ### Режим разработки — маркетплейс из локального клона
 
