@@ -1,0 +1,140 @@
+# Раскатка на команду
+
+Для случая «плагин работает у меня, команда просит поставить у себя». Про сам workflow — [README плагина](plugins/stage-pipeline/README.md).
+
+## Как это работает
+
+Маркетплейс — это **каталог указателей**, а не хранилище кода: git-репозиторий с файлом `.claude-plugin/marketplace.json`, в котором перечислено, какие есть плагины и где взять каждый. Плагин при этом может лежать в другом репозитории и на другом хосте. Поэтому каталог живёт в GitLab команды, а код плагина — здесь, на публичном GitHub.
+
+```
+GitLab  <group>/claude-code-marketplace        ← каталог команды, ~20 строк, после создания не меняется
+        .claude-plugin/marketplace.json  ──┐
+                                           │ ссылка: git-subdir → plugins/stage-pipeline, ref main
+GitHub  maggi08/claude-pipeline  ←──────────┘
+        main  ← прод: отсюда команда получает плагин и обновления
+        dev   ← если нужно, эксперименты живут здесь и в main не попадают
+```
+
+Обновления идут двумя независимыми уровнями:
+
+| Что обновляется | Команда | Откуда тянет | Когда нужно |
+|---|---|---|---|
+| Каталог | `claude plugin marketplace update mycar-frontend` | GitLab | только если в каталог добавили плагин или сменили пин |
+| Сам плагин | `claude plugin update stage-pipeline` | **GitHub, ветка `main`** | каждый раз, когда вышла новая версия |
+
+То есть: я пушу в `main` → разработчик делает `plugin update` + перезапуск Claude Code → доехало. **Репозиторий в GitLab при этом не трогается.**
+
+Репозиторий с плагином публичный, поэтому ни креды, ни SSH-ключи, ни `gh auth` командe не нужны — ни для установки, ни для автообновлений.
+
+## Шаг 1. Каталог в GitLab
+
+Новый репозиторий в группе команды, например `<group>/claude-code-marketplace`, visibility internal. Единственный обязательный файл — `.claude-plugin/marketplace.json`:
+
+```json
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mycar-frontend",
+  "description": "Плагины Claude Code для фронтенд-команды",
+  "owner": { "name": "Frontend" },
+  "plugins": [
+    {
+      "name": "stage-pipeline",
+      "description": "Поэтапный maker/checker-workflow для крупных UI-задач: разбивка на этапы, спека из дизайна, проверки субагентами (Figma/прототип, рантайм, код-ревью, мёртвый код, i18n, зависимости), автономный force-прогон, журнал состояния в файлах и описание PR",
+      "category": "workflow",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/maggi08/claude-pipeline.git",
+        "path": "plugins/stage-pipeline",
+        "ref": "main"
+      }
+    }
+  ]
+}
+```
+
+`git-subdir` нужен потому, что плагин лежит в подпапке репозитория, а не в корне: Claude Code делает sparse-клон только этой папки. `name` каталога определяет id плагина — `stage-pipeline@mycar-frontend`, именно он пишется в настройках репозиториев команды.
+
+Проверка на своей машине до анонса:
+
+```bash
+claude plugin marketplace add https://gitlab.<host>/<group>/claude-code-marketplace.git
+claude plugin install stage-pipeline@mycar-frontend
+claude plugin details stage-pipeline    # 18 скиллов, 10 агентов, 2 MCP-сервера
+```
+
+Дальше каталог можно расширять — второй плагин команды добавляется такой же записью.
+
+## Шаг 2. Подключение разработчиков
+
+**Через репозиторий продукта — основной вариант.** Коммит в `<repo>/.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "mycar-frontend": {
+      "source": {
+        "source": "url",
+        "url": "https://gitlab.<host>/<group>/claude-code-marketplace.git"
+      }
+    }
+  },
+  "enabledPlugins": { "stage-pipeline@mycar-frontend": true }
+}
+```
+
+Разработчик клонирует репозиторий, отвечает «доверяю папке» — каталог зарегистрирован, плагин помечен включённым; если он ещё не установлен на машине, установка — одна команда `claude plugin install stage-pipeline@mycar-frontend` или `/plugin` в сессии. Проверь, что `.gitignore` не глотает файл: нужно `.claude/*` + `!.claude/settings.json`.
+
+**Руками** — если раскатывать на двоих-троих для пробы: те же две команды, что в проверке Шага 1. Без `--scope` попадёт в `~/.claude/settings.json`, то есть плагин включится во всех репозиториях этой машины.
+
+**Через admin-консоль** (Team/Enterprise) — если нужно раздать каталог всем без правки репозиториев: managed settings принимают те же `extraKnownMarketplaces`, разрешены источники `github`, `url`, `git-subdir`.
+
+## Шаг 3. Что нужно каждому разработчику один раз
+
+| Что | Зачем | Проверка |
+|---|---|---|
+| Свежий Claude Code | `git-subdir` и пины — относительно новый CLI | `claude --version` |
+| Node 22+ | `chrome-devtools` MCP ставится через `npx` | `node -v` |
+| Figma desktop, **Enable Dev Mode MCP Server** | `figma-spec` / `figma-compare`; в проектах на HTML-прототипах вместо них `proto-spec` / `proto-compare` | `/pipeline-doctor` |
+| Профиль разрешений | иначе чекеры спрашивают подтверждение на каждом шаге | `node "$PERMS" --check` |
+| Перезапуск Claude Code после install/update | иначе плагин не подхватится | `/plugin` |
+
+Отдельно, **один раз на репозиторий**, а не на человека: `/pipeline-init` генерит `.claude/pipeline.config.md` — стек, команды, dev-URL, токены, брейкпоинты, раскладка кода. Его делает один человек и коммитит, остальные получают вместе с кодом. Личные отклонения (пути к соседним репозиториям, порты) — в `pipeline.config.local.md`, его создаёт `/pipeline-doctor`.
+
+## Шаг 4. Как выходят обновления
+
+Мой цикл:
+
+```bash
+# правка скилла проверяется локально: маркетплейс из папки, пушить не нужно
+claude plugin update stage-pipeline && перезапуск
+
+# релиз
+# 1. поднять version в plugins/stage-pipeline/.claude-plugin/plugin.json + запись в CHANGELOG.md
+node scripts/validate.mjs
+claude plugin validate . --strict
+claude plugin tag plugins/stage-pipeline     # тег stage-pipeline--v<version>
+git push origin main --tags
+```
+
+Команда: `claude plugin update stage-pipeline` + перезапуск. Что изменилось и что нужно сделать руками на апгрейде — [CHANGELOG.md](CHANGELOG.md).
+
+`main` — движущаяся ветка: команда получает всё, что в неё попало. Если понадобится гейт на ревью — в записи каталога вместо `"ref": "main"` ставится тег (`"ref": "stage-pipeline--v0.7.0"`), и тогда каждое обновление становится MR в GitLab с правкой одной строки. Начинать проще с `main`, переключиться можно в любой момент.
+
+## Что знать до раскатки
+
+- **Публичный личный GitHub становится зависимостью dev-машин команды.** Пропал аккаунт или репозиторий — у команды ломается установка и обновление. Лечится сменой `url` в одной строке каталога (например, на зеркало в GitLab), но решить, устраивает ли это, лучше заранее.
+- **Доступность github.com из корпоративной сети** — единственное, что стоит проверить руками до анонса.
+- **Профиль разрешений широкий.** `permissions/base.json` разрешает `node`/`npx`/`python3`, то есть произвольное исполнение; `deny` в нём — защита от случайной команды агента, а не граница безопасности. Кому не подходит — `node "$PERMS" --minimal --apply`: только скиллы и MCP.
+- **Секретов в плагине нет.** `.mcp.json` содержит только локальные эндпоинты (`127.0.0.1:3845` для Figma, `npx chrome-devtools-mcp`).
+- **Плагин не пушит и не создаёт MR.** `git push`, `gh pr create`, `glab mr create`, комментирование существующих MR запрещены в скиллах жёстко, включая автономный `/stage-force`; `/task-wrapup` только готовит текст описания в `PR.md`.
+- **Состояние — файлы в репозитории** (`STAGES.md`, `FEATURE-MAP.md`, `PR.md` в `task_dir` из конфига). Команде надо решить, коммитить их или игнорить; коммитить удобнее — это и есть журнал задачи для ревьюера.
+- **Язык скиллов — русский**: на нём Claude ведёт этапы и пишет отчёты.
+
+## Чеклист
+
+- [ ] Создан репозиторий-каталог в GitLab, в нём `.claude-plugin/marketplace.json` из Шага 1
+- [ ] Установка с нуля проверена на одной машине (`marketplace add` → `install` → `details`)
+- [ ] В пилотном репозитории продукта лежит `.claude/settings.json` с каталогом и `enabledPlugins`
+- [ ] В пилотном репозитории есть `.claude/pipeline.config.md` от `/pipeline-init`
+- [ ] Один разработчик прошёл онбординг по Шагу 3 с нуля, `/pipeline-doctor` зелёный
+- [ ] Команде отправлены README плагина, этот файл и CHANGELOG

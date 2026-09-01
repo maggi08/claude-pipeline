@@ -440,7 +440,7 @@
       <span class="pill">16 задач</span>
       <span class="pill">161 отчёт чекеров</span>
       <span class="pill">18 скиллов · 10 агентов</span>
-      <span class="pill">v0.7.0</span>
+      <span class="pill">v0.7.1</span>
     </div>
     <div class="sig">Магжан Мусаин · 21.07 → 21.08.2026 · плагин <b>stage-pipeline@magzhan</b></div>
   </section>
@@ -518,12 +518,12 @@
           <h3>Память задачи живёт в файлах</h3>
           <p><code>STAGES.md</code> переживает <code>/clear</code>, смену сессии и месяц работы. План, решения,
             статусы этапов, ссылки на отчёты — на диске, а не в контексте.</p>
-          <p style="color:var(--muted)">KC-463 прожила 42 этапа и 76 коммитов. Ни одна сессия не помнила предыдущую — и это не мешало.</p>
+          <p style="color:var(--muted)">Одна задача прожила 42 этапа и 76 коммитов. Ни одна сессия не помнила предыдущую — и это не мешало.</p>
         </div>
         <div class="card" style="height:100%">
           <span class="kicker">03 — Квант работы</span>
           <h3>Этап = экран и все его стейты</h3>
-          <p>Не «сделать фичу», а «сделать шаг VIN: дефолт, загрузка, ошибка, успех». Этап открывается планом
+          <p>Не «сделать фичу», а «сделать шаг загрузки фото: дефолт, загрузка, ошибка, успех». Этап открывается планом
             и sign-off, закрывается чекерами и коммитом.</p>
           <p style="color:var(--muted)">Единица, которая помещается в контекст целиком и проверяется целиком.</p>
         </div>
@@ -866,7 +866,7 @@ claude plugin details stage-pipeline
 /pipeline-init     <span class="cm">← конфиг проекта</span>
 
 <span class="cm"># 4. первая задача</span>
-/feature-checker KC-000   <span class="cm">→ FEATURE-MAP</span>
+/feature-checker &lt;тикет&gt;  <span class="cm">→ FEATURE-MAP</span>
 /stage-plan               <span class="cm">→ STAGES.md</span>
 /stage-kickoff            <span class="cm">→ поехали</span></pre>
           <p class="footnote">Обновление — <code>claude plugin update stage-pipeline</code> и перезапуск.</p>
@@ -933,7 +933,7 @@ claude plugin details stage-pipeline
             <li><b>Всегда запрещено:</b> <code>git push</code>, создание PR, деплой</li>
             <li><b>Всё равно остановится:</b> необратимая развилка, исчерпан fix-loop, красная сборка, конфликт источников правды</li>
           </ul>
-          <p style="margin-top:.5em;color:var(--muted)">Первый реальный прогон — KC-493: 7 решений собраны двумя батчами, 6 допущений с откатом, 6 коммитов.</p>
+          <p style="margin-top:.5em;color:var(--muted)">Первый реальный прогон: 7 решений собраны двумя батчами, 6 допущений с откатом, 6 коммитов.</p>
         </div>
       </div>
       <p class="footnote">Force придумался не от удобства, а по замеру: ожидание на остановках занимало больше времени, чем сами этапы.</p>
@@ -955,7 +955,7 @@ claude plugin details stage-pipeline
           <div class="card">
             <span class="kicker">01</span>
             <h3>Память задачи</h3>
-            <p><code>tasks/KC-494/STAGES.md</code> — решения с обоснованиями, этапы со статусами, контракты слоёв.
+            <p><code>tasks/&lt;тикет&gt;/STAGES.md</code> — решения с обоснованиями, этапы со статусами, контракты слоёв.
               С этого стартует любая новая сессия.</p>
           </div>
           <div class="card">
@@ -981,7 +981,7 @@ claude plugin details stage-pipeline
             <h3>Если MCP не поднялся</h3>
             <p>Показываю готовые отчёты из <code>checks/</code> — их 161, читаются так же, как живой прогон.</p>
           </div>
-          <p class="footnote">Демо-задача: KC-494 — распознавание VIN по фото, три контекста (desktop / adaptive / webview), 20 файлов дифа.</p>
+          <p class="footnote">Демо-задача: три контекста (desktop / adaptive / webview), 20 файлов дифа.</p>
         </div>
       </div>
     </div>
@@ -995,7 +995,7 @@ claude plugin details stage-pipeline
   <!-- 12 -->
   <section class="slide" aria-label="Пример отчёта">
     <div class="eyebrow"><span class="num">11</span><span>Демо</span><span class="spacer"></span><span>как выглядит находка</span></div>
-    <h2>Реальный отчёт: pro-review по ветке KC-494</h2>
+    <h2>Реальный отчёт: pro-review по ветке задачи</h2>
     <div class="body">
       <div class="cols cols-2-1" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.8em;min-height:0">
@@ -1007,7 +1007,7 @@ claude plugin details stage-pipeline
           </div>
           <div class="card" style="min-height:0;overflow:auto">
             <span class="kicker" style="color:var(--major)">🟠 major</span>
-            <h3 style="font-family:var(--mono);font-size:1em;font-weight:500">composables/create-announcement/useVinCodeScan.ts:112</h3>
+            <h3 style="font-family:var(--mono);font-size:1em;font-weight:500">composables/feature/usePhotoScan.ts:112</h3>
             <p><code>isScanning</code> — только <code>pending</code> сетевого запроса: ожидание нативного экрана оно не покрывает,
               и кнопка остаётся активной. Повторный тап запускает второй <code>scan()</code> — второй вызов бриджа и второй
               набор слушателей. Натив пришлёт одно событие, получат его оба → два тоста и две отправки аналитики.</p>

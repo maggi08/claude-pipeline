@@ -10,25 +10,19 @@
 
 ## Установка
 
-Из GitHub — так ставится на любой машине, клонировать репо руками не нужно:
-
-```bash
-claude plugin marketplace add git@github.com:maggi08/claude-pipeline.git
-claude plugin install stage-pipeline@magzhan
-```
-
-Репозиторий приватный, поэтому машине нужен доступ к нему. SSH-вариант выше требует ключа, добавленного в GitHub (`ssh -T git@github.com` должен отвечать приветствием). Через HTTPS — сначала `gh auth login && gh auth setup-git`, тогда работает и короткая форма:
+Репозиторий публичный, поэтому ставится на любой машине без доступов и без клонирования:
 
 ```bash
 claude plugin marketplace add maggi08/claude-pipeline
+claude plugin install stage-pipeline@magzhan
 ```
 
-Дальше:
+То же самое настройками, если раскладывать не руками:
 
 ```json
 {
   "extraKnownMarketplaces": {
-    "magzhan": { "source": { "source": "url", "url": "git@github.com:maggi08/claude-pipeline.git" } }
+    "magzhan": { "source": { "source": "github", "repo": "maggi08/claude-pipeline" } }
   },
   "enabledPlugins": { "stage-pipeline@magzhan": true }
 }
@@ -38,6 +32,10 @@ claude plugin marketplace add maggi08/claude-pipeline
 
 Обновление: `claude plugin update stage-pipeline` (подтянет свежий `main`). После установки и обновления — перезапуск Claude Code. Что изменилось между версиями и что нужно сделать руками на апгрейде — в [CHANGELOG.md](CHANGELOG.md).
 
+**Ветки.** `main` — прод: с неё ставится и обновляется плагин у всех, поэтому в неё попадает только проверенное с поднятой версией. Эксперименты живут локально (маркетплейс из папки — ниже) или в отдельной `dev`-ветке; отдельной «стабильной» ветки нет и не нужно.
+
+Раскатка на команду — каталог в GitLab, который ссылается на этот репозиторий: [ROLLOUT.md](ROLLOUT.md).
+
 Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 18 скиллов, 10 агентов, 2 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
 
 ### Режим разработки — маркетплейс из локального клона
@@ -45,7 +43,7 @@ claude plugin marketplace add maggi08/claude-pipeline
 На машине, где плагин правится, удобнее читать маркетплейс прямо из папки: правишь скилл → `claude plugin update stage-pipeline` → изменение доехало, пушить необязательно.
 
 ```bash
-git clone git@github.com:maggi08/claude-pipeline.git
+git clone https://github.com/maggi08/claude-pipeline.git
 cd claude-pipeline
 claude plugin marketplace add "$PWD"
 claude plugin install stage-pipeline@magzhan
