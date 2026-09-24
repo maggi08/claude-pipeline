@@ -235,7 +235,9 @@ function runRouting(name, attempt, spec) {
   const invoked = invokedSkills(events)
   const failures = []
   // Упавший прогон (лимит сессии, ошибка API) не вызывает скиллов — без этой проверки он засчитал бы forbidSkills.
-  if (!events.length || final.is_error || !Object.keys(final.modelUsage ?? {}).length) {
+  // Обрыв по --max-turns / --max-budget-usd — штатный конец кейса маршрутизации: выбор к этому моменту уже сделан.
+  const stoppedByLimit = /^error_max_(turns|budget)/.test(final.subtype ?? '')
+  if (!events.length || !Object.keys(final.modelUsage ?? {}).length || (final.is_error && !stoppedByLimit)) {
     failures.push(`claude не отработал: код ${result.status}, ${String(final.result ?? result.stderr ?? '').trim().slice(0, 200)}`)
   }
   if (spec.expectSkill && invoked[0] !== spec.expectSkill) failures.push(`первым вызван ${invoked[0] ?? 'ни один скилл'}, ждали ${spec.expectSkill}`)
@@ -247,7 +249,7 @@ function runRouting(name, attempt, spec) {
   const saved = join(RESULTS, `${name}--${label.replace(/[^\w=,-]/g, '_')}--${attempt}.md`)
   writeFileSync(
     saved,
-    `# ${name} (${label}, прогон ${attempt})\n\nВызваны: ${invoked.join(' → ') || '—'}\n\n` +
+    `# ${name} (${label}, прогон ${attempt})\n\nВызваны: ${invoked.join(' → ') || '—'} · конец: ${final.subtype ?? '—'}\n\n` +
       `## Провалы\n\n${failures.map((f) => `- ${f}`).join('\n') || '—'}\n\n## Ответ\n\n${final.result ?? ''}\n`,
   )
   rmSync(repo, { recursive: true, force: true })
