@@ -59,7 +59,7 @@ GitHub  maggi08/claude-pipeline  ←──────────┘
 ```bash
 claude plugin marketplace add https://gitlab.<host>/<group>/claude-code-marketplace.git
 claude plugin install stage-pipeline@mycar-frontend
-claude plugin details stage-pipeline    # 18 скиллов, 11 агентов, 3 MCP-сервера
+claude plugin details stage-pipeline    # 18 скиллов, 12 агентов, 3 MCP-сервера
 ```
 
 Дальше каталог можно расширять — второй плагин команды добавляется такой же записью.

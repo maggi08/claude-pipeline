@@ -5,8 +5,9 @@ import { readHookInput, readPipelineState } from './pipeline-state.mjs'
  * выдаёт текст коммита, а не выполняет его. Прозой это правило не держалось
  * (из 40 отклонённых вызовов по одной задаче больше половины — git add), а профиль
  * разрешений отдаёт `git *` целиком, потому что /stage-force коммитит сам.
- * Хук возвращает вопрос пользователю ровно в этой щели: репо с пайплайном, этап
- * в работе, и у задачи этого этапа нет блока «Force-прогон» — в force агент коммитит сам.
+ * Хук закрывает ровно эту щель: репо с пайплайном, этап в работе, у задачи нет блока
+ * «Force-прогон». Там `git add`/`git commit` отклоняются, а причина уходит агенту — он выдаёт
+ * готовое сообщение коммита, коммитит пользователь сам. В force агент коммитит без вопросов.
  */
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
@@ -23,10 +24,10 @@ process.stdout.write(
   JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: 'ask',
+      permissionDecision: 'deny',
       permissionDecisionReason:
-        `stage-pipeline: этап ${active[0].ticket} в работе, обычный режим — коммит этапа делает пользователь. ` +
-        'Если он не просил закоммитить явно, покажи git status и готовое сообщение коммита вместо команды.',
+        `stage-pipeline: этап ${active[0].ticket} в работе, обычный режим — git add и git commit делает пользователь сам. ` +
+        'Не повторяй команду: покажи git status и готовое сообщение коммита (/stage-check, Шаг 4.4). Автокоммит — только в /stage-force.',
     },
   }),
 )

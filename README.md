@@ -36,7 +36,7 @@ claude plugin install stage-pipeline@magzhan
 
 Раскатка на команду — каталог в GitLab, который ссылается на этот репозиторий: [ROLLOUT.md](ROLLOUT.md).
 
-Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 18 скиллов, 11 агентов, 3 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
+Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 18 скиллов, 12 агентов, 3 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
 
 ### Режим разработки — маркетплейс из локального клона
 

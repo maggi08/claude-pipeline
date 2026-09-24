@@ -1,6 +1,6 @@
 # Stage Pipeline · шпаргалка
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.9.0 — 18 скиллов, 11 агентов.
+Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.9.0 — 18 скиллов, 12 агентов.
 
 ---
 
@@ -10,7 +10,7 @@
 claude plugin marketplace add git@github.com:maggi08/claude-pipeline.git
 claude plugin install stage-pipeline@magzhan
 # перезапустить Claude Code
-claude plugin details stage-pipeline   # проверка: 18 скиллов, 11 агентов, 3 MCP
+claude plugin details stage-pipeline   # проверка: 18 скиллов, 12 агентов, 3 MCP
 ```
 
 Репозиторий приватный — нужен доступ (напишите Магжану ник на GitHub) и рабочий `ssh -T git@github.com` либо `gh auth login && gh auth setup-git`.
