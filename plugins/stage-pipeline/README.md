@@ -132,7 +132,7 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 | `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep`, `docs-lookup` | суждение и точность: ложный зелёный чекера хуже красного, а шум опровергает дорогой оркестратор |
 | `haiku` | `deps-audit` | механическая работа; на eval-кейсе не хуже Sonnet при цене в 2.5 раза ниже (замер — CHANGELOG 0.9.0) |
 
-Исключение — whole-branch pro-review и свежий прогон чекера в fix-loop: они идут на `review_model` из конфига (по умолчанию `opus`) параметром `model` — модели, отличной от той, что писала код (`/stage-check`, Шаг 3.3).
+Исключение — whole-branch pro-review и свежий прогон чекера в fix-loop: они идут на `review_model` из конфига (по умолчанию `opus`) параметром `model`: последняя проверка — самой сильной моделью, в force она ещё и не та, что писала код (`/stage-check`, Шаг 3.3).
 
 Алиас `sonnet` разворачивается по-разному в зависимости от версии Claude Code: в 2.1.193 — в Sonnet 4.6, в 2.1.276 — уже в Sonnet 5. Реальную модель показывает `modelUsage` в сводке eval-прогона. Нужна конкретная модель — ставь во frontmatter явный id (`claude-sonnet-5`). Перед сменой модели агента — `node scripts/eval.mjs --runs 3 --model <agent>=<model> <кейсы агента>`.
 

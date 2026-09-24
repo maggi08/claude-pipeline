@@ -76,7 +76,7 @@ description: Инициализировать stage-пайплайн в ново
 - bundle_size: <команда, печатающая размер бандла, напр. `yarn build && du -sk dist` или `size-limit` | —>  # есть → stage-plan заводит metrics-baseline/metrics-guard; — → пунктов нет
 
 ## Models
-- review_model: opus   # whole-branch pro-review и свежий прогон чекера в fix-loop — другая модель, чем у maker (`stage-implement` = sonnet); sonnet | opus | haiku
+- review_model: opus   # whole-branch pro-review и свежий прогон чекера в fix-loop — самая сильная модель; в force она ещё и не та, что у maker (`stage-implement` = sonnet); sonnet | opus | haiku
 
 ## Static analysis (dead-code / deps-audit)
 <!-- Даёт КАНДИДАТОВ по всему репо; чекер пересекает вывод с дифом и подтверждает сам. -->

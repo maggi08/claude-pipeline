@@ -304,17 +304,34 @@ for (const path of deletedTests) {
   violations.push({ rule: 'test-made-easier', file: path, line: 0, text: 'тестовый файл удалён' })
 }
 
-// Ассерт убран — по сумме всех оставшихся тестов дифа: тест, разнесённый по двум файлам, ассертов не теряет,
-// а удалённые файлы считает правило выше.
-const assertionFiles = [...files].filter(([path]) => TEST_FILE.test(path) && CODE.test(path) && !SKIP_PATH.test(path) && !deleted.includes(path))
+// Ассерт убран — по файлу: переписанный на месте ассерт (`toBe` → `toEqual`) балансом не шумит, убранный виден,
+// даже если ветка добавила тесты в другом месте. Перенесённым считается только ассерт, та же строка которого
+// появилась в другом тестовом файле дифа (тест разнесён на два файла). Удалённые файлы считает правило выше.
 const count = (lines) => lines.filter(({ text }) => ASSERTION.test(text)).length
-const lostAssertions = assertionFiles.reduce((sum, [, { added, removed }]) => sum + count(removed) - count(added), 0)
-if (lostAssertions > 0) {
-  const [path, { removed }] = assertionFiles.reduce((worst, candidate) =>
-    count(candidate[1].removed) - count(candidate[1].added) > count(worst[1].removed) - count(worst[1].added) ? candidate : worst,
-  )
+const normalized = (text) => text.trim().replace(/\s+/g, ' ').replace(/;$/, '')
+const testFiles = [...files].filter(([path]) => TEST_FILE.test(path) && CODE.test(path) && !SKIP_PATH.test(path) && !deleted.includes(path))
+const addedElsewhere = (path) => {
+  const pool = new Map()
+  for (const [other, { added }] of testFiles) {
+    if (other === path) continue
+    for (const { text } of added) if (ASSERTION.test(text)) pool.set(normalized(text), (pool.get(normalized(text)) ?? 0) + 1)
+  }
+  return pool
+}
+for (const [path, { added, removed }] of testFiles) {
+  let lost = count(removed) - count(added)
+  if (lost <= 0) continue
+  const pool = addedElsewhere(path)
+  for (const { text } of removed.filter(({ text }) => ASSERTION.test(text))) {
+    const key = normalized(text)
+    if (lost > 0 && pool.get(key) > 0) {
+      pool.set(key, pool.get(key) - 1)
+      lost--
+    }
+  }
+  if (lost <= 0) continue
   currentFileOk = fileJustification(path)
-  push('test-made-easier', path, removed.find(({ text }) => ASSERTION.test(text))?.line ?? 0, `ассертов стало меньше на ${lostAssertions}`)
+  push('test-made-easier', path, removed.find(({ text }) => ASSERTION.test(text))?.line ?? 0, `ассертов стало меньше на ${lost}`)
 }
 
 // ── вывод ────────────────────────────────────────────────────────────────────

@@ -170,6 +170,18 @@ const CASES = [
     expect: [],
   },
   {
+    name: 'убранный ассерт виден, даже если ветка добавила тесты в другой папке',
+    base: {
+      'tests/smoke/roles.spec.ts': "test('r', async () => {\n  expect(a).toContain(b)\n  await expect(page.getByText(DENIED)).toHaveCount(0)\n})\n",
+      'src/other/x.test.ts': "it('x', () => { expect(1).toBe(1) })\n",
+    },
+    change: {
+      'tests/smoke/roles.spec.ts': "test('r', async () => {\n  expect(a).toContain(b)\n})\n",
+      'src/other/x.test.ts': "it('x', () => {\n  expect(1).toBe(1)\n  expect(2).toBe(2)\n  expect(3).toBe(3)\n})\n",
+    },
+    expect: ['test-made-easier'],
+  },
+  {
     name: 'версии зависимостей в package.json — не пороги; порог покрытия jest — да',
     base: {
       'package.json': '{\n  "devDependencies": {\n    "baseline-browser-mapping": "^2.8.1",\n    "firebase-functions": "^5.0.0"\n  },\n  "jest": { "coverageThreshold": { "global": {\n    "lines": 80\n  } } }\n}\n',
