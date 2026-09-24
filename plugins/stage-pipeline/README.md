@@ -47,6 +47,7 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 ### Скрипты
 
 - `scripts/archive-stages.mjs <STAGES.md> [--apply]` — свернуть закрытые этапы и старый журнал в `STAGES-ARCHIVE.md` (зовётся из `/stage-check`, Шаг 4.2).
+- `scripts/run-check.mjs -- <команда с {files}>` — lint/test/type_check/build этапа: только изменённые файлы, на машине с ОЗУ ≤ 16 GB — по очереди между проектами и с пониженным приоритетом (`references/heavy-checks.md`; `--mode` — режим машины).
 - `scripts/floor-guard.mjs [--base <ref>] [--pathspec-from-stdin]` — планка качества по дифу: заглушённые чекеры, `as any`, ослабленные тесты и конфиги, заглушки, секреты; первая строка — размер дифа (зовётся из `/stage-check`, `stage-implement` и хука на force-коммите — хук передаёт пути коммита через stdin). Нарушения в неотслеживаемых файлах помечены «не в git».
 - `scripts/retro.mjs <repo>` — ретро по файлам задач: ложные находки, раунды fix-loop, skip по чекерам, исходы `AC-*`, раздутые STAGES.md. Метрики берёт из строки `metrics:` журнала этапа.
 

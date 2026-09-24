@@ -108,8 +108,16 @@ export function isCurrentTask(ticket, branches, branch) {
   return new RegExp(`(^|[/_.-])${escaped}($|[/_.-])`, 'i').test(branch)
 }
 
-// Блок «Force-прогон» открыт, пока в строке его заголовка нет «завершён» (stage-force, Выход).
+/**
+ * Блок «Force-прогон» открыт, пока в строке его заголовка нет «завершён» (stage-force, Выход). Прогоны до 0.11
+ * закрывали не заголовок, а строку статуса — «force-прогон 2026-09-23 завершён», «force-прогон завершён 16.09»:
+ * это тоже конец прогона, и старую задачу ради хука никто не обязан переписывать. Признак «все этапы done»
+ * не годится: после последнего этапа force ещё идёт — финальные проверки и догон коммитятся тем же прогоном.
+ */
 export function forceActive(stages) {
+  const status = stages.match(/^## Статус:\s*(.+)$/m)?.[1] ?? ''
+  const finished = status.match(/force-прогон[^.;\n]{0,40}?завершён/i)?.[0]
+  if (finished && !/не\s+завершён/i.test(finished)) return false
   return [...stages.matchAll(/^## Force-прогон.*$/gm)].some(([heading]) => !/заверш/i.test(heading))
 }
 
