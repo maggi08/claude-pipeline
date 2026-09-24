@@ -314,7 +314,7 @@ function validateStageChecklist(pluginDir) {
     ...readdirSync(join(ROOT, pluginDir, 'skills')),
     ...readdirSync(join(ROOT, pluginDir, 'agents')).map((file) => basename(file, '.md')),
     // шаги процесса: исполняет оркестратор или пользователь; metrics-* — команда bundle_size из конфига
-    'kickoff', 'implement', 'user-review', 'commit', 'security-review', 'metrics-baseline', 'metrics-guard',
+    'kickoff', 'implement', 'user-review', 'commit', 'security-review', 'metrics-baseline', 'metrics-guard', 'floor-guard',
     'dedup-pass', 'coverage', 'test-plan', 'confirmations', 'wrapup',
   ])
   readFileSync(join(ROOT, rel), 'utf8').split('\n').forEach((line, i) => {

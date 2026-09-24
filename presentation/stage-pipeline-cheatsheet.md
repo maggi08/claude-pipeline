@@ -1,6 +1,6 @@
 # Stage Pipeline · шпаргалка
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.9.0 — 18 скиллов, 12 агентов.
+Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.10.0 — 18 скиллов, 12 агентов.
 
 ---
 

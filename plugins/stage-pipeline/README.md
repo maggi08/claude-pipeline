@@ -42,11 +42,12 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 Работают только в репо с `.claude/pipeline.config.md`, в остальных молчат.
 
 - **session-start** — в начале сессии кладёт в контекст строку статуса открытых задач (до трёх) и напоминает свернуть STAGES.md больше 40 KB.
-- **git-guard** — пока этап в работе, в обычном режиме `git add`/`git commit` отклоняются: агент выдаёт готовое сообщение коммита, коммитишь ты сам. В force-режиме (блок «Force-прогон» в STAGES.md) агент делает `git add` + `git commit` сам, без вопросов.
+- **git-guard** — пока этап в работе, в обычном режиме `git add`/`git commit` отклоняются: агент выдаёт готовое сообщение коммита, коммитишь ты сам. В force-режиме (блок «Force-прогон» в STAGES.md) агент делает `git add` + `git commit` сам, без вопросов, — но коммит проходит через `floor-guard` и отклоняется, если в дифе заглушён чекер, ослаблен тест или оставлена заглушка.
 
 ### Скрипты
 
 - `scripts/archive-stages.mjs <STAGES.md> [--apply]` — свернуть закрытые этапы и старый журнал в `STAGES-ARCHIVE.md` (зовётся из `/stage-check`, Шаг 4.2).
+- `scripts/floor-guard.mjs [--base <ref>]` — планка качества по дифу: заглушённые чекеры, `as any`, ослабленные тесты и конфиги, заглушки, секреты; первая строка — размер дифа (зовётся из `/stage-check`, `stage-implement` и хука на force-коммите).
 - `scripts/retro.mjs <repo>` — ретро по файлам задач: ложные находки, раунды fix-loop, skip по чекерам, исходы `AC-*`, раздутые STAGES.md. Метрики берёт из строки `metrics:` журнала этапа.
 
 ## 0. Один раз на репозиторий — `/pipeline-init`
@@ -127,8 +128,8 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 
 | Модель | Агенты | Почему |
 |---|---|---|
-| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep` | суждение и точность: ложный зелёный чекера хуже красного, а шум опровергает дорогой оркестратор |
-| `haiku` | `deps-audit`, `docs-lookup` | механическая работа; на eval-кейсах не хуже Sonnet при цене в 2.5–4 раза ниже (замер — CHANGELOG 0.9.0) |
+| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep`, `docs-lookup` | суждение и точность: ложный зелёный чекера хуже красного, а шум опровергает дорогой оркестратор |
+| `haiku` | `deps-audit` | механическая работа; на eval-кейсе не хуже Sonnet при цене в 2.5 раза ниже (замер — CHANGELOG 0.9.0) |
 
 Алиас `sonnet` в Claude Code 2.1.193 разворачивается в Sonnet 4.6, а не в Sonnet 5 — это видно в `modelUsage` eval-прогонов. Явный id (`claude-sonnet-5`) во frontmatter работает; переход на него — отдельный замер на трудных кейсах. Перед сменой модели агента — `node scripts/eval.mjs --runs 3 --model <agent>=<model> <кейсы агента>`.
 

@@ -1,0 +1,67 @@
+{
+  "$comment": "Фразы, которыми пользователь зовёт скилл, — для scripts/routing.mjs. Пишутся так, как говорят в чате, а не цитатой из description: цитата проверяет, что текст равен сам себе. expect — скилл, который обязан попасть в топ-K; not — скиллы, которые не должны оказаться первыми с весом выше noiseFloor. Упала фраза — сначала поправь description.",
+  "topK": 2,
+  "minRank1": 0.75,
+  "maxSimilarity": 0.5,
+  "noiseFloor": 0.12,
+  "allowCollisions": [],
+  "cases": [
+    { "prompt": "посмотри, какой код осиротел после моих изменений — неиспользуемые компоненты и ключи локалей", "expect": "dead-code" },
+    { "prompt": "что стало мёртвым кодом из-за этой задачи?", "expect": "dead-code" },
+
+    { "prompt": "я добавил новую библиотеку в package.json, проверь, оправдана ли зависимость", "expect": "deps-audit" },
+    { "prompt": "аудит зависимостей и новых картинок перед PR", "expect": "deps-audit" },
+
+    { "prompt": "страница белая, открой в браузере и посмотри консоль", "expect": "devtools-verify" },
+    { "prompt": "проверь в хроме скриншоты в тёмной теме на ширине 1024", "expect": "devtools-verify" },
+
+    { "prompt": "какие наши компоненты можно заменить компонентами из UI-кита?", "expect": "ds-parity" },
+    { "prompt": "проверь дубли с дизайн-системой перед PR", "expect": "ds-parity" },
+
+    { "prompt": "как сейчас работает фича избранного на всех платформах?", "expect": "feature-checker" },
+    { "prompt": "что уже сделано по поиску — составь карту фичи", "expect": "feature-checker" },
+
+    { "prompt": "сверь вёрстку с макетом в фигме, вот ссылка на ноду", "expect": "figma-compare" },
+    { "prompt": "pixel perfect: отступы и цвета совпадают с Figma?", "expect": "figma-compare" },
+
+    { "prompt": "найди хардкод текста и недостающие переводы в локалях", "expect": "i18n-sweep" },
+    { "prompt": "проверь интернационализацию: даты форматируются без локали?", "expect": "i18n-sweep" },
+
+    { "prompt": "у меня не работает figma MCP и chrome-devtools, продиагностируй окружение", "expect": "pipeline-doctor" },
+    { "prompt": "склонировал репо на новый ноут, проверь, что пайплайн заведётся", "expect": "pipeline-doctor" },
+
+    { "prompt": "настрой stage-пайплайн в этом новом репозитории, сгенерируй конфиг", "expect": "pipeline-init" },
+    { "prompt": "инициализируй pipeline.config.md для проекта", "expect": "pipeline-init" },
+
+    { "prompt": "сделай код-ревью всей ветки как senior", "expect": "pro-review" },
+    { "prompt": "отревьюй бранч на корректность, безопасность и конвенции репозитория", "expect": "pro-review" },
+
+    { "prompt": "сверь реализацию с HTML-прототипом из репозитория прототипов", "expect": "proto-compare" },
+    { "prompt": "совпадает ли экран с прототипом и поведением по SPEC.md?", "expect": "proto-compare" },
+
+    { "prompt": "поправил, но баг всё равно воспроизводится — найди настоящую причину", "expect": "root-cause" },
+    { "prompt": "фикс не помог, симптом непонятный, давай отладим до корневой причины", "expect": "root-cause" },
+
+    { "prompt": "этап реализован, прогони чекеры и закрой этап", "expect": "stage-check" },
+    { "prompt": "проверь этап 3 и подготовь коммит", "expect": "stage-check" },
+
+    { "prompt": "прогони всю задачу автономно без остановок, коммить сам", "expect": "stage-force" },
+    { "prompt": "запусти force-режим по всем этапам", "expect": "stage-force" },
+
+    { "prompt": "открываем следующий этап — покажи план и собери вопросы перед реализацией", "expect": "stage-kickoff" },
+    { "prompt": "начинаем новый этап, возьми sign-off перед стартом", "expect": "stage-kickoff" },
+
+    { "prompt": "разбей редизайн на этапы по многоэкранной фигме", "expect": "stage-plan" },
+    { "prompt": "составь план этапов с критериями приёмки для этой задачи", "expect": "stage-plan" },
+
+    { "prompt": "что из обещанного по задаче ещё не сделано?", "expect": "task-converge" },
+    { "prompt": "задача правда завершена? сверь код с критериями приёмки всех этапов", "expect": "task-converge" },
+
+    { "prompt": "напиши описание PR по журналу этапов", "expect": "task-wrapup" },
+    { "prompt": "готовлю merge request — собери description для ревьюера", "expect": "task-wrapup" },
+
+    { "prompt": "ревью только текущего этапа перед закрытием", "not": ["task-wrapup", "deps-audit"] },
+    { "prompt": "напиши функцию форматирования цены", "not": ["i18n-sweep", "root-cause", "pro-review"] },
+    { "prompt": "поправь опечатку в README", "not": ["stage-check", "stage-force", "pro-review"] }
+  ]
+}

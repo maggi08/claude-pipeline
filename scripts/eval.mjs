@@ -27,6 +27,14 @@
  *   mcp               ["context7"] — MCP-серверы плагина, которые нужны кейсу (остальные отключены).
  *                     Context7 без CONTEXT7_API_KEY отвечает 401 — такой кейс пропускается, а не падает.
  *
+ * Кейс маршрутизации (`"kind": "routing"`, без `agent`) проверяет не работу скилла, а то, вызовет ли
+ * его модель по обычной фразе: промпт уходит в главную сессию с плагином, из потока событий берутся
+ * вызовы Skill (и Agent с subagent_type плагина), прогон обрывается через пару ходов.
+ *   expectSkill       имя скилла/агента плагина, который обязан быть вызван первым
+ *   forbidSkills      [имя] — не должны быть вызваны вовсе
+ *   base              путь к base/ другого кейса (своего дерева у кейса маршрутизации обычно нет)
+ * Лексическое приближение того же — scripts/routing.mjs (бесплатно, в CI); здесь — сама модель.
+ *
  * --model <agent>=<model> прогоняет кейсы на копии плагина, где у агента переписан `model:` во
  * frontmatter, — так сравнивают модели на одних и тех же кейсах. Какая модель реально отработала,
  * видно по modelUsage из JSON-вывода claude и печатается в сводке. --runs N повторяет каждый кейс:
@@ -53,7 +61,7 @@ const CHECKS = 'tasks/EVAL-1/checks'
 const { names, runs, overrides } = parseArgs(process.argv.slice(2))
 const all = readdirSync(CASES).filter((name) => existsSync(join(CASES, name, 'case.json')))
 if (names.includes('--list')) {
-  for (const name of all) console.log(`${name} [${readCase(name).agent}] — ${readCase(name).why}`)
+  for (const name of all) console.log(`${name} [${readCase(name).agent ?? readCase(name).kind}] — ${readCase(name).why}`)
   process.exit(0)
 }
 const selected = names.length ? names : all
@@ -153,12 +161,12 @@ function applyLayer(layer, repo) {
   }
 }
 
-function buildRepo(caseDir) {
+function buildRepo(caseDir, basePath = 'base') {
   const repo = mkdtempSync(join(tmpdir(), 'stage-pipeline-eval-'))
   git(repo, 'init', '-q', '-b', 'main')
   git(repo, 'config', 'user.email', 'eval@example.com')
   git(repo, 'config', 'user.name', 'eval')
-  cpSync(join(caseDir, 'base'), repo, { recursive: true })
+  cpSync(join(caseDir, basePath), repo, { recursive: true })
   git(repo, 'add', '-A')
   git(repo, 'commit', '-qm', 'base')
   git(repo, 'checkout', '-qb', 'feature')
@@ -174,9 +182,82 @@ function buildRepo(caseDir) {
   return repo
 }
 
+/** Вызовы скиллов и агентов плагина по порядку из потока stream-json: `stage-pipeline:root-cause` → `root-cause`. */
+function invokedSkills(events) {
+  const names = []
+  for (const event of events) {
+    for (const block of event.type === 'assistant' ? event.message?.content ?? [] : []) {
+      if (block.type !== 'tool_use') continue
+      const raw =
+        block.name === 'Skill' ? block.input?.skill ?? block.input?.command : ['Agent', 'Task'].includes(block.name) ? block.input?.subagent_type : null
+      const name = raw && String(raw).replace(/^\/?(stage-pipeline:)?/, '')
+      // Встроенные агенты (Explore, general-purpose) — не маршрут в плагин: считаем только скиллы и агентов плагина.
+      if (name && PLUGIN_NAMES.has(name)) names.push(name)
+    }
+  }
+  return names
+}
+
+const PLUGIN_NAMES = new Set([
+  ...readdirSync(join(SOURCE_PLUGIN, 'skills')),
+  ...readdirSync(join(SOURCE_PLUGIN, 'agents')).map((file) => file.replace(/\.md$/, '')),
+])
+
+function runRouting(name, attempt, spec) {
+  const repo = buildRepo(join(CASES, name), spec.base)
+  const started = Date.now()
+  const result = spawnSync(
+    'claude',
+    [
+      '-p', spec.prompt,
+      '--plugin-dir', plugin,
+      '--setting-sources', 'project',
+      '--strict-mcp-config',
+      '--no-session-persistence',
+      '--output-format', 'stream-json', '--verbose',
+      '--permission-mode', 'dontAsk',
+      // Skill разрешён: отказ в разрешении подменил бы выбор модели. Дальше пары ходов прогон не нужен.
+      '--allowedTools', 'Skill', 'Read', 'Grep', 'Glob',
+      '--max-turns', String(spec.maxTurns ?? 3),
+      '--max-budget-usd', String(spec.budgetUsd ?? 0.3),
+    ],
+    { cwd: repo, encoding: 'utf8', timeout: (spec.timeoutSec ?? 180) * 1000 },
+  )
+  const seconds = Math.round((Date.now() - started) / 1000)
+  const events = (result.stdout ?? '').split('\n').flatMap((line) => {
+    try {
+      return [JSON.parse(line)]
+    } catch {
+      return []
+    }
+  })
+  const final = events.filter((event) => event.type === 'result').pop() ?? {}
+  const invoked = invokedSkills(events)
+  const failures = []
+  // Упавший прогон (лимит сессии, ошибка API) не вызывает скиллов — без этой проверки он засчитал бы forbidSkills.
+  if (!events.length || final.is_error || !Object.keys(final.modelUsage ?? {}).length) {
+    failures.push(`claude не отработал: код ${result.status}, ${String(final.result ?? result.stderr ?? '').trim().slice(0, 200)}`)
+  }
+  if (spec.expectSkill && invoked[0] !== spec.expectSkill) failures.push(`первым вызван ${invoked[0] ?? 'ни один скилл'}, ждали ${spec.expectSkill}`)
+  for (const forbidden of spec.forbidSkills ?? []) {
+    if (invoked.includes(forbidden)) failures.push(`вызван ${forbidden}, а не должен`)
+  }
+
+  mkdirSync(RESULTS, { recursive: true })
+  const saved = join(RESULTS, `${name}--${label.replace(/[^\w=,-]/g, '_')}--${attempt}.md`)
+  writeFileSync(
+    saved,
+    `# ${name} (${label}, прогон ${attempt})\n\nВызваны: ${invoked.join(' → ') || '—'}\n\n` +
+      `## Провалы\n\n${failures.map((f) => `- ${f}`).join('\n') || '—'}\n\n## Ответ\n\n${final.result ?? ''}\n`,
+  )
+  rmSync(repo, { recursive: true, force: true })
+  return { failures, seconds, cost: final.total_cost_usd ?? 0, models: Object.keys(final.modelUsage ?? {}), saved }
+}
+
 function runCase(name, attempt) {
   const caseDir = join(CASES, name)
   const spec = readCase(name)
+  if (spec.kind === 'routing') return runRouting(name, attempt, spec)
   const repo = buildRepo(caseDir)
   const snapshot = Object.fromEntries((spec.unchanged ?? []).map((path) => [path, readIfExists(join(repo, path))]))
   const commitsBefore = git(repo, 'rev-list', '--count', 'HEAD').trim()

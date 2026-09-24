@@ -36,6 +36,15 @@ const checker = (name) => {
 const totals = { tasks: 0, stages: 0, withMetrics: 0, findings: 0, dropped: 0, iterations: 0, fresh: 0, escalations: 0 }
 const acOutcomes = { done: 0, userReview: 0, live: 0 }
 const iterationHistogram = new Map()
+// Размер этапа (поле diff=) против находок и раундов: подтверждает или опровергает ориентир «~300 / >1000 строк».
+const SIZE_BUCKETS = [
+  { label: '≤300', max: 300 },
+  { label: '301–1000', max: 1000 },
+  { label: '>1000', max: Infinity },
+]
+const bySize = SIZE_BUCKETS.map((bucket) => ({ ...bucket, stages: 0, findings: 0, iterations: 0, fresh: 0 }))
+let floorViolations = 0
+let stagesWithFloor = 0
 
 for (const dir of taskDirs) {
   totals.tasks++
@@ -68,6 +77,17 @@ for (const dir of taskDirs) {
       totals.iterations += iterations
       iterationHistogram.set(iterations, (iterationHistogram.get(iterations) ?? 0) + 1)
       if (fields.fresh === 'yes') totals.fresh++
+      if (fields.floor !== undefined) {
+        stagesWithFloor++
+        floorViolations += Number(fields.floor) || 0
+      }
+      if (fields.diff !== undefined) {
+        const bucket = bySize.find((b) => Number(fields.diff) <= b.max)
+        bucket.stages++
+        bucket.findings += Number(fields.findings) || 0
+        bucket.iterations += iterations
+        if (fields.fresh === 'yes') bucket.fresh++
+      }
       for (const name of listField(fields.checkers)) checker(name).ran++
       for (const name of listField(fields.skipped)) checker(name).skipped++
       continue
@@ -149,6 +169,18 @@ console.log(`- эскалаций: ${totals.escalations}`)
 if (iterationHistogram.size) {
   const hist = [...iterationHistogram.entries()].sort((a, b) => a[0] - b[0]).map(([n, c]) => `${n}→${c}`)
   console.log(`- распределение раундов (раундов→этапов): ${hist.join(', ')}`)
+}
+if (stagesWithFloor) console.log(`- floor-guard: нарушений на первом прогоне ${floorViolations} на ${stagesWithFloor} этапах`)
+
+const sized = bySize.filter((bucket) => bucket.stages)
+if (sized.length) {
+  console.log('')
+  console.log('## Размер этапа (строк дифа) против fix-loop')
+  console.log('| Размер | Этапов | Находок на этап | Раундов на этап | Свежий прогон |')
+  console.log('|---|---|---|---|---|')
+  for (const b of sized) {
+    console.log(`| ${b.label} | ${b.stages} | ${(b.findings / b.stages).toFixed(1)} | ${(b.iterations / b.stages).toFixed(1)} | ${pct(b.fresh, b.stages)} |`)
+  }
 }
 console.log('')
 console.log('## Чекеры')
