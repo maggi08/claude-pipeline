@@ -17,6 +17,7 @@ jobs:
           node-version: '22'
       - run: node scripts/validate.mjs
       - run: node scripts/floor-guard-test.mjs
+      - run: node scripts/hooks-test.mjs
       - run: node scripts/routing.mjs
       - name: Версия и CHANGELOG на изменённом плагине
         if: github.event_name == 'pull_request' && github.base_ref == 'main'

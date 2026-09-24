@@ -124,5 +124,13 @@ description: Проверка окружения разработчика для
    разрешение на каждый файл. Добавить: `--scope project --apply --dirs
    ../ui-lib,../prototypes`.
 
-7. **Итог.** Компактная таблица: пункт | статус (OK/FAIL/SKIP) | что сделать.
+7. **`main_branch`** — PR-таргет: от него считают базу whole-branch
+   pro-review, `floor-guard --base`, dead-code и wrapup. Сверь с тем, куда
+   реально вливаются ветки: `git log --merges --first-parent -20 --oneline
+   origin/<main_branch>` против того же по соседним кандидатам с origin
+   (`dev`/`development`/`main`/`master`). Фичевые мерджи идут в другую ветку,
+   а в `main_branch` — только релизные из неё → предложи поправить поле
+   (общий конфиг — отдельным коммитом). Кандидат один — SKIP.
+
+8. **Итог.** Компактная таблица: пункт | статус (OK/FAIL/SKIP) | что сделать.
    Всё OK → окружение готово, дальше по `${CLAUDE_PLUGIN_ROOT}/README.md`.

@@ -440,7 +440,7 @@
       <span class="pill">16 задач</span>
       <span class="pill">161 отчёт чекеров</span>
       <span class="pill">18 скиллов · 12 агентов</span>
-      <span class="pill">v0.10.0</span>
+      <span class="pill">v0.11.0</span>
     </div>
     <div class="sig">Магжан Мусаин · 21.07 → 21.08.2026 · плагин <b>stage-pipeline@magzhan</b></div>
   </section>
@@ -810,6 +810,7 @@
         <table>
           <thead><tr><th>Агент</th><th>Что делает</th><th>Запуск</th></tr></thead>
           <tbody>
+            <tr><td class="name">stage-implement</td><td>maker: реализация этапа или раунда фиксов fix-loop в чистом контексте (sonnet) — в главный контекст идёт только сводка</td><td class="when">в /stage-force</td></tr>
             <tr><td class="name">figma-spec</td><td>вытаскивает из Figma компактную спеку экрана: токены, размеры, копия, стейты</td><td class="when">до кода</td></tr>
             <tr><td class="name">proto-spec</td><td>то же из HTML-прототипа + SPEC.md — для проектов без Figma</td><td class="when">до кода</td></tr>
             <tr><td class="name">docs-lookup</td><td>актуальные доки библиотеки под версию из локфайла через Context7 — вместо памяти модели</td><td class="when">неуверенность в API</td></tr>
@@ -855,8 +856,7 @@
         <div style="display:flex;flex-direction:column;gap:1em">
           <pre>
 <span class="cm"># 1. подключить маркетплейс и поставить плагин</span>
-claude plugin marketplace add \
-  git@github.com:maggi08/claude-pipeline.git
+claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 
 <span class="cm"># 2. перезапустить Claude Code и проверить</span>
@@ -875,9 +875,9 @@ claude plugin details stage-pipeline
         <div style="display:flex;flex-direction:column;gap:.9em">
           <div class="card">
             <span class="kicker">Доступ</span>
-            <h3>Напишите мне за доступом</h3>
-            <p>Маркетплейс приватный: пришлите ник на GitHub — добавлю. На машине должен работать
-              <code>ssh -T git@github.com</code> или <code>gh auth login</code>.</p>
+            <h3>Ничего не нужно</h3>
+            <p>Репозиторий публичный: ни ника на GitHub, ни SSH-ключа, ни <code>gh auth</code> для установки
+              и обновлений не требуется.</p>
           </div>
           <div class="card">
             <span class="kicker">Разрешения</span>
@@ -1262,7 +1262,7 @@ claude plugin details stage-pipeline
         <div style="display:flex;flex-direction:column;gap:.85em">
           <span class="kicker">Открытые вопросы — их решаем вместе</span>
           <ul class="plain">
-            <li><b>Дистрибуция.</b> Маркетплейс — приватный GitHub. Переносить ли в корпоративный GitLab?</li>
+            <li><b>Дистрибуция.</b> Плагин — на публичном GitHub, каталог команды — в GitLab. Зеркалить ли сам код в корпоративный GitLab?</li>
             <li><b>Рантайм-проверка.</b> Отдельный профиль Chrome и порт под чекер — или оставить ручной?</li>
             <li><b>a11y-чекер.</b> Обязательный шаг или по требованию?</li>
             <li><b>Общая рубрика ревью.</b> Что закрепить в <code>CLAUDE.md</code> всех фронтовых репо?</li>
@@ -1290,8 +1290,7 @@ claude plugin details stage-pipeline
       <div class="cols cols-3" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.7em">
           <span class="kicker">Один раз</span>
-          <pre style="font-size:.82em">claude plugin marketplace add \
-  git@github.com:maggi08/claude-pipeline.git
+          <pre style="font-size:.82em">claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 <span class="cm"># рестарт Claude Code</span>
 /pipeline-doctor

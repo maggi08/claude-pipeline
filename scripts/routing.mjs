@@ -109,6 +109,10 @@ for (const c of spec.cases) {
   }
 }
 
+// Скилл без единой фразы проверкой не покрыт: новый скилл прошёл бы молча, даже если его не находит ничто.
+const covered = new Set(spec.cases.map((c) => c.expect).filter(Boolean))
+for (const name of known) if (!covered.has(name)) errors.push(`у скилла ${name} нет ни одной фразы в evals/routing.json`)
+
 const floor = spec.minRank1 ?? 0.8
 const rate = positives ? rank1 / positives : 1
 if (rate < floor) errors.push(`первым местом попало ${rank1}/${positives} (${Math.round(rate * 100)}%) при пороге ${Math.round(floor * 100)}%`)

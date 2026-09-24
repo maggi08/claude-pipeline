@@ -14,17 +14,25 @@
  * идиоматичное обоснование самого подавления (`eslint-disable-line x -- причина`, `@ts-expect-error причина`).
  * Такие строки не нарушения, но печатаются отдельным списком: их видит ревью и пользователь.
  * Файл, где дефекты заложены намеренно (фикстуры тестов, сам guard), — `floor-ok-file: <причина>` в первых
- * 10 строках: все его находки уходят в исключения с этой причиной, а не пропадают.
- * Значение найденного секрета не печатается никогда — только правило и место.
+ * 10 строках: все его находки уходят в исключения с этой причиной, а не пропадают. Маркер действует в тестах
+ * и фикстурах или если стоял в файле до дифа: новый маркер в продовом файле глушил бы всё, что рядом добавлено.
+ * Значение найденного секрета не печатается никогда — только правило и место; плейсхолдеры (`…EXAMPLE`,
+ * `xxxx`, `0000`) секретом не считаются.
+ * Правила подстраиваются под репо: `# noqa` и `# type: ignore` — подавление, только если в репо есть
+ * Python-линтер / тайпчекер, которому они адресованы.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 
 const args = process.argv.slice(2)
 const json = args.includes('--json')
 const baseArg = args.includes('--base') ? args[args.indexOf('--base') + 1] : null
+// Упавший скрипт — не «нашёл нарушения»: код 1 хук читает как отказ в коммите, поэтому любая ошибка — код 2.
+process.on('uncaughtException', (error) => bail(`внутренняя ошибка: ${error.code ?? error.message}`))
+if (args.includes('--base') && (!baseArg || baseArg.startsWith('--'))) bail('--base ждёт ветку или коммит')
 
-const git = (...cmd) => execFileSync('git', ['-c', 'core.quotePath=false', ...cmd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
+const git = (...cmd) => execFileSync('git', ['-c', 'core.quotePath=false', ...cmd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 512 * 1024 * 1024 })
 const tryGit = (...cmd) => {
   try {
     return git(...cmd)
@@ -48,8 +56,12 @@ if (baseArg) {
 // Код и конфиги. Markdown не смотрим: документация законно цитирует `@ts-ignore` и `.skip`.
 const CODE = /\.(m?[jt]sx?|cjs|cts|mts|vue|svelte|astro|py|go|rb|kt|swift|java|php|rs|cs)$/
 const CONFIG = /(^|\/)(\.?eslintrc(\.\w+)?|eslint\.config\.\w+|biome\.jsonc?|tsconfig[\w.-]*\.json|(vitest|jest|vite|playwright)\.config\.\w+|package\.json|pipeline\.config\.md)$/
-const SKIP_PATH = /(^|\/)(node_modules|dist|build|\.next|\.nuxt|\.output|coverage|vendor)\/|(\.lock|-lock\.json|\.lock\.yaml|\.min\.js|\.map|\.snap)$/
-const TEST_FILE = /(\.(test|spec)\.[\w]+$|(^|\/)(__tests__|tests?)\/|_test\.\w+$|(^|\/)test_[\w]+\.py$)/
+const SKIP_PATH = /(^|\/)(node_modules|dist|build|\.next|\.nuxt|\.output|coverage|vendor|__generated__)\/|(\.lock|-lock\.json|\.lock\.yaml|\.min\.js|\.map|\.snap)$|\.(generated|gen)\.\w+$/
+// Тест — по имени файла. Сегмент `test/` в пути тестом не считается: в живых репо это бывает доменный
+// модуль («тесты/экзамены»), и его удаление читалось бы как «удалён тест».
+const TEST_FILE = /\.(test|spec|cy|e2e)\.\w+$|(^|\/)__tests__\/|_test\.\w+$|(^|\/)test_\w+\.py$|^tests?\/|(^|\/)\w+Tests?\.(swift|kt|java)$/
+// Моки и фикстуры: приведения типов и проглоченный промис там — идиома, а не обход.
+const TESTISH = new RegExp(`${TEST_FILE.source}|(^|\\/)(__mocks__|__fixtures__|fixtures?|testdata|mocks?)\\/`)
 
 const RULES = {
   'silenced-checker': 'заглушён чекер',
@@ -63,16 +75,20 @@ const RULES = {
 // Директива работает, только когда стоит первым словом комментария (у noqa и type: ignore комментарий `#` — в конце
 // строки кода, поэтому он ищется где угодно). Упоминание директивы в прозе, в строке или в регэкспе — не директива.
 const COMMENT = String.raw`(?:\/\/|\/\*+|<!--|\{\/\*|^\s*\*)\s*`
-const SUPPRESSION = new RegExp(`${COMMENT}(?:@ts-ignore|@ts-nocheck|@ts-expect-error|eslint-disable|biome-ignore|oxlint-disable|stylelint-disable|(?:istanbul|c8|v8) ignore|nosemgrep|NOLINT)|#\\s*(?:noqa|type:\\s*ignore)\\b`)
+const SUPPRESSION = new RegExp(`${COMMENT}(?:@ts-ignore|@ts-nocheck|@ts-expect-error|eslint-disable|biome-ignore|oxlint-disable|stylelint-disable|(?:istanbul|c8|v8) ignore|nosemgrep|NOLINT)`)
+const PY_SUPPRESSION = /#\s*noqa\b/
+const PY_TYPE_SUPPRESSION = /#\s*type:\s*ignore\b/
 const HARD_SUPPRESSION = new RegExp(`${COMMENT}@ts-(?:ignore|nocheck)`)
 const TYPE_ESCAPE = /\bas\s+any\b|\bas\s+unknown\s+as\b/
-const SKIPPED_TEST = /\b(it|test|describe|context|suite)\.(skip|only|todo)\s*\(|\b(xit|xdescribe|xtest|fit|fdescribe)\s*\(|@pytest\.mark\.skip|\bt\.Skip\(/
-const STUB = [
-  /throw\s+new\s+\w*Error\([^)]*not\s+implemented/i,
-  /\bcatch\s*(\(\s*\w*\s*\))?\s*\{\s*\}|\.catch\(\s*\(\s*\w*\s*\)\s*=>\s*(\{\s*\}|undefined|null)\s*\)/,
-  new RegExp(`(?:${COMMENT}|#\\s*)(?:TODO|FIXME|XXX)\\b`),
-]
+const SKIPPED_TEST = /\b(it|test|describe|context|suite)\.(skip|only|todo)\s*\(|@pytest\.mark\.skip|\bt\.Skip\(/
+// `xit(`/`fit(` — только в тестах и не как метод: `model.fit(X, y)` и `fitAddon.fit()` — не фокус теста.
+const SKIPPED_TEST_BARE = /(?<![.\w$])(xit|xdescribe|xtest|fit|fdescribe)\s*\(/
+// Пустой catch — проглоченная ошибка. `.catch(() => null)` — идиома «данные необязательны», не заглушка.
+const EMPTY_CATCH = /\bcatch\s*(\(\s*\w*\s*\))?\s*\{\s*\}|\.catch\(\s*\(\s*\w*\s*\)\s*=>\s*\{\s*\}\s*\)/
+const STUB = [/throw\s+new\s+\w*Error\([^)]*not\s+implemented/i, new RegExp(`(?:${COMMENT}|#\\s*)(?:TODO|FIXME|XXX)\\b`)]
 const ASSERTION = /\b(expect|assert\w*|should)\b\s*[.(]/
+// Плейсхолдеры из документации и `.env.example`: AWS-овский `AKIAIOSFODNN7EXAMPLE`, `sk-proj-XXXX…`, `ctx7sk-0000…`.
+const PLACEHOLDER = /EXAMPLE|X{6,}|x{6,}|0{8,}|\*{4,}|your[_-]?(api[_-]?)?key|placeholder|dummy|fake|redacted/i
 const SECRET = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\bAKIA[0-9A-Z]{16}\b/,
@@ -90,7 +106,13 @@ const LOOSENED = [
   { file: ESLINT_CONFIG, pattern: /:\s*\[?\s*["']off["']|:\s*\[?\s*0\s*[\],}]|["']?level["']?\s*:\s*["']off["']/ },
   { file: /(^|\/)package\.json$/, pattern: /--passWithNoTests|--no-verify/ },
 ]
-const THRESHOLD = /\b(lines|branches|functions|statements|threshold|baseline)\b[^\n]*?(\d+(\.\d+)?)/
+// Порог покрытия — только ключом в конфиге тест-раннера (или его секции в package.json), baseline — только
+// в конфиге пайплайна. Иначе версии зависимостей (`"baseline-browser-mapping": "^2.8.1"`) читаются как пороги,
+// а в JSON `floor-ok` поставить некуда.
+const THRESHOLD_FILE = /(^|\/)((vitest|jest|vite)\.config\.\w+|package\.json|\.nycrc(\.json)?|\.c8rc(\.json)?)$/
+const THRESHOLD = /["']?\b(lines|branches|functions|statements)\b["']?\s*:\s*(\d+(?:\.\d+)?)/
+const BASELINE_FILE = /(^|\/)pipeline\.config(\.local)?\.md$/
+const BASELINE = /\b(baseline)\b[^\n]*?(\d+(?:\.\d+)?)/
 
 // floor-ok — для любого правила; идиомы обоснованного подавления — только для самого подавления.
 const FLOOR_OK = /floor-ok:\s*\S.{8,}/
@@ -98,6 +120,9 @@ const JUSTIFIED_SUPPRESSION = [
   /eslint-disable(-next-line|-line)?\s+[\w@/-]+(\s*,\s*[\w@/-]+)*\s+--\s*\S.{4,}/,
   /@ts-expect-error:?\s+\S.{4,}/,
   /biome-ignore\s+\S+:\s*\S.{4,}/,
+  // `# noqa: BLE001 — причина`, `# noqa: E501  # причина`, `# type: ignore[attr-defined]  # причина`
+  /#\s*noqa:\s*[A-Z]+\d+(\s*,\s*[A-Z]+\d+)*\s*(?:[—–-]{1,2}|#|:)\s*\S.{4,}/,
+  /#\s*type:\s*ignore(\[[\w,\s-]+\])?\s*#\s*\S.{4,}/,
 ]
 
 // ── диф ──────────────────────────────────────────────────────────────────────
@@ -107,18 +132,39 @@ const fileEntry = (path) => {
   return files.get(path)
 }
 
-parseUnified(git('diff', '--unified=0', '--no-color', '--no-ext-diff', base, '--'))
+// Префиксы и переименования — явно: `diff.mnemonicPrefix`/`diff.noprefix`/`diff.renames` из конфига разработчика
+// меняют заголовки, и путь перестаёт совпадать с файлом.
+const DIFF = ['--no-color', '--no-ext-diff', '-M', '--src-prefix=a/', '--dst-prefix=b/']
+parseUnified(git('diff', '--unified=0', ...DIFF, base, '--'))
+
+// Обычный файл, а не каталог (вложенный репо, указатель субмодуля), не симлинк и не бинарь.
+const regularFile = (path) => {
+  try {
+    const stat = lstatSync(path)
+    return stat.isFile() && stat.size <= 2 * 1024 * 1024
+  } catch {
+    return false
+  }
+}
 
 const untracked = git('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)
 for (const path of untracked) {
-  if (SKIP_PATH.test(path) || !existsSync(path) || statSync(path).size > 2 * 1024 * 1024) continue
+  if (SKIP_PATH.test(path) || !regularFile(path)) continue
   const text = readFileSync(path, 'utf8')
   if (text.includes('\0')) continue
   const entry = fileEntry(path)
   text.split('\n').forEach((line, i) => entry.added.push({ line: i + 1, text: line }))
 }
 
-const deleted = git('diff', '--name-only', '--diff-filter=D', '-z', base, '--').split('\0').filter(Boolean)
+const deleted = git('diff', '--name-only', '--diff-filter=D', '-z', ...DIFF, base, '--').split('\0').filter(Boolean)
+const repoHas = (...paths) => paths.some((path) => existsSync(path))
+const repoFileHas = (path, pattern) => regularFile(path) && pattern.test(readFileSync(path, 'utf8'))
+const pythonLinted =
+  repoHas('ruff.toml', '.ruff.toml', '.flake8', '.pylintrc', 'tox.ini') ||
+  repoFileHas('pyproject.toml', /\[tool\.(ruff|flake8|pylint)/) ||
+  repoFileHas('setup.cfg', /\[flake8\]/)
+const pythonTyped =
+  repoHas('mypy.ini', '.mypy.ini', 'pyrightconfig.json') || repoFileHas('pyproject.toml', /\[tool\.(mypy|pyright)/) || repoFileHas('setup.cfg', /\[mypy\]/)
 
 function parseUnified(diff) {
   let entry = null
@@ -131,8 +177,8 @@ function parseUnified(diff) {
       entry = null
       header = true
     } else if (header && raw.startsWith('+++ ')) {
-      const path = raw.slice(4).replace(/^b\//, '')
-      entry = path === '/dev/null' ? null : fileEntry(path)
+      const path = diffPath(raw.slice(4))
+      entry = path === null ? null : fileEntry(path)
     } else if (header && !raw.startsWith('@@')) continue
     else if (raw.startsWith('@@')) {
       header = false
@@ -142,6 +188,16 @@ function parseUnified(diff) {
     } else if (entry && raw.startsWith('+')) entry.added.push({ line: newLine++, text: raw.slice(1) })
     else if (entry && raw.startsWith('-')) entry.removed.push({ line: oldLine++, text: raw.slice(1) })
   }
+}
+
+// `+++ b/my file.ts\t` — git дописывает таб к пути с пробелом; спецсимволы — C-кавычками даже при quotePath=false.
+function diffPath(raw) {
+  let path = raw.replace(/\t$/, '')
+  if (path === '/dev/null') return null
+  if (path.startsWith('"') && path.endsWith('"')) {
+    path = path.slice(1, -1).replace(/\\([\\"tn])/g, (_, c) => ({ t: '\t', n: '\n' })[c] ?? c)
+  }
+  return path.replace(/^b\//, '')
 }
 
 // ── правила ──────────────────────────────────────────────────────────────────
@@ -164,10 +220,13 @@ const justification = (lines, index, rule) => {
 }
 
 const FILE_OK = /floor-ok-file:\s*(\S.{8,})/
+const fileMarker = (text) => text?.split('\n', 10).join('\n').match(FILE_OK)?.[1].replace(/\s*\*\/\s*$/, '').trim().slice(0, 120) ?? null
 const fileJustification = (path) => {
-  if (!existsSync(path)) return null
-  const head = readFileSync(path, 'utf8').split('\n', 10).join('\n')
-  return head.match(FILE_OK)?.[1].replace(/\s*\*\/\s*$/, '').trim().slice(0, 120) ?? null
+  if (!regularFile(path)) return null
+  const why = fileMarker(readFileSync(path, 'utf8'))
+  if (!why) return null
+  // Новый маркер в продовом файле — не исключение, а способ заглушить весь файл одной строкой.
+  return TESTISH.test(path) || fileMarker(tryGit('show', `${base}:${path}`)) ? why : null
 }
 
 const record = (rule, path, line, text, lines, index, { redact = false, justifiable = true } = {}) => {
@@ -188,46 +247,65 @@ for (const [path, { added, removed }] of files) {
   const isCode = CODE.test(path)
   const isConfig = CONFIG.test(path)
   const isTest = TEST_FILE.test(path)
+  const isTestish = TESTISH.test(path)
+  const isPython = path.endsWith('.py')
 
   added.forEach(({ line, text }, i) => {
-    if (SECRET.some((pattern) => pattern.test(text))) record('secret', path, line, text, added, i, { redact: true, justifiable: false })
+    if (SECRET.some((pattern) => pattern.exec(text) && !PLACEHOLDER.test(text.match(pattern)[0]))) {
+      record('secret', path, line, text, added, i, { redact: true, justifiable: false })
+    }
     if (!isCode && !isConfig) return
     if (HARD_SUPPRESSION.test(text)) record('silenced-checker', path, line, text, added, i, { justifiable: false })
     else if (SUPPRESSION.test(text)) record('silenced-checker', path, line, text, added, i)
-    if (isCode && TYPE_ESCAPE.test(text)) record('type-escape', path, line, text, added, i)
-    if (isCode && SKIPPED_TEST.test(text)) record('test-made-easier', path, line, text, added, i)
-    if (isCode && STUB.some((pattern) => pattern.test(text))) record('unfinished-work', path, line, text, added, i)
+    else if (isPython && ((pythonLinted && PY_SUPPRESSION.test(text)) || (pythonTyped && PY_TYPE_SUPPRESSION.test(text)))) {
+      record('silenced-checker', path, line, text, added, i)
+    }
+    if (isCode && !isTestish && TYPE_ESCAPE.test(text)) record('type-escape', path, line, text, added, i)
+    if (isCode && (SKIPPED_TEST.test(text) || (isTest && SKIPPED_TEST_BARE.test(text)))) record('test-made-easier', path, line, text, added, i)
+    if (isCode && (STUB.some((pattern) => pattern.test(text)) || (!isTestish && EMPTY_CATCH.test(text)))) {
+      record('unfinished-work', path, line, text, added, i)
+    }
     if (LOOSENED.some((rule) => rule.file.test(path) && rule.pattern.test(text))) record('loosened-config', path, line, text, added, i)
   })
 
-  // Ассерт убран из теста, который остался: считаем по файлу, чтобы переписанный ассерт не шумел.
-  if (isTest && isCode) {
-    const lost = removed.filter(({ text }) => ASSERTION.test(text)).length - added.filter(({ text }) => ASSERTION.test(text)).length
-    if (lost > 0) {
-      const first = removed.find(({ text }) => ASSERTION.test(text))
-      push('test-made-easier', path, first.line, `ассертов стало меньше на ${lost}`)
-    }
-  }
-
   // Порог опущен (покрытие) или baseline поднят (type_check): число в той же строке-ключе поменялось в сторону слабее.
-  if (isConfig) {
+  const thresholds = THRESHOLD_FILE.test(path) ? THRESHOLD : BASELINE_FILE.test(path) ? BASELINE : null
+  if (thresholds) {
     for (const before of removed) {
-      const key = before.text.match(THRESHOLD)
+      const key = before.text.match(thresholds)
       if (!key) continue
-      const after = added.find(({ text }) => text.match(THRESHOLD)?.[1] === key[1])
+      const after = added.find(({ text }) => text.match(thresholds)?.[1] === key[1])
       if (!after) continue
       const was = Number(key[2])
-      const now = Number(after.text.match(THRESHOLD)[2])
+      const now = Number(after.text.match(thresholds)[2])
       const weaker = key[1] === 'baseline' ? now > was : now < was
       if (weaker) push('loosened-config', path, after.line, `${key[1]}: ${was} → ${now}`)
     }
   }
 }
 
-for (const path of deleted) {
-  if (TEST_FILE.test(path) && CODE.test(path) && !SKIP_PATH.test(path)) {
-    violations.push({ rule: 'test-made-easier', file: path, line: 0, text: 'тестовый файл удалён' })
-  }
+// Удалённый тест — нарушение, если его не объясняет сам диф: удалён и код, который он проверял
+// (выпил компонента вместе с тестом), или тест с тем же именем появился в другом месте (перенос без `git add`).
+const stem = (path) => basename(path).replace(/\.(test|spec|cy|e2e)(?=\.)/, '').replace(/^test_|_test(?=\.)/, '').replace(/\.\w+$/, '')
+const deletedSources = new Set(deleted.filter((path) => !TEST_FILE.test(path)).map(stem))
+const addedTests = new Set([...files.keys()].filter((path) => TEST_FILE.test(path) && !deleted.includes(path)).map((path) => basename(path)))
+const deletedTests = deleted.filter((path) => TEST_FILE.test(path) && CODE.test(path) && !SKIP_PATH.test(path))
+for (const path of deletedTests) {
+  if (deletedSources.has(stem(path)) || addedTests.has(basename(path))) continue
+  violations.push({ rule: 'test-made-easier', file: path, line: 0, text: 'тестовый файл удалён' })
+}
+
+// Ассерт убран — по сумме всех оставшихся тестов дифа: тест, разнесённый по двум файлам, ассертов не теряет,
+// а удалённые файлы считает правило выше.
+const assertionFiles = [...files].filter(([path]) => TEST_FILE.test(path) && CODE.test(path) && !SKIP_PATH.test(path) && !deleted.includes(path))
+const count = (lines) => lines.filter(({ text }) => ASSERTION.test(text)).length
+const lostAssertions = assertionFiles.reduce((sum, [, { added, removed }]) => sum + count(removed) - count(added), 0)
+if (lostAssertions > 0) {
+  const [path, { removed }] = assertionFiles.reduce((worst, candidate) =>
+    count(candidate[1].removed) - count(candidate[1].added) > count(worst[1].removed) - count(worst[1].added) ? candidate : worst,
+  )
+  currentFileOk = fileJustification(path)
+  push('test-made-easier', path, removed.find(({ text }) => ASSERTION.test(text))?.line ?? 0, `ассертов стало меньше на ${lostAssertions}`)
 }
 
 // ── вывод ────────────────────────────────────────────────────────────────────

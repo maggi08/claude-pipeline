@@ -68,7 +68,7 @@ Converge задаёт этот вопрос. Он читает намерени�
 
 ## Шаг 4. Отчёт
 
-Сохрани в `<task_dir>/<TICKET>/checks/converge-<дата>.md`:
+Сохрани в `<task_dir>/<TICKET>/checks/task-converge-branch.md` (повторный прогон после догона — `task-converge-branch-2.md`, `-3`):
 
 ```
 | # | Тип | Severity | Намерение | Что в коде | Как проверено |

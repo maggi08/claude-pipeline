@@ -121,6 +121,11 @@ function validateMcp(pluginDir) {
 
   // Внешний сервер — это данные, уходящие с машины разработчика. Команда узнаёт об этом из ROLLOUT.md,
   // поэтому новый внешний эндпоинт без упоминания там — ошибка, а не забытая документация.
+  // headersHelper — скрипт, который несёт ключ: переименовали файл — сервер молча остаётся без авторизации.
+  for (const [, script] of raw.matchAll(/"headersHelper":\s*"[^"]*\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s\\]+)/g)) {
+    if (!existsSync(join(ROOT, pluginDir, script))) fail(rel, `headersHelper ссылается на несуществующий ${script}`)
+  }
+
   const rollout = existsSync(join(ROOT, 'ROLLOUT.md')) ? readFileSync(join(ROOT, 'ROLLOUT.md'), 'utf8') : ''
   for (const [, url] of raw.matchAll(/"url":\s*"([^"]+)"/g)) {
     const host = new URL(url).hostname
@@ -181,11 +186,10 @@ function validateDeclaredCounts(pluginDir) {
     const abs = join(ROOT, pluginDir, sub)
     return existsSync(abs) ? readdirSync(abs).filter(isReal).length : 0
   }
-  // «скиллов»/«агентов» — родительный множественного: так пишут счёт.
-  // «Шаг 4 скилла» под правило не попадает и не должно.
+  // Счёт — в любой форме: «18 скиллов», «21 скилл», «22 скилла». «Шаг 4 скилла» — не счёт и под правило не попадает.
   const declared = {
-    'скиллов': count('skills', (name) => existsSync(join(ROOT, pluginDir, 'skills', name, 'SKILL.md'))),
-    'агентов': count('agents', (name) => name.endsWith('.md')),
+    'скилл': count('skills', (name) => existsSync(join(ROOT, pluginDir, 'skills', name, 'SKILL.md'))),
+    'агент': count('agents', (name) => name.endsWith('.md')),
   }
 
   // Витрины плагина: их читают вместо содержимого, поэтому числа в них должны сходиться.
@@ -200,10 +204,11 @@ function validateDeclaredCounts(pluginDir) {
     if (!existsSync(abs) || statSync(abs).isDirectory()) continue
     readFileSync(abs, 'utf8').split('\n').forEach((line, i) => {
       for (const [word, actual] of Object.entries(declared)) {
-        const match = line.match(new RegExp(`(\\d+) ${word}`))
+        const match = line.match(new RegExp(`(?<![\\d.]|[Шш]аг[а-я]*\\s|[Ээ]тап[а-я]*\\s|[Пп]ункт[а-я]*\\s)(\\d+) ${word}(ов|а)?(?![а-яё])`))
         if (match && Number(match[1]) !== actual) fail(`${rel}:${i + 1}`, `сказано «${match[0]}», в плагине ${actual}`)
       }
-      const version = line.match(/\bv(\d+\.\d+\.\d+)\b/)
+      // Версия плагина — рядом с его именем или одна на строке-шапке; `chrome-devtools-mcp v1.6.0` — не она.
+      const version = line.match(/(?:stage-pipeline[^\n]*?|^\s*|>\s*)\bv(\d+\.\d+\.\d+)\b/)
       if (version && manifest?.version && version[1] !== manifest.version) {
         fail(`${rel}:${i + 1}`, `версия ${version[0]} расходится с plugin.json (${manifest.version})`)
       }
@@ -293,7 +298,8 @@ function validateNoProjectIds(pluginDir) {
   for (const file of walkMarkdown(join(ROOT, pluginDir))) {
     readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
       const where = `${file.replace(`${ROOT}/`, '')}:${i + 1}`
-      const ticket = line.match(/\b(?!AC-)[A-Z]{2,6}-\d{3,5}\b/)
+      // Стандарты (SHA-256, ISO-8601, RFC-7231, CVE-…) по форме как тикет, но тикетом не являются.
+      const ticket = line.match(/\b(?!AC-|SHA-|ISO-|RFC-|CVE-|UTF-|WCAG-|HTTP-|ECMA-|ES-)[A-Z]{2,6}-\d{3,5}\b/)
       if (ticket) fail(where, `айди тикета «${ticket[0]}» — прецедент пишется без идентификаторов`)
       for (const name of names) {
         if (line.toLowerCase().includes(name.toLowerCase())) fail(where, `имя из .product-denylist «${name}»`)
@@ -315,7 +321,7 @@ function validateStageChecklist(pluginDir) {
     ...readdirSync(join(ROOT, pluginDir, 'agents')).map((file) => basename(file, '.md')),
     // шаги процесса: исполняет оркестратор или пользователь; metrics-* — команда bundle_size из конфига
     'kickoff', 'implement', 'user-review', 'commit', 'security-review', 'metrics-baseline', 'metrics-guard', 'floor-guard',
-    'dedup-pass', 'coverage', 'test-plan', 'confirmations', 'wrapup',
+    'coverage', 'test-plan', 'confirmations', 'wrapup',
   ])
   readFileSync(join(ROOT, rel), 'utf8').split('\n').forEach((line, i) => {
     const item = line.match(/^- \[ \] ([a-z0-9-]+)/)?.[1]

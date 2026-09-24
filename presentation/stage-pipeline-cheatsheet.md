@@ -1,19 +1,19 @@
 # Stage Pipeline · шпаргалка
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.10.0 — 18 скиллов, 12 агентов.
+Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.11.0 — 18 скиллов, 12 агентов.
 
 ---
 
 ## Установка (один раз на машину)
 
 ```bash
-claude plugin marketplace add git@github.com:maggi08/claude-pipeline.git
+claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 # перезапустить Claude Code
 claude plugin details stage-pipeline   # проверка: 18 скиллов, 12 агентов, 3 MCP
 ```
 
-Репозиторий приватный — нужен доступ (напишите Магжану ник на GitHub) и рабочий `ssh -T git@github.com` либо `gh auth login && gh auth setup-git`.
+Репозиторий публичный — доступы и клонирование не нужны.
 
 Обновление: `claude plugin update stage-pipeline` + перезапуск.
 
@@ -58,6 +58,8 @@ claude plugin details stage-pipeline   # проверка: 18 скиллов, 12
                    красная сборка, конфликт источников правды
 ```
 
+**Хуки** смотрят только на задачу текущей ветки: в обычном режиме `git add`/`commit` агента отклоняются — коммитишь ты по его тексту; автокоммит — только в `/stage-force`, через `floor-guard`.
+
 **Перед MR**
 
 ```
@@ -92,12 +94,13 @@ claude plugin details stage-pipeline   # проверка: 18 скиллов, 12
 | `/task-converge` | код на HEAD против намерения всей задачи: непокрытый критерий, тихо расширенный скоуп |
 | `/task-wrapup` | описание MR из журнала задачи → `PR.md` |
 
-## Агенты-чекеры
+## Агенты
 
-Запускает оркестратор сам; каждый работает в своём чистом контексте и пишет отчёт в `checks/`.
+Запускает оркестратор сам; каждый работает в своём чистом контексте, чекеры пишут отчёт в `checks/`.
 
 | Агент | Что делает | Когда |
 |---|---|---|
+| `stage-implement` | maker: реализация этапа или раунда фиксов fix-loop в чистом контексте (sonnet), назад — сводка | в `/stage-force` |
 | `figma-spec` | компактная спека экрана из Figma | до кода |
 | `proto-spec` | то же из HTML-прототипа + SPEC.md | до кода |
 | `docs-lookup` | доки библиотеки под версию из локфайла через Context7 — вместо памяти модели | неуверенность в API |

@@ -44,7 +44,7 @@ description: Узкий проход по зависимостям и ассет
 
 ## Отчёт
 
-В `<task_dir>/<TICKET>/checks/deps-<stage>.md` и компактно в оркестратор:
+В `<task_dir>/<TICKET>/checks/deps-audit-<stage>.md` (перед PR — `deps-audit-branch.md`) и компактно в оркестратор:
 
 ```
 | # | Пакет / ассет | Что не так | Чем заменить / куда перенести | Severity |

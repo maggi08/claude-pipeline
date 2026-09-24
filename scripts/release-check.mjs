@@ -33,8 +33,15 @@ try {
 }
 
 const errors = []
-if (baseVersion === version) {
-  errors.push(`плагин изменён (${pluginChanged.length} файлов), а версия осталась ${version} — подними version в ${MANIFEST}`)
+// Версия должна вырасти, а не просто поменяться: откат версии ломает `claude plugin update` у команды.
+const semver = (v) => v.split('.').map(Number)
+const grew = (a, b) => {
+  const [x, y] = [semver(a), semver(b)]
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]
+  return false
+}
+if (baseVersion && !grew(version, baseVersion)) {
+  errors.push(`плагин изменён (${pluginChanged.length} файлов), а версия ${version} не выше базовой ${baseVersion} — подними version в ${MANIFEST}`)
 }
 if (!new RegExp(`^## ${version.replace(/\./g, '\\.')}\\b`, 'm').test(readFileSync('CHANGELOG.md', 'utf8'))) {
   errors.push(`в CHANGELOG.md нет раздела «## ${version}»`)

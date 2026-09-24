@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
 
 const targets = process.argv.slice(2)
 if (!targets.length || targets.includes('--help')) {
@@ -26,6 +27,12 @@ if (!taskDirs.size) {
 }
 
 const CHECKERS = ['figma-compare', 'proto-compare', 'devtools-verify', 'pro-review', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'figma-spec', 'proto-spec']
+// Имена отчётов до единой схемы `<checker>-<stage>.md` — их писали сами скиллы, в живых задачах они остаются.
+const REPORT_ALIASES = [
+  [/(^|[/_-])deps-/, 'deps-audit'],
+  [/(^|[/_-])i18n-/, 'i18n-sweep'],
+  [/(^|[/_-])converge-/, 'task-converge'],
+]
 const STAGES_BUDGET_KB = 40
 const stagesSizes = []
 const perChecker = new Map()
@@ -54,19 +61,16 @@ for (const dir of taskDirs) {
     .map((path) => readFileSync(path, 'utf8'))
     .join('\n')
 
-  // Этап из STAGES.md и его полная запись из архива — один этап: берём блок со строкой metrics:, если он есть.
+  // Этап из STAGES.md и его полная запись из архива — один этап: берём самый полный блок.
   const stageBlocks = new Map()
-  for (const block of text.split(/^(?=### Этап \d+)/m).slice(1)) {
-    const number = block.match(/^### Этап (\d+)/)[1]
-    const previous = stageBlocks.get(number)
-    if (!previous || (!/metrics:/.test(previous) && /metrics:/.test(block)) || block.length > previous.length) {
-      stageBlocks.set(number, block)
-    }
+  for (const { number, block } of stageBlocksOf(text)) {
+    if (!stageBlocks.has(number) || block.length > stageBlocks.get(number).length) stageBlocks.set(number, block)
   }
   totals.stages += stageBlocks.size
+  const metricsByStage = metricsLines(text, stageBlocks)
 
-  for (const block of stageBlocks.values()) {
-    const line = block.match(/^.*metrics:.*$/m)?.[0]
+  for (const [number, block] of stageBlocks) {
+    const line = metricsByStage.get(number)
     if (line) {
       const fields = Object.fromEntries([...line.matchAll(/(\w+)=([^\s`]+)/g)].map((m) => [m[1], m[2]]))
       totals.withMetrics++
@@ -81,8 +85,10 @@ for (const dir of taskDirs) {
         stagesWithFloor++
         floorViolations += Number(fields.floor) || 0
       }
-      if (fields.diff !== undefined) {
-        const bucket = bySize.find((b) => Number(fields.diff) <= b.max)
+      // `diff=+412/-30` (размер — по добавленным, удаления не в счёт) или старое `diff=442`.
+      const added = Number(fields.diff?.match(/^\+?(\d+)/)?.[1])
+      if (Number.isFinite(added)) {
+        const bucket = bySize.find((b) => added <= b.max)
         bucket.stages++
         bucket.findings += Number(fields.findings) || 0
         bucket.iterations += iterations
@@ -107,11 +113,49 @@ for (const dir of taskDirs) {
   // Имена отчётов в живых задачах разъехались (pro-review-2.md, stage2-pro-review.md, stage-2/pro-review.md),
   // поэтому чекер ищется в имени файла где угодно, а не по точному шаблону.
   for (const file of walkMarkdown(join(dir, 'checks'))) {
-    const name = CHECKERS.find((candidate) => file.includes(candidate))
+    const name = CHECKERS.find((candidate) => file.includes(candidate)) ?? REPORT_ALIASES.find(([pattern]) => pattern.test(file))?.[1]
     if (name) checker(name).reports++
   }
 
   stagesSizes.push({ ticket: basename(dir), kb: Math.round(statSync(join(dir, 'STAGES.md')).size / 1024) })
+}
+
+/**
+ * Блоки этапов: `### Этап 3 …` / `## Этап A0 …` до следующего заголовка того же или более высокого уровня.
+ * Если в файле есть заголовки этапов со `[status: …]`, этапами считаются только они — иначе
+ * журнальные подзаголовки «### Этап 6 — ход» посчитались бы вторым этапом 6.
+ */
+function stageBlocksOf(text) {
+  const lines = text.split('\n')
+  const headings = lines.map((line, index) => ({ index, match: line.match(/^(#{2,3}) Этап ([\w.]+)/) })).filter(({ match }) => match)
+  const withStatus = headings.filter(({ index }) => /\[status:/i.test(lines[index]))
+  return (withStatus.length ? withStatus : headings).map(({ index, match }) => {
+    let end = index + 1
+    while (end < lines.length && !(lines[end].match(/^(#{1,6}) /)?.[1].length <= match[1].length)) end++
+    return { number: match[2], block: lines.slice(index, end).join('\n'), start: index, end }
+  })
+}
+
+/**
+ * Строки `metrics:` — где бы они ни стояли. /stage-check пишет строку последней в запись «Журнала», а не в блок
+ * этапа, поэтому этап берётся из поля `stage=`, иначе — из блока этапа, где строка стоит, иначе — из ближайшего
+ * «этап N» выше в той же записи журнала.
+ */
+function metricsLines(text, stageBlocks) {
+  const lines = text.split('\n')
+  const blocks = stageBlocksOf(text)
+  const byStage = new Map()
+  lines.forEach((line, index) => {
+    if (!/metrics:.*=/.test(line)) return
+    let stage = line.match(/\bstage=([\w.]+)/)?.[1]
+    stage ??= blocks.find(({ start, end }) => index > start && index < end)?.number
+    for (let back = index; !stage && back >= Math.max(0, index - 12); back--) {
+      stage = lines[back].match(/этап[а-я]*\s+([\w.]+)/i)?.[1]
+      if (back < index && /^[-*] /.test(lines[back])) break
+    }
+    if (stage && stageBlocks.has(stage)) byStage.set(stage, line)
+  })
+  return byStage
 }
 
 function walkMarkdown(root) {
@@ -141,11 +185,7 @@ function collectTaskDirs(path) {
     taskDirs.add(path)
     return
   }
-  const configured = join(path, '.claude/pipeline.config.md')
-  if (existsSync(configured)) {
-    const taskPath = readFileSync(configured, 'utf8').match(/^\s*-\s*task_path:\s*([^\s#]+)/m)?.[1]
-    if (taskPath) return collectTaskDirs(resolve(path, taskPath))
-  }
+  if (existsSync(join(path, '.claude/pipeline.config.md'))) return collectTaskDirs(taskDirFromConfig(readConfig(path), path))
   for (const name of readdirSync(path)) {
     if (name === 'node_modules' || name === '.git') continue
     const child = join(path, name)
