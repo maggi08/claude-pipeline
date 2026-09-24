@@ -1,6 +1,6 @@
 ---
 name: pipeline-doctor
-description: Проверка окружения разработчика для stage-пайплайна — MCP (figma, chrome-devtools), пути к соседним репо, dev-сервер, type-check baseline. Запускать после первого клона репо, при смене машины или когда чекеры (figma-spec/figma-compare/devtools-verify) не работают. Диагностирует, подсказывает фиксы, при нестандартной раскладке создаёт pipeline.config.local.md.
+description: Проверка окружения разработчика для stage-пайплайна — MCP (figma, chrome-devtools, context7), пути к соседним репо, dev-сервер, type-check baseline. Запускать после первого клона репо, при смене машины или когда чекеры (figma-spec/figma-compare/devtools-verify) не работают. Диагностирует, подсказывает фиксы, при нестандартной раскладке создаёт pipeline.config.local.md.
 ---
 
 # Pipeline Doctor — проверка окружения разработчика
@@ -11,9 +11,10 @@ description: Проверка окружения разработчика для
 
 ## Чек-лист (по порядку)
 
-1. **MCP-серверы.** Канонические имена задаёт `.mcp.json` плагина: `figma` и
-   `chrome-devtools`. Проверь через ToolSearch доступность
-   `mcp__figma__get_metadata` и `mcp__chrome-devtools__list_pages`.
+1. **MCP-серверы.** Канонические имена задаёт `.mcp.json` плагина: `figma`,
+   `chrome-devtools` и `context7`. Проверь через ToolSearch доступность
+   `mcp__figma__get_metadata`, `mcp__chrome-devtools__list_pages` и тулов
+   `resolve-library-id` / `query-docs` (запрос `"context7"`).
    - Figma-тулов нет → (а) project-серверы не одобрены — подсказать `/mcp` →
      approve; (б) Figma desktop не запущена или выключен MCP-сервер
      (Figma → Preferences → **Enable Dev Mode MCP Server**). Проверка порта:
@@ -21,6 +22,15 @@ description: Проверка окружения разработчика для
      любой HTTP-код = сервер жив, connection refused = выключен.
    - chrome-devtools нет → нужен Node ≥ 18 (`npx -v`); сервер поднимается сам
      через npx при первом вызове, Chrome должен быть установлен.
+   - context7 нет → нужен выход в интернет до `mcp.context7.com` и Node
+     (ключ подставляет `scripts/context7-headers.mjs`). Ключ необязателен:
+     без `CONTEXT7_API_KEY` сервер работает анонимно на общих лимитах; упёрлись
+     в rate limit — ключ из https://context7.com/dashboard в `~/.zshrc`
+     (`export CONTEXT7_API_KEY=...`) и перезапуск Claude Code. В `.mcp.json`
+     и в репо ключ не класть.
+   - Отдельно установлен плагин `context7@claude-plugins-official` или
+     user-scope сервер context7 — это второй экземпляр того же сервера:
+     тулы двоятся. Можно оставить, но проще снять лишний.
    - Если у разработчика есть user-scope сервер на тот же эндпоинт, но под
      ДРУГИМ именем — это дубль: скиллы и пермишены завязаны на канонические
      имена, дубль стоит удалить (`claude mcp remove <имя> -s user`).

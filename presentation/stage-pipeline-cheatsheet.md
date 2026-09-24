@@ -1,6 +1,6 @@
 # Stage Pipeline · шпаргалка
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.7.1 — 18 скиллов, 10 агентов.
+Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.8.0 — 18 скиллов, 11 агентов.
 
 ---
 
@@ -10,7 +10,7 @@
 claude plugin marketplace add git@github.com:maggi08/claude-pipeline.git
 claude plugin install stage-pipeline@magzhan
 # перезапустить Claude Code
-claude plugin details stage-pipeline   # проверка: 18 скиллов, 10 агентов, 2 MCP
+claude plugin details stage-pipeline   # проверка: 18 скиллов, 11 агентов, 3 MCP
 ```
 
 Репозиторий приватный — нужен доступ (напишите Магжану ник на GitHub) и рабочий `ssh -T git@github.com` либо `gh auth login && gh auth setup-git`.
@@ -100,6 +100,7 @@ claude plugin details stage-pipeline   # проверка: 18 скиллов, 10
 |---|---|---|
 | `figma-spec` | компактная спека экрана из Figma | до кода |
 | `proto-spec` | то же из HTML-прототипа + SPEC.md | до кода |
+| `docs-lookup` | доки библиотеки под версию из локфайла через Context7 — вместо памяти модели | неуверенность в API |
 | `figma-compare` | pixel-perfect сверка: цвета, отступы, радиусы, тени, типографика | после кода |
 | `proto-compare` | то же против прототипа + поведение по SPEC.md | после кода |
 | `devtools-verify` | консоль и hydration, light/dark, ширины, живое состояние | после кода |

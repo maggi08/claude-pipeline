@@ -15,7 +15,7 @@ claude plugin install stage-pipeline@magzhan
 
 Репозиторий публичный — доступы и клонирование не нужны. Вариант «маркетплейс из локального клона» (для машины, где плагин правится) — в [README маркетплейса](../../README.md).
 
-Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma) и `chrome-devtools` — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**.
+Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma), `chrome-devtools` и `context7` (актуальная документация библиотек) — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**. Context7 работает без ключа на общих анонимных лимитах; свой ключ — `export CONTEXT7_API_KEY=...` в профиле шелла (в `.mcp.json` и репо его не кладут), подставляет его `scripts/context7-headers.mjs`.
 
 ### Разрешения
 
@@ -93,6 +93,7 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 | `figma-spec` (агент) | компактная спека из Figma (в чистом контексте) |
 | `figma-compare` (агент) | сверка кода с Figma |
 | `proto-spec` (агент) | как figma-spec, но из репо HTML-прототипов («наша Figma» в проектах без Figma) |
+| `docs-lookup` (агент) | документация библиотеки под версию из локфайла через Context7 — при неуверенности в API на реализации, в fix-loop и `/root-cause` |
 | `proto-compare` (агент) | как figma-compare, но против HTML-прототипа + SPEC.md |
 | `devtools-verify` (агент) | рантайм-проверка через Chrome DevTools |
 | `pro-review` (агент) | senior код-ревью дифа этапа |
