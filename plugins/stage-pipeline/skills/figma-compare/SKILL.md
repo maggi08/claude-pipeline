@@ -90,7 +90,7 @@ description: Pixel-perfect сверка реализованного кода с
 
 | # | AC | Элемент | Свойство | Figma | Код | Severity | Где |
 |---|----|---------|----------|-------|-----|----------|-----|
-| 1 | AC-2.4 | Кнопка «Купить» | цвет фона | token bg-accent-persea-rest | bg-[#5B4DBE] (hex) | critical | page-components/x/Btn.vue:12 |
+| 1 | AC-2.4 | Кнопка «Купить» | цвет фона | token bg-accent-primary | bg-[#5B4DBE] (hex) | critical | src/components/BuyButton.tsx:12 |
 
 ## Критерии этапа
 (по строке на каждый переданный `AC-*`: `AC-2.1` — PASS | FAIL + чем именно не сошлось)

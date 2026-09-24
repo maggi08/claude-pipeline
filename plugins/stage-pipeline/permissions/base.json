@@ -169,6 +169,7 @@
     "Bash(git reset --hard *)",
     "Bash(git clean *)",
     "Bash(gh *)",
+    "Bash(glab *)",
     "Bash(pkill *)",
     "Read(**/.env)",
     "Read(**/.env.*)"

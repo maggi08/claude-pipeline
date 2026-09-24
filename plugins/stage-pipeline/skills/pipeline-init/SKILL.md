@@ -61,7 +61,7 @@ description: Инициализировать stage-пайплайн в ново
 - slug: <repo-basename>
 - stack: <напр. Nuxt 4 / Vue 3 / Pinia / TS>
 - package_manager: <yarn 1.x | npm | pnpm>
-- main_branch: <dev | main | master>   # PR-таргет; merge-base для дифа
+- main_branch: <dev | main | master>   # ветка, В КОТОРУЮ открывается PR (если PR идут в dev — dev, не main); merge-base для whole-branch pro-review, dead-code, wrapup
 
 ## Task state
 - task_path: .claude/tasks/     # в репо: STAGES.md / specs/ / checks/ / DESIGN-QUESTIONS.md по тикетам
@@ -73,6 +73,7 @@ description: Инициализировать stage-пайплайн в ново
 - lint: <yarn lint>
 - type_check: <прямая per-workspace команда, напр. cd apps/x && ../../node_modules/.bin/tsc -p tsconfig.json --noEmit>  # baseline: <N | не замерен>; общий монорепо-скрипт может молча пропускать workspace'ы (см. процедуру, п.2)
 - test: <yarn test>
+- bundle_size: <команда, печатающая размер бандла, напр. `yarn build && du -sk dist` или `size-limit` | —>  # есть → stage-plan заводит metrics-baseline/metrics-guard; — → пунктов нет
 
 ## Static analysis (dead-code / deps-audit)
 <!-- Даёт КАНДИДАТОВ по всему репо; чекер пересекает вывод с дифом и подтверждает сам. -->

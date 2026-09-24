@@ -1,0 +1,21 @@
+{
+  "agent": "dead-code",
+  "why": "замена компонента оставила сироту-компонент и сироту-ключ локали",
+  "prompt": "Тикет EVAL-1, этап 1. База сравнения: незакоммиченные изменения (git diff HEAD + git status). Этап заменил баннер на главной.",
+  "expect": [
+    {
+      "pattern": "OldBanner",
+      "why": "осиротевший компонент OldBanner.tsx"
+    },
+    {
+      "pattern": "banner\\.old",
+      "why": "осиротевший ключ локали banner.old"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "PromoBanner[^\\n]{0,40}(осиротел|orphan|мёртв)",
+      "why": "используемый PromoBanner назван мёртвым"
+    }
+  ]
+}
