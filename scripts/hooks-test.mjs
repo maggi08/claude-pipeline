@@ -13,7 +13,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '../plugins/stage-pipeline/scripts')
-const { gitInvocations } = await import(join(PLUGIN, 'hooks/git-command.mjs'))
+const { commitScope, gitInvocations } = await import(join(PLUGIN, 'hooks/git-command.mjs'))
 const { taskDirFromConfig, taskBranches, isCurrentTask, forceActive } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
 const { planArchive } = await import(join(PLUGIN, 'archive-stages.mjs'))
 
@@ -48,6 +48,26 @@ for (const [command, want] of COMMANDS) {
 }
 check('git -C "a b" — репо из опции', gitInvocations('git -C "a b" commit -m x', CWD)[0]?.dir === '/repo/a b')
 check('cd ../kit && git commit — репо после cd', gitInvocations('cd ../kit && git commit -m x', CWD)[0]?.dir === resolve('/repo', '../kit'))
+
+// ── что войдёт в коммит ──────────────────────────────────────────────────────
+const SCOPES = [
+  ['git add src/a.ts src/b.ts && git commit -m "x"', { all: false, tracked: false, specs: ['src/a.ts', 'src/b.ts'] }],
+  ['git add -A && git commit -m x', { all: true, tracked: false, specs: [] }],
+  ['git add -A src && git commit -m x', { all: false, tracked: false, specs: ['src'] }],
+  ['git add -u', { all: false, tracked: true, specs: [] }],
+  ['git commit -am "fix: src/a.ts"', { all: false, tracked: true, specs: [] }],
+  ['git commit -m "x" -- src/a.ts', { all: false, tracked: false, specs: ['src/a.ts'] }],
+  ['git commit --author "A <a@b.c>" -F msg.txt', { all: false, tracked: false, specs: [] }],
+  ['git commit --message=x src/a.ts', { all: false, tracked: false, specs: ['src/a.ts'] }],
+  ['git add . 2>/dev/null && git commit -m x > /dev/null', { all: false, tracked: false, specs: ['.'] }],
+  ['git add --pathspec-from-file=list.txt', { all: true, tracked: false, specs: [] }],
+]
+for (const [command, want] of SCOPES) {
+  const scope = commitScope(gitInvocations(command, CWD))
+  const got = { ...scope, specs: scope.specs.map(({ spec }) => spec) }
+  check(`охват ${JSON.stringify(command).slice(0, 60)}`, same(got, want), `получили ${JSON.stringify(got)}`)
+}
+check('охват: путь — с каталогом вызова', commitScope(gitInvocations('cd src && git add a.ts', CWD)).specs[0]?.dir === '/repo/src')
 
 // ── конфиг и шапка STAGES.md ─────────────────────────────────────────────────
 const TASK_PATHS = [
@@ -131,15 +151,35 @@ check('ветка без задачи: git add проходит, хотя T-1 в
 
 git(repo, 'checkout', '-qb', 'T-1/feat/a')
 check('ветка T-1, обычный режим: git add отклонён', hook('git-guard.mjs', repo, 'git add -A') === 'deny')
+// /stage-check закрывает этап в STAGES.md раньше, чем готовит коммит: статус этапа хук не смотрит.
+for (const status of ['done', 'todo']) {
+  write(repo, { '.claude/tasks/T-1/STAGES.md': stages('T-1', 'T-1/feat/a', { status }) })
+  check(`ветка T-1, этап ${status}: git commit агента всё равно отклонён`, hook('git-guard.mjs', repo, 'git commit -m x') === 'deny')
+}
+write(repo, { '.claude/tasks/T-1/STAGES.md': stages('T-1', 'T-1/feat/a') })
 check('ветка T-1: grep "git add" не трогается', hook('git-guard.mjs', repo, 'grep -rn "git add" .') === 'allow')
 check('session-start: задача текущей ветки первой', /^- T-1 \(ветка T-1\/feat\/a\)/m.test(hook('session-start.mjs', repo)))
 
 git(repo, 'checkout', '-qb', 'T-2/feat/b')
 check('ветка T-2, force: git add проходит', hook('git-guard.mjs', repo, 'git add -A') === 'allow')
 check('ветка T-2, force: чистый коммит проходит', hook('git-guard.mjs', repo, 'git commit -m x') === 'allow')
-// floor-ok: фикстура — хук обязан отклонить коммит с этим приведением
-write(repo, { 'src/a.ts': 'export const a = 1 as any\n' })
+// floor-ok: фикстура — обход типов, который хук обязан отклонить на force-коммите
+const ESCAPE = 'export const a = 1 as any\n'
+// floor-ok: фикстура — сохранённая страница с минифицированным JS в корне репо, в коммит не идёт
+const JUNK = { 'Saved PR_files/02v-48e5.js': 'try{x()}catch{}\n' }
+write(repo, { 'src/a.ts': ESCAPE })
 check('ветка T-2, force: коммит с обходом типов отклонён floor-guard', hook('git-guard.mjs', repo, 'git commit -am x') === 'deny')
+check('ветка T-2, force: cd в подкаталог и git add — путь от него', hook('git-guard.mjs', repo, 'cd src && git add a.ts && git commit -m x') === 'deny')
+write(repo, { '.claude/tasks/T-2/STAGES.md': stages('T-2', 'T-2/feat/b', { status: 'done', force: '## Force-прогон 2026-09-24\nРежим: автономный.\n\n' }) })
+check('ветка T-2, force, этап уже done: floor-guard всё равно на коммите', hook('git-guard.mjs', repo, 'git commit -am x') === 'deny')
+write(repo, { 'src/a.ts': 'export const a = 2\n', ...JUNK })
+check('ветка T-2, force: мусор вне коммита не отклоняет git add путей', hook('git-guard.mjs', repo, 'git add src/a.ts && git commit -m x') === 'allow')
+check('ветка T-2, force: мусор вне коммита не отклоняет commit -a', hook('git-guard.mjs', repo, 'git commit -am x') === 'allow')
+check('ветка T-2, force: git add -A берёт мусор в коммит — отклонён', hook('git-guard.mjs', repo, 'git add -A && git commit -m x') === 'deny')
+git(repo, 'add', 'Saved PR_files/02v-48e5.js')
+check('ветка T-2, force: мусор уже в индексе — отклонён', hook('git-guard.mjs', repo, 'git commit -m x') === 'deny')
+git(repo, 'reset', '-q')
+rmSync(join(repo, 'Saved PR_files'), { recursive: true, force: true })
 git(repo, 'checkout', '-q', '--', 'src/a.ts')
 write(repo, { '.claude/tasks/T-2/STAGES.md': stages('T-2', 'T-2/feat/b', { force: '## Force-прогон 2026-09-24 — завершён 2026-09-25\n\n' }) })
 check('ветка T-2, force закрыт: снова обычный режим', hook('git-guard.mjs', repo, 'git add -A') === 'deny')

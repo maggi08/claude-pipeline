@@ -43,7 +43,6 @@ export function readPipelineState(cwd) {
         // блокировать ветку навсегда, а вернувшаяся в работу задача обновит STAGES.md первым же kickoff/check.
         current: Date.now() - mtimeMs < STALE_DAYS * DAY && isCurrentTask(ticket, branches, branch),
         // Живые форматы: `[status: in-progress]`, `[status: in-progress — ждёт user-review]`, `[status: in progress; …]`.
-        inProgress: /\[status:\s*in[-\s]progress\b/i.test(stages),
         open: /\[status:\s*(todo|in[-\s]progress)\b/i.test(stages),
         forceActive: forceActive(stages),
       }

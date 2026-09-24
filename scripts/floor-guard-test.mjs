@@ -228,6 +228,48 @@ const CASES = [
     expect: [],
   },
   {
+    name: 'без охвата: мусор рядом с кодом виден, но помечен «не в git»',
+    base: { 'src/a.ts': 'export const a = 1\n' },
+    change: { 'src/a.ts': 'export const a = 2\n', 'Saved PR_files/02v-48e5.js': 'try{x()}catch{}\n' },
+    untracked: true,
+    expect: ['unfinished-work'],
+    untrackedMarked: 1,
+  },
+  {
+    name: 'охват коммита: неотслеживаемый мусор вне путей не проверяется',
+    base: { 'src/a.ts': 'export const a = 1\n' },
+    change: { 'src/a.ts': 'export const a = 2\n', 'Saved PR_files/02v-48e5.js': 'try{x()}catch{}\n// TODO later\n' },
+    untracked: true,
+    args: ['--pathspec-from-stdin'],
+    stdin: ':(literal)src/a.ts',
+    expect: [],
+  },
+  {
+    name: 'охват коммита: новый файл из `git add` проверяется',
+    base: { 'src/a.ts': 'export const a = 1\n' },
+    change: { 'src/new.ts': 'export const b = 1 as any\n' },
+    untracked: true,
+    args: ['--pathspec-from-stdin'],
+    stdin: 'src',
+    expect: ['type-escape'],
+  },
+  {
+    name: 'охват коммита: пустой — коммитить нечего, чисто',
+    base: { 'src/a.ts': 'export const a = 1\n' },
+    change: { 'src/a.ts': 'export const a = 1 as any\n' },
+    args: ['--pathspec-from-stdin'],
+    stdin: '',
+    expect: [],
+  },
+  {
+    name: 'охват коммита: имя с квадратными скобками — буквально',
+    base: { 'src/a.ts': 'export const a = 1\n' },
+    change: { '[T-1] page.ts': 'export const p = 1 as any\n' },
+    args: ['--pathspec-from-stdin'],
+    stdin: ':(literal)[T-1] page.ts',
+    expect: ['type-escape'],
+  },
+  {
     name: '--base без значения — код 2',
     base: { 'src/a.ts': 'export const a = 1\n' },
     change: {},
@@ -269,7 +311,7 @@ for (const spec of CASES) {
   if (!spec.untracked) git(repo, 'add', '-A')
   spec.after?.(repo)
 
-  const run = spawnSync('node', [GUARD, '--json', ...(spec.args ?? [])], { cwd: repo, encoding: 'utf8' })
+  const run = spawnSync('node', [GUARD, '--json', ...(spec.args ?? [])], { cwd: repo, encoding: 'utf8', input: spec.stdin ?? '' })
   const problems = []
   const wantExit = spec.exitCode ?? (spec.expect.length ? 1 : 0)
   if (run.status !== wantExit) problems.push(`код выхода ${run.status}, ждали ${wantExit}`)
@@ -279,6 +321,8 @@ for (const spec of CASES) {
     const want = [...spec.expect].sort()
     if (got.join() !== want.join()) problems.push(`правила ${JSON.stringify(got)}, ждали ${JSON.stringify(want)}`)
     if (spec.accepted !== undefined && out.accepted.length !== spec.accepted) problems.push(`исключений ${out.accepted.length}, ждали ${spec.accepted}`)
+    const marked = out.violations.filter((v) => v.untracked).length
+    if (spec.untrackedMarked !== undefined && marked !== spec.untrackedMarked) problems.push(`помечено «не в git» ${marked}, ждали ${spec.untrackedMarked}`)
     if (spec.forbidOutput?.test(run.stdout)) problems.push('в выводе значение секрета')
   }
   rmSync(repo, { recursive: true, force: true })

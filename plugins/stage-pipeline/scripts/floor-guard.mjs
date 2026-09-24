@@ -6,7 +6,10 @@
  *   node floor-guard.mjs                        # диф этапа: рабочее дерево + неотслеживаемые против HEAD
  *   node floor-guard.mjs --base origin/dev      # вся ветка: от merge-base с базой до рабочего дерева
  *   node floor-guard.mjs --json                 # то же машинно
+ *   node floor-guard.mjs --pathspec-from-stdin  # только эти пути (pathspec'и git от корня, через NUL; пусто — нечего проверять)
  *
+ * Без `--pathspec-from-stdin` смотрятся и все неотслеживаемые файлы: нарушения в них помечены `untracked`,
+ * потому что в дереве разработчика рядом с кодом лежит и то, что никогда не будет закоммичено.
  * Код выхода: 0 — чисто, 1 — есть нарушения, 2 — проверить не удалось (не git-репо, нет базы).
  * 2 никогда не читается как 0: «не смог посмотреть» ≠ «посмотрел, чисто».
  *
@@ -31,6 +34,8 @@ const baseArg = args.includes('--base') ? args[args.indexOf('--base') + 1] : nul
 // Упавший скрипт — не «нашёл нарушения»: код 1 хук читает как отказ в коммите, поэтому любая ошибка — код 2.
 process.on('uncaughtException', (error) => bail(`внутренняя ошибка: ${error.code ?? error.message}`))
 if (args.includes('--base') && (!baseArg || baseArg.startsWith('--'))) bail('--base ждёт ветку или коммит')
+// Охват от хука — то, что войдёт в коммит; `null` — всё дерево вместе с неотслеживаемыми.
+const pathspecs = args.includes('--pathspec-from-stdin') ? readFileSync(0, 'utf8').split('\0').filter(Boolean) : null
 
 const git = (...cmd) => execFileSync('git', ['-c', 'core.quotePath=false', ...cmd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 512 * 1024 * 1024 })
 const tryGit = (...cmd) => {
@@ -135,7 +140,9 @@ const fileEntry = (path) => {
 // Префиксы и переименования — явно: `diff.mnemonicPrefix`/`diff.noprefix`/`diff.renames` из конфига разработчика
 // меняют заголовки, и путь перестаёт совпадать с файлом.
 const DIFF = ['--no-color', '--no-ext-diff', '-M', '--src-prefix=a/', '--dst-prefix=b/']
-parseUnified(git('diff', '--unified=0', ...DIFF, base, '--'))
+// Пустой охват — ни одного файла, а не «без ограничения»: `git diff --` без путей смотрит всё.
+const scoped = (...cmd) => (pathspecs?.length === 0 ? '' : git(...cmd, '--', ...(pathspecs ?? [])))
+parseUnified(scoped('diff', '--unified=0', ...DIFF, base))
 
 // Обычный файл, а не каталог (вложенный репо, указатель субмодуля), не симлинк и не бинарь.
 const regularFile = (path) => {
@@ -147,7 +154,7 @@ const regularFile = (path) => {
   }
 }
 
-const untracked = git('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)
+const untracked = new Set(scoped('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean))
 for (const path of untracked) {
   if (SKIP_PATH.test(path) || !regularFile(path)) continue
   const text = readFileSync(path, 'utf8')
@@ -156,7 +163,7 @@ for (const path of untracked) {
   text.split('\n').forEach((line, i) => entry.added.push({ line: i + 1, text: line }))
 }
 
-const deleted = git('diff', '--name-only', '--diff-filter=D', '-z', ...DIFF, base, '--').split('\0').filter(Boolean)
+const deleted = scoped('diff', '--name-only', '--diff-filter=D', '-z', ...DIFF, base).split('\0').filter(Boolean)
 const repoHas = (...paths) => paths.some((path) => existsSync(path))
 const repoFileHas = (path, pattern) => regularFile(path) && pattern.test(readFileSync(path, 'utf8'))
 const pythonLinted =
@@ -233,12 +240,14 @@ const record = (rule, path, line, text, lines, index, { redact = false, justifia
   const shown = redact ? '(значение скрыто)' : text.trim().slice(0, 120)
   // Секрет не обосновывается ничем — ни строкой, ни файлом.
   const why = rule === 'secret' ? null : currentFileOk ?? (justifiable && lines ? justification(lines, index, rule) : null)
-  ;(why ? accepted : violations).push({ rule, file: path, line, text: shown, ...(why ? { justification: why } : {}) })
+  ;(why ? accepted : violations).push({ rule, file: path, line, text: shown, ...(why ? { justification: why } : {}), ...notInGit(path) })
 }
 
+// Неотслеживаемый файл мог не создаваться этапом — решает тот, кто знает список файлов этапа.
+const notInGit = (path) => (untracked.has(path) ? { untracked: true } : {})
 let currentFileOk = null
 const push = (rule, file, line, text) =>
-  (currentFileOk ? accepted : violations).push({ rule, file, line, text, ...(currentFileOk ? { justification: currentFileOk } : {}) })
+  (currentFileOk ? accepted : violations).push({ rule, file, line, text, ...(currentFileOk ? { justification: currentFileOk } : {}), ...notInGit(file) })
 for (const [path, { added, removed }] of files) {
   if (SKIP_PATH.test(path)) continue
   currentFileOk = fileJustification(path)
@@ -309,7 +318,7 @@ if (lostAssertions > 0) {
 }
 
 // ── вывод ────────────────────────────────────────────────────────────────────
-const baseLabel = baseArg ? `${baseArg} (merge-base ${base.slice(0, 8)})` : 'HEAD'
+const baseLabel = `${baseArg ? `${baseArg} (merge-base ${base.slice(0, 8)})` : 'HEAD'}${pathspecs ? ` · только пути коммита (${pathspecs.length})` : ''}`
 const size = { files: [...files.keys()].filter((path) => !SKIP_PATH.test(path)).length, added: addedTotal, removed: removedTotal }
 
 if (json) {
@@ -319,7 +328,7 @@ if (json) {
   if (!violations.length) console.log('✔ нарушений нет')
   else {
     console.log(`✘ нарушений: ${violations.length}`)
-    for (const v of violations) console.log(`  - [${v.rule}] ${v.file}${v.line ? `:${v.line}` : ''} — ${RULES[v.rule]}: ${v.text}`)
+    for (const v of violations) console.log(`  - [${v.rule}] ${v.file}${v.line ? `:${v.line}` : ''}${v.untracked ? ' (не в git)' : ''} — ${RULES[v.rule]}: ${v.text}`)
   }
   if (accepted.length) {
     console.log(`обоснованные исключения: ${accepted.length} (в журнал этапа и «⚠ Ожидают подтверждения»)`)
