@@ -6,15 +6,15 @@
     "context7"
   ],
   "requireReport": false,
-  "maxSummaryLines": 40,
+  "maxSummaryLines": 50,
   "expect": [
     {
       "pattern": "react-router-dom@6\\.22\\.3",
       "why": "версия взята из локфайла (6.22.3), а не из диапазона манифеста"
     },
     {
-      "pattern": "/remix-run/react-router",
-      "why": "ответ опирается на Context7 ID, а не на память"
+      "pattern": "@6\\.22\\.3\\S*\\s*→\\s*`?/[\\w.-]+/[\\w./-]+",
+      "why": "первая строка: версия → Context7 ID (любой: /remix-run/react-router, /websites/reactrouter)"
     },
     {
       "pattern": "Navigate",
@@ -25,7 +25,7 @@
       "why": "useNavigate вместо useHistory"
     },
     {
-      "pattern": "(Redirect|useHistory|Switch)[\\s\\S]{0,300}(нет|удал|отсутств|removed|не существ|v5)",
+      "pattern": "(Redirect|useHistory|Switch)[\\s\\S]{0,300}(нет|удал|отсутств|removed|не существ|не экспорт|упад|не работ|не заработ|сломан|ломает|несовмест|broken|v5)|(нет|удал|отсутств|removed|не существ|не экспорт|упад|не работ|не заработ|сломан|ломает|несовмест|broken|v5)[\\s\\S]{0,300}(Redirect|useHistory|Switch)",
       "why": "противоречие с src/App.tsx названо явно"
     }
   ],
