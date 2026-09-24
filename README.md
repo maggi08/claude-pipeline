@@ -36,7 +36,7 @@ claude plugin install stage-pipeline@magzhan
 
 Раскатка на команду — каталог в GitLab, который ссылается на этот репозиторий: [ROLLOUT.md](ROLLOUT.md).
 
-Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 18 скиллов, 12 агентов, 3 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
+Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 18 скиллов, 12 агентов, 2 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
 
 ### Режим разработки — маркетплейс из локального клона
 
@@ -87,7 +87,7 @@ claude plugin validate ./plugins/stage-pipeline --strict
 node scripts/eval.mjs                             # если менялись агенты: реальные прогоны, $0.1–0.3 за кейс
 ```
 
-Сравнение моделей на тех же кейсах — `node scripts/eval.mjs --runs 3 --model i18n-sweep=haiku i18n-hardcode`: копия плагина с переписанным `model:` у агента, в сводке — доля прохождений, реальная модель из `modelUsage` и стоимость прогона. Кейсы с Context7 пропускаются без `CONTEXT7_API_KEY`.
+Сравнение моделей на тех же кейсах — `node scripts/eval.mjs --runs 3 --model i18n-sweep=haiku i18n-hardcode`: копия плагина с переписанным `model:` у агента, в сводке — доля прохождений, реальная модель из `modelUsage` и стоимость прогона.
 
 GitHub Actions гоняет `validate.mjs` на push и PR, `release-check.mjs` — на PR в `main`, а на push в `main` ставит тег `stage-pipeline--v<version>`, если его нет (`.github/workflows/validate.yml`). `claude plugin validate` и `eval.mjs` в CI не идут: первому нужен CLI, второму — вызовы модели.
 

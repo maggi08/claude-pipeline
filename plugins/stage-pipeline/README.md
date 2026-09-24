@@ -15,7 +15,7 @@ claude plugin install stage-pipeline@magzhan
 
 Репозиторий публичный — доступы и клонирование не нужны. Вариант «маркетплейс из локального клона» (для машины, где плагин правится) — в [README маркетплейса](../../README.md).
 
-Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma), `chrome-devtools` и `context7` (актуальная документация библиотек) — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**. Context7 **требует авторизации**: бесплатный ключ `ctx7sk-…` с context7.com/dashboard — `export CONTEXT7_API_KEY=...` в профиле шелла (в `.mcp.json` и репо его не кладут, подставляет его `scripts/context7-headers.mjs`), либо OAuth-вход через `/mcp` → `plugin:stage-pipeline:context7` → Authenticate. Без этого сервер отвечает 401, Claude Code помечает его needs-auth, и чекеры работают в режиме «не сверено с доками». Проверка — `/pipeline-doctor`.
+Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma) и `chrome-devtools` — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**. API сторонних библиотек сверяется не внешним сервисом, а по установленному пакету (типы и CHANGELOG в `node_modules` под версию из локфайла) — ключи и авторизация не нужны. Проверка окружения — `/pipeline-doctor`.
 
 ### Разрешения
 
@@ -111,7 +111,7 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 | `figma-spec` (агент) | компактная спека из Figma (в чистом контексте) |
 | `figma-compare` (агент) | сверка кода с Figma |
 | `proto-spec` (агент) | как figma-spec, но из репо HTML-прототипов («наша Figma» в проектах без Figma) |
-| `docs-lookup` (агент) | документация библиотеки под версию из локфайла через Context7 — при неуверенности в API на реализации, в fix-loop и `/root-cause` |
+| `docs-lookup` (агент) | справка по API библиотеки под версию из локфайла — типы, CHANGELOG и исходник установленного пакета, при нехватке — официальные доки этой версии; при неуверенности в API на реализации, в fix-loop и `/root-cause` |
 | `proto-compare` (агент) | как figma-compare, но против HTML-прототипа + SPEC.md |
 | `devtools-verify` (агент) | рантайм-проверка через Chrome DevTools |
 | `pro-review` (агент) | senior код-ревью в двух режимах: диф этапа (stage) или вся ветка перед PR (whole-branch) |
@@ -134,7 +134,7 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 
 Исключение — whole-branch pro-review и свежий прогон чекера в fix-loop: они идут на `review_model` из конфига (по умолчанию `opus`) параметром `model` — модели, отличной от той, что писала код (`/stage-check`, Шаг 3.3).
 
-Алиас `sonnet` в Claude Code 2.1.193 разворачивается в Sonnet 4.6, а не в Sonnet 5 — это видно в `modelUsage` eval-прогонов. Явный id (`claude-sonnet-5`) во frontmatter работает; переход на него — отдельный замер на трудных кейсах. Перед сменой модели агента — `node scripts/eval.mjs --runs 3 --model <agent>=<model> <кейсы агента>`.
+Алиас `sonnet` разворачивается по-разному в зависимости от версии Claude Code: в 2.1.193 — в Sonnet 4.6, в 2.1.276 — уже в Sonnet 5. Реальную модель показывает `modelUsage` в сводке eval-прогона. Нужна конкретная модель — ставь во frontmatter явный id (`claude-sonnet-5`). Перед сменой модели агента — `node scripts/eval.mjs --runs 3 --model <agent>=<model> <кейсы агента>`.
 
 **Три узких чекера вместо одного большого.** `pro-review` отвечает за корректность, безопасность и конвенции. `dead-code`, `i18n-sweep` и `deps-audit` — каждый за свой класс мусора, со своей процедурой подтверждения, и запускаются **по признаку**: что-то удалялось → dead-code; появился пользовательский текст → i18n-sweep; тронут манифест → deps-audit. Признака нет — `[skip: нет признака]`, лишний субагент не тратится.
 

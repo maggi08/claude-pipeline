@@ -1,6 +1,6 @@
 ---
 name: pipeline-doctor
-description: Проверка окружения разработчика для stage-пайплайна — MCP (figma, chrome-devtools, context7), пути к соседним репо, dev-сервер, type-check baseline. Запускать после первого клона репо, при смене машины или когда чекеры (figma-spec/figma-compare/devtools-verify) не работают. Диагностирует, подсказывает фиксы, при нестандартной раскладке создаёт pipeline.config.local.md.
+description: Проверка окружения разработчика для stage-пайплайна — MCP (figma, chrome-devtools), пути к соседним репо, dev-сервер, type-check baseline. Запускать после первого клона репо, при смене машины или когда чекеры (figma-spec/figma-compare/devtools-verify) не работают. Диагностирует, подсказывает фиксы, при нестандартной раскладке создаёт pipeline.config.local.md.
 ---
 
 # Pipeline Doctor — проверка окружения разработчика
@@ -11,10 +11,9 @@ description: Проверка окружения разработчика для
 
 ## Чек-лист (по порядку)
 
-1. **MCP-серверы.** Канонические имена задаёт `.mcp.json` плагина: `figma`,
-   `chrome-devtools` и `context7`. Проверь через ToolSearch доступность
-   `mcp__figma__get_metadata`, `mcp__chrome-devtools__list_pages` и тулов
-   `resolve-library-id` / `query-docs` (запрос `"context7"`).
+1. **MCP-серверы.** Канонические имена задаёт `.mcp.json` плагина: `figma`
+   и `chrome-devtools`. Проверь через ToolSearch доступность
+   `mcp__figma__get_metadata` и `mcp__chrome-devtools__list_pages`.
    - Figma-тулов нет → (а) project-серверы не одобрены — подсказать `/mcp` →
      approve; (б) Figma desktop не запущена или выключен MCP-сервер
      (Figma → Preferences → **Enable Dev Mode MCP Server**). Проверка порта:
@@ -22,24 +21,6 @@ description: Проверка окружения разработчика для
      любой HTTP-код = сервер жив, connection refused = выключен.
    - chrome-devtools нет → нужен Node ≥ 18 (`npx -v`); сервер поднимается сам
      через npx при первом вызове, Chrome должен быть установлен.
-   - context7 нет → **нужна авторизация**: хостед Context7 без неё отвечает
-     `401 Authentication required`, и Claude Code кэширует сервер как
-     needs-auth — дальше он молча не подключается. Два пути:
-     (а) бесплатный ключ `ctx7sk-…` с https://context7.com/dashboard в
-     `~/.zshrc` (`export CONTEXT7_API_KEY=...`) — его подставляет
-     `scripts/context7-headers.mjs`; (б) OAuth-вход: `/mcp` →
-     `plugin:stage-pipeline:context7` → Authenticate. В `.mcp.json` и в репо
-     ключ не класть. После ключа сервер может остаться в кэше needs-auth:
-     проверь `grep context7 ~/.claude/mcp-needs-auth-cache.json` — запись есть,
-     значит, её нужно убрать из этого файла (с согласия пользователя: файл его)
-     и перезапустить Claude Code.
-     Проверка ключа без Claude Code: `curl -s -X POST https://mcp.context7.com/mcp
-     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
-     -H "Authorization: Bearer $CONTEXT7_API_KEY" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
-     — HTTP 200 и список тулов = ключ принят сервером.
-   - Отдельно установлен плагин `context7@claude-plugins-official` или
-     user-scope сервер context7 — это второй экземпляр того же сервера:
-     тулы двоятся. Можно оставить, но проще снять лишний.
    - Если у разработчика есть user-scope сервер на тот же эндпоинт, но под
      ДРУГИМ именем — это дубль: скиллы и пермишены завязаны на канонические
      имена, дубль стоит удалить (`claude mcp remove <имя> -s user`).

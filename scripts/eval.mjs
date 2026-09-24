@@ -24,8 +24,8 @@
  *   maxSummaryLines   предел длины финального сообщения — оно целиком идёт в главный контекст
  *   requireReport     false — агент не пишет отчёт в checks/ (maker или справочный агент)
  *   forbidSummary     регэкспы, которых не должно быть в финальном сообщении
- *   mcp               ["context7"] — MCP-серверы плагина, которые нужны кейсу (остальные отключены).
- *                     Context7 без CONTEXT7_API_KEY отвечает 401 — такой кейс пропускается, а не падает.
+ *   mcp               ["chrome-devtools"] — MCP-серверы плагина, которые нужны кейсу (остальные отключены).
+ *                     Сервера нет в .mcp.json плагина — кейс пропускается, а не падает.
  *
  * Кейс маршрутизации (`"kind": "routing"`, без `agent`) проверяет не работу скилла, а то, вызовет ли
  * его модель по обычной фразе: промпт уходит в главную сессию с плагином, из потока событий берутся
@@ -127,8 +127,9 @@ function mcpConfig(servers, repo) {
 }
 
 function skipReason(spec) {
-  if ((spec.mcp ?? []).includes('context7') && !process.env.CONTEXT7_API_KEY) return 'нет CONTEXT7_API_KEY — хостед Context7 без ключа отвечает 401'
-  return null
+  const declared = JSON.parse(readFileSync(join(plugin, '.mcp.json'), 'utf8'))
+  const missing = (spec.mcp ?? []).filter((name) => !declared[name])
+  return missing.length ? `в .mcp.json плагина нет ${missing.join(', ')}` : null
 }
 
 const git = (cwd, ...cmd) => execFileSync('git', cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })

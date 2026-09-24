@@ -10,7 +10,7 @@
 claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 # перезапустить Claude Code
-claude plugin details stage-pipeline   # проверка: 18 скиллов, 12 агентов, 3 MCP
+claude plugin details stage-pipeline   # проверка: 18 скиллов, 12 агентов, 2 MCP
 ```
 
 Репозиторий публичный — доступы и клонирование не нужны.
@@ -103,7 +103,7 @@ claude plugin details stage-pipeline   # проверка: 18 скиллов, 12
 | `stage-implement` | maker: реализация этапа или раунда фиксов fix-loop в чистом контексте (sonnet), назад — сводка | в `/stage-force` |
 | `figma-spec` | компактная спека экрана из Figma | до кода |
 | `proto-spec` | то же из HTML-прототипа + SPEC.md | до кода |
-| `docs-lookup` | доки библиотеки под версию из локфайла через Context7 — вместо памяти модели | неуверенность в API |
+| `docs-lookup` | API библиотеки по установленному пакету (типы, CHANGELOG) под версию из локфайла — вместо памяти модели | неуверенность в API |
 | `figma-compare` | pixel-perfect сверка: цвета, отступы, радиусы, тени, типографика | после кода |
 | `proto-compare` | то же против прототипа + поведение по SPEC.md | после кода |
 | `devtools-verify` | консоль и hydration, light/dark, ширины, живое состояние | после кода |
