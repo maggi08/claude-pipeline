@@ -14,6 +14,15 @@
  *   working/    слой, который остаётся незакоммиченным (диф текущего этапа)
  * Файл с содержимым `__DELETE__` в слое удаляет файл.
  *
+ * Ожидания в case.json:
+ *   expect / forbid   регэкспы по отчёту в checks/ (+ stdout для expect)
+ *   files             [{ path, pattern, why }] — файл (или все файлы каталога) после прогона обязан совпасть
+ *   filesForbid       [{ path, pattern, why }] — и обязан НЕ совпасть
+ *   unchanged         [path] — файлы, которые агент не вправе трогать
+ *   noCommits         агент не делает коммитов (для maker-агентов: коммит — работа оркестратора)
+ *   maxSummaryLines   предел длины финального сообщения — оно целиком идёт в главный контекст
+ *   requireReport     false — агент не пишет отчёт в checks/ (maker, а не checker)
+ *
  * Прогон идёт по рабочей копии плагина (--plugin-dir) без пользовательских настроек
  * (--setting-sources project), поэтому установленная версия плагина на результат не влияет.
  * Каждый кейс — реальный вызов модели и стоит денег: не в CI, а перед релизом, где менялись чекеры.
@@ -60,6 +69,16 @@ function walk(dir) {
   })
 }
 
+function readIfExists(path) {
+  return existsSync(path) ? readFileSync(path, 'utf8') : null
+}
+
+// Файл — его содержимое; каталог — все файлы подряд (для «нигде в src/ нет второй копии»).
+function readTree(path) {
+  if (!existsSync(path)) return ''
+  return statSync(path).isDirectory() ? walk(path).map((file) => readFileSync(file, 'utf8')).join('\n') : readFileSync(path, 'utf8')
+}
+
 function buildRepo(caseDir) {
   const repo = mkdtempSync(join(tmpdir(), 'stage-pipeline-eval-'))
   git(repo, 'init', '-q', '-b', 'main')
@@ -85,6 +104,8 @@ function runCase(name) {
   const caseDir = join(CASES, name)
   const spec = JSON.parse(readFileSync(join(caseDir, 'case.json'), 'utf8'))
   const repo = buildRepo(caseDir)
+  const snapshot = Object.fromEntries((spec.unchanged ?? []).map((path) => [path, readIfExists(join(repo, path))]))
+  const commitsBefore = git(repo, 'rev-list', '--count', 'HEAD').trim()
   const prompt = `${spec.prompt}\n\nОтчёт сохрани в ${CHECKS}/ по конвенции имени отчёта.`
 
   const started = Date.now()
@@ -113,7 +134,19 @@ function runCase(name) {
   const haystack = `${report}\n${result.stdout ?? ''}`
   const failures = []
   if (result.status !== 0) failures.push(`claude вышел с кодом ${result.status}: ${(result.stderr ?? '').trim().slice(0, 300)}`)
-  if (!report) failures.push(`отчёт не сохранён в ${CHECKS}/`)
+  if (!report && spec.requireReport !== false) failures.push(`отчёт не сохранён в ${CHECKS}/`)
+  for (const check of spec.files ?? []) {
+    if (!new RegExp(check.pattern, 'i').test(readTree(join(repo, check.path)))) failures.push(`${check.path}: ${check.why} (/${check.pattern}/)`)
+  }
+  for (const check of spec.filesForbid ?? []) {
+    if (new RegExp(check.pattern, 'i').test(readTree(join(repo, check.path)))) failures.push(`${check.path}: ${check.why} (/${check.pattern}/)`)
+  }
+  for (const [path, before] of Object.entries(snapshot)) {
+    if (readIfExists(join(repo, path)) !== before) failures.push(`${path} изменён — агенту трогать его нельзя`)
+  }
+  if (spec.noCommits && git(repo, 'rev-list', '--count', 'HEAD').trim() !== commitsBefore) failures.push('агент сделал коммит — коммитит оркестратор')
+  const summaryLines = (result.stdout ?? '').trim().split('\n').length
+  if (spec.maxSummaryLines && summaryLines > spec.maxSummaryLines) failures.push(`сводка ${summaryLines} строк при пределе ${spec.maxSummaryLines} — раздувает главный контекст`)
   for (const expectation of spec.expect ?? []) {
     if (!new RegExp(expectation.pattern, 'i').test(haystack)) failures.push(`не найдено: ${expectation.why} (/${expectation.pattern}/)`)
   }

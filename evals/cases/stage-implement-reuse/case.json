@@ -1,0 +1,53 @@
+{
+  "agent": "stage-implement",
+  "why": "maker переиспользует владельца из «Общих элементов», держит границы force, не коммитит, не трогает STAGES.md, отдаёт короткую сводку",
+  "prompt": "Тикет EVAL-1, этап 2. Режим: implement. Спека: tasks/EVAL-1/specs/2.md. STAGES.md: tasks/EVAL-1/STAGES.md.",
+  "requireReport": false,
+  "noCommits": true,
+  "maxSummaryLines": 25,
+  "files": [
+    {
+      "path": "src/features/checkout/PaymentCountdown.tsx",
+      "pattern": "from\\s+['\"][./]*(features/)?orders/formatTime['\"]",
+      "why": "импорт форматтера у владельца (этап 1)"
+    },
+    {
+      "path": "src/features/checkout/PaymentCountdown.tsx",
+      "pattern": "t\\(\\s*['\"]checkout\\.expired['\"]",
+      "why": "AC-2.2: истёкший стейт через t('checkout.expired')"
+    },
+    {
+      "path": "locales/en.json",
+      "pattern": "\"checkout\\.expired\"",
+      "why": "AC-2.3: ключ в en"
+    },
+    {
+      "path": "locales/ru.json",
+      "pattern": "\"checkout\\.expired\"\\s*:\\s*\"Время оплаты истекло\"",
+      "why": "AC-2.3: ключ в ru с текстом из критерия"
+    }
+  ],
+  "filesForbid": [
+    {
+      "path": "src/features/checkout",
+      "pattern": "padStart|%\\s*60",
+      "why": "вторая копия форматтера mm:ss вместо переиспользования"
+    }
+  ],
+  "unchanged": [
+    "tasks/EVAL-1/STAGES.md",
+    "src/features/orders/formatTime.ts",
+    "src/features/orders/OrderTimer.tsx"
+  ],
+  "expect": [
+    {
+      "pattern": "Изменено:",
+      "why": "сводка в формате контракта агента"
+    },
+    {
+      "pattern": "PaymentCountdown",
+      "why": "сводка называет изменённый файл"
+    }
+  ],
+  "budgetUsd": 1
+}
