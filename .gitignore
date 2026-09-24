@@ -1,2 +1,4 @@
 .DS_Store
 *.log
+.product-denylist
+evals/.results/

@@ -38,7 +38,7 @@ description: Узкий проход по интернационализации
 
 ## Отчёт
 
-В `<task_dir>/<TICKET>/checks/i18n-<stage>.md` и компактно в оркестратор:
+В `<task_dir>/<TICKET>/checks/i18n-sweep-<stage>.md` (перед PR — `i18n-sweep-branch.md`) и компактно в оркестратор:
 
 ```
 | # | Находка | file:line | Класс | Предлагаемый ключ / фикс |

@@ -1,0 +1,7 @@
+{
+  "kind": "routing",
+  "why": "«фикс не помог» зовёт root-cause, а не ещё одну правку наугад",
+  "base": "../pro-review-clean-ac/base",
+  "prompt": "Я уже поправил ProfileName, но имя всё равно не показывается у части пользователей. Фикс не помог — разберись.",
+  "expectSkill": "root-cause"
+}

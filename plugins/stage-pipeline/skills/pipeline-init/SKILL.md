@@ -14,7 +14,7 @@ description: Инициализировать stage-пайплайн в ново
 Исследуй репозиторий напрямую (Read/Glob/Grep), без фан-аута субагентов:
 
 1. **Стек и пакет-менеджер** — `package.json` (deps: nuxt/vue/react/next/svelte/…; `packageManager`), lock-файл (`yarn.lock`→yarn, `pnpm-lock.yaml`→pnpm, `package-lock.json`→npm).
-2. **Команды** — скрипты `dev`/`build`/`lint`/`type-check`(или `typecheck`)/`test` из `package.json`. Если type-check есть — предложи прогнать один раз и записать **baseline** число ошибок (в проектах бывает легаси-долг; чекеры сравнивают с baseline, а не с нулём). Два обязательных санити-чека:
+2. **Команды** — скрипты `dev`/`build`/`lint`/`type-check`(или `typecheck`)/`test` из `package.json`; `bundle_size` — скрипт `size`/`size-limit`/`bundlesize`/`bundle-size` там же, нет такого — `—`. Плюс команды по файлам этапа с `{files}` (их подставляет `run-check.mjs`, `${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`): `lint_files` — линтер из devDependencies напрямую (`<pm> eslint {files}`, `<pm> biome check {files}`, `ruff check {files}`), `test_related` — `<pm> vitest related --run {files}` / `<pm> jest --findRelatedTests {files}`; прогони на одном файле и запиши рабочую форму, не завелось — `—`. Если type-check есть — предложи прогнать один раз и записать **baseline** число ошибок (в проектах бывает легаси-долг; чекеры сравнивают с baseline, а не с нулём). Два обязательных санити-чека:
    - **Монорепо: type_check реально покрывает каждый workspace?** Скрипты с топологическим порядком (`yarn workspaces foreach -t`, turbo/nx) МОЛЧА пропускают зависимые пакеты, когда падает их зависимость. Проверка: прямой `tsc -p <app>/tsconfig.json --noEmit` главного приложения vs вывод общего скрипта; подозрительно быстрый прогон (~секунды на большом приложении) = признак пропуска. В конфиг фиксируй ПРЯМУЮ per-workspace команду, не только общий скрипт (урок: одно из приложений монорепо не тайпчекалось ни локально, ни в CI — сломанный коммит прожил незамеченным).
    - **Baseline sanity.** Ненулевой baseline не принимай молча — прочитай сами ошибки. «Модуль X не экспортирует Y» про локальные пакеты (`file:`-tarball, workspace ui-lib) — чаще устаревшая установка, чем легаси-долг: проверь свежесть (дата tgz, версия vs исходники соседнего репо) и предложи переустановку ДО фиксации baseline (урок: «baseline 16+3» сутки считался командным долгом, оказался устаревшим tgz UI-кита).
 3. **Статические анализаторы** — есть ли в репо детерминированный инструмент, который находит то, что чекеры иначе ищут грепом: `knip`, `ts-prune`, `unimported`, `depcheck`, `madge`. Ищи в devDependencies, в скриптах и в конфигах (`knip.json`, `.knip.*`, `.depcheckrc`, `.madgerc`). Нашёл — прогони один раз и запиши в конфиг ТОЧНУЮ рабочую команду; не запускается или шумит на весь репозиторий — пометь это прямо в конфиге. **Новую зависимость ради чекера не предлагай** — это решение владельца репо; разовый `npx`-прогон предложить можно, но в конфиг пиши только то, что в этом репо реально работает. Ничего нет — ставь `—`: `dead-code` и `deps-audit` тогда работают грепом, как и раньше.
@@ -25,7 +25,7 @@ description: Инициализировать stage-пайплайн в ново
 8. **MCP-зависимости — проверить.** Пайплайну для `figma-compare`/`figma-spec` нужен Figma MCP, для `devtools-verify` — Chrome DevTools MCP. Оба приезжают в `.mcp.json` плагина, поэтому подключать руками обычно не нужно — достаточно `claude mcp list` (ждём «✓ Connected») и разрешить серверы плагина, если Claude Code спрашивает подтверждение.
    - `figma` не подключается — это локальный сервер десктоп-Figma: приложение должно быть запущено, Dev Mode MCP Server включён (Figma → Preferences). Проверка порта: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3845/mcp`.
    - `chrome-devtools` поднимается сам через `npx` при первом вызове; нужен Node ≥ 18 и установленный Chrome.
-   Не молчи о том, что требует действия пользователя. Проекту без Figma/UI-редизайна эти MCP не нужны — не гоняй его настраивать их впустую.
+   Не молчи о том, что требует действия пользователя. Проекту без Figma/UI-редизайна `figma` и `chrome-devtools` не нужны — не гоняй его настраивать их впустую.
 
 9. **Разрешения — иначе пайплайн спрашивает подтверждение на каждом шаге.** Профиль разрешений лежит в плагине (`permissions/base.json`) и доливается в settings скриптом; записи `Skill(stage-pipeline:*)` и `mcp__*` он генерирует из самого плагина, так что новый скилл вписывать руками не надо.
 
@@ -61,7 +61,7 @@ description: Инициализировать stage-пайплайн в ново
 - slug: <repo-basename>
 - stack: <напр. Nuxt 4 / Vue 3 / Pinia / TS>
 - package_manager: <yarn 1.x | npm | pnpm>
-- main_branch: <dev | main | master>   # PR-таргет; merge-base для дифа
+- main_branch: <dev | main | master>   # ветка, В КОТОРУЮ открывается PR (если PR идут в dev — dev, не main); merge-base для whole-branch pro-review, dead-code, wrapup
 
 ## Task state
 - task_path: .claude/tasks/     # в репо: STAGES.md / specs/ / checks/ / DESIGN-QUESTIONS.md по тикетам
@@ -73,6 +73,12 @@ description: Инициализировать stage-пайплайн в ново
 - lint: <yarn lint>
 - type_check: <прямая per-workspace команда, напр. cd apps/x && ../../node_modules/.bin/tsc -p tsconfig.json --noEmit>  # baseline: <N | не замерен>; общий монорепо-скрипт может молча пропускать workspace'ы (см. процедуру, п.2)
 - test: <yarn test>
+- lint_files: <yarn eslint {files} | —>        # lint по файлам этапа (run-check.mjs подставит изменённые); — → на этапе целиком `lint`
+- test_related: <yarn vitest related --run {files} | yarn jest --findRelatedTests {files} | —>  # тесты, связанные с файлами этапа
+- bundle_size: <команда, печатающая размер бандла, напр. `yarn build && du -sk dist` или `size-limit` | —>  # есть → stage-plan заводит metrics-baseline/metrics-guard; — → пунктов нет
+
+## Models
+- review_model: opus   # whole-branch pro-review и свежий прогон чекера в fix-loop — самая сильная модель; в force она ещё и не та, что у maker (`stage-implement` = sonnet); sonnet | opus | haiku
 
 ## Static analysis (dead-code / deps-audit)
 <!-- Даёт КАНДИДАТОВ по всему репо; чекер пересекает вывод с дифом и подтверждает сам. -->

@@ -1,0 +1,8 @@
+{
+  "kind": "routing",
+  "why": "закрытие этапа идёт через stage-check, а не через ручной прогон ревью",
+  "base": "../pro-review-clean-ac/base",
+  "prompt": "Этап 1 реализован. Прогони проверки и закрой этап.",
+  "expectSkill": "stage-check",
+  "forbidSkills": ["stage-force", "task-wrapup"]
+}

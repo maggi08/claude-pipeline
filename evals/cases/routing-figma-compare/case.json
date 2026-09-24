@@ -1,0 +1,7 @@
+{
+  "kind": "routing",
+  "why": "русская просьба сверить вёрстку с макетом находит figma-compare (дыра в лексике, найденная scripts/routing.mjs)",
+  "base": "../pro-review-clean-ac/base",
+  "prompt": "Сверь вёрстку ProfileName с макетом в фигме: https://www.figma.com/design/abc123/Profile?node-id=12-445",
+  "expectSkill": "figma-compare"
+}

@@ -1,0 +1,7 @@
+{
+  "kind": "routing",
+  "why": "обычная мелкая правка не тянет за собой ни оркестратор, ни ревью",
+  "base": "../pro-review-clean-ac/base",
+  "prompt": "Переименуй проп name в displayName в ProfileName.tsx.",
+  "forbidSkills": ["stage-check", "stage-force", "stage-kickoff", "pro-review", "root-cause"]
+}

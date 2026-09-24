@@ -99,6 +99,12 @@ function validatePluginTree(pluginDir) {
   validatePermissions(pluginDir)
   validateNoHomePaths(pluginDir)
   validateDeclaredCounts(pluginDir)
+  validateChangelog(pluginDir)
+  validatePluginPaths(pluginDir)
+  validateHooks(pluginDir)
+  validateNoProjectIds(pluginDir)
+  validateStageChecklist(pluginDir)
+  validateSizeBudget(pluginDir)
 }
 
 function validateMcp(pluginDir) {
@@ -111,6 +117,20 @@ function validateMcp(pluginDir) {
   }
   if (/_authToken|API_KEY|SECRET|PASSWORD|Bearer /i.test(raw)) {
     fail(rel, 'похоже на секрет — .mcp.json уезжает всей команде')
+  }
+
+  // Внешний сервер — это данные, уходящие с машины разработчика. Команда узнаёт об этом из ROLLOUT.md,
+  // поэтому новый внешний эндпоинт без упоминания там — ошибка, а не забытая документация.
+  // headersHelper — скрипт, который несёт ключ: переименовали файл — сервер молча остаётся без авторизации.
+  for (const [, script] of raw.matchAll(/"headersHelper":\s*"[^"]*\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s\\]+)/g)) {
+    if (!existsSync(join(ROOT, pluginDir, script))) fail(rel, `headersHelper ссылается на несуществующий ${script}`)
+  }
+
+  const rollout = existsSync(join(ROOT, 'ROLLOUT.md')) ? readFileSync(join(ROOT, 'ROLLOUT.md'), 'utf8') : ''
+  for (const [, url] of raw.matchAll(/"url":\s*"([^"]+)"/g)) {
+    const host = new URL(url).hostname
+    if (['127.0.0.1', 'localhost'].includes(host)) continue
+    if (!rollout.includes(host)) fail(rel, `внешний MCP-сервер ${host} не упомянут в ROLLOUT.md — команда должна знать, что уходит наружу`)
   }
 }
 
@@ -166,11 +186,10 @@ function validateDeclaredCounts(pluginDir) {
     const abs = join(ROOT, pluginDir, sub)
     return existsSync(abs) ? readdirSync(abs).filter(isReal).length : 0
   }
-  // «скиллов»/«агентов» — родительный множественного: так пишут счёт.
-  // «Шаг 4 скилла» под правило не попадает и не должно.
+  // Счёт — в любой форме: «18 скиллов», «21 скилл», «22 скилла». «Шаг 4 скилла» — не счёт и под правило не попадает.
   const declared = {
-    'скиллов': count('skills', (name) => existsSync(join(ROOT, pluginDir, 'skills', name, 'SKILL.md'))),
-    'агентов': count('agents', (name) => name.endsWith('.md')),
+    'скилл': count('skills', (name) => existsSync(join(ROOT, pluginDir, 'skills', name, 'SKILL.md'))),
+    'агент': count('agents', (name) => name.endsWith('.md')),
   }
 
   // Витрины плагина: их читают вместо содержимого, поэтому числа в них должны сходиться.
@@ -185,10 +204,11 @@ function validateDeclaredCounts(pluginDir) {
     if (!existsSync(abs) || statSync(abs).isDirectory()) continue
     readFileSync(abs, 'utf8').split('\n').forEach((line, i) => {
       for (const [word, actual] of Object.entries(declared)) {
-        const match = line.match(new RegExp(`(\\d+) ${word}`))
+        const match = line.match(new RegExp(`(?<![\\d.]|[Шш]аг[а-я]*\\s|[Ээ]тап[а-я]*\\s|[Пп]ункт[а-я]*\\s)(\\d+) ${word}(ов|а)?(?![а-яё])`))
         if (match && Number(match[1]) !== actual) fail(`${rel}:${i + 1}`, `сказано «${match[0]}», в плагине ${actual}`)
       }
-      const version = line.match(/\bv(\d+\.\d+\.\d+)\b/)
+      // Версия плагина — рядом с его именем или одна на строке-шапке; `chrome-devtools-mcp v1.6.0` — не она.
+      const version = line.match(/(?:stage-pipeline[^\n]*?|^\s*|>\s*)\bv(\d+\.\d+\.\d+)\b/)
       if (version && manifest?.version && version[1] !== manifest.version) {
         fail(`${rel}:${i + 1}`, `версия ${version[0]} расходится с plugin.json (${manifest.version})`)
       }
@@ -218,10 +238,131 @@ function validateNoHomePaths(pluginDir) {
   walk(join(ROOT, pluginDir))
 }
 
+/**
+ * Первый раздел CHANGELOG — текущая версия. Иначе человек после `plugin update`
+ * читает описание предыдущего релиза и не находит, что делать руками на апгрейде.
+ */
+function validateChangelog(pluginDir) {
+  const manifest = readJson(`${pluginDir}/.claude-plugin/plugin.json`)
+  if (!manifest?.version || !existsSync(join(ROOT, 'CHANGELOG.md'))) return
+  const top = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8').match(/^## (\d+\.\d+\.\d+)/m)?.[1]
+  if (top !== manifest.version) fail('CHANGELOG.md', `верхний раздел — ${top ?? 'нет'}, в plugin.json ${manifest.version}`)
+}
+
+/**
+ * Ссылки `${CLAUDE_PLUGIN_ROOT}/…` в скиллах и агентах — это инструкции «прочитай/запусти это».
+ * Переименовали файл — ссылка ведёт в пустоту молча, модель просто не найдёт методологию.
+ */
+function validatePluginPaths(pluginDir) {
+  const expand = (path) => {
+    const brace = path.match(/\{([^}]+)\}/)
+    return brace ? brace[1].split(',').flatMap((part) => expand(path.replace(brace[0], part))) : [path]
+  }
+  for (const file of walkMarkdown(join(ROOT, pluginDir))) {
+    readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+      for (const [, raw] of line.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([\w{},./-]+)/g)) {
+        const path = raw.replace(/[.,]+$/, '')
+        for (const candidate of expand(path)) {
+          if (!existsSync(join(ROOT, pluginDir, candidate))) {
+            fail(`${file.replace(`${ROOT}/`, '')}:${i + 1}`, `ссылка на несуществующий \${CLAUDE_PLUGIN_ROOT}/${candidate}`)
+          }
+        }
+      }
+    })
+  }
+}
+
+function validateHooks(pluginDir) {
+  const rel = `${pluginDir}/hooks/hooks.json`
+  if (!existsSync(join(ROOT, rel))) return
+  const hooks = readJson(rel)
+  for (const [event, matchers] of Object.entries(hooks?.hooks ?? {})) {
+    for (const hook of matchers.flatMap((matcher) => matcher.hooks ?? [])) {
+      const script = hook.command?.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s]+)/)?.[1]
+      if (script && !existsSync(join(ROOT, pluginDir, script))) fail(rel, `${event}: нет файла ${script}`)
+    }
+  }
+}
+
+/**
+ * Плагин включён во всех репозиториях: айди тикетов и имена продуктов в скиллах — шум для чужого
+ * проекта (0.7.1 вычищал их руками по 15 файлам). Общий признак — айди тикета; имена продуктов,
+ * которые не стоит светить в публичном репо, перечисляются в локальном `.product-denylist`
+ * (по строке на имя, файл в .gitignore).
+ */
+function validateNoProjectIds(pluginDir) {
+  const denylistPath = join(ROOT, '.product-denylist')
+  const names = existsSync(denylistPath)
+    ? readFileSync(denylistPath, 'utf8').split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'))
+    : []
+  for (const file of walkMarkdown(join(ROOT, pluginDir))) {
+    readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+      const where = `${file.replace(`${ROOT}/`, '')}:${i + 1}`
+      // Стандарты (SHA-256, ISO-8601, RFC-7231, CVE-…) по форме как тикет, но тикетом не являются.
+      const ticket = line.match(/\b(?!AC-|SHA-|ISO-|RFC-|CVE-|UTF-|WCAG-|HTTP-|ECMA-|ES-)[A-Z]{2,6}-\d{3,5}\b/)
+      if (ticket) fail(where, `айди тикета «${ticket[0]}» — прецедент пишется без идентификаторов`)
+      for (const name of names) {
+        if (line.toLowerCase().includes(name.toLowerCase())) fail(where, `имя из .product-denylist «${name}»`)
+      }
+    })
+  }
+}
+
+/**
+ * Каждый пункт чеклиста в шаблоне STAGES.md должен иметь исполнителя: скилл, агент или шаг
+ * процесса. Пункт без исполнителя (раньше — a11y и metrics-guard) висит незакрываемым чекбоксом
+ * и противоречит правилу «этап не закрывается с пунктом без исхода».
+ */
+function validateStageChecklist(pluginDir) {
+  const rel = `${pluginDir}/skills/stage-plan/SKILL.md`
+  if (!existsSync(join(ROOT, rel))) return
+  const known = new Set([
+    ...readdirSync(join(ROOT, pluginDir, 'skills')),
+    ...readdirSync(join(ROOT, pluginDir, 'agents')).map((file) => basename(file, '.md')),
+    // шаги процесса: исполняет оркестратор или пользователь; metrics-* — команда bundle_size из конфига
+    'kickoff', 'implement', 'user-review', 'commit', 'security-review', 'metrics-baseline', 'metrics-guard', 'floor-guard',
+    'coverage', 'test-plan', 'confirmations', 'wrapup', 'full-checks',
+  ])
+  readFileSync(join(ROOT, rel), 'utf8').split('\n').forEach((line, i) => {
+    const item = line.match(/^- \[ \] ([a-z0-9-]+)/)?.[1]
+    if (item && !known.has(item)) fail(`${rel}:${i + 1}`, `пункт чеклиста «${item}» — нет ни скилла, ни агента, ни шага процесса с таким именем`)
+  })
+}
+
+/**
+ * Скилл оркестратора читается на каждом этапе целиком, и каждое ретро дописывает в него абзац.
+ * Бюджет делает рост решением, а не дрейфом: прецеденты — в references/, правило — одной строкой.
+ */
+function validateSizeBudget(pluginDir) {
+  const SKILL_KB = 30
+  const AGENT_KB = 8
+  for (const name of readdirSync(join(ROOT, pluginDir, 'skills'))) {
+    const path = join(ROOT, pluginDir, 'skills', name, 'SKILL.md')
+    if (!existsSync(path)) continue
+    const kb = statSync(path).size / 1024
+    if (kb > SKILL_KB) fail(`${pluginDir}/skills/${name}/SKILL.md`, `${kb.toFixed(1)} KB при бюджете ${SKILL_KB} KB — прецеденты и замеры вынеси в references/`)
+  }
+  for (const file of readdirSync(join(ROOT, pluginDir, 'agents'))) {
+    // Агент без одноимённого скилла (proto-spec, docs-lookup) сам несёт методологию — бюджет как у скилла.
+    const hasSkill = existsSync(join(ROOT, pluginDir, 'skills', basename(file, '.md'), 'SKILL.md'))
+    const kb = statSync(join(ROOT, pluginDir, 'agents', file)).size / 1024
+    if (!hasSkill && kb > SKILL_KB) fail(`${pluginDir}/agents/${file}`, `${kb.toFixed(1)} KB при бюджете ${SKILL_KB} KB`)
+    if (hasSkill && kb > AGENT_KB) fail(`${pluginDir}/agents/${file}`, `${kb.toFixed(1)} KB при бюджете ${AGENT_KB} KB — методология живёт в скилле, агенту — только роль и контракт отчёта`)
+  }
+}
+
+function walkMarkdown(dir) {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) return walkMarkdown(path)
+    return name.endsWith('.md') ? [path] : []
+  })
+}
+
 if (errors.length) {
   console.error(`✘ Проверка не прошла (${errors.length}):\n`)
   for (const error of errors) console.error(`  ${error}`)
   process.exit(1)
 }
 
-console.log('✔ Манифесты, скиллы, агенты и .mcp.json в порядке')
+console.log('✔ Манифесты, скиллы, агенты, хуки, .mcp.json и CHANGELOG в порядке')

@@ -1,6 +1,6 @@
 ---
 name: pipeline-doctor
-description: Проверка окружения разработчика для stage-пайплайна — MCP (figma, chrome-devtools, context7), пути к соседним репо, dev-сервер, type-check baseline. Запускать после первого клона репо, при смене машины или когда чекеры (figma-spec/figma-compare/devtools-verify) не работают. Диагностирует, подсказывает фиксы, при нестандартной раскладке создаёт pipeline.config.local.md.
+description: Проверка окружения разработчика для stage-пайплайна — MCP (figma, chrome-devtools), пути к соседним репо, dev-сервер, type-check baseline. Запускать после первого клона репо, при смене машины или когда чекеры (figma-spec/figma-compare/devtools-verify) не работают. Диагностирует, подсказывает фиксы, при нестандартной раскладке создаёт pipeline.config.local.md.
 ---
 
 # Pipeline Doctor — проверка окружения разработчика
@@ -11,10 +11,9 @@ description: Проверка окружения разработчика для
 
 ## Чек-лист (по порядку)
 
-1. **MCP-серверы.** Канонические имена задаёт `.mcp.json` плагина: `figma`,
-   `chrome-devtools` и `context7`. Проверь через ToolSearch доступность
-   `mcp__figma__get_metadata`, `mcp__chrome-devtools__list_pages` и тулов
-   `resolve-library-id` / `query-docs` (запрос `"context7"`).
+1. **MCP-серверы.** Канонические имена задаёт `.mcp.json` плагина: `figma`
+   и `chrome-devtools`. Проверь через ToolSearch доступность
+   `mcp__figma__get_metadata` и `mcp__chrome-devtools__list_pages`.
    - Figma-тулов нет → (а) project-серверы не одобрены — подсказать `/mcp` →
      approve; (б) Figma desktop не запущена или выключен MCP-сервер
      (Figma → Preferences → **Enable Dev Mode MCP Server**). Проверка порта:
@@ -22,15 +21,6 @@ description: Проверка окружения разработчика для
      любой HTTP-код = сервер жив, connection refused = выключен.
    - chrome-devtools нет → нужен Node ≥ 18 (`npx -v`); сервер поднимается сам
      через npx при первом вызове, Chrome должен быть установлен.
-   - context7 нет → нужен выход в интернет до `mcp.context7.com` и Node
-     (ключ подставляет `scripts/context7-headers.mjs`). Ключ необязателен:
-     без `CONTEXT7_API_KEY` сервер работает анонимно на общих лимитах; упёрлись
-     в rate limit — ключ из https://context7.com/dashboard в `~/.zshrc`
-     (`export CONTEXT7_API_KEY=...`) и перезапуск Claude Code. В `.mcp.json`
-     и в репо ключ не класть.
-   - Отдельно установлен плагин `context7@claude-plugins-official` или
-     user-scope сервер context7 — это второй экземпляр того же сервера:
-     тулы двоятся. Можно оставить, но проще снять лишний.
    - Если у разработчика есть user-scope сервер на тот же эндпоинт, но под
      ДРУГИМ именем — это дубль: скиллы и пермишены завязаны на канонические
      имена, дубль стоит удалить (`claude mcp remove <имя> -s user`).
@@ -41,10 +31,17 @@ description: Проверка окружения разработчика для
    `.claude/pipeline.config.local.md` с секцией `## Platforms / related repos`
    (поля local перекрывают базовый конфиг; файл gitignored).
 
-3. **Dev-сервер.** `Dev server → url` из конфига (+ local-оверрайд). Если у
+3. **Ресурсы машины.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-check.mjs --mode` — `low` (ОЗУ ≤ 16 GB или
+   `resources: low` в `pipeline.config.local.md`): тяжёлые проверки всех проектов машины идут по очереди,
+   dev-сервер живёт только на время devtools-verify (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`).
+   Скажи режим пользователю; сильная машина, а очередь мешает — `- resources: normal` в local-конфиг.
+   Нет `lint_files`/`test_related` в конфиге — предложи их (`/pipeline-init`, п.2): без них на этапе
+   гоняется весь проект.
+
+4. **Dev-сервер.** `Dev server → url` из конфига (+ local-оверрайд). Если у
    разработчика другой порт/протокол — тоже в `pipeline.config.local.md`.
 
-4. **Baseline (опционально, ~минута).** `type_check` из конфига → сравнить
+5. **Baseline (опционально, ~минута).** `type_check` из конфига → сравнить
    число ошибок с baseline. Разъехался — предложить обновить baseline в
    базовом конфиге (общий файл — отдельным коммитом, не молча). Два подвоха:
    - **Монорепо-маскировка**: общий скрипт с топологическим порядком
@@ -72,7 +69,7 @@ description: Проверка окружения разработчика для
      относящихся. Замерь состав падений на чистом дереве и запиши как
      известный шум окружения, иначе каждая сессия чинит его заново.
 
-5. **Статические анализаторы (если объявлены).** Секция `Static analysis`
+6. **Статические анализаторы (если объявлены).** Секция `Static analysis`
    конфига: каждую непустую команду (`unused_code`, `unused_deps`,
    `import_graph`) прогнать один раз и убедиться, что она отрабатывает и
    отдаёт список, а не ошибку. Сломалась — вернуть в конфиге `—`: чекеру
@@ -80,7 +77,7 @@ description: Проверка окружения разработчика для
    недостающего пакета — сказать, чем доставить, но не ставить самому.
    Секции нет вовсе — SKIP, не FAIL: конфиг сгенерирован до её появления.
 
-6. **Разрешения.** Проверяются скриптом плагина, а не глазами:
+7. **Разрешения.** Проверяются скриптом плагина, а не глазами:
 
    ```bash
    node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs --check          # user-скоуп
@@ -115,5 +112,13 @@ description: Проверка окружения разработчика для
    разрешение на каждый файл. Добавить: `--scope project --apply --dirs
    ../ui-lib,../prototypes`.
 
-7. **Итог.** Компактная таблица: пункт | статус (OK/FAIL/SKIP) | что сделать.
+8. **`main_branch`** — PR-таргет: от него считают базу whole-branch
+   pro-review, `floor-guard --base`, dead-code и wrapup. Сверь с тем, куда
+   реально вливаются ветки: `git log --merges --first-parent -20 --oneline
+   origin/<main_branch>` против того же по соседним кандидатам с origin
+   (`dev`/`development`/`main`/`master`). Фичевые мерджи идут в другую ветку,
+   а в `main_branch` — только релизные из неё → предложи поправить поле
+   (общий конфиг — отдельным коммитом). Кандидат один — SKIP.
+
+9. **Итог.** Компактная таблица: пункт | статус (OK/FAIL/SKIP) | что сделать.
    Всё OK → окружение готово, дальше по `${CLAUDE_PLUGIN_ROOT}/README.md`.

@@ -2,7 +2,7 @@ name: validate
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 jobs:
@@ -10,7 +10,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: node scripts/validate.mjs
+      - run: node scripts/floor-guard-test.mjs
+      - run: node scripts/hooks-test.mjs
+      - run: node scripts/routing.mjs
+      - name: Версия и CHANGELOG на изменённом плагине
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        run: node scripts/release-check.mjs "origin/${{ github.base_ref }}"
+
+  tag:
+    # main — прод: каждая версия, доехавшая до него, получает тег stage-pipeline--v<version>.
+    # На теги можно пиннить каталог команды ("ref" в ROLLOUT.md), поэтому их не забывают руками.
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Тег версии, если его ещё нет
+        run: |
+          version=$(node -p "require('./plugins/stage-pipeline/.claude-plugin/plugin.json').version")
+          tag="stage-pipeline--v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "${tag} уже есть"
+            exit 0
+          fi
+          git tag "${tag}"
+          git push origin "${tag}"
+          echo "создан ${tag}"
