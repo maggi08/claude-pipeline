@@ -96,6 +96,7 @@ claude plugin details stage-pipeline    # 18 скиллов, 12 агентов, 
 | Node 22+ | `chrome-devtools` MCP ставится через `npx` | `node -v` |
 | Figma desktop, **Enable Dev Mode MCP Server** | `figma-spec` / `figma-compare`; в проектах на HTML-прототипах вместо них `proto-spec` / `proto-compare` | `/pipeline-doctor` |
 | Профиль разрешений | иначе чекеры спрашивают подтверждение на каждом шаге | `node "$PERMS" --check` |
+| Ключ Context7 (`CONTEXT7_API_KEY`, бесплатный, context7.com/dashboard) или OAuth через `/mcp` | без авторизации сервер отвечает 401 — API библиотек сверяется по памяти модели, а не по докам | `/pipeline-doctor` |
 | Перезапуск Claude Code после install/update | иначе плагин не подхватится | `/plugin` |
 
 Отдельно, **один раз на репозиторий**, а не на человека: `/pipeline-init` генерит `.claude/pipeline.config.md` — стек, команды, dev-URL, токены, брейкпоинты, раскладка кода. Его делает один человек и коммитит, остальные получают вместе с кодом. Личные отклонения (пути к соседним репозиториям, порты) — в `pipeline.config.local.md`, его создаёт `/pipeline-doctor`.

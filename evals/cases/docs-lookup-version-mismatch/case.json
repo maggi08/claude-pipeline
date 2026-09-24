@@ -1,0 +1,33 @@
+{
+  "agent": "docs-lookup",
+  "why": "версия из локфайла, ответ из Context7, а не из памяти, и противоречие с использованием в файле — главная часть ответа",
+  "prompt": "Библиотека: react-router-dom. Вопрос: как в этом репо правильно сделать редирект неавторизованного пользователя на /login и программную навигацию после выхода? Файл, где API используется: src/App.tsx.",
+  "mcp": [
+    "context7"
+  ],
+  "requireReport": false,
+  "maxSummaryLines": 40,
+  "expect": [
+    {
+      "pattern": "react-router-dom@6\\.22\\.3",
+      "why": "версия взята из локфайла (6.22.3), а не из диапазона манифеста"
+    },
+    {
+      "pattern": "/remix-run/react-router",
+      "why": "ответ опирается на Context7 ID, а не на память"
+    },
+    {
+      "pattern": "Navigate",
+      "why": "<Navigate> вместо <Redirect>"
+    },
+    {
+      "pattern": "useNavigate",
+      "why": "useNavigate вместо useHistory"
+    },
+    {
+      "pattern": "(Redirect|useHistory|Switch)[\\s\\S]{0,300}(нет|удал|отсутств|removed|не существ|v5)",
+      "why": "противоречие с src/App.tsx названо явно"
+    }
+  ],
+  "budgetUsd": 1
+}

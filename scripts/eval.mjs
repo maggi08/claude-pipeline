@@ -1,66 +1,129 @@
 #!/usr/bin/env node
 /**
- * Регрессионные прогоны чекеров на фикстурах с заложенными дефектами.
+ * Регрессионные прогоны агентов плагина на фикстурах с заложенными дефектами.
  *
- *   node scripts/eval.mjs                 # все кейсы
+ *   node scripts/eval.mjs                          # все кейсы, по одному прогону
  *   node scripts/eval.mjs dead-code-orphan i18n-hardcode
+ *   node scripts/eval.mjs --runs 3 --model i18n-sweep=haiku i18n-hardcode
  *   node scripts/eval.mjs --list
  *
  * Правило в скилле ничего не стоит, пока не проверено, что агент с ним ловит свой класс дефектов —
  * и что следующая правка скилла этого не сломала. Кейс — это evals/cases/<name>/:
- *   case.json   агент, промпт, ожидания к отчёту
+ *   case.json   агент, промпт, ожидания
  *   base/       исходное дерево (коммит «base»)
  *   stages/N/   слои, которые коммитятся по очереди поверх base («stage N»)
  *   working/    слой, который остаётся незакоммиченным (диф текущего этапа)
  * Файл с содержимым `__DELETE__` в слое удаляет файл.
  *
  * Ожидания в case.json:
- *   expect / forbid   регэкспы по отчёту в checks/ (+ stdout для expect)
+ *   expect / forbid   регэкспы по отчёту в checks/ (+ финальное сообщение для expect)
  *   files             [{ path, pattern, why }] — файл (или все файлы каталога) после прогона обязан совпасть
  *   filesForbid       [{ path, pattern, why }] — и обязан НЕ совпасть
  *   unchanged         [path] — файлы, которые агент не вправе трогать
  *   noCommits         агент не делает коммитов (для maker-агентов: коммит — работа оркестратора)
  *   maxSummaryLines   предел длины финального сообщения — оно целиком идёт в главный контекст
- *   requireReport     false — агент не пишет отчёт в checks/ (maker, а не checker)
+ *   requireReport     false — агент не пишет отчёт в checks/ (maker или справочный агент)
+ *   forbidSummary     регэкспы, которых не должно быть в финальном сообщении
+ *   mcp               ["context7"] — MCP-серверы плагина, которые нужны кейсу (остальные отключены).
+ *                     Context7 без CONTEXT7_API_KEY отвечает 401 — такой кейс пропускается, а не падает.
+ *
+ * --model <agent>=<model> прогоняет кейсы на копии плагина, где у агента переписан `model:` во
+ * frontmatter, — так сравнивают модели на одних и тех же кейсах. Какая модель реально отработала,
+ * видно по modelUsage из JSON-вывода claude и печатается в сводке. --runs N повторяет каждый кейс:
+ * модель недетерминирована, один прогон — это анекдот, а не замер.
  *
  * Прогон идёт по рабочей копии плагина (--plugin-dir) без пользовательских настроек
  * (--setting-sources project), поэтому установленная версия плагина на результат не влияет.
- * Каждый кейс — реальный вызов модели и стоит денег: не в CI, а перед релизом, где менялись чекеры.
+ * Каждый прогон — реальный вызов модели (лимит подписки или деньги по API-ключу): не в CI,
+ * а перед релизом, где менялись агенты.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CASES = join(ROOT, 'evals/cases')
-const PLUGIN = join(ROOT, 'plugins/stage-pipeline')
+const SOURCE_PLUGIN = join(ROOT, 'plugins/stage-pipeline')
+const RESULTS = join(ROOT, 'evals/.results')
 // task_path фикстур — tasks/, а не .claude/tasks/: запись в .claude/ защищена и в режиме dontAsk отклоняется.
 const CHECKS = 'tasks/EVAL-1/checks'
 
-const args = process.argv.slice(2)
+const { names, runs, overrides } = parseArgs(process.argv.slice(2))
 const all = readdirSync(CASES).filter((name) => existsSync(join(CASES, name, 'case.json')))
-if (args.includes('--list')) {
-  for (const name of all) console.log(`${name} — ${JSON.parse(readFileSync(join(CASES, name, 'case.json'), 'utf8')).why}`)
+if (names.includes('--list')) {
+  for (const name of all) console.log(`${name} [${readCase(name).agent}] — ${readCase(name).why}`)
   process.exit(0)
 }
-const selected = args.length ? args : all
+const selected = names.length ? names : all
 const unknown = selected.filter((name) => !all.includes(name))
 if (unknown.length) {
   console.error(`Нет кейсов: ${unknown.join(', ')}. Список: --list`)
   process.exit(2)
 }
 
-const git = (cwd, ...cmd) => execFileSync('git', cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+const plugin = preparePlugin(overrides)
+const label = Object.entries(overrides).map(([agent, model]) => `${agent}=${model}`).join(',') || 'as-is'
 
-function applyLayer(layer, repo) {
-  for (const file of walk(layer)) {
-    const target = join(repo, relative(layer, file))
-    if (readFileSync(file, 'utf8').trim() === '__DELETE__') rmSync(target, { force: true })
-    else cpSync(file, target)
+function parseArgs(argv) {
+  const result = { names: [], runs: 1, overrides: {} }
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--runs') result.runs = Number(argv[++i])
+    else if (argv[i] === '--model') {
+      const [agent, model] = (argv[++i] ?? '').split('=')
+      if (!agent || !model) fail('--model ждёт <agent>=<model>, например i18n-sweep=haiku')
+      result.overrides[agent] = model
+    } else result.names.push(argv[i])
   }
+  if (!Number.isInteger(result.runs) || result.runs < 1) fail('--runs ждёт целое число ≥ 1')
+  return result
 }
+
+function fail(message) {
+  console.error(message)
+  process.exit(2)
+}
+
+function readCase(name) {
+  return JSON.parse(readFileSync(join(CASES, name, 'case.json'), 'utf8'))
+}
+
+/** Копия плагина с переписанным `model:` у агентов из --model; без переопределений — сам плагин. */
+function preparePlugin(overrides) {
+  if (!Object.keys(overrides).length) return SOURCE_PLUGIN
+  const copy = mkdtempSync(join(tmpdir(), 'stage-pipeline-plugin-'))
+  cpSync(SOURCE_PLUGIN, copy, { recursive: true })
+  for (const [agent, model] of Object.entries(overrides)) {
+    const path = join(copy, 'agents', `${agent}.md`)
+    if (!existsSync(path)) fail(`нет агента ${agent}`)
+    const text = readFileSync(path, 'utf8')
+    if (!/^model: .*$/m.test(text)) fail(`у агента ${agent} нет поля model во frontmatter`)
+    writeFileSync(path, text.replace(/^model: .*$/m, `model: ${model}`))
+  }
+  return copy
+}
+
+/**
+ * --mcp-config только с серверами, которые кейс попросил; ${CLAUDE_PLUGIN_ROOT} раскрыт вручную.
+ * Имя сервера уникально на прогон (но содержит исходное — ToolSearch агента ищет по нему): Claude Code
+ * кэширует needs-auth по имени сервера, и один неудачный прогон иначе отравил бы все следующие.
+ */
+function mcpConfig(servers, repo) {
+  const declared = JSON.parse(readFileSync(join(plugin, '.mcp.json'), 'utf8'))
+  const suffix = relative(tmpdir(), repo).replace(/\W/g, '').slice(-8)
+  const picked = Object.fromEntries(servers.map((name) => [`${name}-eval-${suffix}`, declared[name]]))
+  const path = join(repo, '..', `${suffix}-mcp.json`)
+  writeFileSync(path, JSON.stringify({ mcpServers: picked }).replaceAll('${CLAUDE_PLUGIN_ROOT}', plugin))
+  return { path, tools: Object.keys(picked).map((name) => `mcp__${name}`) }
+}
+
+function skipReason(spec) {
+  if ((spec.mcp ?? []).includes('context7') && !process.env.CONTEXT7_API_KEY) return 'нет CONTEXT7_API_KEY — хостед Context7 без ключа отвечает 401'
+  return null
+}
+
+const git = (cwd, ...cmd) => execFileSync('git', cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
 
 function walk(dir) {
   return readdirSync(dir).flatMap((name) => {
@@ -77,6 +140,17 @@ function readIfExists(path) {
 function readTree(path) {
   if (!existsSync(path)) return ''
   return statSync(path).isDirectory() ? walk(path).map((file) => readFileSync(file, 'utf8')).join('\n') : readFileSync(path, 'utf8')
+}
+
+function applyLayer(layer, repo) {
+  for (const file of walk(layer)) {
+    const target = join(repo, relative(layer, file))
+    if (readFileSync(file, 'utf8').trim() === '__DELETE__') rmSync(target, { force: true })
+    else {
+      mkdirSync(dirname(target), { recursive: true })
+      cpSync(file, target)
+    }
+  }
 }
 
 function buildRepo(caseDir) {
@@ -100,41 +174,68 @@ function buildRepo(caseDir) {
   return repo
 }
 
-function runCase(name) {
+function runCase(name, attempt) {
   const caseDir = join(CASES, name)
-  const spec = JSON.parse(readFileSync(join(caseDir, 'case.json'), 'utf8'))
+  const spec = readCase(name)
   const repo = buildRepo(caseDir)
   const snapshot = Object.fromEntries((spec.unchanged ?? []).map((path) => [path, readIfExists(join(repo, path))]))
   const commitsBefore = git(repo, 'rev-list', '--count', 'HEAD').trim()
-  const prompt = `${spec.prompt}\n\nОтчёт сохрани в ${CHECKS}/ по конвенции имени отчёта.`
+  const prompt = spec.requireReport === false ? spec.prompt : `${spec.prompt}\n\nОтчёт сохрани в ${CHECKS}/ по конвенции имени отчёта.`
 
+  const servers = spec.mcp ?? []
+  const mcp = servers.length ? mcpConfig(servers, repo) : null
+  const mcpArgs = mcp ? ['--mcp-config', mcp.path] : []
   const started = Date.now()
   const result = spawnSync(
     'claude',
     [
       '-p', prompt,
       '--agent', `stage-pipeline:${spec.agent}`,
-      '--plugin-dir', PLUGIN,
+      '--plugin-dir', plugin,
       '--setting-sources', 'project',
-      '--strict-mcp-config',
+      '--strict-mcp-config', ...mcpArgs,
       '--no-session-persistence',
+      '--output-format', 'json',
       '--permission-mode', 'dontAsk',
-      '--allowedTools', 'Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash(git *)', 'Bash(ls *)', 'Bash(cat *)', 'Bash(grep *)', 'Bash(rg *)', 'Bash(find *)', 'Bash(wc *)', 'Bash(mkdir -p *)',
+      '--allowedTools', 'Read', 'Grep', 'Glob', 'Write', 'Edit', 'ToolSearch',
+      'Bash(git *)', 'Bash(ls *)', 'Bash(cat *)', 'Bash(grep *)', 'Bash(rg *)', 'Bash(find *)', 'Bash(wc *)', 'Bash(mkdir -p *)',
+      ...(mcp?.tools ?? []),
       '--max-budget-usd', String(spec.budgetUsd ?? 1),
     ],
-    { cwd: repo, encoding: 'utf8', timeout: (spec.timeoutSec ?? 600) * 1000 },
+    // В -p серверы из --mcp-config подключаются асинхронно: без этого агент успевает решить,
+    // что тулов нет, раньше, чем сервер поднялся.
+    { cwd: repo, encoding: 'utf8', timeout: (spec.timeoutSec ?? 600) * 1000, env: { ...process.env, MCP_CONNECTION_NONBLOCKING: 'false' } },
   )
   const seconds = Math.round((Date.now() - started) / 1000)
+
+  let output = {}
+  try {
+    output = JSON.parse(result.stdout ?? '')
+  } catch {
+    // не JSON — claude упал до вывода; причина в stderr
+  }
+  const summary = output.result ?? ''
+  const cost = output.total_cost_usd ?? 0
+  const models = Object.keys(output.modelUsage ?? {})
 
   // Имя файла — забота конвенции скилла, кейс проверяет только, что отчёт вообще сохранён.
   const checksDir = join(repo, CHECKS)
   const report = existsSync(checksDir)
     ? walk(checksDir).filter((file) => file.endsWith('.md')).map((file) => readFileSync(file, 'utf8')).join('\n')
     : ''
-  const haystack = `${report}\n${result.stdout ?? ''}`
+  const haystack = `${report}\n${summary}`
   const failures = []
-  if (result.status !== 0) failures.push(`claude вышел с кодом ${result.status}: ${(result.stderr ?? '').trim().slice(0, 300)}`)
+  if (result.status !== 0 || output.is_error) failures.push(`claude: код ${result.status}, ${output.subtype ?? ''} ${(result.stderr ?? '').trim().slice(0, 300)}`)
   if (!report && spec.requireReport !== false) failures.push(`отчёт не сохранён в ${CHECKS}/`)
+  for (const expectation of spec.expect ?? []) {
+    if (!new RegExp(expectation.pattern, 'i').test(haystack)) failures.push(`не найдено: ${expectation.why} (/${expectation.pattern}/)`)
+  }
+  for (const expectation of spec.forbid ?? []) {
+    if (new RegExp(expectation.pattern, 'i').test(report)) failures.push(`лишнее в отчёте: ${expectation.why} (/${expectation.pattern}/)`)
+  }
+  for (const expectation of spec.forbidSummary ?? []) {
+    if (new RegExp(expectation.pattern, 'i').test(summary)) failures.push(`лишнее в сообщении: ${expectation.why} (/${expectation.pattern}/)`)
+  }
   for (const check of spec.files ?? []) {
     if (!new RegExp(check.pattern, 'i').test(readTree(join(repo, check.path)))) failures.push(`${check.path}: ${check.why} (/${check.pattern}/)`)
   }
@@ -145,30 +246,51 @@ function runCase(name) {
     if (readIfExists(join(repo, path)) !== before) failures.push(`${path} изменён — агенту трогать его нельзя`)
   }
   if (spec.noCommits && git(repo, 'rev-list', '--count', 'HEAD').trim() !== commitsBefore) failures.push('агент сделал коммит — коммитит оркестратор')
-  const summaryLines = (result.stdout ?? '').trim().split('\n').length
+  const summaryLines = summary.trim().split('\n').length
   if (spec.maxSummaryLines && summaryLines > spec.maxSummaryLines) failures.push(`сводка ${summaryLines} строк при пределе ${spec.maxSummaryLines} — раздувает главный контекст`)
-  for (const expectation of spec.expect ?? []) {
-    if (!new RegExp(expectation.pattern, 'i').test(haystack)) failures.push(`не найдено: ${expectation.why} (/${expectation.pattern}/)`)
-  }
-  for (const expectation of spec.forbid ?? []) {
-    if (new RegExp(expectation.pattern, 'i').test(report)) failures.push(`лишнее в отчёте: ${expectation.why} (/${expectation.pattern}/)`)
-  }
 
-  const saved = join(ROOT, 'evals/.results', `${name}.md`)
-  execFileSync('mkdir', ['-p', dirname(saved)])
-  writeFileSync(saved, `# ${name}\n\n## Отчёт агента\n\n${report || '(нет)'}\n\n## stdout\n\n${result.stdout ?? ''}\n`)
+  mkdirSync(RESULTS, { recursive: true })
+  const saved = join(RESULTS, `${name}--${label.replace(/[^\w=,-]/g, '_')}--${attempt}.md`)
+  const denials = (output.permission_denials ?? []).map((denial) => `- ${denial.tool_name}: ${JSON.stringify(denial.tool_input).slice(0, 200)}`)
+  writeFileSync(
+    saved,
+    `# ${name} (${label}, прогон ${attempt})\n\nМодели: ${models.join(', ') || '—'} · $${cost.toFixed(3)} · ${seconds}s\n\n` +
+      `## Провалы\n\n${failures.map((f) => `- ${f}`).join('\n') || '—'}\n\n## Отказы в разрешениях\n\n${denials.join('\n') || '—'}\n\n` +
+      `## Отчёт агента\n\n${report || '(нет)'}\n\n## Финальное сообщение\n\n${summary}\n`,
+  )
   rmSync(repo, { recursive: true, force: true })
-  return { name, failures, seconds, saved }
+  return { failures, seconds, cost, models, saved }
 }
 
-let failed = 0
+const table = []
 for (const name of selected) {
-  process.stdout.write(`… ${name}`)
-  const { failures, seconds, saved } = runCase(name)
-  if (failures.length) failed++
-  process.stdout.write(`\r${failures.length ? '✘' : '✔'} ${name} (${seconds}s)\n`)
-  for (const failure of failures) console.log(`    ${failure}`)
-  if (failures.length) console.log(`    полный вывод: ${relative(ROOT, saved)}`)
+  const skip = skipReason(readCase(name))
+  if (skip) {
+    console.log(`⏭ ${name} — пропущен: ${skip}`)
+    continue
+  }
+  const row = { name, passed: 0, cost: 0, seconds: 0, models: new Set() }
+  for (let attempt = 1; attempt <= runs; attempt++) {
+    process.stdout.write(`… ${name} #${attempt}`)
+    const { failures, seconds, cost, models, saved } = runCase(name, attempt)
+    if (!failures.length) row.passed++
+    row.cost += cost
+    row.seconds += seconds
+    for (const model of models) row.models.add(model)
+    process.stdout.write(`\r${failures.length ? '✘' : '✔'} ${name} #${attempt} (${seconds}s, $${cost.toFixed(3)}, ${models.join('+') || '?'})\n`)
+    for (const failure of failures) console.log(`    ${failure}`)
+    if (failures.length) console.log(`    полный вывод: ${relative(ROOT, saved)}`)
+  }
+  table.push(row)
 }
-console.log(`\n${selected.length - failed}/${selected.length} кейсов прошло`)
-process.exit(failed ? 1 : 0)
+
+console.log(`\n## ${label}, прогонов на кейс: ${runs}\n`)
+console.log('| Кейс | Прошло | Модели | $ за прогон | с за прогон |')
+console.log('|---|---|---|---|---|')
+for (const row of table) {
+  console.log(`| ${row.name} | ${row.passed}/${runs} | ${[...row.models].join(', ')} | ${(row.cost / runs).toFixed(3)} | ${Math.round(row.seconds / runs)} |`)
+}
+const total = table.reduce((sum, row) => sum + row.cost, 0)
+console.log(`\nИтого: ${table.reduce((s, r) => s + r.passed, 0)}/${table.length * runs} прогонов, $${total.toFixed(2)}`)
+if (plugin !== SOURCE_PLUGIN) rmSync(plugin, { recursive: true, force: true })
+process.exit(table.every((row) => row.passed === runs) ? 0 : 1)

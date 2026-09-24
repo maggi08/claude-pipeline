@@ -22,12 +22,21 @@ description: Проверка окружения разработчика для
      любой HTTP-код = сервер жив, connection refused = выключен.
    - chrome-devtools нет → нужен Node ≥ 18 (`npx -v`); сервер поднимается сам
      через npx при первом вызове, Chrome должен быть установлен.
-   - context7 нет → нужен выход в интернет до `mcp.context7.com` и Node
-     (ключ подставляет `scripts/context7-headers.mjs`). Ключ необязателен:
-     без `CONTEXT7_API_KEY` сервер работает анонимно на общих лимитах; упёрлись
-     в rate limit — ключ из https://context7.com/dashboard в `~/.zshrc`
-     (`export CONTEXT7_API_KEY=...`) и перезапуск Claude Code. В `.mcp.json`
-     и в репо ключ не класть.
+   - context7 нет → **нужна авторизация**: хостед Context7 без неё отвечает
+     `401 Authentication required`, и Claude Code кэширует сервер как
+     needs-auth — дальше он молча не подключается. Два пути:
+     (а) бесплатный ключ `ctx7sk-…` с https://context7.com/dashboard в
+     `~/.zshrc` (`export CONTEXT7_API_KEY=...`) — его подставляет
+     `scripts/context7-headers.mjs`; (б) OAuth-вход: `/mcp` →
+     `plugin:stage-pipeline:context7` → Authenticate. В `.mcp.json` и в репо
+     ключ не класть. После ключа сервер может остаться в кэше needs-auth:
+     проверь `grep context7 ~/.claude/mcp-needs-auth-cache.json` — запись есть,
+     значит, её нужно убрать из этого файла (с согласия пользователя: файл его)
+     и перезапустить Claude Code.
+     Проверка ключа без Claude Code: `curl -s -X POST https://mcp.context7.com/mcp
+     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
+     -H "Authorization: Bearer $CONTEXT7_API_KEY" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
+     — HTTP 200 и список тулов = ключ принят сервером.
    - Отдельно установлен плагин `context7@claude-plugins-official` или
      user-scope сервер context7 — это второй экземпляр того же сервера:
      тулы двоятся. Можно оставить, но проще снять лишний.

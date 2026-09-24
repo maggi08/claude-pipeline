@@ -1,0 +1,26 @@
+{
+  "agent": "deps-audit",
+  "why": "вторая библиотека дат рядом с date-fns, тулинг в рантайм-разделе, ассет без ссылок",
+  "prompt": "Тикет EVAL-1, этап 1. База сравнения: незакоммиченные изменения (git diff HEAD + git status, включая неотслеживаемые файлы). Этап добавил отчёт по периоду.",
+  "expect": [
+    {
+      "pattern": "moment[\\s\\S]{0,400}date-fns|date-fns[\\s\\S]{0,400}moment",
+      "why": "moment — дубль уже используемой date-fns"
+    },
+    {
+      "pattern": "eslint-plugin-react-hooks[\\s\\S]{0,300}dev|dev[\\s\\S]{0,300}eslint-plugin-react-hooks",
+      "why": "eslint-plugin-react-hooks — в devDependencies"
+    },
+    {
+      "pattern": "summer-promo\\.png",
+      "why": "новый ассет без единой ссылки"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "typescript[^\\n]{0,80}(перенес|move)",
+      "why": "пре-существующие зависимости вне дифа не ревьюятся"
+    }
+  ],
+  "budgetUsd": 1
+}

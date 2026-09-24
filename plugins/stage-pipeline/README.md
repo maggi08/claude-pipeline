@@ -15,7 +15,7 @@ claude plugin install stage-pipeline@magzhan
 
 Репозиторий публичный — доступы и клонирование не нужны. Вариант «маркетплейс из локального клона» (для машины, где плагин правится) — в [README маркетплейса](../../README.md).
 
-Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma), `chrome-devtools` и `context7` (актуальная документация библиотек) — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**. Context7 работает без ключа на общих анонимных лимитах; свой ключ — `export CONTEXT7_API_KEY=...` в профиле шелла (в `.mcp.json` и репо его не кладут), подставляет его `scripts/context7-headers.mjs`.
+Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma), `chrome-devtools` и `context7` (актуальная документация библиотек) — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**. Context7 **требует авторизации**: бесплатный ключ `ctx7sk-…` с context7.com/dashboard — `export CONTEXT7_API_KEY=...` в профиле шелла (в `.mcp.json` и репо его не кладут, подставляет его `scripts/context7-headers.mjs`), либо OAuth-вход через `/mcp` → `plugin:stage-pipeline:context7` → Authenticate. Без этого сервер отвечает 401, Claude Code помечает его needs-auth, и чекеры работают в режиме «не сверено с доками». Проверка — `/pipeline-doctor`.
 
 ### Разрешения
 
@@ -122,6 +122,15 @@ node "$PERMS" --apply   # дописать в ~/.claude/settings.json
 | `task-converge` (агент + skill) | код на HEAD против намерения всей задачи: непокрытый критерий, частичная реализация, противоречие, тихо расширенный скоуп |
 | `/stage-force` (skill) | автономный прогон всей задачи: вопросы батчем на старте, дальше без остановок |
 | `/task-wrapup` (skill) | описание PR/MR из журнала задачи → `PR.md` |
+
+**Модели.** Оркестратор (скиллы `/stage-*`) идёт на модели вашей сессии — плагин её не задаёт; рекомендуемая — Opus (`/model`). Агенты — по полю `model:` во frontmatter, и оно выбрано замером `scripts/eval.mjs`, а не по роли:
+
+| Модель | Агенты | Почему |
+|---|---|---|
+| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep` | суждение и точность: ложный зелёный чекера хуже красного, а шум опровергает дорогой оркестратор |
+| `haiku` | `deps-audit`, `docs-lookup` | механическая работа; на eval-кейсах не хуже Sonnet при цене в 2.5–4 раза ниже (замер — CHANGELOG 0.9.0) |
+
+Алиас `sonnet` в Claude Code 2.1.193 разворачивается в Sonnet 4.6, а не в Sonnet 5 — это видно в `modelUsage` eval-прогонов. Явный id (`claude-sonnet-5`) во frontmatter работает; переход на него — отдельный замер на трудных кейсах. Перед сменой модели агента — `node scripts/eval.mjs --runs 3 --model <agent>=<model> <кейсы агента>`.
 
 **Три узких чекера вместо одного большого.** `pro-review` отвечает за корректность, безопасность и конвенции. `dead-code`, `i18n-sweep` и `deps-audit` — каждый за свой класс мусора, со своей процедурой подтверждения, и запускаются **по признаку**: что-то удалялось → dead-code; появился пользовательский текст → i18n-sweep; тронут манифест → deps-audit. Признака нет — `[skip: нет признака]`, лишний субагент не тратится.
 
