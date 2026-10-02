@@ -13,9 +13,13 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '../plugins/stage-pipeline/scripts')
+// Реестр каталогов задач и снимки журнала хуки пишут в каталог данных плагина — в тесте он временный.
+const DATA = mkdtempSync(join(tmpdir(), 'hooks-test-data-'))
+process.env.CLAUDE_PLUGIN_DATA = DATA
 const { commitScope, gitInvocations } = await import(join(PLUGIN, 'hooks/git-command.mjs'))
-const { taskDirFromConfig, taskBranches, isCurrentTask, forceActive } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+const { taskDirFromConfig, taskBranches, isCurrentTask, forceActive, openForceBlock, reviewModel } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
 const { planArchive } = await import(join(PLUGIN, 'archive-stages.mjs'))
+const { acViolation, skipViolation, barePasses } = await import(join(PLUGIN, 'journal-check.mjs'))
 
 let failed = 0
 const check = (name, ok, detail = '') => {
@@ -110,6 +114,58 @@ check('прогон до 0.11, закрытый статусом', !forceActive(
 check('статус с датой между словами', !forceActive('## Статус: force-прогон 2026-09-23 завершён — три коммита\n\n## Force-прогон 2026-09-23\n'))
 check('«force-прогон не завершён» — прогон идёт', forceActive('## Статус: force-прогон не завершён, этап 7 в работе\n\n## Force-прогон 2026-09-01\n'))
 check('все этапы done, финальные проверки — прогон идёт', forceActive('## Статус: все этапы done, финальные проверки\n\n## Force-прогон 2026-09-01\n\n### Этап 1: x  [status: done]\n'))
+check('открытый Force-блок: дата из заголовка, текст до следующего раздела', (() => {
+  const block = openForceBlock('## Force-прогон 28.09.2026 — завершён 28.09.2026\nстарый\n\n## Force-прогон 2026-10-05b (второй)\nОтветы интервью: …\n\n## Этапы\n')
+  return block?.date === '2026-10-05' && block.body.includes('Ответы интервью') && !block.body.includes('Этапы')
+})())
+check('review_model: из конфига, по умолчанию opus', reviewModel('- review_model: sonnet   # дешевле') === 'sonnet' && reviewModel('- main_branch: dev') === 'opus')
+
+// ── правила закрытия критериев ───────────────────────────────────────────────
+// Строки — живые формы из STAGES.md: исход перед формулировкой и после, отложенная проверка, smoke, решение пользователя.
+const REPORTS = ['devtools-verify-2.md', 'pro-review-2.md']
+const AC_LINES = [
+  ['- `AC-4.5` WHEN обязательное поле пустое THEN «Сохранить» неактивна — [verify: devtools-verify] ✅ pro-review по коду · ⏳ user-review', 'ac-checker'],
+  ['- `AC-4.6` WHEN сохранено THEN тост — [verify: devtools-verify] ✅ pro-review по коду, стенд: лиды 76 и 80', 'ac-checker'],
+  ['- `AC-3.8` WHEN `yarn start` THEN без ошибок — [verify: devtools-verify] ✅', 'ac-checker'],
+  ['- `AC-1.2` WHEN сверить алерт с нодой THEN отступы совпадают — [verify: figma-compare] ✅ проверено живьём', 'ac-checker'],
+  ['- `AC-2.4` WHEN сверить с макетом THEN радиус 12 — [verify: figma-compare] ✅ figma-compare', 'ac-report'],
+  ['- `AC-2.3` WHEN нажать «Позвонить» THEN тот же блок — [verify: devtools-verify] ✅ devtools-verify (2 карточки)', null],
+  ['- `AC-2.2` ✅ devtools-verify (CommonInput `/prime/{id}`) · WHEN вставка THEN номер верный — [verify: devtools-verify]', null],
+  ['- `AC-3.4` WHEN вкладка открыта THEN дата перехода — [verify: devtools-verify] ⏳ devtools-verify', null],
+  ['- `AC-1.1` WHEN шторка открыта THEN блока нет — [verify: devtools-verify] ✅ pro-review статически · [live: user-side]', null],
+  ['- `AC-6.1` WHEN листинг гидрирован THEN запросов нет — [verify: devtools-verify] ✅ подтверждено живьём: 0 запросов', null],
+  ['- `AC-8.1` WHEN форма пустая THEN «Добавить» активна — [verify: devtools-verify] ✅ smoke (new-lead.spec.ts:40)', null],
+  ['- `AC-1.4` WHEN type-check THEN не выше baseline — [verify: pro-review] ✅ pro-review по коду', null],
+  ['- `AC-5.2` WHEN экран открыт THEN без ошибок — [verify: devtools-verify] ✅ без чекера по решению пользователя 2026-10-02', null],
+]
+for (const [line, want] of AC_LINES) {
+  const got = acViolation(line, REPORTS)?.rule ?? null
+  check(`критерий ${JSON.stringify(line.slice(line.indexOf('[verify'))).slice(0, 70)} → ${want}`, got === want, `получили ${got}`)
+}
+const SKIPS = [
+  ['Проверки: pro-review-7a.md; proto-compare и devtools-verify — skip: MCP-Chrome занят другой сессией, рантайм → `[live: user-side]`', true],
+  ['- [x] proto-compare [skip: staging не принимает токен]', true],
+  ['- [x] figma-compare   `[skip: logic-only]`', false],
+  ['- [ ] figma-compare   (skip — Figma нет; визуальная сверка с PNG вручную)', false],
+  ['Чекеры прохода: figma-compare / proto-compare — skip (Figma нет, прототип больше не эталон вида); вид сверяет devtools-verify', false],
+  ['Пайплайн: implement · proto-compare · devtools-verify (`[live: user-side]`) · dead-code (skip: нет признака)', false],
+]
+for (const [line, want] of SKIPS) {
+  check(`скип дизайн-чекера ${JSON.stringify(line).slice(0, 60)} → ${want ? 'нарушение' : 'ок'}`, Boolean(skipViolation(line)) === want)
+}
+const PASSES = [
+  ['## AC (по коду)\n4.1 PASS · 4.5 PASS · 4.7 PASS (данные, «Сохранить» — через\n`isContractDraftChanged`) · 4.16 PASS с замечанием (п.7) · 4.17 PASS', ['AC-4.1', 'AC-4.5', 'AC-4.16', 'AC-4.17']],
+  ['Вердикт: AC-3.1 PASS, AC-3.2 PASS.\n- `AC-3.1` — PASS, радиус 12px (`Button.vue:34`)\n- `AC-3.2` — PASS по порядку: `Tabs.vue:12`', []],
+  ['- **`AC-8.1` — PASS на обеих бронях.**\n  - бронь 1: `status=OK`, 2 строки', []],
+  ['- `AC-1.3` — PASS.\n- `AC-1.4` — PASS.', ['AC-1.3', 'AC-1.4']],
+  ['Поведение: SPEC §27.5-27.7 PASS по смыслу', []],
+  ['| AC-4.5 | PASS |\n| AC-4.6 | PASS | Button.vue:34 |', ['AC-4.5']],
+  ['AC-1.1 PASS (390: box y763 h61 w358; 768: y774 h50 w736; text RU exact)', []],
+]
+for (const [text, want] of PASSES) {
+  const got = barePasses(text)
+  check(`голый PASS ${JSON.stringify(text).slice(0, 50)} → [${want}]`, same(got, want), `получили ${JSON.stringify(got)}`)
+}
 
 // ── git-guard и session-start на живом репо ──────────────────────────────────
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
@@ -203,7 +259,125 @@ const plain = join(root, 'plain')
 mkdirSync(plain)
 git(plain, 'init', '-q')
 check('репо без пайплайна: хуки молчат', hook('git-guard.mjs', plain, 'git add -A') === 'allow' && hook('session-start.mjs', plain) === '')
+check('репо без пайплайна: подпись в коммите не наше дело', hook('git-guard.mjs', plain, 'git commit -m "x\n\nCo-Authored-By: X <x@y.z>"') === 'allow')
 rmSync(root, { recursive: true, force: true })
+
+// ── гейты 0.12: журнал, запуск субагентов, подписи, задача на два репо ──────
+const runHook = (name, input) => {
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8' })
+  if (!run.stdout.trim()) return { decision: 'allow', text: run.stderr }
+  if (name === 'session-start.mjs') return { decision: 'message', text: run.stdout }
+  const out = JSON.parse(run.stdout)
+  return {
+    decision: out.hookSpecificOutput?.permissionDecision ?? out.decision ?? 'message',
+    text: out.hookSpecificOutput?.permissionDecisionReason ?? out.reason ?? out.systemMessage ?? '',
+  }
+}
+const repoAt = (path, branch) => {
+  mkdirSync(path, { recursive: true })
+  git(path, 'init', '-q', '-b', branch)
+  git(path, 'config', 'user.email', 'test@example.com')
+  git(path, 'config', 'user.name', 'test')
+  write(path, { 'src/a.ts': 'export const a = 1\n', '.gitignore': '.claude/\nmsg.txt\n' })
+  git(path, 'add', '-A')
+  git(path, 'commit', '-qm', 'base')
+}
+const gRoot = mkdtempSync(join(tmpdir(), 'gates-test-'))
+const app = join(gRoot, 'app')
+repoAt(app, 'main')
+const OLD = '- `AC-1.1` WHEN старое THEN старое — [verify: devtools-verify] ✅ pro-review по коду'
+const journal = (extra = '', force = '') =>
+  `# T-7: задача\nВетка: \`T-7/feat/g\`\n\n## Статус: этап 2\n\n${force}## Этапы\n\n### Этап 1: первый  [status: done]\n${OLD}\n${extra}`
+const stagesPath = join(app, '.claude/tasks/T-7/STAGES.md')
+write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': journal() })
+git(app, 'checkout', '-qb', 'T-7/feat/g')
+runHook('session-start.mjs', { cwd: app })
+
+const gate = (tool_name, tool_input) => runHook('journal-gate.mjs', { cwd: app, tool_name, tool_input })
+check('журнал: старое нарушение — в снимке, хук молчит', gate('Edit', { file_path: stagesPath }).decision === 'allow')
+write(app, { '.claude/tasks/T-7/STAGES.md': journal('- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ✅ pro-review по коду\n') })
+const caught = gate('Edit', { file_path: stagesPath })
+check('журнал: новое «✅ pro-review по коду» у devtools-критерия — возвращено агенту', caught.decision === 'block' && /AC-2\.1/.test(caught.text) && !/AC-1\.1/.test(caught.text), caught.text)
+check('журнал: правка через Bash с путём STAGES.md — тоже', gate('Bash', { command: `python3 fix.py ${stagesPath}` }).decision === 'block')
+check('журнал: код и команды без журнала — молчит', gate('Edit', { file_path: join(app, 'src/a.ts') }).decision === 'allow' && gate('Bash', { command: 'git status' }).decision === 'allow')
+write(app, { '.claude/tasks/T-7/STAGES.md': journal('- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ⏳ devtools-verify\n') })
+check('журнал: исправлено на ⏳ — молчит', gate('Edit', { file_path: stagesPath }).decision === 'allow')
+const report = join(app, '.claude/tasks/T-7/checks/pro-review-2.md')
+write(app, { '.claude/tasks/T-7/checks/pro-review-2.md': '## AC\n2.1 PASS · 2.2 PASS · 2.3 PASS (`a.ts:3`, a=1)\n' })
+const bare = gate('Write', { file_path: report })
+check('отчёт: голые PASS — возвращены агенту, PASS с замером — нет', bare.decision === 'block' && /AC-2\.1, AC-2\.2/.test(bare.text) && !/AC-2\.3/.test(bare.text), bare.text)
+
+const agentHook = (subagent_type, prompt, model) =>
+  runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type, prompt, ...(model ? { model } : {}) } }).decision
+check('whole-branch pro-review без model — отклонён (агент на sonnet)', agentHook('stage-pipeline:pro-review', 'Тикет T-7, режим whole-branch. База origin/main.') === 'deny')
+check('whole-branch pro-review на opus — проходит', agentHook('stage-pipeline:pro-review', 'Тикет T-7, whole-branch mode.', 'opus') === 'allow')
+check('pro-review этапа — модель не требуется', agentHook('stage-pipeline:pro-review', 'Тикет T-7, режим stage, этап 2. Перепроверка после whole-branch Request changes.') === 'allow')
+write(app, { '.claude/pipeline.config.local.md': '- review_model: sonnet\n' })
+check('review_model: sonnet в конфиге — whole-branch без model проходит', agentHook('stage-pipeline:pro-review', 'Режим: whole-branch.') === 'allow')
+rmSync(join(app, '.claude/pipeline.config.local.md'))
+const withForce = (heading, body) => write(app, { '.claude/tasks/T-7/STAGES.md': journal('', `${heading}\n${body}\n\n`) })
+withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nОтветы интервью: ветка — от dev')
+check('stage-implement: новый Force-блок без «Подтверждено:» — отклонён', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2, режим implement') === 'deny')
+withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nОтветы интервью: ветка — от dev\nПодтверждено: 2026-10-05 — «да, гони»')
+check('stage-implement: подтверждение есть — проходит', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2') === 'allow')
+withForce('## Force-прогон 2026-09-24', 'Режим: автономный.')
+check('stage-implement: блок, открытый до 0.12, — не трогается', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2') === 'allow')
+check('другие агенты — молчит', agentHook('stage-pipeline:devtools-verify', 'whole-branch mode') === 'allow')
+
+withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nПодтверждено: 2026-10-05 — «да»')
+write(app, { 'src/a.ts': 'export const a = 2\n', 'msg.txt': 'T-7: правка\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n' })
+const commit = (cwd, command) => runHook('git-guard.mjs', { cwd, tool_input: { command } }).decision
+check('force: Co-Authored-By в heredoc сообщения — отклонён', commit(app, `git commit -am "$(cat <<'EOF'\nT-7: правка\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)"`) === 'deny')
+check('force: подпись в файле -F — отклонён', commit(app, 'git commit -a -F msg.txt') === 'deny')
+check('force: чистое сообщение — проходит', commit(app, 'git commit -am "T-7: правка"') === 'allow')
+git(app, 'checkout', '-q', '--', 'src/a.ts')
+git(app, 'checkout', '-qb', 'hotfix/y')
+check('ветка без задачи в репо пайплайна: подпись тоже отклонена', commit(app, 'git commit -m "fix\n\nCo-Authored-By: X <x@y.z>"') === 'deny')
+
+// Задача на два репо: STAGES.md — в каталоге задач app, коммит — в соседнем webapp.
+write(app, {
+  '.claude/tasks/KC-9/STAGES.md': '# KC-9: задача на два репо\nВетка: `KC-9/feat/x` (app и webapp — одно имя)\n\n## Статус: этап 1\n',
+  '.claude/tasks/KC-10/STAGES.md': '# KC-10: только app\nВетка: `KC-10/feat/y`\n\n## Статус: этап 1\n',
+  '.claude/tasks/OPS/STAGES.md': '# OPS: без PR-флоу\nВетка: master (коммиты по этапам)\n\n## Статус: этап 1\n',
+})
+runHook('session-start.mjs', { cwd: app })
+const web = join(gRoot, 'webapp')
+repoAt(web, 'master')
+write(web, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n' })
+git(web, 'checkout', '-qb', 'KC-9/feat/x')
+check('соседний репо: задача из реестра — обычный режим, git add отклонён', commit(web, 'git add -A') === 'deny')
+check('соседний репо: session-start показывает задачу и путь к ней', /KC-9 \(ветка KC-9\/feat\/x\)/.test(runHook('session-start.mjs', { cwd: web }).text))
+git(web, 'checkout', '-q', 'master')
+check('соседний репо на master: «Ветка: master» чужой задачи его не захватывает', commit(web, 'git add -A') === 'allow')
+git(web, 'checkout', '-qb', 'KC-10/feat/y')
+check('соседний репо: тикет в ветке, но STAGES.md репо не называет — не своя', commit(web, 'git add -A') === 'allow')
+
+// Работа после закрытия force: коммит на ветке задачи, которого журнал не знает.
+git(app, 'checkout', '-q', 'T-7/feat/g')
+withForce('## Force-прогон 2026-10-05 — завершён 2026-10-05', 'Режим: автономный.')
+write(app, { 'src/b.ts': 'export const b = 1\n' })
+git(app, 'add', 'src/b.ts')
+git(app, 'commit', '-qm', 'T-7: правка после прогона без этапа')
+const after = runHook('session-start.mjs', { cwd: app }).text
+check('session-start: коммит после force мимо журнала — назван', /на ветке 1 коммит/.test(after) && /правка после прогона/.test(after), after)
+write(app, { '.claude/tasks/T-7/STAGES.md': journal('- 2026-10-05 — догон: `T-7: правка после прогона без этапа`, pro-review Approve\n', '## Force-прогон 2026-10-05 — завершён 2026-10-05\n\n') })
+check('session-start: коммит записан в журнал — молчит', !/коммит\(ов\)/.test(runHook('session-start.mjs', { cwd: app }).text))
+// main_branch: main в конфиге, а PR идут в dev: смёржённые туда чужие PR — не работа задачи.
+git(app, 'checkout', '-q', 'main')
+git(app, 'checkout', '-qb', 'dev')
+write(app, { 'src/c.ts': 'export const c = 1\n' })
+git(app, 'add', 'src/c.ts')
+git(app, 'commit', '-qm', 'Feat: чужая фича (#12)')
+git(app, 'checkout', '-qb', 'T-8/feat/h')
+write(app, {
+  'src/d.ts': 'export const d = 1\n',
+  '.claude/tasks/T-8/STAGES.md': '# T-8: задача\nВетка: `T-8/feat/h`\n\n## Статус: done\n\n## Force-прогон 2026-10-05 — завершён 2026-10-05\n',
+})
+git(app, 'add', 'src/d.ts')
+git(app, 'commit', '-qm', 'T-8: своя правка мимо журнала')
+const nearest = runHook('session-start.mjs', { cwd: app }).text
+check('session-start: база — ближайшая интеграционная ветка, чужой PR не в счёт', /на ветке 1 коммит/.test(nearest) && !/чужая фича/.test(nearest), nearest)
+rmSync(gRoot, { recursive: true, force: true })
 
 // ── тяжёлые проверки: охват по дифу и очередь на машину ─────────────────────
 const RUN_CHECK = join(PLUGIN, 'run-check.mjs')

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -23,18 +23,26 @@ export function readPipelineState(cwd) {
   const taskDir = taskDirFromConfig(config, root)
   // Ветка — рабочего дерева, где идёт команда: у каждого worktree своя.
   const branch = git(worktree, 'symbolic-ref', '--short', '-q', 'HEAD')
-  if (!existsSync(taskDir)) return { root, worktree, branch, tasks: [] }
+  const tasks = readTasks(taskDir, branch)
+  if (!tasks.some((task) => task.current)) tasks.push(...foreignTasks(taskDir, mainRoot(cwd) ?? root, branch))
 
-  const tasks = readdirSync(taskDir)
+  return { root, worktree, branch, config, taskDir, tasks }
+}
+
+function readTasks(taskDir, branch) {
+  if (!isDir(taskDir)) return []
+  return readdirSync(taskDir)
     .map((ticket) => ({ ticket, dir: join(taskDir, ticket), stagesPath: join(taskDir, ticket, 'STAGES.md') }))
     .filter(({ dir, stagesPath }) => isDir(dir) && isFile(stagesPath))
-    .map(({ ticket, stagesPath }) => {
+    .map(({ ticket, dir, stagesPath }) => {
       const stages = readFileSync(stagesPath, 'utf8')
       const { mtimeMs, size } = statSync(stagesPath)
       const branches = taskBranches(stages)
       return {
         ticket,
+        dir,
         stagesPath,
+        stages,
         mtime: mtimeMs,
         sizeKb: Math.round(size / 1024),
         status: stages.match(/^## Статус:\s*(.+)$/m)?.[1]?.trim() ?? null,
@@ -48,8 +56,120 @@ export function readPipelineState(cwd) {
       }
     })
     .sort((a, b) => b.mtime - a.mtime)
+}
 
-  return { root, worktree, branch, tasks }
+/**
+ * Задача на несколько репо живёт в каталоге одного из них: задача правит core и вебвью, а STAGES.md лежит
+ * в `task_path` core. Без этого во втором репо хуки задачу не видели — коммиты оркестратора шли мимо
+ * обычного режима и мимо floor-guard. Каталоги задач других репо берутся из реестра (его пополняет
+ * session-start), и чужая задача считается своей только при двух условиях сразу: тикет вида `ABC-12`
+ * стоит в имени ветки и STAGES.md называет этот репо по имени. По одной строке `Ветка:` — нельзя:
+ * `Ветка: master` задачи из соседнего проекта захватила бы master любого репо.
+ */
+function foreignTasks(ownTaskDir, root, branch) {
+  if (!branch) return []
+  const own = realPath(ownTaskDir)
+  const repoName = basename(root)
+  return knownTaskDirs()
+    .filter((dir) => dir !== own)
+    .flatMap((dir) => readTasks(dir, branch))
+    .filter((task) => task.current && /^[A-Z][A-Z0-9]*-\d+$/.test(task.ticket) && isCurrentTask(task.ticket, [], branch))
+    .filter((task) => new RegExp(`(^|[^\\w-])${escapeRegExp(repoName)}([^\\w-]|$)`).test(task.stages))
+    .map((task) => ({ ...task, foreign: true }))
+}
+
+/**
+ * Каталог данных плагина: Claude Code отдаёт его хукам в CLAUDE_PLUGIN_DATA. Запасной путь — тот же
+ * каталог, что Claude Code заводит плагину сам, чтобы скрипты, запущенные руками, видели те же данные.
+ */
+export function pluginDataDir() {
+  return process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.claude/plugins/data/stage-pipeline')
+}
+
+const registryPath = () => join(pluginDataDir(), 'task-dirs.json')
+
+export function knownTaskDirs() {
+  try {
+    const dirs = JSON.parse(readFileSync(registryPath(), 'utf8'))
+    return Array.isArray(dirs) ? dirs.filter((dir) => typeof dir === 'string' && isDir(dir)) : []
+  } catch {
+    return []
+  }
+}
+
+export function registerTaskDir(dir) {
+  const real = realPath(dir)
+  if (!real || !isDir(real)) return
+  const dirs = knownTaskDirs()
+  if (dirs.includes(real)) return
+  try {
+    mkdirSync(pluginDataDir(), { recursive: true })
+    writeFileSync(registryPath(), JSON.stringify([...dirs, real], null, 2))
+  } catch {
+    // Реестр — подсказка для соседних репо; не записался — хук этого репо работает как раньше.
+  }
+}
+
+/** `review_model` из конфига: модель whole-branch ревью и свежего прогона чекера (stage-check, Шаг 3.3). */
+export function reviewModel(config) {
+  const raw = config.match(/^\s*-\s*review_model:\s*[`*]*([\w.-]+)/m)?.[1]
+  return raw ? raw.toLowerCase() : 'opus'
+}
+
+/**
+ * Открытый блок «Force-прогон» (последний без «завершён» в заголовке): заголовок, дата из него
+ * (`2026-09-30`, `2026-09-30b`, `28.09.2026`) и текст до следующего раздела `## `.
+ */
+export function openForceBlock(stages) {
+  if (!forceActive(stages)) return null
+  const blocks = [...stages.matchAll(/^## Force-прогон.*$/gm)].filter(([heading]) => !/заверш/i.test(heading))
+  const last = blocks.at(-1)
+  if (!last) return null
+  const rest = stages.slice(last.index + last[0].length)
+  const end = rest.search(/^## /m)
+  return { heading: last[0], date: headingDate(last[0]), body: end === -1 ? rest : rest.slice(0, end) }
+}
+
+function headingDate(heading) {
+  const iso = heading.match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) return iso[0]
+  const ru = heading.match(/(\d{2})\.(\d{2})\.(\d{4})/)
+  return ru ? `${ru[3]}-${ru[2]}-${ru[1]}` : null
+}
+
+/**
+ * Коммиты ветки задачи, о которых журнал не знает: ни SHA, ни заголовок коммита не встречаются
+ * в STAGES.md, STAGES-ARCHIVE.md и PR.md. Так выглядит работа после закрытия force — правки
+ * в главном контексте и коммиты пользователя, которые не прошли ни один чекер. Заголовок сверяется
+ * наравне с SHA: пользователь пересобирает коммиты (убирает подпись) — SHA меняется, заголовок нет.
+ */
+export function unjournaledCommits(state, task, limit = 50) {
+  // База — ближайшая из интеграционных веток, а не только `main_branch`: в живых конфигах он бывает
+  // `main` при PR в dev, и тогда в «работу мимо журнала» попали бы чужие смёрженные PR.
+  const configured = state.config.match(/^\s*-\s*main_branch:\s*[`*]*([\w./-]+)/m)?.[1]
+  const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
+  const bases = names
+    .flatMap((name) => [`origin/${name}`, name])
+    .filter((ref) => git(state.worktree, 'rev-parse', '-q', '--verify', `${ref}^{commit}`))
+    .map((ref) => ({ ref, ahead: Number(git(state.worktree, 'rev-list', '--count', `${ref}..HEAD`) ?? Infinity) }))
+    .sort((a, b) => a.ahead - b.ahead)
+  if (!bases.length || !bases[0].ahead) return []
+  // Мерж-коммиты и сквош смёрженного PR («… (#17)») — не работа задачи мимо журнала.
+  const log = git(state.worktree, 'log', '--no-merges', `--max-count=${limit}`, '--format=%H%x09%s', `${bases[0].ref}..HEAD`)
+  if (!log) return []
+  const journal = ['STAGES.md', 'STAGES-ARCHIVE.md', 'PR.md']
+    .map((name) => join(task.dir, name))
+    .filter(isFile)
+    .map((path) => readFileSync(path, 'utf8'))
+    .join('\n')
+  return log
+    .split('\n')
+    .map((line) => {
+      const [sha, ...subject] = line.split('\t')
+      return { sha, subject: subject.join('\t') }
+    })
+    .filter(({ subject }) => !/\(#\d+\)\s*$/.test(subject))
+    .filter(({ sha, subject }) => !journal.includes(sha.slice(0, 7)) && !(subject.length >= 12 && journal.includes(subject)))
 }
 
 /**
@@ -104,8 +224,7 @@ export function taskBranches(stages) {
 export function isCurrentTask(ticket, branches, branch) {
   if (!branch || branch === 'HEAD') return false
   if (branches.includes(branch)) return true
-  const escaped = ticket.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(^|[/_.-])${escaped}($|[/_.-])`, 'i').test(branch)
+  return new RegExp(`(^|[/_.-])${escapeRegExp(ticket)}($|[/_.-])`, 'i').test(branch)
 }
 
 /**
@@ -130,9 +249,26 @@ export const STALE_DAYS = 21
  */
 function configRoot(cwd, worktree) {
   if (isFile(join(worktree, '.claude/pipeline.config.md'))) return worktree
-  const common = git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
-  const main = common && basename(common) === '.git' ? dirname(common) : null
+  const main = mainRoot(cwd)
   return main && main !== worktree && isFile(join(main, '.claude/pipeline.config.md')) ? main : null
+}
+
+// Основное рабочее дерево: у worktree `webview-abc12` репо всё равно называется `webview`.
+function mainRoot(cwd) {
+  const common = git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+  return common && basename(common) === '.git' ? dirname(common) : null
+}
+
+function realPath(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return null
+  }
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function git(cwd, ...args) {
