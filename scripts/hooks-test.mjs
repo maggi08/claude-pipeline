@@ -379,6 +379,83 @@ const nearest = runHook('session-start.mjs', { cwd: app }).text
 check('session-start: база — ближайшая интеграционная ветка, чужой PR не в счёт', /на ветке 1 коммит/.test(nearest) && !/чужая фича/.test(nearest), nearest)
 rmSync(gRoot, { recursive: true, force: true })
 
+// ── 0.13: force не ждёт подтверждений ────────────────────────────────────────
+const { askMatch, bashRulePattern, nameKill } = await import(join(PLUGIN, 'hooks/permission-rules.mjs'))
+const KILLS = [
+  ['pkill -f "http.server 3199"; cd /repo; node floor-guard.mjs', 'pkill -f http.server 3199'],
+  ["pkill -f 'scratchpad/stub.js'; lsof -ti :4010 | xargs -r kill", 'pkill -f scratchpad/stub.js'],
+  ['/usr/bin/killall node', '/usr/bin/killall node'],
+  ['pgrep -f stub | xargs pkill', 'xargs pkill'],
+  ['FOO=1 nohup pkill -f x', 'pkill -f x'],
+  ['kill 12345', null],
+  ['lsof -ti :4010 | xargs -r kill', null],
+  ['echo "pkill later"', null],
+  ['grep -rn pkill plugins/', null],
+  ["cat <<'EOF' > notes.md\npkill -f x\nEOF", null],
+]
+for (const [command, want] of KILLS) check(`снятие по имени ${JSON.stringify(command).slice(0, 50)} → ${want}`, nameKill(command) === want, `получили ${nameKill(command)}`)
+
+const RULES = ['Bash(git push *)', 'Bash(git reset --hard *)', 'Bash(gh *)', 'Bash(npm run deploy:*)', 'Bash(ls)', 'Bash', 'Bash(*)'].map((rule) => ({ rule, source: 'settings.json' }))
+const ASKS = [
+  ['git push origin HEAD', 'Bash(git push *)'],
+  ['git push', 'Bash(git push *)'],
+  ['git status && git push -u origin x', 'Bash(git push *)'],
+  ['cd app && GIT_TRACE=1 git reset --hard HEAD~1', 'Bash(git reset --hard *)'],
+  ['gh pr view 12', 'Bash(gh *)'],
+  ['npm run deploy -- --prod', 'Bash(npm run deploy:*)'],
+  ['npm run deployment', null],
+  ['ls', 'Bash(ls)'],
+  ['ls -la', null],
+  ['ghost --help', null],
+  ['git commit -m "потом git push"', null],
+  ['git pushx', null],
+  ['echo ok', null],
+]
+for (const [command, want] of ASKS) {
+  const got = askMatch(command, RULES)?.rule ?? null
+  check(`ask ${JSON.stringify(command).slice(0, 50)} → ${want}`, got === want, `получили ${got}`)
+}
+check('ask: голое Bash и Bash(*) не превращаются в «отклонять всё»', bashRulePattern('Bash') === null && bashRulePattern('Bash(*)') === null)
+
+const fRoot = mkdtempSync(join(tmpdir(), 'force-guard-test-'))
+const fApp = join(fRoot, 'app')
+const fHome = join(fRoot, 'home')
+repoAt(fApp, 'main')
+write(fHome, { '.claude/settings.json': JSON.stringify({ permissions: { ask: ['Bash(pkill *)', 'Bash(git push *)'] } }) })
+write(fApp, {
+  '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+  '.claude/settings.json': JSON.stringify({ permissions: { ask: ['Bash(gh *)'] } }),
+  '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force: '## Force-прогон 2026-10-03\nПодтверждено: 03.10.2026 — да\n\n' }),
+  '.claude/tasks/T-10/STAGES.md': stages('T-10', 'T-10/feat/n'),
+})
+const force = (cwd, command) => {
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks/force-guard.mjs')], {
+    input: JSON.stringify({ cwd, tool_input: { command } }),
+    encoding: 'utf8',
+    env: { ...process.env, HOME: fHome, CLAUDE_PROJECT_DIR: fApp },
+  })
+  if (!run.stdout.trim()) return { decision: 'allow', text: run.stderr }
+  const out = JSON.parse(run.stdout).hookSpecificOutput
+  return { decision: out.permissionDecision, text: out.permissionDecisionReason }
+}
+git(fApp, 'checkout', '-qb', 'T-9/feat/f')
+const killed = force(fApp, 'pkill -f "http.server 3199"; git status')
+check('force: pkill отклонён сразу, с подсказкой про PID', killed.decision === 'deny' && /kill <PID>/.test(killed.text), killed.text)
+check('force: killall без ask-правила — тоже отклонён', force(fApp, 'killall node').decision === 'deny')
+check('force: kill по PID проходит', force(fApp, 'kill 4242').decision === 'allow')
+const pushed = force(fApp, 'git push -u origin T-9/feat/f')
+check('force: git push под ask пользователя — отклонён, назван файл правила', pushed.decision === 'deny' && pushed.text.includes(join(fHome, '.claude/settings.json')), pushed.text)
+check('force: gh под ask проекта — отклонён', /Блокер/.test(force(join(fApp, 'src'), 'gh pr view 1').text))
+check('force: обычные команды не трогаются', force(fApp, 'git status && pnpm test').decision === 'allow')
+git(fApp, 'checkout', '-qb', 'T-10/feat/n')
+check('обычный режим: pkill не отклоняется — пользователь рядом и ответит сам', force(fApp, 'pkill -f x').decision === 'allow')
+git(fApp, 'checkout', '-q', 'main')
+check('ветка без задачи: хук молчит', force(fApp, 'git push').decision === 'allow')
+write(fApp, { '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force: '## Force-прогон 2026-10-03 — завершён с блокерами 2026-10-03\n\n' }) })
+git(fApp, 'checkout', '-q', 'T-9/feat/f')
+check('force «завершён с блокерами» — закрыт, хук молчит', force(fApp, 'pkill -f x').decision === 'allow')
+rmSync(fRoot, { recursive: true, force: true })
+
 // ── тяжёлые проверки: охват по дифу и очередь на машину ─────────────────────
 const RUN_CHECK = join(PLUGIN, 'run-check.mjs')
 const rcRoot = mkdtempSync(join(tmpdir(), 'run-check-test-'))
