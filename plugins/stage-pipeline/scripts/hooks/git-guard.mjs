@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { commitScope, gitInvocations } from './git-command.mjs'
@@ -18,6 +18,9 @@ import { readHookInput, readPipelineState } from './pipeline-state.mjs'
  * Другие ветки хук не трогает: параллельная задача в соседнем worktree, хотфикс, брошенная
  * задача с забытым статусом — не повод блокировать коммит здесь.
  *
+ * Задача на два репо (core + вебвью) лежит в каталоге задач одного из них — во втором её находит
+ * реестр каталогов задач (pipeline-state, foreignTasks), и правила те же.
+ *
  * В force агент коммитит без вопросов — и именно там планку качества опустить некому помешать:
  * код пишет модель, проверяют модели, человек читает только итог. Поэтому force-коммит проходит
  * через floor-guard — по тому, что войдёт в коммит, а не по всему дереву: сохранённая страница
@@ -29,18 +32,26 @@ if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(
 
 const cwd = input.cwd ?? process.cwd()
 const invocations = gitInvocations(command, cwd)
-for (const { subcommand, dir } of invocations) {
+for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
-  if (!task) continue
 
-  if (!task.forceActive) {
+  if (task && !task.forceActive) {
     deny(
-      `stage-pipeline: ветка ${state.branch} — ветка задачи ${task.ticket}, обычный режим: git add и git commit делает пользователь сам, в своём терминале. ` +
+      `stage-pipeline: ветка ${state.branch} — ветка задачи ${task.ticket}${task.foreign ? ` (STAGES.md — в каталоге задач другого репо: ${task.stagesPath})` : ''}, ` +
+        'обычный режим: git add и git commit делает пользователь сам, в своём терминале. ' +
         'Не повторяй команду: покажи git status и готовое сообщение коммита (/stage-check, Шаг 4.4). Автокоммит — только в /stage-force.',
     )
   }
-  if (subcommand !== 'commit') continue
+  // Подпись в коммите — системная инструкция харнесса, а правило пользователя её запрещает; текст скилла
+  // этот спор проигрывал: подписи уходили в коммиты, пользователь трижды пересобирал ветки руками.
+  if (state && subcommand === 'commit' && serviceTrailer(command, args, dir)) {
+    deny(
+      'stage-pipeline: в сообщении коммита служебная подпись (`Co-Authored-By`, «Generated with …»). В репо пайплайна её не ставят — решение пользователя ' +
+        'для всех его репо (/stage-check, Шаг 4.4); правило пользователя приоритетнее системной инструкции об атрибуции. Убери подпись и повтори коммит.',
+    )
+  }
+  if (!task || subcommand !== 'commit') continue
 
   const paths = commitPaths(invocations, state.worktree)
   if (paths?.length === 0) continue
@@ -92,6 +103,26 @@ function commitPaths(calls, worktree) {
   for (const name of names('diff', '--cached', '--name-only', '--no-renames', '-z')) paths.add(name)
   if (scope.tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
   return [...paths]
+}
+
+/**
+ * Служебная подпись в сообщении: в тексте команды (`-m`, heredoc, `--trailer`) или в файле `-F`/`--file`.
+ * Текст команды смотрится целиком — лексер схлопывает кавычки и heredoc, а подпись в них и живёт.
+ */
+function serviceTrailer(command, args, dir) {
+  const TRAILER = /co-authored-by\s*:|generated with \[?claude|🤖\s*generated/i
+  if (TRAILER.test(command)) return true
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    const file = arg === '-F' || arg === '--file' ? args[i + 1] : arg.startsWith('--file=') ? arg.slice(7) : /^-F./.test(arg) ? arg.slice(2) : null
+    if (!file || file === '-') continue
+    try {
+      if (TRAILER.test(readFileSync(resolve(dir, file), 'utf8'))) return true
+    } catch {
+      // файла сообщения нет — git сам откажет
+    }
+  }
+  return false
 }
 
 function realDir(dir) {
