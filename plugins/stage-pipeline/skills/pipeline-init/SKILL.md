@@ -1,6 +1,7 @@
 ---
 name: pipeline-init
-description: Инициализировать stage-пайплайн в новом репозитории — изучить проект (стек, команды, dev-сервер, дизайн-токены, UI-lib, брейкпоинты, раскладку кода) и сгенерировать `.claude/pipeline.config.md`, из которого дальше читают все пайплайн-скиллы и агенты (feature-checker, stage-plan, stage-kickoff, stage-check, figma-spec, figma-compare, devtools-verify, pro-review), плюс разложить разрешения пайплайна (скиллы, MCP, безопасные команды, deny/ask) в user-скоуп `~/.claude/settings.json`, чтобы чекеры не спрашивали подтверждение на каждом шаге. Use ONCE per new project before running the pipeline, or when project setup changed. Делает пайплайн проект-агностичным.
+description: Инициализировать stage-пайплайн в новом репозитории — изучить проект (стек, команды, dev-сервер, дизайн-токены, UI-lib, брейкпоинты, раскладку кода) и сгенерировать `.claude/pipeline.config.md`, из которого дальше читают все пайплайн-скиллы и агенты (feature-checker, stage-plan, stage-kickoff, stage-check, figma-spec, figma-compare, devtools-verify, pro-review), плюс разложить разрешения пайплайна (скиллы, MCP, безопасные команды, deny/ask) в user-скоуп `~/.claude/settings.json`, чтобы чекеры не спрашивали подтверждение на каждом шаге. Запускать ОДИН раз на новый проект перед пайплайном или когда поменялся стек/команды/пути. Только вручную, командой /pipeline-init — пишет конфиг и user-скоуп settings, поэтому модель сама не вызывает. Делает пайплайн проект-агностичным.
+disable-model-invocation: true
 ---
 
 # Pipeline Init — конфиг пайплайна под конкретный репозиторий

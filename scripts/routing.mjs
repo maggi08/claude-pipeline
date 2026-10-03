@@ -52,14 +52,18 @@ function tokens(text) {
 }
 
 // ── индекс по описаниям ──────────────────────────────────────────────────────
-const skills = readdirSync(SKILLS)
+const all = readdirSync(SKILLS)
   .filter((name) => existsSync(join(SKILLS, name, 'SKILL.md')))
   .map((name) => {
     const text = readFileSync(join(SKILLS, name, 'SKILL.md'), 'utf8')
     const description = text.match(/^description:\s*(.*)$/m)?.[1] ?? ''
     // Имя скилла — тоже лексика вызова: «/stage-check» и «stage check» пользователь пишет буквально.
-    return { name, terms: tokens(`${name.replaceAll('-', ' ')} ${description}`) }
+    return { name, manual: /^disable-model-invocation:\s*true\s*$/m.test(text), terms: tokens(`${name.replaceAll('-', ' ')} ${description}`) }
   })
+// Ручной скилл (disable-model-invocation) зовёт только пользователь командой: его описания модель не видит,
+// поэтому в маршрутизации он не участвует — ни кандидатом, ни соседом по близости описаний.
+const skills = all.filter((skill) => !skill.manual)
+const manual = new Set(all.filter((skill) => skill.manual).map((skill) => skill.name))
 
 const df = new Map()
 for (const skill of skills) for (const term of new Set(skill.terms)) df.set(term, (df.get(term) ?? 0) + 1)
@@ -90,7 +94,8 @@ let positives = 0
 
 for (const c of spec.cases) {
   for (const name of [c.expect, ...(c.not ?? [])].filter(Boolean)) {
-    if (!known.has(name)) errors.push(`«${c.prompt}»: нет скилла ${name}`)
+    if (manual.has(name)) errors.push(`«${c.prompt}»: ${name} ручной (disable-model-invocation) — модель его не выбирает, фраза ничего не проверяет`)
+    else if (!known.has(name)) errors.push(`«${c.prompt}»: нет скилла ${name}`)
   }
   const ranking = rank(c.prompt)
   const top = ranking.slice(0, topK).map((r) => r.name)

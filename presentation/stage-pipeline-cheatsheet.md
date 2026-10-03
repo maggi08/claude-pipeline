@@ -1,6 +1,6 @@
 # Stage Pipeline · шпаргалка
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.12.0 — 18 скиллов, 12 агентов.
+Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.12.1 — 18 скиллов, 12 агентов.
 
 ---
 
@@ -70,6 +70,7 @@ claude plugin details stage-pipeline   # проверка: 18 скиллов, 12
                    и что сделано, но не просили. Находки → блок «Догон» в STAGES.md,
                    прогонять до «сошлось»
 /task-wrapup       → PR.md: что и зачем, как проверить, слепые зоны, открытые вопросы
+                   (только вручную — сам не запускается, даже в force)
 ```
 
 ---
@@ -78,7 +79,7 @@ claude plugin details stage-pipeline   # проверка: 18 скиллов, 12
 
 | Команда | Что делает |
 |---|---|
-| `/pipeline-init` | изучает репо → `pipeline.config.md`, из которого читают все остальные |
+| `/pipeline-init` | изучает репо → `pipeline.config.md`, из которого читают все остальные; только вручную |
 | `/pipeline-doctor` | диагностика окружения: MCP, соседние репо, dev-сервер, baseline |
 | `/feature-checker` | карта существующей фичи по всем платформам → `FEATURE-MAP.md` |
 | `/stage-plan` | режет задачу на этапы (экран + стейты = этап) → `STAGES.md` |
@@ -92,7 +93,7 @@ claude plugin details stage-pipeline   # проверка: 18 скиллов, 12
 | `/dead-code`, `/i18n-sweep`, `/deps-audit` | узкие проходы: мусор от задачи, i18n, зависимости |
 | `/ds-parity` | паритет с дизайн-системой перед PR |
 | `/task-converge` | код на HEAD против намерения всей задачи: непокрытый критерий, тихо расширенный скоуп |
-| `/task-wrapup` | описание MR из журнала задачи → `PR.md` |
+| `/task-wrapup` | описание MR из журнала задачи → `PR.md`; только вручную |
 
 ## Агенты
 
