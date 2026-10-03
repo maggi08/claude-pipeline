@@ -1,5 +1,5 @@
 {
-  "$comment": "Фразы, которыми пользователь зовёт скилл, — для scripts/routing.mjs. Пишутся так, как говорят в чате, а не цитатой из description: цитата проверяет, что текст равен сам себе. expect — скилл, который обязан попасть в топ-K; not — скиллы, которые не должны оказаться первыми с весом выше noiseFloor. Упала фраза — сначала поправь description.",
+  "$comment": "Фразы, которыми пользователь зовёт скилл, — для scripts/routing.mjs. Пишутся так, как говорят в чате, а не цитатой из description: цитата проверяет, что текст равен сам себе. expect — скилл, который обязан попасть в топ-K; not — скиллы, которые не должны оказаться первыми с весом выше noiseFloor. Упала фраза — сначала поправь description. Ручных скиллов (disable-model-invocation) здесь нет: их описание модель не видит.",
   "topK": 2,
   "minRank1": 0.75,
   "maxSimilarity": 0.5,
@@ -30,9 +30,6 @@
     { "prompt": "у меня не работает figma MCP и chrome-devtools, продиагностируй окружение", "expect": "pipeline-doctor" },
     { "prompt": "склонировал репо на новый ноут, проверь, что пайплайн заведётся", "expect": "pipeline-doctor" },
 
-    { "prompt": "настрой stage-пайплайн в этом новом репозитории, сгенерируй конфиг", "expect": "pipeline-init" },
-    { "prompt": "инициализируй pipeline.config.md для проекта", "expect": "pipeline-init" },
-
     { "prompt": "сделай код-ревью всей ветки как senior", "expect": "pro-review" },
     { "prompt": "отревьюй бранч на корректность, безопасность и конвенции репозитория", "expect": "pro-review" },
 
@@ -58,10 +55,7 @@
     { "prompt": "что из обещанного по задаче ещё не сделано?", "expect": "task-converge" },
     { "prompt": "задача правда завершена? сверь код с критериями приёмки всех этапов", "expect": "task-converge" },
 
-    { "prompt": "напиши описание PR по журналу этапов", "expect": "task-wrapup" },
-    { "prompt": "готовлю merge request — собери description для ревьюера", "expect": "task-wrapup" },
-
-    { "prompt": "ревью только текущего этапа перед закрытием", "not": ["task-wrapup", "deps-audit"] },
+    { "prompt": "ревью только текущего этапа перед закрытием", "not": ["deps-audit"] },
     { "prompt": "напиши функцию форматирования цены", "not": ["i18n-sweep", "root-cause", "pro-review"] },
     { "prompt": "поправь опечатку в README", "not": ["stage-check", "stage-force", "pro-review"] }
   ]
