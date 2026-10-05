@@ -8,7 +8,8 @@
  *   никого — 24 таких критерия в одной задаче, и два из них пользователь потом нашёл сломанными;
  * - дизайн-чекер пропущен по причине браузера («staging не принимает токен», «MCP занят»), хотя
  *   сверка код ↔ макет статическая — так в одной задаче он не прошёл ни на одном UI-этапе;
- * - PASS в отчёте чекера без замера («4.5 PASS») — неотличим от «не посмотрел» (stage-check, Шаг 1).
+ * - PASS в отчёте чекера без замера («4.5 PASS») — неотличим от «не посмотрел» (stage-check, Шаг 1);
+ * - «как у X» в критерии или решении без пути к X — замысел теряется на открытии этапа (stage-plan, Шаг 3).
  *
  *   node journal-check.mjs <task_dir>/<TICKET>     # все нарушения в STAGES.md, архиве и checks/
  *
@@ -17,7 +18,7 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
@@ -124,6 +125,34 @@ export function noDataViolation(line) {
   }
 }
 
+// «Как у X» без пути к X. «так как в …» — причина, а не ссылка; «как в ТЗ» — ссылка на сам тикет.
+const LIKE = /(?<![а-яё])(?<!так\s+)как\s+(?:у|в|на|сейчас|раньше|было|прежде)(?![а-яё])|\b(?:same\s+as|like\s+in)\b/i
+const REF = /[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|less|html?|md|py|go|rb|kt|swift|java|php|rs|cs)\b|https?:\/\/|node-?id|\b\d+[:-]\d+\b|`[^`\s]*\/[^`\s]*`/i
+const DECISION = /^\s*(?:[-*]|\d+\.|\|)?\s*\**(?:D\d+\b|Решени[ея]|Решено|Решили)/i
+
+/**
+ * Критерий или решение ссылается на образец словами — «как у эксперта», «как сейчас в шторке», «как было» —
+ * без пути к нему. В одной задаче решение «как у эксперта» (там сохранение активно и без смены статуса)
+ * на открытии этапа стало «как сейчас в шторке», и анкету нельзя было сохранить, не меняя статус.
+ * Ссылка на макет у критерия с дизайн-чекером проходит: узлы этапа у чекера есть.
+ */
+export function likeViolation(line) {
+  if (!AC_ID.test(line) && !DECISION.test(line)) return null
+  const match = line.match(LIKE)
+  if (!match) return null
+  const after = line.slice(match.index + match[0].length)
+  if (REF.test(line) || /^\s*(?:AC-\d|этап[а-яё]*\s+\d|B\d|тз|тикет|задач[а-яё]*\s|описани|contract|spec\b|ci\b)/i.test(after)) return null
+  if (/^\s*(?:макет|дизайн|figma|фигм|прототип)/i.test(after) && /\[verify:\s*(?:figma|proto)-compare/i.test(line)) return null
+  const id = line.match(/AC-[\w.]+/)?.[0]?.replace(/[.,]+$/, '') ?? line.match(/\bD\d+\b/)?.[0] ?? 'решение'
+  return {
+    rule: 'ac-like-ref',
+    id,
+    message:
+      `${id}: «${`${match[0]}${after}`.trim().slice(0, 40)}…» без ссылки на образец — впиши \`путь:строка\` (или node-id макета) того, на что ссылаешься. ` +
+      'Для действия с условиями — ещё таблица «состояние × действие → что уходит на сервер, что видит пользователь» (stage-plan, Шаг 3).',
+  }
+}
+
 /**
  * Отметка чекера в журнале — `- [x] pro-review (checks/stage-8-pro-review.md — …)` — закрывает его находки.
  * У этого отчёта должен быть полный «Итог находок»: в одной задаче такая строка закрыла Request changes словами
@@ -147,7 +176,8 @@ export function journalViolations(text, reports = null, taskDir = null) {
   return text
     .split('\n')
     .map((line) => {
-      const violation = acViolation(line, reports) ?? skipViolation(line) ?? caveatViolation(line) ?? noDataViolation(line) ?? checkerLineViolation(line, taskDir)
+      const violation =
+        acViolation(line, reports) ?? skipViolation(line) ?? caveatViolation(line) ?? noDataViolation(line) ?? likeViolation(line) ?? checkerLineViolation(line, taskDir)
       return violation && { ...violation, line: line.trim() }
     })
     .filter(Boolean)
@@ -163,7 +193,7 @@ const legacyViolation = (line) => acViolation(line) ?? skipViolation(line)
 
 // ── отчёты чекеров: сводка, итог находок ─────────────────────────────────────
 
-const CHECKERS = ['pro-review', 'figma-compare', 'proto-compare', 'devtools-verify', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'security-review']
+const CHECKERS = ['pro-review', 'figma-compare', 'proto-compare', 'devtools-verify', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'security-review', 'kit-overrides']
 export const reportChecker = (name) => CHECKERS.find((checker) => name.includes(checker)) ?? null
 
 // Сводка в живых отчётах: «Находки: critical 0 · major 2 · minor 1», «0 critical / 2 major», «🔴0 · 🟠2»,
@@ -311,9 +341,21 @@ export function summaryViolation(text, name) {
  * Прецеденты: плашка схлопнулась на дне меню (`m-4` в контейнере без отступа), а чекер мерил ширину и вложенность;
  * название страны в три строки вылезало из карточки на скриншотах самого чекера.
  */
-export function runtimeViolations(text, name) {
+export function runtimeViolations(text, name, taskDir = null) {
   if (reportChecker(name) !== 'devtools-verify' || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
   const found = []
+  // Этап с «Эталоном вида» — сверка типографики с соседней секцией: прототип совпадал с кодом, а «жирно» и «разные кнопки»
+  // пользователь увидел рядом с остальным дашбордом.
+  const reference = taskDir && stageReference(taskDir, name)
+  if (reference && !/^\s*[-*]?\s*`?style-diff\b/im.test(text)) {
+    found.push({
+      rule: 'no-style-diff',
+      id: name,
+      message:
+        `checks/${name}: у этапа «Эталон вида» (${reference.slice(0, 60)}), а строк \`style-diff <ширина>: roles N · differ N\` нет — сверь типографику, кнопки и таблицы ` +
+        'новой секции с эталонной (skill devtools-verify, шаг «Эталон вида»). Расхождение без решения пользователя — находка major.',
+    })
+  }
   if (!/^\s*[-*]?\s*`?geometry\b/im.test(text)) {
     found.push({
       rule: 'no-geometry',
@@ -344,7 +386,20 @@ export function reportViolations(path) {
     return []
   }
   const name = basename(path)
-  return [reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name), ...runtimeViolations(text, name)].filter(Boolean)
+  return [reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name), ...runtimeViolations(text, name, dirname(dirname(path)))].filter(Boolean)
+}
+
+/** «Эталон вида» этапа, к которому относится отчёт (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), или null. */
+export function stageReference(taskDir, name) {
+  const stage = name.match(/(?:stage|этап)-?(\d+[a-z]?)\b/i)?.[1] ?? name.match(/devtools-verify-(\d+[a-z]?)\b/i)?.[1]
+  if (!stage) return null
+  const text = journalText(taskDir)
+  const heading = text.match(new RegExp(`^###\\s+Этап\\s+${stage}(?![\\w.])[^\\n]*$`, 'm'))
+  if (!heading) return null
+  const rest = text.slice(heading.index + heading[0].length)
+  const end = rest.search(/^#{2,3}\s/m)
+  const value = (end === -1 ? rest : rest.slice(0, end)).match(/эталон\s+вида\**\s*:\s*(.+)$/im)?.[1]?.trim()
+  return value && !/^(?:—|-|нет|n\/a|не\s+нужен)/i.test(value) ? value : null
 }
 
 const VALUE =

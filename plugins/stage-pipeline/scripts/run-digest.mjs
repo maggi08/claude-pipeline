@@ -29,12 +29,14 @@ import {
   newReports,
   openBlockers,
 } from './journal-check.mjs'
-import { pluginDataDir } from './hooks/pipeline-state.mjs'
+import { describe, gateStatus } from './ci-gates.mjs'
+import { pluginDataDir, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
 const bullet = (line) => line.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').trim()
 
-export function runDigest(taskDir, dataDir = pluginDataDir()) {
+/** `repo` — `{ worktree, config }` репо прогона: по нему в сводке состояние гейтов CI на текущем HEAD. */
+export function runDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   const { lines, ledgerSince } = baselineInfo(dataDir, taskDir)
   const stages = existsSync(join(taskDir, 'STAGES.md')) ? readFileSync(join(taskDir, 'STAGES.md'), 'utf8') : ''
   const fresh = (line) => line.trim() && !lines.has(fingerprint(line))
@@ -44,6 +46,12 @@ export function runDigest(taskDir, dataDir = pluginDataDir()) {
   const block = lastForceBlock(stages)
   const blockers = block ? openBlockers(block.body) : []
   out.push(`### Блокеры — нужен твой ответ (${blockers.length})`, ...(blockers.length ? blockers.map((line) => `- ${bullet(line)}`) : ['- нет']))
+
+  const gates = repo ? gateStatus(dataDir, repo.worktree, repo.config) : []
+  if (gates.length) {
+    const red = gates.filter(({ status }) => status !== 'green')
+    out.push('', `### Гейты CI на HEAD (${gates.length - red.length} из ${gates.length} зелёные)`, ...gates.map((gate) => `- ${gate.status === 'green' ? '✅' : '✗'} ${describe(gate)}`))
+  }
 
   const open = reports.flatMap(({ name, text }) => ledgerViolations(text, name, { complete: true }).map((violation) => `- ${violation.message}`))
   if (open.length) out.push('', `### Находки без итога (${open.length}) — исправить или вынести блокером`, ...open)
@@ -96,5 +104,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     console.error('Использование: node run-digest.mjs <task_dir>/<TICKET>')
     process.exit(2)
   }
-  console.log(runDigest(resolve(target)))
+  console.log(runDigest(resolve(target), pluginDataDir(), readPipelineState(process.cwd())))
 }

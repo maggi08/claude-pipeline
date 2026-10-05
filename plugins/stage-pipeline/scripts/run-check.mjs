@@ -17,13 +17,16 @@
  *   всех проектов машины идут по очереди через общий лок и с пониженным приоритетом (`nice`): две проверки
  *   типов одновременно на 8 GB — своп, а не параллельность.
  * - время и код выхода в последней строке — для журнала этапа.
+ * - команда целиком (без `{files}` и `--base`) на чистом дереве — результат пишется по дереву коммита:
+ *   по нему хук закрытия force-прогона видит, зелёные ли гейты CI на текущем HEAD (`ci-gates.mjs`).
  * Код выхода — код команды; 2 — сам скрипт не смог (не git-репо, нет команды).
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
-import { readConfig } from './hooks/pipeline-state.mjs'
+import { recordGate, treeState } from './ci-gates.mjs'
+import { pluginDataDir, readConfig } from './hooks/pipeline-state.mjs'
 
 const args = process.argv.slice(2)
 const baseIndex = args.indexOf('--base')
@@ -71,6 +74,9 @@ if (placeholder) {
 
 const release = mode.name === 'low' ? await acquireLock() : () => {}
 const started = Date.now()
+// Прогон всего репо на чистом дереве — свидетельство для гейтов CI; по дифу или с правками в работе — нет.
+const whole = !placeholder && !base
+const before = whole ? treeState(root) : null
 const lowPriority = mode.name === 'low' && process.platform !== 'win32'
 const child = spawn('/bin/sh', ['-c', lowPriority ? `nice -n 10 /bin/sh -c ${shellQuote(finalCommand)}` : finalCommand], { stdio: 'inherit' })
 for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -84,6 +90,10 @@ child.on('exit', (code, signal) => {
   release()
   const seconds = ((Date.now() - started) / 1000).toFixed(0)
   console.log(`run-check: код ${code ?? signal} за ${seconds} с`)
+  if (before?.clean && before.tree) {
+    const after = treeState(root)
+    if (after.clean && after.tree === before.tree) recordGate(pluginDataDir(), root, command, code ?? 1, before.tree)
+  }
   process.exit(code ?? 1)
 })
 

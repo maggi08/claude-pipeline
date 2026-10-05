@@ -77,6 +77,14 @@ disable-model-invocation: true
 - lint_files: <yarn eslint {files} | —>        # lint по файлам этапа (run-check.mjs подставит изменённые); — → на этапе целиком `lint`
 - test_related: <yarn vitest related --run {files} | yarn jest --findRelatedTests {files} | —>  # тесты, связанные с файлами этапа
 - bundle_size: <команда, печатающая размер бандла, напр. `yarn build && du -sk dist` или `size-limit` | —>  # есть → stage-plan заводит metrics-baseline/metrics-guard; — → пунктов нет
+- e2e: <`yarn e2e:test` | —>   # гейт CI, если ниже нет таблицы «Гейты CI»; так же `smoke:`
+
+## Гейты CI (опц. — что CI гоняет на PR и ронять нельзя)
+<!-- Финальные проверки гоняют каждую команду на HEAD (`ci-gates.mjs --run`), force не закрывается «завершён»,
+     пока они не зелёные. Список — из джоб CI на pull request; деплой, публикация и шаги с секретами — не гейты. -->
+| Проверка | Команда | Что ловит |
+|---|---|---|
+| <Смоук> | `<pnpm --filter smoke exec playwright test>` | <маршруты, отказ по роли> |
 
 ## Models
 - review_model: opus   # whole-branch pro-review и свежий прогон чекера в fix-loop — самая сильная модель; в force она ещё и не та, что у maker (`stage-implement` = sonnet); sonnet | opus | haiku
@@ -93,7 +101,7 @@ disable-model-invocation: true
 ## Design sources of truth (figma-compare / figma-spec)
 - tokens: <config/theme/tokens.ts | —>
 - palette: <config/theme/colors.ts | —>
-- ui_lib: <@scope/ui-lib, префикс UI*, компоненты в node_modules/.../runtime/components/ | —>
+- ui_lib: <@scope/ui-lib, префикс UI*, компоненты в node_modules/.../runtime/components/ | —>  # каталог кита внутри репо — путём в бэктиках: kit-override-scan его не сканирует; в самом репо кита — строка `- kit_overrides: off`
 - breakpoints: <xs ≤420, sm ≤767, md ≤1023, lg ≥1024 — из tailwind.config | —>
 - icons: <assets/icons/ авто-импорт, префикс Icon* | —>
 - i18n: <locales/ (ru, kk), useLang() | —>

@@ -7,7 +7,7 @@
  * а хук, который видит чужие задачи, блокирует параллельную работу.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -359,9 +359,9 @@ write(app, { 'src/b.ts': 'export const b = 1\n' })
 git(app, 'add', 'src/b.ts')
 git(app, 'commit', '-qm', 'T-7: правка после прогона без этапа')
 const after = runHook('session-start.mjs', { cwd: app }).text
-check('session-start: коммит после force мимо журнала — назван', /на ветке 1 коммит/.test(after) && /правка после прогона/.test(after), after)
+check('session-start: коммит после force мимо журнала — назван', /коммиты, которых нет ни в STAGES\.md, ни в PR\.md \(1\)/.test(after) && /правка после прогона/.test(after), after)
 write(app, { '.claude/tasks/T-7/STAGES.md': journal('- 2026-10-05 — догон: `T-7: правка после прогона без этапа`, pro-review Approve\n', '## Force-прогон 2026-10-05 — завершён 2026-10-05\n\n') })
-check('session-start: коммит записан в журнал — молчит', !/коммит\(ов\)/.test(runHook('session-start.mjs', { cwd: app }).text))
+check('session-start: коммит записан в журнал — молчит', !/мимо журнала|нет ни в STAGES/.test(runHook('session-start.mjs', { cwd: app }).text))
 // main_branch: main в конфиге, а PR идут в dev: смёржённые туда чужие PR — не работа задачи.
 git(app, 'checkout', '-q', 'main')
 git(app, 'checkout', '-qb', 'dev')
@@ -376,7 +376,7 @@ write(app, {
 git(app, 'add', 'src/d.ts')
 git(app, 'commit', '-qm', 'T-8: своя правка мимо журнала')
 const nearest = runHook('session-start.mjs', { cwd: app }).text
-check('session-start: база — ближайшая интеграционная ветка, чужой PR не в счёт', /на ветке 1 коммит/.test(nearest) && !/чужая фича/.test(nearest), nearest)
+check('session-start: база — ближайшая интеграционная ветка, чужой PR не в счёт', /коммиты, которых нет ни в STAGES\.md, ни в PR\.md \(1\)/.test(nearest) && !/чужая фича/.test(nearest), nearest)
 rmSync(gRoot, { recursive: true, force: true })
 
 // ── 0.13: force не ждёт подтверждений ────────────────────────────────────────
@@ -588,6 +588,131 @@ check('frames-guard: один кадр не открыт — агент прод
 check('frames-guard: все кадры открыты — агент заканчивает', frames('stage-pipeline:devtools-verify', [a, b]).decision === 'allow')
 check('frames-guard: другие агенты не трогаются', frames('stage-pipeline:pro-review', []).decision === 'allow')
 rmSync(lRoot, { recursive: true, force: true })
+
+// ── 0.15: критерии в плане, вид из кита, гейты CI, работа после «готово» ──────
+const LIKES = [
+  ['- `AC-5.3` WHEN сохранить THEN как у эксперта — [verify: devtools-verify]', 'AC-5.3'],
+  ['- D11: «Сохранить» — как у эксперта (expert-lead-card-sheet.tsx:227)', null],
+  ['- `AC-2.1` WHEN карточка THEN отступы как в макете — [verify: figma-compare]', null],
+  ['- `AC-2.2` WHEN поля нет THEN прочерк, так как в API его нет — [verify: pro-review]', null],
+  ['- Решение: активная «Сохранить» — как сейчас в шторке', 'решение'],
+  ['- 2026-10-01 — сделал как у эксперта', null],
+]
+for (const [line, want] of LIKES) check(`«как у X» ${line.slice(2, 46)} → ${want}`, (jc.likeViolation(line)?.id ?? null) === want, JSON.stringify(jc.likeViolation(line)))
+
+const gates = await import(join(PLUGIN, 'ci-gates.mjs'))
+const GATES_TABLE =
+  '## Commands\n- test: `pnpm test`\n\n## Гейты CI (ронять нельзя)\n\n| Проверка | Команда | Что ловит |\n| --- | --- | --- |\n| Юниты | `pnpm test` | словари |\n' +
+  '| **Смоук** | `pnpm --filter smoke exec playwright test` | маршруты |\n\n## Архитектура\n| слой | `не гейт` |\n'
+const parsed = gates.gateCommands(GATES_TABLE)
+check('гейты: таблица «Гейты CI» — названия и команды до следующего раздела', same(parsed, [{ name: 'Юниты', command: 'pnpm test' }, { name: 'Смоук', command: 'pnpm --filter smoke exec playwright test' }]), JSON.stringify(parsed))
+check('гейты: без таблицы — e2e из Commands', same(gates.gateCommands('- test: `yarn test`\n- e2e: `yarn e2e:test` / `yarn e2e:test:stg` (Playwright)\n'), [{ name: 'e2e', command: 'yarn e2e:test' }]))
+check('гейты: «e2e: НЕТ» — не гейт', gates.gateCommands('- e2e: НЕТ # тестов нет\n- test: yarn test\n').length === 0)
+
+const kRoot = mkdtempSync(join(tmpdir(), 'kit-test-'))
+const kApp = join(kRoot, 'app')
+repoAt(kApp, 'main')
+write(kApp, { 'src/ui/button.tsx': 'export const B = 1\n', 'src/Old.tsx': 'export const Old = () => null\n', 'src/Other.tsx': 'export const o = "font-bold"\n' })
+git(kApp, 'add', '-A')
+git(kApp, 'commit', '-qm', 'base 2')
+const kits = await import(join(PLUGIN, 'kit-override-scan.mjs'))
+const KIT_CONFIG = '- ui_lib: shadcn/ui → `src/ui/`\n'
+write(kApp, {
+  'src/Card.tsx': [
+    'export const Card = () => <h3 className="text-[13px] font-bold uppercase text-[var(--text-secondary)]">x</h3>',
+    '// font-extrabold в комментарии не в счёт',
+    'export const panel = "rounded-[9px] px-[18px] max-w-[70ch] p-4 font-medium"',
+    '',
+  ].join('\n'),
+  'src/ui/button.tsx': 'export const B = "font-bold"\n',
+  'src/Card.stories.tsx': 'export const s = "font-bold"\n',
+})
+const kitFound = kits.scanOverrides(kApp, { config: KIT_CONFIG })
+check('kit-overrides: новые и изменённые файлы, без каталога кита и сторис', same(kitFound.map(({ file }) => file), ['src/Card.tsx']), JSON.stringify(kitFound.map(({ file }) => file)))
+const tokens = [...new Set(kitFound[0]?.hits.map(({ token }) => token))].sort()
+check('kit-overrides: вес, регистр, кегль, радиус, отступ, ширина; токен через var и комментарий — нет', same(tokens, ['font-bold', 'max-w-[70ch]', 'px-[18px]', 'rounded-[9px]', 'text-[13px]', 'uppercase'].sort()), JSON.stringify(tokens))
+check('kit-overrides: «kit_overrides: off» — в репо кита молчит', kits.scanOverrides(kApp, { config: '- kit_overrides: off\n' }).length === 0)
+const rendered = kits.renderReport(kitFound, { previous: '# old\n## Итог находок\n- K-1 — исправлено: src/Card.tsx:1\n' })
+check('kit-overrides: отчёт со сводкой чекера, итог прошлого прогона сохранён', jc.findingCounts(rendered, 'stage-1-kit-overrides.md').major === 1 && /## Итог находок\n- K-1 — исправлено/.test(rendered))
+rmSync(join(kApp, 'src/Card.stories.tsx'))
+
+const today = new Date().toISOString().slice(0, 10)
+const kTask = join(kApp, '.claude/tasks/T-12')
+const kStages = ({ extra = '', heading = `## Force-прогон ${today}`, blockers = '' } = {}) =>
+  `# T-12: задача\nВетка: \`T-12/feat/k\`\n\n## Статус: этап 1\n\n${heading}\nПодтверждено: ${today} — «да»\nБлокеры: ${blockers}\n\n## Этапы\n\n` +
+  `### Этап 1: карточка  [status: in-progress]\nЭталон вида: src/Other.tsx — соседняя секция\n${extra}`
+const KIT_GATE = '`node -e "process.exit(0)"`'
+write(kApp, {
+  '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${KIT_CONFIG}\n## Гейты CI\n| Проверка | Команда |\n|---|---|\n| Смоук | ${KIT_GATE} |\n`,
+  '.claude/tasks/T-12/STAGES.md': kStages(),
+})
+git(kApp, 'checkout', '-qb', 'T-12/feat/k')
+runHook('session-start.mjs', { cwd: kApp })
+const kCommit = (command) => runHook('git-guard.mjs', { cwd: kApp, tool_input: { command } })
+const noKitReport = kCommit('git add -A && git commit -m "T-12: карточка"')
+check('force-коммит: переопределения кита без отчёта — отклонён', noKitReport.decision === 'deny' && /src\/Card\.tsx/.test(noKitReport.text) && /kit-override-scan/.test(noKitReport.text), noKitReport.text)
+const kReport = join(kTask, 'checks/stage-1-kit-overrides.md')
+mkdirSync(dirname(kReport), { recursive: true })
+spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', kReport], { cwd: kApp })
+const soon = Date.now() / 1000 + 5
+utimesSync(kReport, soon, soon)
+const noKitLedger = kCommit('git add -A && git commit -m "T-12: карточка"')
+check('force-коммит: отчёт kit-overrides есть, итога нет — отклонён', noKitLedger.decision === 'deny' && /stage-1-kit-overrides\.md/.test(noKitLedger.text), noKitLedger.text)
+writeFileSync(kReport, `${readFileSync(kReport, 'utf8')}\n## Итог находок\n- K-1 — ложная: эталон src/Other.tsx:1 — тот же font-bold\n`)
+utimesSync(kReport, soon, soon)
+const kitOk = kCommit('git add -A && git commit -m "T-12: карточка"')
+check('force-коммит: итог доказан эталоном — проходит', kitOk.decision === 'allow', kitOk.text)
+git(kApp, 'add', '-A')
+git(kApp, 'commit', '-qm', 'T-12: карточка')
+const cardSha = git(kApp, 'rev-parse', 'HEAD').trim()
+
+rmSync(join(kApp, 'src/Old.tsx'))
+const noParity = kCommit('git commit -am "T-12: убрал старую секцию"')
+check('force-коммит: удалён UI-компонент без таблицы паритета — отклонён', noParity.decision === 'deny' && /`Old`/.test(noParity.text), noParity.text)
+const PARITY = '| Паритет | было `Old` → перенесено в Card (`AC-1.P1`) |\n'
+write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: PARITY }) })
+check('force-коммит: Old в таблице паритета — проходит', kCommit('git commit -am "T-12: убрал старую секцию"').decision === 'allow')
+git(kApp, 'commit', '-qam', 'T-12: убрал старую секцию')
+const oldSha = git(kApp, 'rev-parse', 'HEAD').trim()
+
+const dv = join(kTask, 'checks/stage-1-devtools-verify.md')
+const DV = '# devtools-verify, этап 1\nНаходки: critical 0 · major 0 · minor 0\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n'
+writeFileSync(dv, DV)
+check('devtools-verify у этапа с «Эталоном вида» без style-diff — no-style-diff', jc.reportViolations(dv).some(({ rule }) => rule === 'no-style-diff'), JSON.stringify(jc.reportViolations(dv)))
+writeFileSync(dv, `${DV}style-diff 1440: roles 4 · differ 0\n`)
+check('devtools-verify со строкой style-diff — чисто', jc.reportViolations(dv).length === 0, JSON.stringify(jc.reportViolations(dv)))
+
+// Гейт CI: «завершён» — только с зелёным прогоном на текущем HEAD.
+const JOURNALED = `${PARITY}- [x] commit: \`${cardSha.slice(0, 8)}\` T-12: карточка\n- [x] commit: \`${oldSha.slice(0, 8)}\` T-12: убрал старую секцию\n`
+const kGate = () => runHook('journal-gate.mjs', { cwd: kApp, tool_name: 'Edit', tool_input: { file_path: join(kTask, 'STAGES.md') } })
+write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
+const redGate = kGate()
+check('закрытие «завершён» без прогона гейта CI — возвращено', redGate.decision === 'block' && /Смоук/.test(redGate.text) && /не запускался/.test(redGate.text), redGate.text)
+const kConfig = readFileSync(join(kApp, '.claude/pipeline.config.md'), 'utf8')
+write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён с блокерами ${today}`, blockers: '\n- B1 — Смоук: нужен стейджинг, локально не поднимается' }) })
+check('«с блокерами»: незелёный гейт назван блокером — не нарушение', gates.gateCloseViolations(DATA, kApp, kConfig, kTask).length === 0)
+spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'node -e "process.exit(0)"'], { cwd: kApp, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
+check('run-check: прогон на чистом дереве записан — гейт зелёный', gates.gateStatus(DATA, kApp, kConfig)[0]?.status === 'green', JSON.stringify(gates.gateStatus(DATA, kApp, kConfig)))
+write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
+const greenGate = kGate()
+check('гейт зелёный на HEAD — закрытие проходит, гейты в сводке', greenGate.decision === 'message' && /Гейты CI на HEAD \(1 из 1/.test(greenGate.text), `${greenGate.decision}: ${greenGate.text.slice(0, 300)}`)
+
+// Пересобранный без подписи коммит — тот же коммит: журнал узнаёт его по содержимому.
+git(kApp, 'commit', '--amend', '-qm', 'секция: перенос в карточку')
+const rebuilt = runHook('session-start.mjs', { cwd: kApp }).text
+check('session-start: пересобранный коммит с другим заголовком — не «мимо журнала»', !/мимо журнала|нет ни в STAGES/.test(rebuilt), rebuilt)
+check('гейт после нового коммита с тем же деревом — всё ещё зелёный', gates.gateStatus(DATA, kApp, kConfig)[0]?.status === 'green')
+
+// Доработка после «готово» прямо в интеграционную ветку под чужим тикетом.
+git(kApp, 'checkout', '-q', 'main')
+git(kApp, 'merge', '-q', '--no-ff', 'T-12/feat/k', '-m', 'Merge T-12')
+write(kApp, { 'src/Card.tsx': 'export const Card = () => null\n' })
+const later = new Date(Date.now() + 120_000).toISOString()
+execFileSync('git', ['commit', '-qam', 'Fix(T-99): карточка обрезалась'], { cwd: kApp, env: { ...process.env, GIT_AUTHOR_DATE: later, GIT_COMMITTER_DATE: later } })
+const elsewhere = runHook('session-start.mjs', { cwd: kApp }).text
+check('session-start на main: фикс файла задачи под чужим тикетом после закрытия — назван', /T-12 \(закрыта/.test(elsewhere) && /Fix\(T-99\)/.test(elsewhere), elsewhere)
+check('session-start: та же строка второй раз не повторяется', !/T-12 \(закрыта/.test(runHook('session-start.mjs', { cwd: kApp }).text))
+rmSync(kRoot, { recursive: true, force: true })
 
 // ── тяжёлые проверки: охват по дифу и очередь на машину ─────────────────────
 const RUN_CHECK = join(PLUGIN, 'run-check.mjs')
