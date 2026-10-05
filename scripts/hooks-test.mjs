@@ -270,7 +270,7 @@ const runHook = (name, input) => {
   const out = JSON.parse(run.stdout)
   return {
     decision: out.hookSpecificOutput?.permissionDecision ?? out.decision ?? 'message',
-    text: out.hookSpecificOutput?.permissionDecisionReason ?? out.reason ?? out.systemMessage ?? '',
+    text: out.hookSpecificOutput?.permissionDecisionReason ?? out.reason ?? out.systemMessage ?? out.hookSpecificOutput?.additionalContext ?? '',
   }
 }
 const repoAt = (path, branch) => {
@@ -455,6 +455,139 @@ write(fApp, { '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force
 git(fApp, 'checkout', '-q', 'T-9/feat/f')
 check('force «завершён с блокерами» — закрыт, хук молчит', force(fApp, 'pkill -f x').decision === 'allow')
 rmSync(fRoot, { recursive: true, force: true })
+
+// ── 0.14: итог находок, непроверенное, кадры ─────────────────────────────────
+const jc = await import(join(PLUGIN, 'journal-check.mjs'))
+const COUNTS = [
+  ['# pro-review\nНаходки: critical 1 · major 2 · minor 3\n', 'pro-review-1.md', [1, 2, 3]],
+  ['# figma\nВердикт: 3 расхождения (0 critical / 2 major / 1 minor-spec-note).\n', 'figma-compare-2.md', [0, 2, 1]],
+  ['# pro\nИтог: 🔴0 · 🟠2 · 🟡3 · ⚪2. Отброшено при перепроверке: 6.\n', 'stage-8-pro-review.md', [0, 2, 3]],
+  ['# pro\n## Сводка\n- 🔴 Critical: 0\n- 🟠 Major: 1\n', 'pro-review-7a.md', [0, 1, 0]],
+  ['# devtools\n1 critical / 0 major / 0 minor. Shutter crashes on open\n', 'devtools-verify-1.md', [1, 0, 0]],
+  ['# figma\nВердикт: PASS\n- кегль/вес — text-xs 12 / font-medium 500 / leading-4 16\n', 'stage-3-figma-compare.md', [0, 0, 0]],
+  ['# dead\nИтог: 1 удалить / 2 под вопросом.\n', 'final-dead-code.md', [0, 1, 0]],
+  ['# sec\n## Итог\n| M1 | medium | ПДн в localStorage |\n| M2 | medium | стенд в проде |\n', 'final-security-review.md', [0, 2, 0]],
+  ['# dead\n| 1 | `X` | a.ts:83 | high |\n', 'dead-code-final.md', [0, 0, 0]],
+  ['# pro\nВердикт: Request changes (2 major).\n', 'stage-4-pro-review.md', [0, 2, 0]],
+]
+for (const [text, name, want] of COUNTS) {
+  const got = jc.findingCounts(text, name)
+  check(`сводка ${name}: critical/major/minor ${want}`, same([got.critical, got.major, got.minor], want), JSON.stringify(got))
+}
+check('FAIL по критерию — находка, «было FAIL» — нет', same(jc.failedCriteria('- `AC-2.1` - FAIL по 2 major\n- AC-3.1 — PASS (было FAIL)\n'), ['AC-2.1']))
+const DISPOSITIONS = [
+  ['- M-1 — исправлено: use-express-form.ts:104, перепроверено', 'fixed'],
+  ['- #2 — ложная: 109×32 — нативный размер svg', 'false'],
+  ['- AC-5.9 — B1', 'blocker'],
+  ['- M-1 — принят как компромисс, см. «Ожидают подтверждения»', 'parked'],
+  ['- #3 — давний, не находка', 'unproven'],
+  ['- #3 — давний: на базе 422729d0 то же самое (замер 1037)', 'false'],
+  ['- #4 — вопрос дизайнеру', 'parked'],
+  ['- #5 — решение пользователя 04.10.2026: оставить 109', 'user'],
+  ['- #6 — посмотрим', 'unknown'],
+]
+for (const [entry, want] of DISPOSITIONS) check(`итог «${entry.slice(2, 40)}» → ${want}`, jc.disposition(entry) === want, jc.disposition(entry))
+const REVIEW = '# pro-review, этап 1\nНаходки: critical 0 · major 2 · minor 0\n\n### 🟠 M-1 a.ts:1 — дубль\n### 🟠 M-2 b.ts:2 — гонка\n'
+const missing = jc.ledgerViolations(REVIEW, 'pro-review-1.md', { complete: true })
+check('итог: две major без строк — ledger-missing', missing.length === 1 && missing[0].rule === 'ledger-missing', JSON.stringify(missing))
+check('итог: одна строка на две major — всё ещё неполный', jc.ledgerViolations(`${REVIEW}\n## Итог находок\n- M-1 — исправлено: a.ts:3\n`, 'pro-review-1.md', { complete: true }).length === 1)
+check('итог: обе закрыты — чисто', jc.ledgerViolations(`${REVIEW}\n## Итог находок\n- M-1 — исправлено: a.ts:3\n- M-2 — B1\n`, 'pro-review-1.md', { complete: true }).length === 0)
+check('итог: «оставляю» — ledger-parked даже без полноты', jc.ledgerViolations(`${REVIEW}\n## Итог находок\n- M-1 — оставляю, minor по сути\n`, 'pro-review-1.md')[0]?.rule === 'ledger-parked')
+check('✅ с оговоркой — ac-caveat', jc.caveatViolation('- `AC-2.7` WHEN тема THEN ок — [verify: devtools-verify] ✅ devtools-verify (тёмная тема выпадашек не снята)')?.rule === 'ac-caveat')
+check('✅ и явный ⏳ на непроверенное — не оговорка', jc.caveatViolation('- `AC-2.7` — ✅ devtools-verify (light) · ⏳ devtools-verify (dark не снят)') === null)
+check('[live] из-за «нет броней» — live-no-data', jc.noDataViolation('- `AC-4.5` WHEN бар THEN статус — [live: user-side] — нет броней с police на аккаунте')?.rule === 'live-no-data')
+check('[live] с подставленной фикстурой — не нарушение', jc.noDataViolation('- `AC-4.5` — ⏳ нет броней на стенде, проверено на подменённом ответе (фикстура)') === null)
+check('devtools без строк geometry — no-geometry', jc.runtimeViolations('# devtools\nНаходки: critical 0 · major 0 · minor 0\n', 'devtools-verify-3.md')[0]?.rule === 'no-geometry')
+check(
+  'devtools с geometry и «нет данных» в непроверенном — live-no-data',
+  same(jc.runtimeViolations('# d\nНаходки: critical 0 · major 0 · minor 0\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n## Не удалось проверить\n- AC-3.2 — нет данных на стенде\n', 'stage-3-devtools-verify.md').map((v) => v.rule), ['live-no-data']),
+)
+check('devtools skip — геометрии не требует', jc.runtimeViolations('# devtools-verify\nskip: MCP недоступен\n', 'devtools-verify-2.md').length === 0)
+check('отчёт чекера без сводки — report-summary', jc.summaryViolation('# i18n\nВердикт: 3 дефекта\n', 'i18n-sweep-2.md')?.rule === 'report-summary')
+check('не отчёт чекера (проба стенда) — сводка не нужна', jc.summaryViolation('# probe\n', 'stand-probe-2026-10-03.md') === null)
+
+const lRoot = mkdtempSync(join(tmpdir(), 'ledger-test-'))
+const lApp = join(lRoot, 'app')
+repoAt(lApp, 'main')
+const lTask = join(lApp, '.claude/tasks/T-11')
+const forceBlock = (heading = '## Force-прогон 2026-10-04', blockers = '') => `${heading}\nПодтверждено: 04.10.2026 — да\nБлокеры: ${blockers}\n\n`
+const lStages = (extra = '', force = forceBlock()) =>
+  `# T-11: задача\nВетка: \`T-11/feat/l\`\n\n## Статус: этап 1\n\n${force}## Этапы\n\n### Этап 1: первый  [status: in-progress]\n- [x] pro-review (\`checks/pro-review-0.md\` — M-1 принят как компромисс)\n${extra}`
+write(lApp, {
+  '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+  '.claude/tasks/T-11/STAGES.md': lStages(),
+  // Отчёт прошлой версии: находка без итога, на неё ссылается старая строка журнала.
+  '.claude/tasks/T-11/checks/pro-review-0.md': '# pro-review\nИтог: 🔴0 · 🟠1\n### 🟠 M-1 a.ts:1 — дубль\n',
+})
+const past = Date.now() / 1000 - 3600
+utimesSync(join(lTask, 'checks/pro-review-0.md'), past, past)
+// Снимок v1 (0.12–0.13): только строки с ✅ — новая версия дописывает в него текущие строки, а не придирается к ним.
+const v1 = join(DATA, 'journal-baseline')
+mkdirSync(v1, { recursive: true })
+const { createHash } = await import('node:crypto')
+const { realpathSync } = await import('node:fs')
+writeFileSync(join(v1, `${createHash('sha1').update(realpathSync(lTask)).digest('hex').slice(0, 16)}.json`), JSON.stringify({ taskDir: lTask, created: new Date(past * 1000).toISOString(), lines: [] }))
+git(lApp, 'checkout', '-qb', 'T-11/feat/l')
+const lGate = (file) => runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Write', tool_input: { file_path: join(lTask, file) } })
+check('снимок v1 → v2: старая строка «[x] pro-review … компромисс» не придирается', lGate('STAGES.md').decision === 'allow', lGate('STAGES.md').text)
+check('force-коммит: старый отчёт без итога (до снимка) не мешает', hook('git-guard.mjs', lApp, 'git commit --allow-empty -m x') === 'allow')
+
+const future = Date.now() / 1000 + 5
+const writeReport = (name, text) => {
+  write(lApp, { [`.claude/tasks/T-11/checks/${name}`]: text })
+  utimesSync(join(lTask, 'checks', name), future, future)
+}
+writeReport('pro-review-1.md', REVIEW)
+check('запись отчёта с находками без итога — не блок (итог пишется после fix-loop)', lGate('checks/pro-review-1.md').decision === 'allow', lGate('checks/pro-review-1.md').text)
+const denied = runHook('git-guard.mjs', { cwd: lApp, tool_input: { command: 'git commit --allow-empty -m x' } })
+check('force-коммит: новый отчёт без итога — отклонён', denied.decision === 'deny' && /pro-review-1\.md/.test(denied.text), denied.text)
+writeReport('pro-review-1.md', `${REVIEW}\n## Итог находок\n- M-1 — оставляю\n- M-2 — исправлено: b.ts:4\n`)
+const parked = lGate('checks/pro-review-1.md')
+check('итог «оставляю» — возвращён тем же ходом', parked.decision === 'block' && /решение не исправлять/.test(parked.text), parked.text)
+writeReport('pro-review-1.md', `${REVIEW}\n## Итог находок\n- M-1 — исправлено: a.ts:3\n- M-2 — исправлено: b.ts:4\n`)
+check('итог полный — force-коммит проходит', hook('git-guard.mjs', lApp, 'git commit --allow-empty -m x') === 'allow')
+writeReport('devtools-verify-1.md', '# devtools-verify, этап 1\nНаходки: critical 0 · major 0 · minor 0\n')
+check('рантайм-отчёт без geometry — возвращён', /geometry/.test(lGate('checks/devtools-verify-1.md').text))
+writeReport('pro-review-2.md', REVIEW)
+write(lApp, { '.claude/tasks/T-11/STAGES.md': lStages('- [x] pro-review (`checks/pro-review-2.md` — Request changes)\n') })
+check('новая отметка «[x] pro-review (checks/…)» при неполном итоге — возвращена', /pro-review-2\.md/.test(lGate('STAGES.md').text))
+writeReport('pro-review-2.md', `${REVIEW}\n## Итог находок\n- M-1 — исправлено: a.ts:3\n- M-2 — B1\n`)
+write(lApp, { '.claude/tasks/T-11/STAGES.md': lStages('', forceBlock('## Force-прогон 2026-10-04 — завершён 2026-10-04', '\n- B1 — гонка M-2 — нужен ответ бэкенда — рекомендую очередь')) })
+const closedEarly = lGate('STAGES.md')
+check('«завершён» при открытом блокере — возвращено', closedEarly.decision === 'block' && /с блокерами/.test(closedEarly.text), closedEarly.text)
+write(lApp, { '.claude/tasks/T-11/STAGES.md': lStages('- `AC-1.2` WHEN бар THEN статус — ⏳ devtools-verify (подставить нечем)\n', forceBlock('## Force-прогон 2026-10-04 — завершён с блокерами 2026-10-04', '\n- B1 — гонка M-2 — нужен ответ бэкенда — рекомендую очередь')) })
+const closed = runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } })
+check('«завершён с блокерами» — сводка прогона в контексте', closed.decision === 'message' && /Блокеры — нужен твой ответ \(1\)/.test(closed.text) && /AC-1\.2/.test(closed.text), `${closed.decision}: ${closed.text.slice(0, 200)}`)
+check('сводка прогона — один раз на закрытие', runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } }).decision === 'allow')
+
+// frames-guard: кадры агента devtools-verify, открытые Read'ом, и неоткрытые.
+const shots = join(lTask, 'checks/screens')
+mkdirSync(shots, { recursive: true })
+const frame = (name) => {
+  writeFileSync(join(shots, name), 'png')
+  return join(shots, name)
+}
+const [a, b] = [frame('a.png'), frame('b.png')]
+const record = (time, content) => JSON.stringify({ timestamp: new Date(time).toISOString(), message: { content } })
+const agentLog = (reads) => {
+  const path = join(lRoot, `agent-${reads.length}.jsonl`)
+  const now = Date.now()
+  writeFileSync(
+    path,
+    [
+      record(now - 60_000, [{ type: 'tool_use', name: 'mcp__chrome-devtools__take_screenshot', input: { filePath: a } }]),
+      record(now - 50_000, [{ type: 'tool_use', name: 'mcp__chrome-devtools__take_screenshot', input: { filePath: b } }]),
+      ...reads.map((path, i) => record(now - 40_000 + i, [{ type: 'tool_use', name: 'Read', input: { file_path: path } }])),
+    ].join('\n'),
+  )
+  return path
+}
+const frames = (agent_type, reads) => runHook('frames-guard.mjs', { cwd: lApp, agent_type, agent_transcript_path: agentLog(reads) })
+const unseen = frames('stage-pipeline:devtools-verify', [a])
+check('frames-guard: один кадр не открыт — агент продолжает', unseen.decision === 'block' && /b\.png/.test(unseen.text) && !/a\.png/.test(unseen.text), unseen.text)
+check('frames-guard: все кадры открыты — агент заканчивает', frames('stage-pipeline:devtools-verify', [a, b]).decision === 'allow')
+check('frames-guard: другие агенты не трогаются', frames('stage-pipeline:pro-review', []).decision === 'allow')
+rmSync(lRoot, { recursive: true, force: true })
 
 // ── тяжёлые проверки: охват по дифу и очередь на машину ─────────────────────
 const RUN_CHECK = join(PLUGIN, 'run-check.mjs')

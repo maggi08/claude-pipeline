@@ -1,6 +1,7 @@
-import { realpathSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import { newJournalViolations, reportViolation, reportNames } from '../journal-check.mjs'
+import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
+import { runDigest } from '../run-digest.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
@@ -10,10 +11,16 @@ import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-stat
  * «skip: MCP-Chrome занят». Хук смотрит на правку журнала или отчёта чекера сразу после неё
  * и возвращает нарушения агенту — тем же ходом, пока этап ещё открыт.
  *
- * Только новые строки: всё, что было в журнале, когда плагин впервые увидел задачу (снимок
- * в каталоге данных плагина, его делает session-start), не проверяется — закрытые задачи и
- * старые этапы никто не обязан переписывать. Новое нарушение напоминает о себе на каждой
- * следующей правке, пока его не исправят.
+ * 0.14 — итог находок (references/checker-report.md). Находка чекера закрывается исправлением,
+ * доказанной ложностью или блокером, а не строкой «оставляю» или «в Ожидают подтверждения»: в трёх
+ * разобранных задачах так ушла большая часть того, что пользователь потом чинил сам. Отчёт проверяется
+ * при записи (сводка, запрещённые итоги, геометрия у devtools-verify), журнал — при отметке чекера
+ * и закрытии force-прогона. При закрытии прогона в контекст кладётся сводка непроверенного — она идёт
+ * в итоговое сообщение целиком, а не на выбор оркестратора.
+ *
+ * Только новое: строки журнала, которых не было в снимке, и отчёты, записанные после него
+ * (снимок — в каталоге данных плагина, его делает session-start). Старые этапы и закрытые задачи
+ * никто не обязан переписывать. Новое нарушение напоминает о себе, пока его не исправят.
  */
 const input = await readHookInput()
 const tool = input.tool_name ?? ''
@@ -41,6 +48,7 @@ const tasks = state.tasks
 if (!tasks.length) process.exit(0)
 
 const messages = []
+const context = []
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
   // Отчёт — тот, что записан этой правкой: Write/Edit — его путь, Bash — отчёты, изменённые только что.
@@ -52,17 +60,61 @@ for (const task of tasks) {
     : reportNames(task.dir)
         .map((name) => join(checks, name))
         .filter((path) => Date.now() - statSync(path).mtimeMs < 60_000)
-  const reports = written.map(reportViolation).filter(Boolean)
-  for (const violation of [...journal, ...reports]) messages.push(`- ${task.ticket}: ${violation.message}`)
+  const reports = written.flatMap(reportViolations)
+  const closing = forceCloseViolations(pluginDataDir(), task.dir)
+  for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
+  if (!closing.length) {
+    const digest = closedDigest(task)
+    if (digest) context.push(digest)
+  }
 }
-if (!messages.length) process.exit(0)
 
-process.stdout.write(
-  JSON.stringify({
-    decision: 'block',
-    reason:
-      `stage-pipeline: правка журнала задачи нарушает правила закрытия критериев:\n${messages.join('\n')}\n` +
-      'Исправь исход в STAGES.md или прогони чекер, прежде чем идти дальше. Сама правка уже записана, хук её не отменял.',
-  }),
-)
+if (messages.length) {
+  process.stdout.write(
+    JSON.stringify({
+      decision: 'block',
+      reason:
+        `stage-pipeline: правка журнала задачи нарушает правила закрытия критериев и находок:\n${[...new Set(messages)].join('\n')}\n` +
+        'Исправь журнал или отчёт, прогони чекер или допиши «## Итог находок» (references/checker-report.md), прежде чем идти дальше. Сама правка уже записана, хук её не отменял.',
+    }),
+  )
+  process.exit(0)
+}
+if (context.length) {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context.join('\n\n') } }))
+}
 process.exit(0)
+
+/**
+ * Сводка непроверенного — один раз на каждое закрытие блока «Force-прогон», записанное после снимка.
+ * В итоговое сообщение она идёт целиком: в одной задаче сводка выбрала «тексты kk/en, заголовок вкладки»,
+ * а под этим ярлыком лежали два дефекта, которые пользователь нашёл в работе с продуктом.
+ */
+function closedDigest(task) {
+  const stagesPath = join(task.dir, 'STAGES.md')
+  if (!existsSync(stagesPath)) return null
+  const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
+  if (!block || !/заверш/i.test(block.heading)) return null
+  const { lines } = baselineInfo(pluginDataDir(), task.dir)
+  const shown = join(pluginDataDir(), 'digest-shown.json')
+  let seen = {}
+  try {
+    seen = JSON.parse(readFileSync(shown, 'utf8'))
+  } catch {
+    // первый показ
+  }
+  const key = `${real(task.dir)}::${block.heading}`
+  // Блок, закрытый до снимка, — старый прогон: его сводку уже видели.
+  if (seen[key] || lines.has(fingerprint(block.heading))) return null
+  const digest = runDigest(task.dir, pluginDataDir())
+  try {
+    mkdirSync(pluginDataDir(), { recursive: true })
+    writeFileSync(shown, JSON.stringify({ ...seen, [key]: new Date().toISOString() }))
+  } catch {
+    // не записался — сводка придёт ещё раз, это безопасно
+  }
+  return (
+    `stage-pipeline: force-прогон ${task.ticket} закрыт. Ниже — сводка из журнала и отчётов. Вставь её в итоговое сообщение целиком, ` +
+    `не пересказывая и не выбирая: что проверять первым, решает пользователь.\n\n${digest}`
+  )
+}
