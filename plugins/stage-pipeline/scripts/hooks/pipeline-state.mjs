@@ -138,39 +138,118 @@ function headingDate(heading) {
 }
 
 /**
- * Коммиты ветки задачи, о которых журнал не знает: ни SHA, ни заголовок коммита не встречаются
- * в STAGES.md, STAGES-ARCHIVE.md и PR.md. Так выглядит работа после закрытия force — правки
- * в главном контексте и коммиты пользователя, которые не прошли ни один чекер. Заголовок сверяется
- * наравне с SHA: пользователь пересобирает коммиты (убирает подпись) — SHA меняется, заголовок нет.
+ * Коммиты задачи, о которых журнал не знает: ни SHA, ни заголовок, ни содержимое не встречаются в STAGES.md,
+ * STAGES-ARCHIVE.md и PR.md. Так выглядит работа после закрытия force — правки в главном контексте
+ * и коммиты пользователя, которые не прошли ни один чекер. Где искать:
+ * - все ветки задачи из строки `Ветка:` (локальные и origin/) и текущая, если она ветка задачи: после
+ *   сквош-мержа вечерние коммиты остаются только на старой ветке, а новая ветка от dev их не видит;
+ * - интеграционная ветка после закрытия force — только коммиты автора этого репо (`user.email`) в файлах
+ *   задачи, которые не называют её тикет: фикс задачи под чужим тикетом прямо в dev — та же работа мимо журнала.
+ * Пересобранный без подписи коммит — тот же коммит: журнал узнаёт его по заголовку или по patch-id.
  */
 export function unjournaledCommits(state, task, limit = 50) {
+  const cwd = state.worktree
   // База — ближайшая из интеграционных веток, а не только `main_branch`: в живых конфигах он бывает
   // `main` при PR в dev, и тогда в «работу мимо журнала» попали бы чужие смёрженные PR.
   const configured = state.config.match(/^\s*-\s*main_branch:\s*[`*]*([\w./-]+)/m)?.[1]
   const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
-  const bases = names
-    .flatMap((name) => [`origin/${name}`, name])
-    .filter((ref) => git(state.worktree, 'rev-parse', '-q', '--verify', `${ref}^{commit}`))
-    .map((ref) => ({ ref, ahead: Number(git(state.worktree, 'rev-list', '--count', `${ref}..HEAD`) ?? Infinity) }))
-    .sort((a, b) => a.ahead - b.ahead)
-  if (!bases.length || !bases[0].ahead) return []
-  // Мерж-коммиты и сквош смёрженного PR («… (#17)») — не работа задачи мимо журнала.
-  const log = git(state.worktree, 'log', '--no-merges', `--max-count=${limit}`, '--format=%H%x09%s', `${bases[0].ref}..HEAD`)
-  if (!log) return []
+  const integration = names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
+  if (!integration.length) return []
+  const nearest = (ref) =>
+    integration
+      .map((base) => ({ ref: base, ahead: Number(git(cwd, 'rev-list', '--count', `${base}..${ref}`) ?? Infinity) }))
+      .sort((a, b) => a.ahead - b.ahead)[0]
   const journal = ['STAGES.md', 'STAGES-ARCHIVE.md', 'PR.md']
     .map((name) => join(task.dir, name))
     .filter(isFile)
     .map((path) => readFileSync(path, 'utf8'))
     .join('\n')
-  return log
-    .split('\n')
-    .map((line) => {
+
+  const candidates = new Map()
+  const add = (where, ...args) => {
+    for (const line of (git(cwd, 'log', '--no-merges', `--max-count=${limit}`, '--format=%H%x09%s', ...args) ?? '').split('\n').filter(Boolean)) {
       const [sha, ...subject] = line.split('\t')
-      return { sha, subject: subject.join('\t') }
-    })
-    .filter(({ subject }) => !/\(#\d+\)\s*$/.test(subject))
-    .filter(({ sha, subject }) => !journal.includes(sha.slice(0, 7)) && !(subject.length >= 12 && journal.includes(subject)))
+      // Мерж-коммиты и сквош смёрженного PR («… (#17)») — не работа задачи мимо журнала.
+      if (!candidates.has(sha) && !/\(#\d+\)\s*$/.test(subject.join('\t'))) candidates.set(sha, { sha, subject: subject.join('\t'), where })
+    }
+  }
+  // Ветки задачи — из шапки и по тикету в имени: шапку переписывают на новую ветку, старая с вечерними коммитами остаётся.
+  const named = (git(cwd, 'for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes/origin') ?? '')
+    .split('\n')
+    .filter((ref) => ref && isCurrentTask(task.ticket, [], ref.replace(/^origin\//, '')))
+  const refs = [...new Set([...(task.current ? ['HEAD'] : []), ...task.branches.flatMap((branch) => [branch, `origin/${branch}`]), ...named])]
+    .filter((ref) => isCommit(cwd, ref))
+    .slice(0, 12)
+  const bases = new Set()
+  for (const ref of refs) {
+    const base = nearest(ref)
+    bases.add(base.ref)
+    // Ветка уже влита сквошем («Feat(ABC-1): … (#17)» в базе позже её последнего коммита) — её работа в базе, напоминать не о чем.
+    const merged = Number(git(cwd, 'log', '-1', '--format=%ct', '-F', '-i', `--grep=${task.ticket}`, base.ref) ?? 0)
+    if (base.ahead && !(merged && merged >= Number(git(cwd, 'log', '-1', '--format=%ct', ref) ?? Infinity))) add('branch', `${base.ref}..${ref}`)
+  }
+
+  const closed = closedForceDate(task.stages)
+  const me = git(cwd, 'config', 'user.email')
+  const known = journalCommits(cwd, journal)
+  if (closed && me && known.length) {
+    const ticket = new RegExp(`(^|[^\\w-])${escapeRegExp(task.ticket)}([^\\w-]|$)`, 'i')
+    // Коммиты задачи из журнала — с тикетом в заголовке: журнал ссылается и на базу («на базе 422729d0»), её файлы не задача.
+    const info = (git(cwd, 'log', '--no-walk=unsorted', '--format=%H %ct %s', ...known) ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [sha, time, ...subject] = line.split(' ')
+        return { sha, time: Number(time) * 1000, subject: subject.join(' ') }
+      })
+    const own = info.some(({ subject }) => ticket.test(subject)) ? info.filter(({ subject }) => ticket.test(subject)) : info
+    const files = [...new Set((git(cwd, 'show', '--name-only', '--format=', ...own.map(({ sha }) => sha)) ?? '').split('\n').filter(Boolean))]
+    const before = new Set(candidates.keys())
+    // После закрытия — после последнего коммита прогона, а не с начала дня: утренний хотфикс до прогона — не доработка.
+    // Доработка после «готово» идёт в первые дни; дальше те же файлы правят уже другие задачи.
+    const since = Math.max(Date.parse(`${closed}T00:00:00`), ...own.map(({ time }) => time + 1000))
+    const until = Date.parse(`${closed}T00:00:00`) + AFTER_CLOSE_DAYS * DAY
+    const iso = (time) => new Date(time).toISOString().replace(/\.\d+Z$/, 'Z')
+    for (const ref of bases.size ? bases : [nearest('HEAD').ref]) {
+      if (files.length) add(ref, `--since=${iso(since)}`, `--until=${iso(until)}`, `--author=${escapeRegExp(me)}`, ref, '--', ...files.slice(0, 400))
+    }
+    // Свой сквош задачи в dev («Feat(KC-1): …») — не работа мимо журнала; откат чужого коммита — тоже не доработка задачи.
+    for (const [sha, commit] of candidates) if (!before.has(sha) && (ticket.test(commit.subject) || /^Revert\s/.test(commit.subject))) candidates.delete(sha)
+  }
+
+  const left = [...candidates.values()].filter(({ sha, subject }) => !journal.includes(sha.slice(0, 7)) && !(subject.length >= 12 && journal.includes(subject)))
+  if (!left.length) return []
+  const journaled = new Set(patchIds(cwd, known).values())
+  const ids = patchIds(cwd, left.map(({ sha }) => sha))
+  return left.filter(({ sha }) => !journaled.has(ids.get(sha)))
 }
+
+/** Дата закрытия последнего force-прогона — из заголовка «завершён …» или строки статуса; null — не закрыт. */
+export function closedForceDate(stages) {
+  const heading = [...stages.matchAll(/^## Force-прогон.*$/gm)].at(-1)?.[0]
+  const status = stages.match(/^## Статус:\s*(.+)$/m)?.[1]?.match(/force-прогон[^.;\n]{0,40}?завершён[^.;\n]{0,20}/i)?.[0]
+  const closed = heading && /заверш/i.test(heading) ? heading : status
+  if (!closed) return null
+  return headingDate(closed.slice(closed.search(/заверш/i))) ?? headingDate(closed)
+}
+
+// SHA из журнала, которые есть в репо как коммиты: по ним журнал узнаёт пересобранный коммит и файлы задачи.
+function journalCommits(cwd, journal) {
+  const words = [...new Set(journal.match(/\b[0-9a-f]{7,40}\b/g) ?? [])].slice(0, 400)
+  if (!words.length) return []
+  const out = gitInput(cwd, words.map((word) => `${word}^{commit}`).join('\n'), 'cat-file', '--batch-check=%(objectname) %(objecttype)')
+  return [...new Set(out.split('\n').filter((line) => / commit$/.test(line)).map((line) => line.split(' ')[0]))]
+}
+
+function patchIds(cwd, shas) {
+  if (!shas.length) return new Map()
+  const diff = gitInput(cwd, '', 'log', '--no-walk=unsorted', '-p', '--no-color', '--no-ext-diff', '--format=commit %H', ...shas)
+  if (!diff) return new Map()
+  const out = gitInput(cwd, diff, 'patch-id', '--stable')
+  return new Map(out.split('\n').filter(Boolean).map((line) => line.split(' ').reverse()))
+}
+
+const isCommit = (cwd, ref) => Boolean(git(cwd, 'rev-parse', '-q', '--verify', `${ref}^{commit}`))
 
 /**
  * Каталог задач из строки `task_path` конфига. В живых конфигах путь бывает в бэктиках,
@@ -242,6 +321,7 @@ export function forceActive(stages) {
 
 const DAY = 24 * 60 * 60 * 1000
 export const STALE_DAYS = 21
+export const AFTER_CLOSE_DAYS = 14
 
 /**
  * Корень репо с конфигом пайплайна. В worktree `.claude/` может быть не закоммичен
@@ -276,6 +356,14 @@ function git(cwd, ...args) {
     return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null
   } catch {
     return null
+  }
+}
+
+function gitInput(cwd, input, ...args) {
+  try {
+    return execFileSync('git', args, { cwd, input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 })
+  } catch {
+    return ''
   }
 }
 

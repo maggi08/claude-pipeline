@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
+import { gateCloseViolations } from '../ci-gates.mjs'
 import { runDigest } from '../run-digest.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
@@ -17,6 +18,9 @@ import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-stat
  * при записи (сводка, запрещённые итоги, геометрия у devtools-verify), журнал — при отметке чекера
  * и закрытии force-прогона. При закрытии прогона в контекст кладётся сводка непроверенного — она идёт
  * в итоговое сообщение целиком, а не на выбор оркестратора.
+ *
+ * 0.15 — гейты CI проекта (смоук, e2e из конфига): «завершён» — только когда каждый зелёный на текущем HEAD,
+ * «завершён с блокерами» — каждый незелёный назван блокером. В одной задаче смоук упал уже на PR.
  *
  * Только новое: строки журнала, которых не было в снимке, и отчёты, записанные после него
  * (снимок — в каталоге данных плагина, его делает session-start). Старые этапы и закрытые задачи
@@ -61,7 +65,7 @@ for (const task of tasks) {
         .map((name) => join(checks, name))
         .filter((path) => Date.now() - statSync(path).mtimeMs < 60_000)
   const reports = written.flatMap(reportViolations)
-  const closing = forceCloseViolations(pluginDataDir(), task.dir)
+  const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir)]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   if (!closing.length) {
     const digest = closedDigest(task)
@@ -106,7 +110,7 @@ function closedDigest(task) {
   const key = `${real(task.dir)}::${block.heading}`
   // Блок, закрытый до снимка, — старый прогон: его сводку уже видели.
   if (seen[key] || lines.has(fingerprint(block.heading))) return null
-  const digest = runDigest(task.dir, pluginDataDir())
+  const digest = runDigest(task.dir, pluginDataDir(), state)
   try {
     mkdirSync(pluginDataDir(), { recursive: true })
     writeFileSync(shown, JSON.stringify({ ...seen, [key]: new Date().toISOString() }))

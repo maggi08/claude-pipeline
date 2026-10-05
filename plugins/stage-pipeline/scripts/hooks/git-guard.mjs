@@ -2,7 +2,8 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { openLedgers } from '../journal-check.mjs'
+import { journalText, openLedgers, reportNames } from '../journal-check.mjs'
+import { scanOverrides, summarize } from '../kit-override-scan.mjs'
 import { commitScope, gitInvocations } from './git-command.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
@@ -26,6 +27,12 @@ import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-stat
  * код пишет модель, проверяют модели, человек читает только итог. Поэтому force-коммит проходит
  * через floor-guard — по тому, что войдёт в коммит, а не по всему дереву: сохранённая страница
  * или черновик разработчика рядом с кодом не должны отклонять коммит, в который они не попадут.
+ *
+ * 0.15 — два хода, которые force-коммит этапа тоже проверяет по своему дифу:
+ * - удалён UI-компонент, а таблицы паритета («было → где теперь / удалено по решению») с его именем
+ *   в журнале нет: в одной задаче удалённая секция унесла шесть функций, их вернул ревьюер паритета;
+ * - переопределения кита и ручная типографика без отчёта kit-overrides: вид взяли из прототипа, а не из
+ *   кита и соседних секций, и пользователь вернул «жирно», «разные кнопки», «другая таблица».
  */
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
@@ -66,6 +73,34 @@ for (const { subcommand, dir, args } of invocations) {
 
   const paths = commitPaths(invocations, state.worktree)
   if (paths?.length === 0) continue
+
+  const journal = journalText(task.dir)
+  const removed = removedComponents(state.worktree, paths).filter((name) => !/паритет/i.test(journal) || !journal.includes(name))
+  if (removed.length) {
+    deny(
+      `stage-pipeline: этап удаляет UI — ${removed.map((name) => `\`${name}\``).join(', ')}, а таблицы паритета с этими строками в STAGES.md нет. Коммит отклонён.\n` +
+        'Допиши в этап таблицу «Паритет»: что из удалённого куда переехало, что удалено по решению (строки — критерии `AC-N.P*`, их сверяет task-converge; stage-plan, Шаг 3). ' +
+        'Компонент не рендерился нигде (осиротел) — строка с этим и ссылкой на отчёт dead-code.',
+    )
+  }
+
+  const overrides = safeScan(state.worktree, paths, state.config)
+  const kitReports = reportNames(task.dir)
+    .filter((name) => name.includes('kit-overrides'))
+    .map((name) => readFileSync(join(task.dir, 'checks', name), 'utf8'))
+    .join('\n')
+  const unreported = overrides.filter(({ file }) => !kitReports.includes(file))
+  if (unreported.length) {
+    const scan = join(dirname(fileURLToPath(import.meta.url)), '..', 'kit-override-scan.mjs')
+    deny(
+      `stage-pipeline: в дифе этапа переопределения кита без отчёта — коммит отклонён.\n${unreported
+        .slice(0, 8)
+        .map(({ file, hits }) => `- ${file}: ${summarize(hits)}`)
+        .join('\n')}\n` +
+        `Запиши отчёт: \`node ${scan} --out ${join(task.dir, 'checks')}/stage-<N>-kit-overrides.md\` и закрой каждую строку в «## Итог находок»: ` +
+        'исправлено (вид из кита), ложная — с `путь:строка` эталонной секции, которая делает так же, или решение пользователя «вид как в прототипе».',
+    )
+  }
 
   // Пути — надмножество коммита: `git add x && git commit` в одной команде ещё не обновил индекс.
   const guard = join(dirname(fileURLToPath(import.meta.url)), '..', 'floor-guard.mjs')
@@ -134,6 +169,30 @@ function serviceTrailer(command, args, dir) {
     }
   }
   return false
+}
+
+/**
+ * Удалённые коммитом UI-компоненты — имена для таблицы паритета (`index.tsx` — по имени каталога).
+ * Переименование — не удаление; тесты, сторис и моки — не UI.
+ */
+function removedComponents(worktree, paths) {
+  const names = gitOut(worktree, 'diff', '--name-only', '--diff-filter=D', '--find-renames', '-z', 'HEAD', '--', ...(paths ?? []))
+    .split('\0')
+    .filter((path) => /\.(?:tsx|jsx|vue|svelte|astro|html?)$/.test(path) && !/\.(?:test|spec|stories|story)\.\w+$|(^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//.test(path))
+    .map((path) => {
+      const stem = path.split('/').pop().replace(/\.\w+$/, '')
+      return stem === 'index' ? (path.split('/').at(-2) ?? stem) : stem
+    })
+  return [...new Set(names)]
+}
+
+// Скан не смог (не git, битый диф) — коммит не блокируется: то же прогонит /stage-check.
+function safeScan(worktree, paths, config) {
+  try {
+    return scanOverrides(worktree, { paths, config })
+  } catch {
+    return []
+  }
 }
 
 function realDir(dir) {
