@@ -38,6 +38,18 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "matcher": "devtools-verify",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/frames-guard.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|Bash",

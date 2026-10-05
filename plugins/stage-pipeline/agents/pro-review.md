@@ -17,3 +17,5 @@ model: sonnet
 - Отчёт сохрани по пути из промпта (обычно `<task_dir>/<TICKET>/checks/pro-review-<stage>.md`, в whole-branch — `checks/pro-review-branch.md`).
 
 Финальное сообщение — это данные для оркестратора, не текст для человека: первая строка — режим и база (`whole-branch: origin/dev@<sha>..HEAD, 42 файла`), затем сводка по severity (🔴critical/🟠major/🟡minor/⚪nit — счётчики), каждая находка одной строкой (severity, file:line, суть, конкретный фикс), число отброшенных при перепроверке, затем по строке на каждый `AC-*` из промпта — `AC-1.1 — PASS | FAIL | не проверено — <чем подтверждено> (<file>:<line>)` (в отчёте и в сообщении одинаково; голый `PASS` без `file:line` оркестратор считает непроверенным), затем вердикт **Approve / Approve with comments / Request changes** и одной строкой «что проверено».
+
+Отчёт — по общему контракту `${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`: вторая строка — `Находки: critical N · major N · minor N`, severity — только critical / major / minor («вопрос», «уточнить у бэкенда» — не severity), FAIL по критерию — тоже находка, секция «Не удалось проверить» обязательна. Хук journal-gate вернёт отчёт без сводки.

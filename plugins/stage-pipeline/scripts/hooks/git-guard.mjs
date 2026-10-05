@@ -2,8 +2,9 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { openLedgers } from '../journal-check.mjs'
 import { commitScope, gitInvocations } from './git-command.mjs'
-import { readHookInput, readPipelineState } from './pipeline-state.mjs'
+import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
  * В обычном режиме пайплайна индекс и коммит принадлежат пользователю: /stage-check
@@ -52,6 +53,16 @@ for (const { subcommand, dir, args } of invocations) {
     )
   }
   if (!task || subcommand !== 'commit') continue
+
+  // Force-коммит этапа — после итога каждой находки его чекеров: иначе «принят как компромисс» уезжает в коммит,
+  // а пользователь находит дефект на следующий день (прецедент: Request changes → дубль заявки).
+  const open = openLedgers(pluginDataDir(), task.dir)
+  if (open.length) {
+    deny(
+      `stage-pipeline: у находок чекеров нет итога — коммит этапа отклонён.\n${[...new Set(open.map((violation) => `- ${violation.message}`))].join('\n')}\n` +
+        'Допиши в конец каждого отчёта «## Итог находок»: исправлено / ложная (с доказательством) / B<n> — блокер (references/checker-report.md). Неисправленное — блокер, а не «Ожидают подтверждения».',
+    )
+  }
 
   const paths = commitPaths(invocations, state.worktree)
   if (paths?.length === 0) continue
