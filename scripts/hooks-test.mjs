@@ -318,6 +318,8 @@ rmSync(join(app, '.claude/pipeline.config.local.md'))
 const withForce = (heading, body) => write(app, { '.claude/tasks/T-7/STAGES.md': journal('', `${heading}\n${body}\n\n`) })
 withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nОтветы интервью: ветка — от dev')
 check('stage-implement: новый Force-блок без «Подтверждено:» — отклонён', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2, режим implement') === 'deny')
+const unconfirmed = runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt: 'Тикет T-7, этап 2' } }).text
+check('stage-implement: отказ не требует второго «да» после интервью', /ответы интервью/.test(unconfirmed) && !/возьми.*«да»|спроси/i.test(unconfirmed), unconfirmed)
 withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nОтветы интервью: ветка — от dev\nПодтверждено: 2026-10-05 — «да, гони»')
 check('stage-implement: подтверждение есть — проходит', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2') === 'allow')
 withForce('## Force-прогон 2026-09-24', 'Режим: автономный.')

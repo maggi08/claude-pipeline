@@ -6,7 +6,7 @@
   "chrome-devtools": {
     "type": "stdio",
     "command": "npx",
-    "args": ["-y", "chrome-devtools-mcp@1.6.0"],
+    "args": ["-y", "chrome-devtools-mcp@1.6.0", "--isolated"],
     "env": {}
   }
 }
