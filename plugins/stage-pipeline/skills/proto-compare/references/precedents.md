@@ -1,15 +1,15 @@
-# Прецеденты правил proto-compare
+# Precedents of the proto-compare rules
 
-Откуда взялось каждое правило. Для исполнения скилла файл не нужен — правила в `SKILL.md` самодостаточны; он нужен, когда правило хочется ослабить или переписать.
+Where each rule came from. The file is not needed to run the skill — the rules in `SKILL.md` are self-sufficient; it is needed when you want to weaken or rewrite a rule.
 
-## Порядок сверки
+## Comparison order
 
-промо-блок дублировался в боковой панели и в карточке формы; Terms/Privacy стояли на всех 4 стейтах экрана входа при 2 в прототипе. Обе находки пришли от пользователя после PASS чекера — сверка шла по одному стейту за раз.
+A promo block was duplicated in the side panel and in the form card; Terms/Privacy stood on all 4 states of the sign-in screen against 2 in the prototype. Both findings came from the user after the checker's PASS — the comparison went one state at a time.
 
-## Чеклист
+## Checklist
 
-README обещал вариант поверхности, которого в CSS не существовало (поймано proto-spec на этапе 1 — образец); SPEC §20 «glass card» оказался старше CSS, который стекло срезал; сам CSS описывал себя точнее любого документа.
+The README promised a surface variant that did not exist in the CSS (caught by proto-spec at stage 1 — an example); SPEC §20 "glass card" turned out older than the CSS, which had cut the glass; the CSS described itself more accurately than any document.
 
 ## Severity
 
-proto-compare выдал FAIL с 3 critical, из которых оркестратор опроверг два — «pill 50px» (на деле `--button-radius:10px`, переменная переопределена ниже) и «синий outline» (правило перекрыто ниже в том же файле). Тот же непройденный каскад, но в обратную сторону, в другой задаче дал пропуск целой темы.
+proto-compare issued a FAIL with 3 criticals, two of which the orchestrator refuted — "pill 50px" (in fact `--button-radius:10px`, the variable is overridden further down) and "blue outline" (the rule is overridden further down in the same file). The same unresolved cascade, but in the opposite direction, in another task caused a whole theme to be missed.

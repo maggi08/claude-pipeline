@@ -3,102 +3,103 @@ name: figma-compare
 description: Pixel-perfect сверка реализованного кода (вёрстки) с Figma-дизайном — макетом в фигме — токены, цвета, отступы, радиусы, тени, типографика, структура layout (источники правды из pipeline.config.md). Use when the user gives a Figma link (ссылка на макет или ноду) and asks to check/compare the implementation, or as the check step of /stage-check. Статическая сверка код ↔ дизайн (без браузера).
 ---
 
-# Figma Compare — сверка кода с дизайном
+# Figma Compare — checking code against the design
 
-Цель: найти все расхождения между Figma-нодой и реализацией. Ты — **проверяющий**, не автор: не оправдывай код, ищи расхождения. Ничего не чини — только отчёт (починка — отдельный шаг вне этого скилла).
+Goal: find every divergence between the Figma node and the implementation. You are the **checker**, not the author: do not justify the code, look for divergences. Fix nothing — only the report (fixing is a separate step outside this skill).
 
-> **Project config.** Пути, источники правды и `<task_dir>` бери из `<repo>/.claude/pipeline.config.md` (нет файла — попроси запустить `/pipeline-init`). Далее `<task_dir>` = поле `task_path` из конфига (по умолчанию `<repo>/.claude/tasks/ (в репо)`).
+> **Project config.** Take paths, sources of truth and `<task_dir>` from `<repo>/.claude/pipeline.config.md` (no file — ask to run `/pipeline-init`). Below, `<task_dir>` = the `task_path` field of the config (by default `<repo>/.claude/tasks/ (in the repo)`).
 
-## Вход
+> **Task language.** The task has one language, the `Language: ru|en` line from the prompt (no line in the prompt — the STAGES.md header). Write the report in it; service markers come from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md`. The report samples below are the English forms.
 
-- Figma URL ноды/фрейма (один или несколько, каждый со своим стейтом/экраном).
-- Пути к коду (страница/компоненты). Если не даны — возьми из блока «Ориентация» в шапке `<task_dir>/<TICKET>/FEATURE-MAP.md` (карту целиком читать не нужно) или найди по роуту.
-- Какой контекст сверяем: desktop / adaptive / webview (влияет на breakpoints и репо).
+## Input
 
-## Инструменты Figma (загрузи через ToolSearch: "select:...")
+- The Figma URL of a node/frame (one or several, each with its own state/screen).
+- Code paths (page/components). If not given — take them from the "Orientation" block in the header of `<task_dir>/<TICKET>/FEATURE-MAP.md` (no need to read the whole map) or find them by the route.
+- Which context is compared: desktop / adaptive / webview (it affects breakpoints and the repo).
 
-| Тул | Зачем |
+## Figma tools (load via ToolSearch: "select:...")
+
+| Tool | What for |
 |---|---|
-| `mcp__figma__get_design_context` | основной: структура ноды, стили, значения, привязанные переменные |
-| `mcp__figma__get_variable_defs` | все переменные (токены) ноды: цвета, spacing, radius, типографика |
-| `mcp__figma__get_metadata` | дерево фреймов, размеры и позиции элементов |
-| `mcp__figma__get_screenshot` | эталонная картинка для глазной сверки структуры |
-| `mcp__figma__get_code_connect_map` | существующий маппинг Figma-компонент ↔ код |
+| `mcp__figma__get_design_context` | the main one: node structure, styles, values, bound variables |
+| `mcp__figma__get_variable_defs` | all variables (tokens) of the node: colors, spacing, radius, typography |
+| `mcp__figma__get_metadata` | the frame tree, sizes and positions of elements |
+| `mcp__figma__get_screenshot` | the reference picture for an eye check of the structure |
+| `mcp__figma__get_code_connect_map` | the existing Figma component ↔ code mapping |
 
-## Источники правды на стороне кода
+## Sources of truth on the code side
 
-Конкретные пути — из `.claude/pipeline.config.md` (секция «Design sources of truth»). Что сверять:
+Concrete paths come from `.claude/pipeline.config.md` (the "Design sources of truth" section). What to compare against:
 
-- **Семантические токены DS**: файл `tokens` из конфига — маппинг классов (`bg-neutral-base`, `text-neutral-primary` и т.п.) → палитра + dark-варианты. Если в Figma переменная — в коде должен быть соответствующий токен, не сырой hex.
-- **Палитра**: файл `palette` из конфига (CSS-переменные `--color-*`) + пресет UI-lib, если указан.
-- **Breakpoints**: поле `breakpoints` из конфига.
-- **UI-kit**: `ui_lib` из конфига — если в Figma использован компонент дизайн-системы, в коде должен быть соответствующий `UI*`-компонент, а не самодельная копия.
-- Мульти-контекст (desktop/adaptive/webview) — из секции «Platforms» конфига; у webview свои токены/пути.
+- **DS semantic tokens**: the `tokens` file from the config — the mapping of classes (`bg-neutral-base`, `text-neutral-primary`, etc.) → palette + dark variants. If Figma has a variable, the code must have the matching token, not a raw hex.
+- **Palette**: the `palette` file from the config (CSS variables `--color-*`) + the UI-lib preset, if given.
+- **Breakpoints**: the `breakpoints` field of the config.
+- **UI kit**: `ui_lib` from the config — if Figma uses a design-system component, the code must have the matching `UI*` component, not a home-made copy.
+- Multi-context (desktop/adaptive/webview) — from the "Platforms" section of the config; webview has its own tokens/paths.
 
-## Порядок сверки
+## Comparison order
 
-1. Вытащи из Figma: переменные (`get_variable_defs`), структуру и стили (`get_design_context`, `get_metadata`), скриншот.
-2. Прочитай код: tailwind-классы, scss, инлайн-стили, пропсы `UI*` компонентов. Разрезолвь классы в значения через конфиги выше.
-3. Сравни по чеклисту (ниже) — элемент за элементом, сверху вниз по дереву ноды.
+1. Pull from Figma: variables (`get_variable_defs`), structure and styles (`get_design_context`, `get_metadata`), the screenshot.
+2. Read the code: tailwind classes, scss, inline styles, props of `UI*` components. Resolve the classes into values through the configs above.
+3. Compare by the checklist (below) — element by element, top to bottom along the node tree.
 
-## Чеклист сверки
+## Comparison checklist
 
-- **Цвета** — сверка НА УРОВНЕ ТОКЕНОВ: если в Figma переменная (напр. `text/neutral/secondary`), в коде должен быть соответствующий семантический токен, а не сырой hex/палитра — даже при визуальном совпадении это нарушение (сломается в dark mode). Захардкоженный hex = critical.
-- **Типографика**: размер, вес, line-height, letter-spacing; шрифт Okta Neue.
-- **Отступы**: margin / padding / gap (в Figma — auto-layout padding и item spacing).
-- **Границы и радиусы**: border width/color, border-radius (по углам, если разные).
-- **Тени**: box-shadow (все слои эффекта).
-- **Размеры и позиции**: ширины/высоты фиксированных элементов, выравнивание, порядок элементов; fill/hug в Figma ↔ flex-grow/fit-content в CSS.
-- **Структура**: все ли элементы ноды есть в коде; нет ли лишних; состояния (hover/active/disabled), если они в переданных нодах.
-- **Компоненты DS**: инстанс из библиотеки в Figma ↔ `UI*` в коде; сверь variant-пропсы (напр. variant у `UIButton`).
-- **Копия/символы**: статическая UI-копия (лейблы, кнопки, заголовки, хинты, empty-state, ошибки) — сверять посимвольно; динамический контент — НЕ сверять. Подробно — раздел «Text fidelity» ниже.
-- **Dark mode**: если у токена есть dark-вариант, класс из tokens.ts его уже несёт; ручные `dark:` поверх сырой палитры — подозрительно.
+- **Colors** — compare AT THE TOKEN LEVEL: if Figma has a variable (e.g. `text/neutral/secondary`), the code must have the matching semantic token, not a raw hex/palette — even when it matches visually this is a violation (it breaks in dark mode). A hardcoded hex = critical.
+- **Typography**: size, weight, line-height, letter-spacing; the font Okta Neue.
+- **Spacing**: margin / padding / gap (in Figma — auto-layout padding and item spacing).
+- **Borders and radii**: border width/color, border-radius (per corner, if different).
+- **Shadows**: box-shadow (all layers of the effect).
+- **Sizes and positions**: widths/heights of fixed elements, alignment, element order; fill/hug in Figma ↔ flex-grow/fit-content in CSS.
+- **Structure**: are all elements of the node in the code; are there extra ones; states (hover/active/disabled), if they are in the passed nodes.
+- **DS components**: a library instance in Figma ↔ `UI*` in the code; compare the variant props (e.g. the variant of `UIButton`).
+- **Copy/characters**: static UI copy (labels, buttons, headings, hints, empty-state, errors) — compare character by character; dynamic content — do NOT compare. Details in the "Text fidelity" section below.
+- **Dark mode**: if a token has a dark variant, the class from tokens.ts already carries it; manual `dark:` over the raw palette is suspicious.
 
-## Text fidelity — как сверять текст (частый источник ложных находок)
+## Text fidelity — how to compare text (a frequent source of false findings)
 
-Текст из Figma ломается двумя способами. Оба реально ловили на практике — не наступай.
+Text from Figma breaks in two ways. Both were caught in practice — do not repeat them.
 
-**Класс A — плейсхолдер vs реальный контент.** Прежде чем флагать текст, классифицируй узел:
-- **Статическая UI-копия** — фиксированные строки: кнопки, заголовки, хинты, empty-state, ошибки, лейблы. Её сверяем.
-- **Динамический контент** — data-driven: цены, годы, названия марок/моделей, счётчики, диапазоны. Значение в Figma — это ПЛЕЙСХОЛДЕР, а не копия.
-- Признаки динамики/плейсхолдера: круглые/повторяющиеся числа (`2000`, `2000-2000`, `10 000 000`), сэмпл-имена (`Kia Sport`), lorem, привязка узла к Figma-переменной/component-property, слот данных в `design_context`.
-- Правило: **для динамики не флагай различие контента вообще** (напр. Figma-плейсхолдер `2000` vs реальный `2012 — 2015` — НЕ находка). Сверяй лишь **формат**, если он специфицирован дизайном (маска, разделители, суффикс `₸`). Static-vs-dynamic непонятно → пиши в «Не удалось проверить»/вопрос дизайнеру, не утверждай.
+**Class A — placeholder vs real content.** Before flagging a text, classify the node:
+- **Static UI copy** — fixed strings: buttons, headings, hints, empty-state, errors, labels. We compare it.
+- **Dynamic content** — data-driven: prices, years, make/model names, counters, ranges. The value in Figma is a PLACEHOLDER, not copy.
+- Signs of dynamic content/placeholder: round/repeating numbers (`2000`, `2000-2000`, `10 000 000`), sample names (`Kia Sport`), lorem, the node bound to a Figma variable/component-property, a data slot in `design_context`.
+- The rule: **for dynamic content do not flag a content difference at all** (e.g. the Figma placeholder `2000` vs the real `2012 — 2015` is NOT a finding). Compare only the **format**, if the design specifies it (a mask, separators, the `₸` suffix). Static-vs-dynamic is unclear → write it into "Could not verify"/a question to the designer, do not assert.
 
-**Класс B — точность символов.** Источник правды по символам = текст из `get_design_context` (реальный `characters`), НЕ vision-чтение скриншота (кириллица и мелкий текст читаются с ошибкой). Скриншот — только чтобы понять, какой стейт/вариант показан. design_context ↔ скриншот расходятся → зафиксируй неоднозначность, не выбирай молча. Реально проверяй: семейство тире (`-` дефис / `–` en / `—` em), кавычки (`«»` / `""`), `₸`, non-breaking space, `…` vs `...`.
+**Class B — character accuracy.** The source of truth for characters = the text from `get_design_context` (the real `characters`), NOT a vision read of the screenshot (Cyrillic and small text are read with errors). The screenshot is only for understanding which state/variant is shown. design_context and the screenshot diverge → record the ambiguity, do not pick silently. Really check: the dash family (`-` hyphen / `–` en / `—` em), quotes (`«»` / `""`), `₸`, non-breaking space, `…` vs `...`.
 
-**i18n.** Сверяй Figma-копию с РАЗРЕЗОЛВЛЕННОЙ строкой локали (ru + kk из `locales/`), не с ключом. Незаполненная интерполяция (напр. `«Модель {mark}»`, отрендеренная без параметра) — реальный баг, флагай. Ключ, который резолвится верно, но отличается от Figma-плейсхолдера — НЕ баг.
+**i18n.** Compare the Figma copy with the RESOLVED locale string (ru + kk from `locales/`), not with the key. An unfilled interpolation (e.g. `"Model {mark}"` rendered without the parameter) is a real bug, flag it. A key that resolves correctly but differs from the Figma placeholder is NOT a bug.
 
-## Допуски (severity)
+## Tolerances (severity)
 
-| Severity | Что |
+| Severity | What |
 |---|---|
-| **critical** | не тот токен/цвет, hex вместо токена, отсутствующий/лишний элемент, не тот UI-компонент или variant, сломанная структура |
-| **major** | расхождение spacing/radius/shadow/типографики > 2px, неверное выравнивание |
-| **minor** | ≤ 2px (округления px↔rem), различия рендеринга шрифта |
+| **critical** | wrong token/color, hex instead of a token, a missing/extra element, wrong UI component or variant, broken structure |
+| **major** | a spacing/radius/shadow/typography divergence > 2px, wrong alignment |
+| **minor** | ≤ 2px (px↔rem rounding), font rendering differences |
 
-Не флагай: различия из-за **динамического** контента (реальные цены/годы/имена vs Figma-плейсхолдер — см. «Text fidelity»), длину текста, картинки, скроллбары, антиалиасинг. Статическую же копию сверяй посимвольно против разрезолвленной локали.
+Do not flag: differences caused by **dynamic** content (real prices/years/names vs a Figma placeholder — see "Text fidelity"), text length, images, scrollbars, anti-aliasing. Compare static copy character by character against the resolved locale.
 
-**Границы статического чекера** — всегда перечисляй это в «Не удалось проверить», чтобы оркестратор/пользователь знали слепые зоны: анимации и motion-механика (проверяются только рантаймом или по спеке механики), поведение на ширинах ≠ макетной (responsiveness-чекер), hover/focus/active, dark mode при light-only макете, реально сгенерированные CSS-классы (Tailwind arbitrary values могут не собраться — видно только в браузере).
+**The limits of a static checker** — always list them in "Could not verify", so that the orchestrator/user know the blind spots: animations and motion mechanics (checked only at runtime or against the mechanics spec), behavior at widths other than the mockup's (the responsiveness checker), hover/focus/active, dark mode when the mockup is light-only, the CSS classes actually generated (Tailwind arbitrary values may fail to build — visible only in the browser).
 
-## Выход: отчёт
+## Output: report
 
-Если есть `<task_dir>/<TICKET>/` — сохрани в `checks/figma-compare-<stage>.md`, иначе просто выведи.
+If `<task_dir>/<TICKET>/` exists — save to `checks/figma-compare-<stage>.md`, otherwise just print it.
 
 ```markdown
-# Figma compare: <нода> ↔ <файлы>
-Вердикт: PASS | N расхождений (X critical / Y major / Z minor)
+# Figma compare: <node> ↔ <files>
+Findings: critical N · major N · minor N — PASS | N divergences
 
-| # | AC | Элемент | Свойство | Figma | Код | Severity | Где |
+| # | AC | Element | Property | Figma | Code | Severity | Where |
 |---|----|---------|----------|-------|-----|----------|-----|
-| 1 | AC-2.4 | Кнопка «Купить» | цвет фона | token bg-accent-primary | bg-[#5B4DBE] (hex) | critical | src/components/BuyButton.tsx:12 |
+| 1 | AC-2.4 | Button "Buy" | background color | token bg-accent-primary | bg-[#5B4DBE] (hex) | critical | src/components/BuyButton.tsx:12 |
 
-## Критерии этапа
-(по строке на каждый переданный `AC-*`: `AC-2.1` — PASS | FAIL + чем именно не сошлось)
+## Stage criteria
+(one line for every passed `AC-*`: `AC-2.1` — PASS, with the measured value | FAIL + exactly what does not match)
 
-## Не удалось проверить
-(нет доступа к ноде, динамический стейт и т.п. — честно перечисли)
+## Could not verify
+(no access to the node, a dynamic state, etc. — list them honestly; nothing left — "everything verified")
 ```
 
-Каждая строка — с точным `file:line` и точным значением из Figma (не «примерно»). Если расхождений нет — явный PASS со списком того, что было проверено.
-`AC` — ID критерия приёмки из STAGES.md, который закрывает эта строка (`AC-2.4`); критерия на неё нет — ставь `—`. Без ID вторая итерация fix-loop не понимает, что именно перепроверяется, и правки расходятся с планом.
-
+Every row carries an exact `file:line` and the exact value from Figma (not "about"). If there are no divergences — an explicit PASS with the list of what was checked.
+`AC` is the ID of the acceptance criterion from STAGES.md that this row closes (`AC-2.4`); no criterion for it — put `—`. Without the ID the second iteration of the fix loop does not understand what exactly is being rechecked, and the fixes drift from the plan.

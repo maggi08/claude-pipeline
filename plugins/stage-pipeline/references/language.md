@@ -69,6 +69,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Blocker line `B<n> — …` closed by the words | `lifted by`, `resolved by`, `closed by`, `answered by`, `user answer`, `user decision` | `снят`, `решён`, `закрыт`, `отвечен`, `ответ пользователя`, `решение пользователя` |
 | Report, line 2 | `Findings: critical N · major N · minor N` | `Находки: critical N · major N · minor N` |
 | Report section | `## Findings outcome` | `## Итог находок` |
+| Verdict line, criterion not reached | `not checked` | `не проверено` |
 | Report section | `## Could not verify` | `## Не удалось проверить` |
 | Findings outcome | `fixed: <file:line or the recheck>` | `исправлено: <file:line или чем перепроверено>` |
 | Findings outcome | `false: <proof>` | `ложная: <доказательство>` |
