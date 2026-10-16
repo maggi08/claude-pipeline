@@ -1,21 +1,21 @@
 /**
- * Язык прозы отчёта чекера (D9): journal-gate возвращает автору отчёт `checks/`, написанный не на языке задачи.
+ * The language of a checker report's prose (D9): journal-gate sends back to its author a `checks/` report not written in the task language.
  *
- * Считаются слова прозы: кириллические против латинских. Не считаются код-блоки, инлайн-бэктики, цитаты «…» и "…",
- * ссылки, пути, идентификаторы (`AC-3.1`, `M-1`, `B1`, `devtools-verify`, camelCase), слова severity и PASS/FAIL.
- * Короткий отчёт и отчёт с долей вне «серой зоны» не оценивается: ложный возврат хуже пропуска.
+ * Prose words are counted: Cyrillic against Latin. Not counted: code blocks, inline backticks, quotes «…» and "…",
+ * links, paths, identifiers (`AC-3.1`, `M-1`, `B1`, `devtools-verify`, camelCase), severity words and PASS/FAIL.
+ * A short report and a report with a share outside the "grey zone" is not judged: a false return is worse than a miss.
  */
 
-/** Меньше слов прозы — язык не определяется. */
+/** Fewer prose words — the language is not determined. */
 export const MIN_WORDS = 40
-/** Русская задача: отчёт возвращается, если доля кириллицы в прозе ниже. */
+/** A ru task: the report is sent back if the Cyrillic share of the prose is below this. */
 export const RU_SHARE_MAX = 0.2
-/** Английская задача: отчёт возвращается, если доля кириллицы в прозе выше. */
+/** An en task: the report is sent back if the Cyrillic share of the prose is above this. */
 export const EN_SHARE_MAX = 0.5
 
 const STOP = new Set(['critical', 'major', 'minor', 'high', 'medium', 'low', 'severity', 'pass', 'fail', 'skip', 'todo', 'ok', 'etc'])
 
-/** Текст отчёта без того, что не является прозой. */
+/** The report text without what is not prose. */
 export function stripNonProse(text) {
   return text
     .replace(/<!--[\s\S]*?-->/g, ' ')
@@ -28,7 +28,7 @@ export function stripNonProse(text) {
     .replace(/https?:\/\/\S+/g, ' ')
 }
 
-/** Слова прозы: `{ ru, en }`. */
+/** Prose words: `{ ru, en }`. */
 export function proseWords(text) {
   let ru = 0
   let en = 0
@@ -46,13 +46,13 @@ export function proseWords(text) {
   return { ru, en }
 }
 
-/** `{ ru, en, share }`, где share — доля кириллицы в прозе; `share: null` — прозы слишком мало. */
+/** `{ ru, en, share }`, where share is the Cyrillic share of the prose; `share: null` — too little prose. */
 export function reportLanguage(text) {
   const { ru, en } = proseWords(text)
   return { ru, en, share: ru + en < MIN_WORDS ? null : ru / (ru + en) }
 }
 
-/** Язык отчёта не совпадает с языком задачи (`ru` | `en`); `null`/неизвестный язык задачи — не проверяется. */
+/** The report language does not match the task language (`ru` | `en`); `null`/an unknown task language — not checked. */
 export function languageMismatch(text, language) {
   if (language !== 'ru' && language !== 'en') return null
   const { share, ru, en } = reportLanguage(text)

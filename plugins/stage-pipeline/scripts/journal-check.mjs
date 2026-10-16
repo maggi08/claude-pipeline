@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * Правила закрытия критериев в журнале задачи — то, что /stage-check требует текстом и что на живых
- * прогонах не держалось:
+ * Rules for closing criteria in the task journal — what /stage-check demands in text and what did not hold on
+ * live runs:
  *
- * - критерий с тегом рантайм- или дизайн-чекера (`[verify: devtools-verify]`, `figma-compare`,
- *   `proto-compare`) закрыт ✅, а исход называет другого проверяющего («✅ pro-review по коду») или
- *   никого — 24 таких критерия в одной задаче, и два из них пользователь потом нашёл сломанными;
- * - дизайн-чекер пропущен по причине браузера («staging не принимает токен», «MCP занят»), хотя
- *   сверка код ↔ макет статическая — так в одной задаче он не прошёл ни на одном UI-этапе;
- * - PASS в отчёте чекера без замера («4.5 PASS») — неотличим от «не посмотрел» (stage-check, Шаг 1);
- * - «как у X» в критерии или решении без пути к X — замысел теряется на открытии этапа (stage-plan, Шаг 3).
+ * - a criterion tagged with a runtime or design checker (`[verify: devtools-verify]`, `figma-compare`,
+ *   `proto-compare`) is closed ✅, but the outcome names another verifier ("✅ pro-review by code") or
+ *   nobody — 24 such criteria in one task, and the user later found two of them broken;
+ * - a design checker skipped for a browser reason ("staging does not accept the token", "MCP busy"), although
+ *   a code ↔ mockup comparison is static — in one task it did not run at any UI stage;
+ * - PASS in a checker report without a measurement ("4.5 PASS") — indistinguishable from "did not look" (stage-check, Step 1);
+ * - "like X" in a criterion or decision without a path to X — the intent is lost when the stage opens (stage-plan, Step 3).
  *
- *   node journal-check.mjs <task_dir>/<TICKET>     # все нарушения в STAGES.md, архиве и checks/
+ *   node journal-check.mjs <task_dir>/<TICKET>     # all violations in STAGES.md, the archive and checks/
  *
- * Хук journal-gate применяет те же правила только к строкам, которые появились после первого
- * взгляда на задачу: старые задачи и закрытые этапы никто не обязан переписывать.
+ * The journal-gate hook applies the same rules only to lines that appeared after the first
+ * look at the task: old tasks and closed stages do not have to be rewritten.
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
@@ -47,10 +47,10 @@ export function requiredCheckers(line) {
 }
 
 /**
- * Нарушение в строке критерия или null. Исход — текст после первой ✅ без самих тегов `[verify: …]`:
- * у части задач исход стоит перед формулировкой критерия, и тег в хвосте строки иначе «называл» бы себя сам.
- * Честные формы проходят: проверяющий назван, рантайм-часть отложена (`⏳ devtools-verify`, `[live: …]`),
- * devtools заменён smoke-прогоном, или явное решение пользователя.
+ * A violation in a criterion line, or null. The outcome is the text after the first ✅ without the `[verify: …]` tags themselves:
+ * in some tasks the outcome stands before the criterion wording, and a tag in the tail of the line would otherwise "name" itself.
+ * Honest forms pass: the verifier is named, the runtime part is deferred (`⏳ devtools-verify`, `[live: …]`),
+ * devtools is replaced by a smoke run, or there is an explicit user decision.
  */
 export function acViolation(line, reports = null) {
   if (!AC_ID.test(line) || !line.includes('✅')) return null
@@ -61,7 +61,7 @@ export function acViolation(line, reports = null) {
   const deferred = /\[live:|решени[а-яё]* пользователя|user\s+decision/i.test(outcome) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(outcome))
   if (deferred) return null
   const named = required.filter((checker) => outcome.includes(checker))
-  // Рантайм-критерий закрывает и живая проверка без субагента (smoke-прогон, «проверено живьём»); дизайн-критерий — только сверка чекером.
+  // A runtime criterion is also closed by a live check without a subagent (a smoke run, "checked live"); a design criterion only by a checker comparison.
   const live = required.includes('devtools-verify') && /\bsmoke\b|живь[её]м|вживую|в браузере|\b(?:checked|tested|verified|confirmed|ran|run|done)\s+live\b|\blive\s+(?:check|run|smoke|test|session)\b|in\s+(?:the|a)\s+(?:live\s+)?browser/i.test(outcome)
   if (!named.length && !live) {
     const shown = outcome.replace(/\s+/g, ' ').trim().slice(0, 60)
@@ -69,15 +69,15 @@ export function acViolation(line, reports = null) {
       rule: 'ac-checker',
       id,
       message:
-        `${id}: тег [verify: ${required.join(', ')}], а исход ${shown ? `«✅ ${shown}»` : '— голая ✅'}: этот чекер критерий не проверял. ` +
-        `Прогони ${required[0]} или поставь «⏳ ${required[0]}» — исход называет того, кто проверял (stage-check, Шаг 4.1).`,
+        `${id}: tag [verify: ${required.join(', ')}], but the outcome is ${shown ? `"✅ ${shown}"` : 'a bare ✅'}: this checker did not check the criterion. ` +
+        `Run ${required[0]} or set "⏳ ${required[0]}" — the outcome names who checked (stage-check, Step 4.1).`,
     }
   }
   if (reports && named.length && !named.some((checker) => reports.some((name) => name.includes(checker)))) {
     return {
       rule: 'ac-report',
       id,
-      message: `${id}: исход «✅ ${named[0]}», а отчёта ${named[0]} в checks/ нет — сохрани его (\`${named[0]}-<этап>.md\`, stage-check, Шаг 4.3) или поставь ⏳.`,
+      message: `${id}: the outcome is "✅ ${named[0]}", but there is no ${named[0]} report in checks/ — save it (\`${named[0]}-<stage>.md\`, stage-check, Step 4.3) or set ⏳.`,
     }
   }
   return null
@@ -87,8 +87,8 @@ const BROWSER_REASON = /браузер|browser|chrome|\bmcp\b|devtools|токе�
 const LEGIT_REASON =
   /logic-only|нет\s+(дизайн|макет|figma|прототип)|дизайн-источник|источник|без визуал|визуал не меня|макет[а-яё]*\s+нет|figma\s+нет|\bno\s+(?:design|mockup|figma|prototype)|design\s+source|no\s+visual|visuals?\s+(?:are\s+)?unchanged/i
 
-// Пропуск дизайн-чекера по причине браузера: живые формы — `[skip: …]`, `(skip — …)`, `— skip (…)`, `skip: …`,
-// в том числе общий на два чекера: «proto-compare и devtools-verify — skip: MCP-Chrome занят». Через « · » skip уже чужой.
+// A design checker skipped for a browser reason: live forms are `[skip: …]`, `(skip — …)`, `— skip (…)`, `skip: …`,
+// including one shared by two checkers: "proto-compare and devtools-verify — skip: MCP-Chrome busy". After " · " the skip is someone else's.
 export function skipViolation(line) {
   for (const match of line.matchAll(/(figma-compare|proto-compare)/g)) {
     const near = line.slice(match.index + match[0].length, match.index + match[0].length + 200)
@@ -100,20 +100,20 @@ export function skipViolation(line) {
         rule: 'design-skip',
         id: match[1],
         message:
-          `${match[1]} пропущен по причине «${reason.slice(0, 60)}» — это статическая сверка код ↔ макет, браузер, стенд и токен ей не нужны. ` +
-          `Запусти чекер; skip — только logic-only или нет дизайн-источника (stage-check, Шаги 0–1).`,
+          `${match[1]} skipped for the reason "${reason.slice(0, 60)}" — this is a static code ↔ mockup comparison, it needs no browser, stand or token. ` +
+          `Run the checker; skip is only for logic-only or no design source (stage-check, Steps 0–1).`,
       }
     }
   }
   return null
 }
 
-// ✅ с оговоркой внутри — «✅ (тёмная тема не снята)», «✅ только по cookie, вид не проверен»: критерий закрыт наполовину.
+// ✅ with a caveat inside — "✅ (dark theme not captured)", "✅ only by cookie, look not checked": the criterion is half-closed.
 const CAVEAT_RU = 'не\\s+снят|не\\s+проверен|не\\s+проверял|не\\s+смотрел|не\\s+открывал|только\\s+по\\s+коду|частично|не\\s+удалось\\s+(?:проверить|снять|открыть|посмотреть)'
 const CAVEAT_EN =
   "\\bnot\\s+(?:captured|verified)\\b|\\bnot\\s+(?:checked|opened)(?:\\s+yet\\b|\\s+(?:in|on|at|for)\\s+(?!load\\b|default\\b)\\S)|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)"
 const CAVEAT = new RegExp(`${CAVEAT_RU}|${CAVEAT_EN}`, 'i')
-// «Нет данных» вместо подстановки состояния: 46 «[live: user-side]» в одной задаче, шесть дефектов из них нашёл пользователь.
+// "No data" instead of putting a state in place: 46 "[live: user-side]" in one task, the user found six defects among them.
 const NO_DATA = /нет\s+(?:подходящ[а-яё]*\s+|живых\s+|тестов[а-яё]*\s+)?(?:данных|брон[а-яё]*|лид[а-яё]*|записей|объявлен[а-яё]*|заказ[а-яё]*)(?![а-яё])|нет\s+на\s+аккаунте|\bno\s+(?:suitable\s+|live\s+|test\s+)?(?:data|bookings|leads|records|listings|orders)\b(?!\s+(?:loss|lost|was\s+lost|were\s+lost|changed?)\b)|\bnot\s+on\s+the\s+account|\bno\s+such\s+data/i
 const STUBBED = /подмен|подстав|заглушк|фикстур|stub|mock|override|перехват|intercept|fixture|substitut|\bfak(?:e|ed|ing)\b|replaced\s+the\s+API\s+response/i
 
@@ -126,14 +126,14 @@ export function caveatViolation(line) {
     rule: 'ac-caveat',
     id,
     message:
-      `${id}: ✅ с оговоркой «${outcome.match(CAVEAT)[0]}» — критерий закрыт наполовину. Непроверенная часть — это ⏳ с тем, кто её проверит, ` +
-      'или разбей критерий на два (references/checker-report.md).',
+      `${id}: ✅ with a caveat "${outcome.match(CAVEAT)[0]}" — the criterion is half-closed. The unverified part is a ⏳ naming who will check it, ` +
+      'or split the criterion in two (references/checker-report.md).',
   }
 }
 
 export function noDataViolation(line) {
   if (!AC_ID.test(line) || !/⏳|\[live:|не\s+провер|\bnot\s+(?:verified|checked)\b|\bcould\s+not\s+verify/i.test(line) || !NO_DATA.test(line) || STUBBED.test(line)) return null
-  // В длинной строке журнала критериев несколько: причина относится к ближайшему перед ней.
+  // A long journal line holds several criteria: the reason belongs to the nearest one before it.
   const reason = line.search(NO_DATA)
   const before = [...line.slice(0, reason).matchAll(/AC-[\w.]+/g)].at(-1)
   const id = (before ?? line.match(/AC-[\w.]+/))[0].replace(/[.,]+$/, '')
@@ -141,22 +141,22 @@ export function noDataViolation(line) {
     rule: 'live-no-data',
     id,
     message:
-      `${id}: не проверен из-за «${line.match(NO_DATA)[0]}». Нет данных — не причина: состояние подставляется фикстурой или заглушкой API ` +
-      '(skill devtools-verify, «Состояния без данных»). Подставить нельзя — назови почему.',
+      `${id}: not verified because of "${line.match(NO_DATA)[0]}". No data is not a reason: the state is put in place with a fixture or an API stub ` +
+      '(skill devtools-verify, "States without data"). If it cannot be put in place — say why.',
   }
 }
 
-// «Как у X» без пути к X. «так как в …» — причина, а не ссылка; «как в ТЗ» — ссылка на сам тикет.
+// "Like X" without a path to X. "because in …" is a reason, not a reference; "as in the ticket" refers to the ticket itself.
 const LIKE =
   /(?<![а-яё])(?<!так\s+)как\s+(?:у|в|на|сейчас|раньше|было|прежде)(?![а-яё])|\b(?:same\s+as|like\s+in)\b|(?<![\w-])(?<!such\s)(?<!well\s)as\s+(?:in\s+the|on\s+the|before\b|it\s+was\b|it\s+is\s+now\b|now\b|currently\b)|\blike\s+the\s+old\b/i
 const REF = /[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|less|html?|md|py|go|rb|kt|swift|java|php|rs|cs)\b|https?:\/\/|node-?id|\b\d+[:-]\d+\b|`[^`\s]*\/[^`\s]*`/i
 const DECISION = /^\s*(?:[-*]|\d+\.|\|)?\s*\**(?:D\d+\b|Решени[ея]|Решено|Решили|Decisions?\b|Decided\b|We\s+decided\b)/i
 
 /**
- * Критерий или решение ссылается на образец словами — «как у эксперта», «как сейчас в шторке», «как было» —
- * без пути к нему. В одной задаче решение «как у эксперта» (там сохранение активно и без смены статуса)
- * на открытии этапа стало «как сейчас в шторке», и анкету нельзя было сохранить, не меняя статус.
- * Ссылка на макет у критерия с дизайн-чекером проходит: узлы этапа у чекера есть.
+ * A criterion or decision refers to a model in words — "like the expert", "as it is now in the drawer", "as it was" —
+ * without a path to it. In one task the decision "like the expert" (where saving is active even without a status change)
+ * became "as it is now in the drawer" when the stage opened, and the form could not be saved without changing the status.
+ * A link to a mockup passes for a criterion with a design checker: the checker has the stage's nodes.
  */
 export function likeViolation(line) {
   if (!AC_ID.test(line) && !DECISION.test(line)) return null
@@ -165,20 +165,20 @@ export function likeViolation(line) {
   const after = line.slice(match.index + match[0].length)
   if (REF.test(line) || /^\s*(?:in\s+)?(?:the\s+)?(?:AC-\d|этап[а-яё]*\s+\d|stage\s+\d|B\d|тз|тикет|ticket\b|задач[а-яё]*\s|task\b|описани|description\b|contract|spec\b|ci\b)/i.test(after)) return null
   if (/^\s*(?:in\s+)?(?:the\s+)?(?:макет|дизайн|figma|фигм|прототип|design\b|mockup\b|prototype\b)/i.test(after) && /\[verify:\s*(?:figma|proto)-compare/i.test(line)) return null
-  const id = line.match(/AC-[\w.]+/)?.[0]?.replace(/[.,]+$/, '') ?? line.match(/\bD\d+\b/)?.[0] ?? 'решение'
+  const id = line.match(/AC-[\w.]+/)?.[0]?.replace(/[.,]+$/, '') ?? line.match(/\bD\d+\b/)?.[0] ?? 'decision'
   return {
     rule: 'ac-like-ref',
     id,
     message:
-      `${id}: «${`${match[0]}${after}`.trim().slice(0, 40)}…» без ссылки на образец — впиши \`путь:строка\` (или node-id макета) того, на что ссылаешься. ` +
-      'Для действия с условиями — ещё таблица «состояние × действие → что уходит на сервер, что видит пользователь» (stage-plan, Шаг 3).',
+      `${id}: "${`${match[0]}${after}`.trim().slice(0, 40)}…" without a reference to the model — write the \`path:line\` (or the mockup node-id) of what you refer to. ` +
+      'For an action with conditions — also a "state × action → what goes to the server, what the user sees" table (stage-plan, Step 3).',
   }
 }
 
 /**
- * Отметка чекера в журнале — `- [x] pro-review (checks/stage-8-pro-review.md — …)` — закрывает его находки.
- * У этого отчёта должен быть полный «Итог находок»: в одной задаче такая строка закрыла Request changes словами
- * «M-1 — принят как компромисс», и дубль лида пользователь чинил на следующий день.
+ * A checker mark in the journal — `- [x] pro-review (checks/stage-8-pro-review.md — …)` — closes its findings.
+ * This report must have a full "Findings outcome": in one task such a line closed Request changes with the words
+ * "M-1 — accepted as a compromise", and the user fixed a duplicate of the lead the next day.
  */
 export function checkerLineViolation(line, taskDir) {
   if (!taskDir) return null
@@ -205,29 +205,29 @@ export function journalViolations(text, reports = null, taskDir = null) {
     .filter(Boolean)
 }
 
-// Строки журнала, из которых состоит базовый снимок задачи: все — правило смотрит только на новые и переписанные.
+// Journal lines that make up the task's base snapshot: all of them — the rule looks only at new and rewritten ones.
 export function journalCandidates(text) {
   return text.split('\n').filter((line) => line.trim())
 }
 
-// Правила до 0.14 — по ним старый снимок отличает «уже было» от «появилось и ещё не исправлено».
+// Rules before 0.14 — by them an old snapshot tells "already there" from "appeared and not yet fixed".
 const legacyViolation = (line) => acViolation(line) ?? skipViolation(line)
 
-// ── отчёты чекеров: сводка, итог находок ─────────────────────────────────────
+// ── checker reports: summary, findings outcome ───────────────────────────────
 
 const CHECKERS = ['pro-review', 'figma-compare', 'proto-compare', 'devtools-verify', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'security-review', 'kit-overrides']
 export const reportChecker = (name) => CHECKERS.find((checker) => name.includes(checker)) ?? null
 
-// Сводка в живых отчётах: «Находки: critical 0 · major 2 · minor 1», «0 critical / 2 major», «🔴0 · 🟠2»,
-// «🔴 Critical: 1», «- Major: 0», «critical 0, major 0», «Request changes (2 major)», у dead-code — «1 удалить».
+// The summary in live reports: "Findings: critical 0 · major 2 · minor 1", "0 critical / 2 major", "🔴0 · 🟠2",
+// "🔴 Critical: 1", "- Major: 0", "critical 0, major 0", "Request changes (2 major)", for dead-code — "1 remove".
 const SUMMARY_LINE = /вердикт|итог|сводка|находк|findings|verdict|severity|🔴|🟠|^\s*[-*]?\s*\**(?:critical|major)\**\s*:\s*\d|(?:critical|major|minor)[^\n]*(?:critical|major|minor)/i
 const severityWord = (words) => words.map((word) => `(?<![\\w-])${word}(?![\\w-])`).join('|')
 const severityPatterns = (words) => [new RegExp(`(\\d+)\\s*\\**\\s*(?:${severityWord(words)})`, 'i'), new RegExp(`(?:${severityWord(words)})\\**\\s*:?\\s*(\\d+)`, 'i')]
 
 /**
- * Сколько в отчёте critical и major. Сначала сводка из первых строк (стандартная или любая живая форма),
- * без неё — строки таблиц и списков с severity. `high`/`medium` — severity только у security-review:
- * у dead-code это уверенность, у Tailwind — `font-medium 500`. `null` — посчитать нечем.
+ * How many critical and major findings are in a report. First the summary from the first lines (standard or any live form),
+ * without it — table and list rows with a severity. `high`/`medium` are a severity only in security-review:
+ * in dead-code it is confidence, in Tailwind it is `font-medium 500`. `null` — nothing to count with.
  */
 export function findingCounts(text, name = '') {
   const security = name.includes('security')
@@ -253,13 +253,13 @@ export function findingCounts(text, name = '') {
     if (severity) rows[/critical|high/i.test(severity) ? 'critical' : 'major']++
     if (/\|\s*\**minor\**\s*\|/i.test(line)) rows.minor++
     const item = line.match(/^\s*(?:[-*]\s*|#{2,4}\s*|\d+\.\s*)\**(🔴|🟠|critical\b|major\b)/i)
-    // Заголовок группы «## 🟠 Major» — не находка.
+    // The group heading "## 🟠 Major" is not a finding.
     if (item && !/^\s*#{1,4}\s*(?:🔴|🟠)?\s*\**(?:critical|major)\**\s*(?:\(\d+\))?\s*$/i.test(line)) rows[/🔴|critical/i.test(item[1]) ? 'critical' : 'major']++
   }
   return rows
 }
 
-// Критерии с FAIL — тоже находки, даже без строки в таблице. «было FAIL» после фикса — не в счёт.
+// Criteria with FAIL are findings too, even without a row in the table. "was FAIL" after a fix does not count.
 export function failedCriteria(text) {
   const ids = new Set()
   for (const line of text.split('\n')) {
@@ -274,7 +274,7 @@ const PARKED =
 const PRE_EXISTING = /давн|не\s+регресс|pre-?existing|было\s+до|до\s+задачи|long-?standing|not\s+a\s+regression|existed\s+before|(?:was|were)\s+(?:already\s+)?there\s+before|before\s+this\s+task|predat(?:es|ed)/i
 const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![а-яё])|\bprod\b|на\s+базе|\bproduction\b|\bon\s+(?:the\s+)?base\b/i
 
-/** Итог одной строки «Итог находок»: fixed | false | blocker | user — итог; parked | unproven | unknown — нет. */
+/** The outcome of one "Findings outcome" line: fixed | false | blocker | user — an outcome; parked | unproven | unknown — none. */
 export function disposition(entry) {
   const proven = PRE_EXISTING.test(entry) && BASE_EVIDENCE.test(entry)
   if (PRE_EXISTING.test(entry) && !proven) return 'unproven'
@@ -298,8 +298,8 @@ const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
 const LEDGER_DOC = 'references/checker-report.md'
 
 /**
- * Нарушения итога находок в отчёте: запрещённый итог («оставляю», «в Ожидают»), «давний» без доказательства
- * на базе, нераспознанный итог; с `complete` — ещё и итогов меньше, чем critical + major (или FAIL, если их больше).
+ * Violations of the findings outcome in a report: a forbidden outcome ("leaving it", "to Awaiting"), a "pre-existing" claim without proof
+ * on the base, an unrecognised outcome; with `complete` also fewer outcomes than critical + major (or FAIL, if there are more).
  */
 export function ledgerViolations(text, name, { complete = false } = {}) {
   const entries = ledgerEntries(text) ?? []
@@ -311,19 +311,19 @@ export function ledgerViolations(text, name, { complete = false } = {}) {
       found.push({
         rule: 'ledger-parked',
         id: name,
-        message: `checks/${name}: «${shown(entry)}» — это решение не исправлять, его принимает пользователь. Итог — исправлено, ложная (с доказательством) или блокер B<n> (${LEDGER_DOC}).`,
+        message: `checks/${name}: "${shown(entry)}" — this is a decision not to fix, and the user makes it. The outcome is fixed, false (with proof) or blocker B<n> (${LEDGER_DOC}).`,
       })
     } else if (kind === 'unproven') {
       found.push({
         rule: 'ledger-unproven',
         id: name,
-        message: `checks/${name}: «${shown(entry)}» — «давнее» без доказательства на базе. Проверь на sha базы или на проде и впиши замер, иначе это находка задачи.`,
+        message: `checks/${name}: "${shown(entry)}" — "pre-existing" without proof on the base. Check on the base sha or on prod and write down the measurement, otherwise it is a finding of the task.`,
       })
     } else if (kind === 'unknown') {
       found.push({
         rule: 'ledger-unknown',
         id: name,
-        message: `checks/${name}: итог «${shown(entry)}» не распознан — допустимы «исправлено: …», «ложная: …», «B<n>», «решение пользователя <дата>» (${LEDGER_DOC}).`,
+        message: `checks/${name}: the outcome "${shown(entry)}" is not recognised — allowed are "fixed: …", "false: …", "B<n>", "user decision <date>" (${LEDGER_DOC}).`,
       })
     }
   }
@@ -338,14 +338,14 @@ export function ledgerViolations(text, name, { complete = false } = {}) {
       rule: 'ledger-missing',
       id: name,
       message:
-        `checks/${name}: ${what}, а итогов в «## Итог находок» — ${accepted}. Каждая находка закрывается строкой: исправлено / ложная / B<n> ` +
-        `(${LEDGER_DOC}). Находку, которую fix-loop не исправил, не откладывают — это блокер.`,
+        `checks/${name}: ${what}, and "## Findings outcome" has ${accepted}. Each finding is closed by a line: fixed / false / B<n> ` +
+        `(${LEDGER_DOC}). A finding that the fix-loop did not fix is not put off — it is a blocker.`,
     })
   }
   return found
 }
 
-/** Отчёт чекера без сводки, по которой можно сосчитать находки. */
+/** A checker report without a summary line from which findings can be counted. */
 export function summaryViolation(text, name) {
   if (!reportChecker(name)) return null
   const counts = findingCounts(text, name)
@@ -354,28 +354,28 @@ export function summaryViolation(text, name) {
   return {
     rule: 'report-summary',
     id: name,
-    message: `checks/${name}: нет строки сводки — второй строкой отчёта «Находки: critical N · major N · minor N» (${LEDGER_DOC}). Без неё находки не сосчитать.`,
+    message: `checks/${name}: no summary line — the second line of the report must be "Findings: critical N · major N · minor N" (${LEDGER_DOC}). Without it findings cannot be counted.`,
   }
 }
 
 /**
- * Рантайм-отчёт: замер геометрии новых узлов на каждой ширине и честная причина «не проверено».
- * Прецеденты: плашка схлопнулась на дне меню (`m-4` в контейнере без отступа), а чекер мерил ширину и вложенность;
- * название страны в три строки вылезало из карточки на скриншотах самого чекера.
+ * Runtime report: a geometry measurement of new nodes at every width and an honest "not verified" reason.
+ * Precedents: a badge collapsed at the bottom of the menu (`m-4` in a container without padding) while the checker measured width and nesting;
+ * a country name in three lines stuck out of the card on the checker's own screenshots.
  */
 export function runtimeViolations(text, name, taskDir = null) {
   if (reportChecker(name) !== 'devtools-verify' || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
   const found = []
-  // Этап с «Эталоном вида» — сверка типографики с соседней секцией: прототип совпадал с кодом, а «жирно» и «разные кнопки»
-  // пользователь увидел рядом с остальным дашбордом.
+  // A stage with a "Visual reference" — a typography comparison with a neighbouring section: the prototype matched the code, and "too bold" and "different buttons"
+  // the user saw next to the rest of the dashboard.
   const reference = taskDir && stageReference(taskDir, name)
   if (reference && !/^\s*[-*]?\s*`?style-diff\b/im.test(text)) {
     found.push({
       rule: 'no-style-diff',
       id: name,
       message:
-        `checks/${name}: у этапа «Эталон вида» (${reference.slice(0, 60)}), а строк \`style-diff <ширина>: roles N · differ N\` нет — сверь типографику, кнопки и таблицы ` +
-        'новой секции с эталонной (skill devtools-verify, шаг «Эталон вида»). Расхождение без решения пользователя — находка major.',
+        `checks/${name}: the stage has a "Visual reference" (${reference.slice(0, 60)}), but there are no \`style-diff <width>: roles N · differ N\` lines — compare the typography, buttons and tables ` +
+        'of the new section with the reference one (skill devtools-verify, step "Visual reference"). A difference without a user decision is a major finding.',
     })
   }
   if (!/^\s*[-*]?\s*`?geometry\b/im.test(text)) {
@@ -383,8 +383,8 @@ export function runtimeViolations(text, name, taskDir = null) {
       rule: 'no-geometry',
       id: name,
       message:
-        `checks/${name}: нет строк \`geometry <ширина>: overflow N · zero-gap N · clipped N\` — замер геометрии новых узлов на каждой ширине ` +
-        '(skill devtools-verify, шаг «Геометрия»). Переполнение и нулевой зазор до края контейнера скриншот не показывает, пока на него не смотрят.',
+        `checks/${name}: no \`geometry <width>: overflow N · zero-gap N · clipped N\` lines — a geometry measurement of new nodes at each width ` +
+        '(skill devtools-verify, step "Geometry"). Overflow and zero gap to the container edge are not shown by a screenshot until someone looks at them.',
     })
   }
   const unverified = text.slice(Math.max(0, text.search(UNVERIFIED_HEADING)))
@@ -393,24 +393,24 @@ export function runtimeViolations(text, name, taskDir = null) {
     found.push({
       rule: 'live-no-data',
       id: name,
-      message: `checks/${name}: «${line.trim().slice(0, 80)}» — нет данных не причина: подставь состояние фикстурой или заглушкой API без записи на стенд (skill devtools-verify, «Состояния без данных»).`,
+      message: `checks/${name}: "${line.trim().slice(0, 80)}" — no data is not a reason: put the state in place with a fixture or an API stub without writing to the stand (skill devtools-verify, "States without data").`,
     })
   }
   return found
 }
 
-/** Отчёт написан не на языке задачи (D9). `language` — `task.language`; `null` — задача без языка, не проверяется. */
+/** A report is not written in the task language (D9). `language` is `task.language`; `null` — a task without a language, not checked. */
 export function languageViolation(text, name, language) {
   const mismatch = languageMismatch(text, language)
   if (!mismatch) return null
   return {
     rule: 'report-language',
     id: name,
-    message: `checks/${name}: отчёт написан не на языке задачи (${language === 'ru' ? 'русском' : 'английском'}): проза по-${mismatch.wrote === 'en' ? 'английски' : 'русски'}. Перепиши отчёт на языке задачи — код, пути, id и цитаты UI остаются как есть.`,
+    message: `checks/${name}: the report is not written in the task language (${language === 'ru' ? 'Russian' : 'English'}): the prose is in ${mismatch.wrote === 'en' ? 'English' : 'Russian'}. Rewrite the report in the task language — code, paths, id and UI quotes stay as they are.`,
   }
 }
 
-/** Все нарушения отчёта при его записи: язык, голые PASS, сводка, итоги (без полноты — она нужна к коммиту), рантайм. */
+/** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
 export function reportViolations(path, language = null) {
   let text
   try {
@@ -422,7 +422,7 @@ export function reportViolations(path, language = null) {
   return [languageViolation(text, name, language), reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name), ...runtimeViolations(text, name, dirname(dirname(path)))].filter(Boolean)
 }
 
-/** «Эталон вида» этапа, к которому относится отчёт (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), или null. */
+/** The "Visual reference" of the stage a report belongs to (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), or null. */
 export function stageReference(taskDir, name) {
   const stage = name.match(STAGE_FILE)?.[1] ?? name.match(/devtools-verify-(\d+[a-z]?)\b/i)?.[1]
   if (!stage) return null
@@ -440,19 +440,19 @@ const VALUE =
 const PASS_RUN = /((?:`?(?:AC-)?\d+[a-z]?(?:\.\d+[a-z]?)+`?\s*(?:,|и|and|\/)?\s*)+)(?:[—–:|-]\s*)?\**PASS\b\**/g
 
 /**
- * Критерии, у которых в отчёте чекера есть только голые PASS: ни одно упоминание критерия не несёт
- * замера (file:line, значение, цитату) или хотя бы фразы по существу. Сводная строка
- * «AC-3.1 PASS, AC-3.2 PASS» вверху отчёта — не нарушение, если ниже у тех же критериев есть подробности.
+ * Criteria that have only bare PASS in a checker report: no mention of the criterion carries
+ * a measurement (file:line, a value, a quote) or at least a phrase on the substance. A summary line
+ * "AC-3.1 PASS, AC-3.2 PASS" at the top of a report is not a violation if the same criteria have details below.
  */
 export function barePasses(text) {
   const passed = new Set()
   const evidence = new Set()
   const lines = text.split('\n')
   for (const [index, line] of lines.entries()) {
-    // Номер без `AC-` («4.5 PASS») — критерий только в списке из нескольких: одиночное «§27.7 PASS» — номер раздела.
+    // A number without `AC-` ("4.5 PASS") — a criterion only in a list of several: a lone "§27.7 PASS" is a section number.
     const compact = (line.match(/\d+[a-z]?\.\d+[a-z]?`?\s*(?:[—–:-]\s*)?\**PASS/g) ?? []).length > 1
-    // Подробности часто идут подпунктами под строкой «`AC-8.1` — PASS на обеих бронях.» — они продолжают
-    // последний пункт строки, а не весь список «4.1 PASS · 4.2 PASS · …» перед ним.
+    // Details often come as sub-items under a line "`AC-8.1` — PASS on both bookings." — they continue
+    // the last item of the line, not the whole list "4.1 PASS · 4.2 PASS · …" before it.
     const below = lines.slice(index + 1, index + 7)
     const stop = below.findIndex((next) => !next.trim() || /^#|AC-\d/.test(next))
     const details = (stop === -1 ? below : below.slice(0, stop)).join(' ')
@@ -468,7 +468,7 @@ export function barePasses(text) {
           if (hasValue) evidence.add(id)
         }
       }
-      // Подробность без слова PASS («`AC-3.3` — колонки 150/200 …») — тоже замер по критерию.
+      // A detail without the word PASS ("`AC-3.3` — columns 150/200 …") is also a measurement for the criterion.
       if (runs.length) continue
       for (const match of segment.matchAll(/AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)/g)) {
         const tail = segment.slice(match.index + match[0].length).replace(/^[`\s.*|:—–-]+/, '')
@@ -497,20 +497,20 @@ export function reportViolation(path) {
   }
   const ids = barePasses(text)
   if (!ids.length) return null
-  const shown = ids.length > 6 ? `${ids.slice(0, 6).join(', ')} и ещё ${ids.length - 6}` : ids.join(', ')
+  const shown = ids.length > 6 ? `${ids.slice(0, 6).join(', ')} and ${ids.length - 6} more` : ids.join(', ')
   return {
     rule: 'bare-pass',
     id: basename(path),
     message:
-      `checks/${basename(path)}: PASS без замера — ${shown}. Голый PASS неотличим от «не посмотрел» (stage-check, Шаг 1): ` +
-      'запроси у чекера значение с file:line или считай пункт непроверенным (⏳ в журнале).',
+      `checks/${basename(path)}: PASS without a measurement — ${shown}. A bare PASS is indistinguishable from "did not look" (stage-check, Step 1): ` +
+      'ask the checker for a value with file:line or count the item as unverified (⏳ in the journal).',
   }
 }
 
 /**
- * Базовый снимок задачи — строки журнала, которые уже были, когда плагин впервые посмотрел на задачу.
- * Хук проверяет только то, чего в снимке нет: новые и переписанные строки. Снимок не растёт —
- * нарушение, появившееся позже, напоминает о себе, пока его не исправят.
+ * The task base snapshot — journal lines that already existed when the plugin first looked at the task.
+ * The hook checks only what is not in the snapshot: new and rewritten lines. The snapshot does not grow —
+ * a violation that appears later reminds about itself until it is fixed.
  */
 export const fingerprint = (line) => createHash('sha1').update(line.trim()).digest('hex').slice(0, 16)
 
@@ -527,7 +527,7 @@ function baselinePath(dataDir, taskDir) {
   try {
     real = realpathSync(taskDir)
   } catch {
-    // каталог задачи пропал — снимок по исходному пути
+    // the task directory is gone — snapshot by the original path
   }
   return join(dataDir, 'journal-baseline', `${createHash('sha1').update(real).digest('hex').slice(0, 16)}.json`)
 }
@@ -547,7 +547,7 @@ function writeBaseline(dataDir, taskDir, data) {
     mkdirSync(join(dataDir, 'journal-baseline'), { recursive: true })
     writeFileSync(baselinePath(dataDir, taskDir), JSON.stringify(data))
   } catch {
-    // снимок не записался — следующий взгляд создаст его заново
+    // the snapshot was not written — the next look will create it again
   }
 }
 
@@ -557,18 +557,17 @@ export function loadBaseline(dataDir, taskDir) {
 }
 
 /**
- * Снимок v2 — все строки журнала и момент, с которого отчёты проверяются на итог находок (`ledgerSince`).
- * Снимок v1 (0.12–0.13) хранил только строки с ✅ и skip: при первом взгляде новой версии в него
- * дописываются все текущие строки, кроме нарушений 0.12, появившихся после снимка, — те и дальше
- * напоминают о себе. `reports` — имена отчётов, застигнутых при первом взгляде: язык проверяется только у отчётов вне этого множества
- * (путь файла и время создания ненадёжны: Edit заменяет файл через rename). Отчёты, записанные до этого момента, итога не требуют: идущая задача
- * не обязана переписывать закрытые этапы.
+ * Snapshot v2 — all journal lines and the moment from which reports are checked for a findings outcome (`ledgerSince`).
+ * Snapshot v1 (0.12–0.13) kept only lines with ✅ and skip: at the first look of a new version all current lines are
+ * added to it, except 0.12 violations that appeared after the snapshot — those keep reminding about themselves. `reports` are the names of reports caught at the first look: the language is checked only for reports outside this set
+ * (the file path and creation time are unreliable: Edit replaces a file through rename). Reports written before that moment do not need an outcome: a task in progress
+ * does not have to rewrite closed stages.
  */
 export function baselineInfo(dataDir, taskDir) {
   const data = readBaseline(dataDir, taskDir)
   if (data?.version === BASELINE_VERSION) {
     if (Array.isArray(data.reports)) return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(data.reports) }
-    // снимок v2 без имён отчётов: текущие отчёты — старые (ленивая миграция, остальные поля не меняются)
+    // snapshot v2 without report names: current reports are old (a lazy migration, the other fields do not change)
     const migrated = { ...data, reports: reportNames(taskDir) }
     writeBaseline(dataDir, taskDir, migrated)
     return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(migrated.reports) }
@@ -588,7 +587,7 @@ export function ensureBaseline(dataDir, taskDir) {
   return baselineInfo(dataDir, taskDir).lines
 }
 
-// Отчёты чекеров, записанные после снимка v2: только у них проверяется итог находок.
+// Checker reports written after snapshot v2: only they are checked for a findings outcome.
 export function newReports(taskDir, since) {
   return reportNames(taskDir).filter((name) => {
     try {
@@ -599,7 +598,7 @@ export function newReports(taskDir, since) {
   })
 }
 
-/** Новые отчёты без полного итога находок — то, с чем не коммитят force-этап и не закрывают прогон. */
+/** New reports without a full findings outcome — what a force stage is not committed with and a run is not closed with. */
 export function openLedgers(dataDir, taskDir) {
   const { ledgerSince } = baselineInfo(dataDir, taskDir)
   return newReports(taskDir, ledgerSince).flatMap((name) =>
@@ -607,7 +606,7 @@ export function openLedgers(dataDir, taskDir) {
   )
 }
 
-/** Последний блок «Force-прогон»: заголовок и текст до следующего раздела. */
+/** The last "Force run" block: the heading and the text up to the next section. */
 export function lastForceBlock(stages) {
   const heading = forceHeadings(stages).at(-1)
   if (!heading) return null
@@ -616,7 +615,7 @@ export function lastForceBlock(stages) {
   return { heading: heading[0], body: end === -1 ? rest : rest.slice(0, end) }
 }
 
-// Блокер `B<n> — …` без пометки, что он снят пользователем.
+// A blocker `B<n> — …` without a mark that the user lifted it.
 export const openBlockers = (body) =>
   body
     .split('\n')
@@ -624,8 +623,8 @@ export const openBlockers = (body) =>
     .map((line) => line.trim())
 
 /**
- * Закрытие force-прогона «завершён» (без «с блокерами») при открытых блокерах или отчётах без итога.
- * Только когда заголовок переписан после снимка: старые закрытые прогоны не трогаются.
+ * Closing a force run as "completed" (without "with blockers") with open blockers or reports without an outcome.
+ * Only when the heading was rewritten after the snapshot: old closed runs are not touched.
  */
 export function forceCloseViolations(dataDir, taskDir) {
   const stagesPath = join(taskDir, 'STAGES.md')
@@ -641,7 +640,7 @@ export function forceCloseViolations(dataDir, taskDir) {
     found.push({
       rule: 'force-blockers',
       id: 'force',
-      message: `Блок «${block.heading.replace(/^## /, '')}»: открытых блокеров ${blockers.length} (${blockers[0].slice(0, 60)}…) — закрывай как «завершён с блокерами», в сводке они первыми.`,
+      message: `Block "${block.heading.replace(/^## /, '')}": ${blockers.length} open blockers (${blockers[0].slice(0, 60)}…) — close it as "completed with blockers", they come first in the summary.`,
     })
   }
   return [...found, ...openLedgers(dataDir, taskDir)]
@@ -655,7 +654,7 @@ export function newJournalViolations(dataDir, taskDir) {
 function main(args) {
   const target = args.find((arg) => !arg.startsWith('--'))
   if (!target || !existsSync(target)) {
-    console.error('Использование: node journal-check.mjs <task_dir>/<TICKET> [--ledger]   # --ledger — ещё и полнота «Итога находок» во всех отчётах')
+    console.error('Usage: node journal-check.mjs <task_dir>/<TICKET> [--ledger]   # --ledger — also the completeness of "Findings outcome" in all reports')
     process.exit(2)
   }
   const taskDir = resolve(target.endsWith('.md') ? join(target, '..') : target)
@@ -664,7 +663,7 @@ function main(args) {
   const language = existsSync(stagesPath) ? taskLanguage(readFileSync(stagesPath, 'utf8')) : null
   const reports = reportNames(taskDir).flatMap((name) => {
     const path = join(taskDir, 'checks', name)
-    // Сводка и геометрия — правила новых отчётов: в старых их нет по построению, без --ledger это шум.
+    // Summary and geometry are rules for new reports: old ones lack them by construction, without --ledger it is noise.
     const all = reportViolations(path, language).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
     return args.includes('--ledger') && reportChecker(name)
       ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...ledgerViolations(readFileSync(path, 'utf8'), name, { complete: true })]
@@ -672,7 +671,7 @@ function main(args) {
   })
   const messages = [...new Set([...found, ...reports].map((violation) => violation.message))]
   for (const message of messages) console.log(`- ${message}`)
-  if (!found.length && !reports.length) console.log('Нарушений правил закрытия критериев нет.')
+  if (!found.length && !reports.length) console.log('No violations of the criteria closing rules.')
   process.exit(found.length || reports.length ? 1 : 0)
 }
 

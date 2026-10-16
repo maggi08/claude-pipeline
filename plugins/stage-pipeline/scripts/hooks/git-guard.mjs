@@ -9,31 +9,31 @@ import { commitScope, gitInvocations } from './git-command.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
- * В обычном режиме пайплайна индекс и коммит принадлежат пользователю: /stage-check
- * выдаёт текст коммита, а не выполняет его. Прозой это правило не держалось
- * (из 40 отклонённых вызовов по одной задаче больше половины — git add), а профиль
- * разрешений отдаёт `git *` целиком, потому что /stage-force коммитит сам.
- * Хук закрывает ровно эту щель: ветка, к которой привязана задача, и у этой задачи нет
- * открытого блока «Force-прогон». Там `git add`/`git commit` отклоняются, а причина уходит
- * агенту — он выдаёт готовое сообщение коммита, коммитит пользователь сам.
- * Статус этапа не смотрится: `in-progress` никто не обязан ставить, а /stage-check закрывает
- * этап в STAGES.md раньше, чем готовит коммит, — хук по статусу пропускал ровно коммит этапа.
- * Другие ветки хук не трогает: параллельная задача в соседнем worktree, хотфикс, брошенная
- * задача с забытым статусом — не повод блокировать коммит здесь.
+ * In the normal pipeline mode the index and the commit belong to the user: /stage-check
+ * hands out the commit text rather than running it. Prose did not hold this rule
+ * (of 40 rejected calls in one task more than half were git add), and the permission
+ * profile allows `git *` as a whole, because /stage-force commits by itself.
+ * The hook closes exactly this gap: the branch the task is bound to, and that task has no
+ * open "Force run" block. There `git add`/`git commit` are rejected, and the reason goes to
+ * the agent — it hands out a ready commit message, and the user commits by themselves.
+ * The stage status is not looked at: nobody has to set `in-progress`, and /stage-check closes
+ * the stage in STAGES.md before it prepares the commit — a status check let through exactly the stage commit.
+ * Other branches are left alone: a parallel task in a neighbouring worktree, a hotfix, an abandoned
+ * task with a forgotten status — none is a reason to block a commit here.
  *
- * Задача на два репо (core + вебвью) лежит в каталоге задач одного из них — во втором её находит
- * реестр каталогов задач (pipeline-state, foreignTasks), и правила те же.
+ * A task over two repos (core + webview) lives in the task directory of one of them — in the other it is
+ * found by the task directory registry (pipeline-state, foreignTasks), and the rules are the same.
  *
- * В force агент коммитит без вопросов — и именно там планку качества опустить некому помешать:
- * код пишет модель, проверяют модели, человек читает только итог. Поэтому force-коммит проходит
- * через floor-guard — по тому, что войдёт в коммит, а не по всему дереву: сохранённая страница
- * или черновик разработчика рядом с кодом не должны отклонять коммит, в который они не попадут.
+ * In force the agent commits without questions — and that is exactly where nobody can stop the quality floor
+ * from being lowered: a model writes the code, models check it, the human reads only the result. So a force
+ * commit goes through floor-guard — over what goes into the commit, not over the whole tree: a saved page
+ * or a developer's draft next to the code must not reject a commit they will not be part of.
  *
- * 0.15 — два хода, которые force-коммит этапа тоже проверяет по своему дифу:
- * - удалён UI-компонент, а таблицы паритета («было → где теперь / удалено по решению») с его именем
- *   в журнале нет: в одной задаче удалённая секция унесла шесть функций, их вернул ревьюер паритета;
- * - переопределения кита и ручная типографика без отчёта kit-overrides: вид взяли из прототипа, а не из
- *   кита и соседних секций, и пользователь вернул «жирно», «разные кнопки», «другая таблица».
+ * 0.15 — two moves that a force stage commit also checks over its own diff:
+ * - a UI component is removed, but the journal has no parity table ("was → where it is now / removed by decision")
+ *   with its name: in one task a removed section took six functions with it, and the parity reviewer brought them back;
+ * - kit overrides and hand-set typography without a kit-overrides report: the look was taken from the prototype, not from
+ *   the kit and neighbouring sections, and the user sent back "too bold", "different buttons", "another table".
  */
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
@@ -47,28 +47,28 @@ for (const { subcommand, dir, args } of invocations) {
 
   if (task && !task.forceActive) {
     deny(
-      `stage-pipeline: ветка ${state.branch} — ветка задачи ${task.ticket}${task.foreign ? ` (STAGES.md — в каталоге задач другого репо: ${task.stagesPath})` : ''}, ` +
-        'обычный режим: git add и git commit делает пользователь сам, в своём терминале. ' +
-        'Не повторяй команду: покажи git status и готовое сообщение коммита (/stage-check, Шаг 4.4). Автокоммит — только в /stage-force.',
+      `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}${task.foreign ? ` (STAGES.md is in the task directory of another repo: ${task.stagesPath})` : ''}, ` +
+        'normal mode: the user runs git add and git commit by themselves, in their own terminal. ' +
+        'Do not repeat the command: show git status and the ready commit message (/stage-check, Step 4.4). Auto-commit is only in /stage-force.',
     )
   }
-  // Подпись в коммите — системная инструкция харнесса, а правило пользователя её запрещает; текст скилла
-  // этот спор проигрывал: подписи уходили в коммиты, пользователь трижды пересобирал ветки руками.
+  // A signature in the commit is a system instruction of the harness, and the user's rule forbids it; the skill
+  // text lost this dispute: signatures went into commits, and the user rebuilt branches by hand three times.
   if (state && subcommand === 'commit' && serviceTrailer(command, args, dir)) {
     deny(
-      'stage-pipeline: в сообщении коммита служебная подпись (`Co-Authored-By`, «Generated with …»). В репо пайплайна её не ставят — решение пользователя ' +
-        'для всех его репо (/stage-check, Шаг 4.4); правило пользователя приоритетнее системной инструкции об атрибуции. Убери подпись и повтори коммит.',
+      'stage-pipeline: the commit message has a service signature (`Co-Authored-By`, "Generated with …"). It is not added in a pipeline repo — the user\'s decision ' +
+        'for all their repos (/stage-check, Step 4.4); the user\'s rule outranks the system instruction about attribution. Remove the signature and commit again.',
     )
   }
   if (!task || subcommand !== 'commit') continue
 
-  // Force-коммит этапа — после итога каждой находки его чекеров: иначе «принят как компромисс» уезжает в коммит,
-  // а пользователь находит дефект на следующий день (прецедент: Request changes → дубль заявки).
+  // A force stage commit comes after the outcome of every finding of its checkers: otherwise "accepted as a compromise" goes into the commit,
+  // and the user finds the defect the next day (precedent: Request changes → a duplicate request).
   const open = openLedgers(pluginDataDir(), task.dir)
   if (open.length) {
     deny(
-      `stage-pipeline: у находок чекеров нет итога — коммит этапа отклонён.\n${[...new Set(open.map((violation) => `- ${violation.message}`))].join('\n')}\n` +
-        'Допиши в конец каждого отчёта «## Итог находок»: исправлено / ложная (с доказательством) / B<n> — блокер (references/checker-report.md). Неисправленное — блокер, а не «Ожидают подтверждения».',
+      `stage-pipeline: the checkers' findings have no outcome — the stage commit is rejected.\n${[...new Set(open.map((violation) => `- ${violation.message}`))].join('\n')}\n` +
+        'Add "## Findings outcome" to the end of each report: fixed / false (with proof) / B<n> — blocker (references/checker-report.md). Something not fixed is a blocker, not "Awaiting user confirmation".',
     )
   }
 
@@ -79,9 +79,9 @@ for (const { subcommand, dir, args } of invocations) {
   const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
   if (removed.length) {
     deny(
-      `stage-pipeline: этап удаляет UI — ${removed.map((name) => `\`${name}\``).join(', ')}, а таблицы паритета с этими строками в STAGES.md нет. Коммит отклонён.\n` +
-        'Допиши в этап таблицу «Паритет»: что из удалённого куда переехало, что удалено по решению (строки — критерии `AC-N.P*`, их сверяет task-converge; stage-plan, Шаг 3). ' +
-        'Компонент не рендерился нигде (осиротел) — строка с этим и ссылкой на отчёт dead-code.',
+      `stage-pipeline: the stage removes UI — ${removed.map((name) => `\`${name}\``).join(', ')}, and STAGES.md has no parity table with these rows. The commit is rejected.\n` +
+        'Add a "Parity" table to the stage: what moved where from what was removed, what was removed by decision (the rows are criteria `AC-N.P*`, task-converge checks them; stage-plan, Step 3). ' +
+        'If the component was not rendered anywhere (orphaned) — a row saying so, with a link to the dead-code report.',
     )
   }
 
@@ -94,16 +94,16 @@ for (const { subcommand, dir, args } of invocations) {
   if (unreported.length) {
     const scan = join(dirname(fileURLToPath(import.meta.url)), '..', 'kit-override-scan.mjs')
     deny(
-      `stage-pipeline: в дифе этапа переопределения кита без отчёта — коммит отклонён.\n${unreported
+      `stage-pipeline: the stage diff has kit overrides without a report — the commit is rejected.\n${unreported
         .slice(0, 8)
         .map(({ file, hits }) => `- ${file}: ${summarize(hits)}`)
         .join('\n')}\n` +
-        `Запиши отчёт: \`node ${scan} --out ${join(task.dir, 'checks')}/stage-<N>-kit-overrides.md\` и закрой каждую строку в «## Итог находок»: ` +
-        'исправлено (вид из кита), ложная — с `путь:строка` эталонной секции, которая делает так же, или решение пользователя «вид как в прототипе».',
+        `Write the report: \`node ${scan} --out ${join(task.dir, 'checks')}/stage-<N>-kit-overrides.md\` and close every row in "## Findings outcome": ` +
+        'fixed (the look from the kit), false — with the `path:line` of a reference section that does the same, or a user decision "the look as in the prototype".',
     )
   }
 
-  // Пути — надмножество коммита: `git add x && git commit` в одной команде ещё не обновил индекс.
+  // The paths are a superset of the commit: `git add x && git commit` in one command has not updated the index yet.
   const guard = join(dirname(fileURLToPath(import.meta.url)), '..', 'floor-guard.mjs')
   const run = spawnSync(process.execPath, [guard, ...(paths ? ['--pathspec-from-stdin'] : [])], {
     cwd: state.worktree,
@@ -113,24 +113,24 @@ for (const { subcommand, dir, args } of invocations) {
   })
   if (run.status === 1) {
     deny(
-      `stage-pipeline: floor-guard нашёл в дифе этапа ходы, которые опускают планку качества — коммит отклонён.\n${run.stdout.trim()}\n` +
-        'Почини как находку fix-loop (не подавлением). Если исключение действительно оправдано — строка `floor-ok: <причина>` ' +
-        'на месте нарушения и пункт в «⚠ Ожидают подтверждения пользователя» STAGES.md; @ts-ignore и секреты исключением не бывают.',
+      `stage-pipeline: floor-guard found moves in the stage diff that lower the quality floor — the commit is rejected.\n${run.stdout.trim()}\n` +
+        'Fix it as a fix-loop finding (not by suppressing it). If an exception is truly justified — a `floor-ok: <reason>` line ' +
+        'at the violation and an item in "⚠ Awaiting user confirmation" of STAGES.md; @ts-ignore and secrets are never an exception.',
     )
   }
-  // «Не смог посмотреть» коммит не блокирует — то же прогонит /stage-check, Шаг 1, — но и не проходит молча.
+  // "Could not look" does not block the commit — /stage-check, Step 1, will run the same — but it does not pass silently.
   if (run.status !== 0) {
-    const why = run.error?.message ?? (run.stderr.trim() || `код ${run.status}`)
-    process.stdout.write(JSON.stringify({ systemMessage: `stage-pipeline: floor-guard не смог проверить force-коммит (${why}) — коммит пропущен без проверки.` }))
+    const why = run.error?.message ?? (run.stderr.trim() || `code ${run.status}`)
+    process.stdout.write(JSON.stringify({ systemMessage: `stage-pipeline: floor-guard could not check the force commit (${why}) — the commit went through unchecked.` }))
     process.exit(0)
   }
 }
 process.exit(0)
 
 /**
- * Пути, которые войдут в коммит этой команды, — pathspec'и от корня worktree: уже собранный индекс,
- * пути из `git add`/`git commit`, все отслеживаемые при `-a`/`-u`. `null` — всё дерево вместе
- * с неотслеживаемыми (`git add -A` без путей, пути из файла, pathspec-магия с `:`), `[]` — коммитить нечего.
+ * The paths that go into this command's commit — pathspecs from the worktree root: the index already built,
+ * the paths from `git add`/`git commit`, all tracked files with `-a`/`-u`. `null` — the whole tree including
+ * untracked files (`git add -A` without paths, paths from a file, pathspec magic with `:`), `[]` — nothing to commit.
  */
 function commitPaths(calls, worktree) {
   const scope = commitScope(calls.filter(({ dir }) => toplevel(dir) === worktree))
@@ -138,14 +138,14 @@ function commitPaths(calls, worktree) {
   const paths = new Set()
   for (const { dir, spec } of scope.specs) {
     if (spec.startsWith(':')) return null
-    // Корень от git — реальный путь, каталог вызова может идти через симлинк (`/var` → `/private/var` на macOS).
+    // The root from git is a real path, the call directory can go through a symlink (`/var` → `/private/var` on macOS).
     const real = realDir(dir)
     if (!real) continue
     const path = relative(worktree, resolve(real, spec))
     if (path.startsWith('..') || isAbsolute(path)) continue
     paths.add(path || '.')
   }
-  // Имена из git — буквально: `[PLI-1] page.ts` как glob не совпал бы сам с собой.
+  // Names from git are literal: `[PLI-1] page.ts` as a glob would not match itself.
   const names = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean).map((name) => `:(literal)${name}`)
   for (const name of names('diff', '--cached', '--name-only', '--no-renames', '-z')) paths.add(name)
   if (scope.tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
@@ -153,8 +153,8 @@ function commitPaths(calls, worktree) {
 }
 
 /**
- * Служебная подпись в сообщении: в тексте команды (`-m`, heredoc, `--trailer`) или в файле `-F`/`--file`.
- * Текст команды смотрится целиком — лексер схлопывает кавычки и heredoc, а подпись в них и живёт.
+ * A service signature in the message: in the command text (`-m`, heredoc, `--trailer`) or in a `-F`/`--file` file.
+ * The command text is looked at as a whole — the lexer collapses quotes and heredocs, and the signature lives in them.
  */
 function serviceTrailer(command, args, dir) {
   const TRAILER = /co-authored-by\s*:|generated with \[?claude|🤖\s*generated/i
@@ -166,15 +166,15 @@ function serviceTrailer(command, args, dir) {
     try {
       if (TRAILER.test(readFileSync(resolve(dir, file), 'utf8'))) return true
     } catch {
-      // файла сообщения нет — git сам откажет
+      // no message file — git will refuse by itself
     }
   }
   return false
 }
 
 /**
- * Удалённые коммитом UI-компоненты — имена для таблицы паритета (`index.tsx` — по имени каталога).
- * Переименование — не удаление; тесты, сторис и моки — не UI.
+ * UI components removed by the commit — names for the parity table (`index.tsx` — by the directory name).
+ * A rename is not a removal; tests, stories and mocks are not UI.
  */
 function removedComponents(worktree, paths) {
   const names = gitOut(worktree, 'diff', '--name-only', '--diff-filter=D', '--find-renames', '-z', 'HEAD', '--', ...(paths ?? []))
@@ -187,7 +187,7 @@ function removedComponents(worktree, paths) {
   return [...new Set(names)]
 }
 
-// Скан не смог (не git, битый диф) — коммит не блокируется: то же прогонит /stage-check.
+// The scan could not run (not git, a broken diff) — the commit is not blocked: /stage-check will run the same.
 function safeScan(worktree, paths, config) {
   try {
     return scanOverrides(worktree, { paths, config })

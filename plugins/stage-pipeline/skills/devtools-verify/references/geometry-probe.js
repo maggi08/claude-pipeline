@@ -1,11 +1,11 @@
-// Замер геометрии новых узлов этапа — передаётся в evaluate_script целиком, селекторы — в SELECTORS.
-// Возвращает компактный JSON: переполнение, нулевой зазор до края ближайшего «видимого» контейнера
-// (фон, рамка, тень, обрезка), обрезку окном или предком, тексты в 3+ строки, текущий фокус.
-// Флаг — не вердикт: сверь его с макетом и решениями этапа, но каждый флаг попадает в отчёт.
-// Откуда: плашка схлопнула `m-4` на дне меню (зазор 0), чекер мерил ширину и вложенность;
-// название страны в 3 строки вылезало из карточки на скриншотах самого чекера.
+// A geometry measurement of the stage's new nodes — passed to evaluate_script whole, the selectors go in SELECTORS.
+// Returns a compact JSON: overflow, zero gap to the edge of the nearest "visible" container
+// (background, border, shadow, clipping), clipping by the window or an ancestor, text in 3+ lines, the current focus.
+// A flag is not a verdict: check it against the mockup and the stage decisions, but every flag goes into the report.
+// Origin: a badge collapsed by `m-4` at the bottom of the menu (gap 0) while the checker measured width and nesting;
+// a country name in 3 lines stuck out of the card on the checker's own screenshots.
 () => {
-  const SELECTORS = ['main'] // ← селекторы новых или изменённых узлов этапа
+  const SELECTORS = ['main'] // ← selectors of the stage's new or changed nodes
   const round = (n) => Math.round(n * 10) / 10
   const box = (r) => [round(r.left), round(r.top), round(r.width), round(r.height)]
   const transparent = (c) => !c || c === 'transparent' || /rgba\([^)]*,\s*0\)$/.test(c)
@@ -14,7 +14,7 @@
     const border = ['Top', 'Right', 'Bottom', 'Left'].some((side) => parseFloat(s[`border${side}Width`]) > 0 && !transparent(s[`border${side}Color`]))
     return !transparent(s.backgroundColor) || border || s.boxShadow !== 'none' || /hidden|clip|auto|scroll/.test(s.overflow)
   }
-  // Внутренний край (без рамки) ближайшего видимого предка; нет такого — окно.
+  // The inner edge (without the border) of the nearest visible ancestor; if there is none — the window.
   const edgeOf = (el) => {
     const r = el.getBoundingClientRect()
     const s = getComputedStyle(el)
@@ -65,7 +65,7 @@
           out.overflow.push({ in: selector, tag: child.tagName.toLowerCase(), text: (child.innerText || '').trim().slice(0, 40), scroll: child.scrollWidth, client: child.clientWidth })
         }
         if (![...child.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue
-        // Текст меряется своими границами против своего видимого бокса: у карточки — её же край.
+        // Text is measured by its own bounds against its own visible box: for a card, its own edge.
         const range = textRange(child)
         const tr = range.getBoundingClientRect()
         const host = painted(child) ? edgeOf(child) : container(child)

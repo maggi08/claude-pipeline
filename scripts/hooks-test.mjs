@@ -277,7 +277,7 @@ for (const status of ['done', 'todo']) {
 }
 write(repo, { '.claude/tasks/T-1/STAGES.md': stages('T-1', 'T-1/feat/a') })
 check('ветка T-1: grep "git add" не трогается', hook('git-guard.mjs', repo, 'grep -rn "git add" .') === 'allow')
-check('session-start: задача текущей ветки первой', /^- T-1 \(ветка T-1\/feat\/a\)/m.test(hook('session-start.mjs', repo)))
+check('session-start: задача текущей ветки первой', /^- T-1 \(branch T-1\/feat\/a\)/m.test(hook('session-start.mjs', repo)))
 
 git(repo, 'checkout', '-qb', 'T-2/feat/b')
 check('ветка T-2, force: git add проходит', hook('git-guard.mjs', repo, 'git add -A') === 'allow')
@@ -378,7 +378,7 @@ const withForce = (heading, body) => write(app, { '.claude/tasks/T-7/STAGES.md':
 withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nОтветы интервью: ветка — от dev')
 check('stage-implement: новый Force-блок без «Подтверждено:» — отклонён', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2, режим implement') === 'deny')
 const unconfirmed = runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt: 'Тикет T-7, этап 2' } }).text
-check('stage-implement: отказ не требует второго «да» после интервью', /ответы интервью/.test(unconfirmed) && !/возьми.*«да»|спроси/i.test(unconfirmed), unconfirmed)
+check('stage-implement: отказ не требует второго «да» после интервью', /interview answers/.test(unconfirmed) && /Do not ask the user for a separate confirmation/.test(unconfirmed), unconfirmed)
 withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nОтветы интервью: ветка — от dev\nПодтверждено: 2026-10-05 — «да, гони»')
 check('stage-implement: подтверждение есть — проходит', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2') === 'allow')
 withForce('## Force-прогон 2026-09-24', 'Режим: автономный.')
@@ -416,7 +416,7 @@ repoAt(web, 'master')
 write(web, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n' })
 git(web, 'checkout', '-qb', 'KC-9/feat/x')
 check('соседний репо: задача из реестра — обычный режим, git add отклонён', commit(web, 'git add -A') === 'deny')
-check('соседний репо: session-start показывает задачу и путь к ней', /KC-9 \(ветка KC-9\/feat\/x\)/.test(runHook('session-start.mjs', { cwd: web }).text))
+check('соседний репо: session-start показывает задачу и путь к ней', /KC-9 \(branch KC-9\/feat\/x\)/.test(runHook('session-start.mjs', { cwd: web }).text))
 git(web, 'checkout', '-q', 'master')
 check('соседний репо на master: «Ветка: master» чужой задачи его не захватывает', commit(web, 'git add -A') === 'allow')
 git(web, 'checkout', '-qb', 'KC-10/feat/y')
@@ -429,7 +429,7 @@ write(app, { 'src/b.ts': 'export const b = 1\n' })
 git(app, 'add', 'src/b.ts')
 git(app, 'commit', '-qm', 'T-7: правка после прогона без этапа')
 const after = runHook('session-start.mjs', { cwd: app }).text
-check('session-start: коммит после force мимо журнала — назван', /коммиты, которых нет ни в STAGES\.md, ни в PR\.md \(1\)/.test(after) && /правка после прогона/.test(after), after)
+check('session-start: коммит после force мимо журнала — назван', /commits on the task's branches that are in neither STAGES\.md nor PR\.md \(1\)/.test(after) && /правка после прогона/.test(after), after)
 write(app, { '.claude/tasks/T-7/STAGES.md': journal('- 2026-10-05 — догон: `T-7: правка после прогона без этапа`, pro-review Approve\n', '## Force-прогон 2026-10-05 — завершён 2026-10-05\n\n') })
 check('session-start: коммит записан в журнал — молчит', !/мимо журнала|нет ни в STAGES/.test(runHook('session-start.mjs', { cwd: app }).text))
 // main_branch: main в конфиге, а PR идут в dev: смёржённые туда чужие PR — не работа задачи.
@@ -446,7 +446,7 @@ write(app, {
 git(app, 'add', 'src/d.ts')
 git(app, 'commit', '-qm', 'T-8: своя правка мимо журнала')
 const nearest = runHook('session-start.mjs', { cwd: app }).text
-check('session-start: база — ближайшая интеграционная ветка, чужой PR не в счёт', /коммиты, которых нет ни в STAGES\.md, ни в PR\.md \(1\)/.test(nearest) && !/чужая фича/.test(nearest), nearest)
+check('session-start: база — ближайшая интеграционная ветка, чужой PR не в счёт', /commits on the task's branches that are in neither STAGES\.md nor PR\.md \(1\)/.test(nearest) && !/чужая фича/.test(nearest), nearest)
 rmSync(gRoot, { recursive: true, force: true })
 
 // ── 0.13: force не ждёт подтверждений ────────────────────────────────────────
@@ -515,7 +515,7 @@ check('force: killall без ask-правила — тоже отклонён', 
 check('force: kill по PID проходит', force(fApp, 'kill 4242').decision === 'allow')
 const pushed = force(fApp, 'git push -u origin T-9/feat/f')
 check('force: git push под ask пользователя — отклонён, назван файл правила', pushed.decision === 'deny' && pushed.text.includes(join(fHome, '.claude/settings.json')), pushed.text)
-check('force: gh под ask проекта — отклонён', /Блокер/.test(force(join(fApp, 'src'), 'gh pr view 1').text))
+check('force: gh под ask проекта — отклонён', /blocker/.test(force(join(fApp, 'src'), 'gh pr view 1').text))
 check('force: обычные команды не трогаются', force(fApp, 'git status && pnpm test').decision === 'allow')
 git(fApp, 'checkout', '-qb', 'T-10/feat/n')
 check('обычный режим: pkill не отклоняется — пользователь рядом и ответит сам', force(fApp, 'pkill -f x').decision === 'allow')
@@ -653,7 +653,7 @@ const denied = runHook('git-guard.mjs', { cwd: lApp, tool_input: { command: 'git
 check('force-коммит: новый отчёт без итога — отклонён', denied.decision === 'deny' && /pro-review-1\.md/.test(denied.text), denied.text)
 writeReport('pro-review-1.md', `${REVIEW}\n## Итог находок\n- M-1 — оставляю\n- M-2 — исправлено: b.ts:4\n`)
 const parked = lGate('checks/pro-review-1.md')
-check('итог «оставляю» — возвращён тем же ходом', parked.decision === 'block' && /решение не исправлять/.test(parked.text), parked.text)
+check('итог «оставляю» — возвращён тем же ходом', parked.decision === 'block' && /decision not to fix/.test(parked.text), parked.text)
 writeReport('pro-review-1.md', `${REVIEW}\n## Итог находок\n- M-1 — исправлено: a.ts:3\n- M-2 — исправлено: b.ts:4\n`)
 check('итог полный — force-коммит проходит', hook('git-guard.mjs', lApp, 'git commit --allow-empty -m x') === 'allow')
 writeReport('devtools-verify-1.md', '# devtools-verify, этап 1\nНаходки: critical 0 · major 0 · minor 0\n')
@@ -664,7 +664,7 @@ check('новая отметка «[x] pro-review (checks/…)» при непо
 writeReport('pro-review-2.md', `${REVIEW}\n## Итог находок\n- M-1 — исправлено: a.ts:3\n- M-2 — B1\n`)
 write(lApp, { '.claude/tasks/T-11/STAGES.md': lStages('', forceBlock('## Force-прогон 2026-10-04 — завершён 2026-10-04', '\n- B1 — гонка M-2 — нужен ответ бэкенда — рекомендую очередь')) })
 const closedEarly = lGate('STAGES.md')
-check('«завершён» при открытом блокере — возвращено', closedEarly.decision === 'block' && /с блокерами/.test(closedEarly.text), closedEarly.text)
+check('«завершён» при открытом блокере — возвращено', closedEarly.decision === 'block' && /completed with blockers/.test(closedEarly.text), closedEarly.text)
 write(lApp, { '.claude/tasks/T-11/STAGES.md': lStages('- `AC-1.2` WHEN бар THEN статус — ⏳ devtools-verify (подставить нечем)\n', forceBlock('## Force-прогон 2026-10-04 — завершён с блокерами 2026-10-04', '\n- B1 — гонка M-2 — нужен ответ бэкенда — рекомендую очередь')) })
 const closed = runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } })
 check('«завершён с блокерами» — сводка прогона в контексте', closed.decision === 'message' && /Блокеры — нужен твой ответ \(1\)/.test(closed.text) && /AC-1\.2/.test(closed.text), `${closed.decision}: ${closed.text.slice(0, 200)}`)
@@ -676,12 +676,12 @@ const lStagesEn = (force) => `# T-11: task\nBranch: \`T-11/feat/l\`\n\n## Status
 const ruClosedStages = readFileSync(join(lTask, 'STAGES.md'), 'utf8')
 write(lApp, { '.claude/tasks/T-11/STAGES.md': lStagesEn(forceBlockEn('## Force run 2026-10-04 — completed 2026-10-04', '\n- B1 — race M-2 — backend answer needed — recommend a queue')) })
 const closedEarlyEn = lGate('STAGES.md')
-check('EN "completed" with an open blocker — returned', closedEarlyEn.decision === 'block' && /с блокерами/.test(closedEarlyEn.text), closedEarlyEn.text)
+check('EN "completed" with an open blocker — returned', closedEarlyEn.decision === 'block' && /completed with blockers/.test(closedEarlyEn.text), closedEarlyEn.text)
 write(lApp, { '.claude/tasks/T-11/STAGES.md': lStagesEn(forceBlockEn('## Force run 2026-10-04 — completed 2026-10-04', '\n- B1 — race M-2 — backend answer needed — resolved by the user')) })
 check('EN "completed" with a lifted blocker — passes', lGate('STAGES.md').decision !== 'block', lGate('STAGES.md').text)
 write(lApp, { '.claude/tasks/T-11/STAGES.md': lStagesEn(forceBlockEn('## Force run 2026-10-04b — completed with blockers 2026-10-04', '\n- B1 — race M-2 — backend answer needed — recommend a queue')) })
 const closedEn = runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } })
-check('EN "completed with blockers" — run summary is in the context', closedEn.decision === 'message' && /Блокеры — нужен твой ответ \(1\)/.test(closedEn.text), `${closedEn.decision}: ${closedEn.text.slice(0, 200)}`)
+check('EN "completed with blockers" — run summary is in the context', closedEn.decision === 'message' && /Blockers — your answer needed \(1\)/.test(closedEn.text), `${closedEn.decision}: ${closedEn.text.slice(0, 200)}`)
 check('EN task: pipeline state gives task.language = en', readPipelineState(lApp)?.tasks.find((t) => t.ticket === 'T-11')?.language === 'en')
 write(lApp, { '.claude/tasks/T-11/STAGES.md': ruClosedStages })
 check('RU task: pipeline state gives task.language = ru', readPipelineState(lApp)?.tasks.find((t) => t.ticket === 'T-11')?.language === 'ru')
@@ -724,7 +724,7 @@ const LIKES = [
   ['- D11: «Сохранить» — как у эксперта (expert-lead-card-sheet.tsx:227)', null],
   ['- `AC-2.1` WHEN карточка THEN отступы как в макете — [verify: figma-compare]', null],
   ['- `AC-2.2` WHEN поля нет THEN прочерк, так как в API его нет — [verify: pro-review]', null],
-  ['- Решение: активная «Сохранить» — как сейчас в шторке', 'решение'],
+  ['- Решение: активная «Сохранить» — как сейчас в шторке', 'decision'],
   ['- 2026-10-01 — сделал как у эксперта', null],
 ]
 for (const [line, want] of LIKES) check(`«как у X» ${line.slice(2, 46)} → ${want}`, (jc.likeViolation(line)?.id ?? null) === want, JSON.stringify(jc.likeViolation(line)))
@@ -790,6 +790,24 @@ check('force-коммит: переопределения кита без отч
 const kReport = join(kTask, 'checks/stage-1-kit-overrides.md')
 mkdirSync(dirname(kReport), { recursive: true })
 spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', kReport], { cwd: kApp })
+{
+  // The report is a task file: its language is the task language (D1). A ru task gets the old text, byte for byte.
+  const ruReport = readFileSync(kReport, 'utf8')
+  check(
+    'kit-overrides: отчёт ru-задачи — по-русски, как раньше',
+    ruReport.startsWith('# kit-overrides: рабочее дерево против HEAD\nНаходки: critical 0 · major 1 · minor 0\n\nПереопределения кита и ручная типографика') &&
+      /\| K-1 \| `src\/Card\.tsx` \| .*вес шрифта.*регистр/.test(ruReport) &&
+      /\n## Не удалось проверить\n- стили, собранные в рантайме/.test(ruReport) &&
+      !/Findings|Could not verify/.test(ruReport),
+    ruReport,
+  )
+  check('kit-overrides: отчёт ru-задачи читается обратно (сводка, язык)', jc.findingCounts(ruReport, 'stage-1-kit-overrides.md').major === 1 && jc.languageViolation(ruReport, 'stage-1-kit-overrides.md', 'ru') === null)
+  check(
+    'kit-overrides: ru-сводка с хитом !important — вид из RULES, не undefined',
+    kits.summarize([{ kind: '!important', token: '!important', line: 1 }, { kind: 'font weight', token: 'font-bold', line: 2 }], 'ru') === '!important (`!important`), вес шрифта (`font-bold`)' &&
+      kits.summarize([{ kind: 'new kind', token: 'x', line: 1 }], 'ru') === 'new kind (`x`)',
+  )
+}
 const soon = Date.now() / 1000 + 5
 utimesSync(kReport, soon, soon)
 const noKitLedger = kCommit('git add -A && git commit -m "T-12: карточка"')
@@ -823,7 +841,7 @@ const JOURNALED = `${PARITY}- [x] commit: \`${cardSha.slice(0, 8)}\` T-12: ка�
 const kGate = () => runHook('journal-gate.mjs', { cwd: kApp, tool_name: 'Edit', tool_input: { file_path: join(kTask, 'STAGES.md') } })
 write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
 const redGate = kGate()
-check('закрытие «завершён» без прогона гейта CI — возвращено', redGate.decision === 'block' && /Смоук/.test(redGate.text) && /не запускался/.test(redGate.text), redGate.text)
+check('закрытие «завершён» без прогона гейта CI — возвращено', redGate.decision === 'block' && /Смоук/.test(redGate.text) && /never ran/.test(redGate.text), redGate.text)
 const kConfig = readFileSync(join(kApp, '.claude/pipeline.config.md'), 'utf8')
 write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён с блокерами ${today}`, blockers: '\n- B1 — Смоук: нужен стейджинг, локально не поднимается' }) })
 check('«с блокерами»: незелёный гейт назван блокером — не нарушение', gates.gateCloseViolations(DATA, kApp, kConfig, kTask).length === 0)
@@ -846,7 +864,7 @@ write(kApp, { 'src/Card.tsx': 'export const Card = () => null\n' })
 const later = new Date(Date.now() + 120_000).toISOString()
 execFileSync('git', ['commit', '-qam', 'Fix(T-99): карточка обрезалась'], { cwd: kApp, env: { ...process.env, GIT_AUTHOR_DATE: later, GIT_COMMITTER_DATE: later } })
 const elsewhere = runHook('session-start.mjs', { cwd: kApp }).text
-check('session-start на main: фикс файла задачи под чужим тикетом после закрытия — назван', /T-12 \(закрыта/.test(elsewhere) && /Fix\(T-99\)/.test(elsewhere), elsewhere)
+check('session-start на main: фикс файла задачи под чужим тикетом после закрытия — назван', /T-12 \(closed /.test(elsewhere) && /Fix\(T-99\)/.test(elsewhere), elsewhere)
 check('session-start: та же строка второй раз не повторяется', !/T-12 \(закрыта/.test(runHook('session-start.mjs', { cwd: kApp }).text))
 rmSync(kRoot, { recursive: true, force: true })
 
@@ -874,6 +892,19 @@ check('EN force commit: kit overrides without a report — denied', noKitReportE
 const eReport = join(eTask, 'checks/stage-1-kit-overrides.md')
 mkdirSync(dirname(eReport), { recursive: true })
 spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', eReport], { cwd: eApp })
+{
+  const enReport = readFileSync(eReport, 'utf8')
+  check(
+    'EN kit-overrides report: an en task gets English markers',
+    enReport.startsWith('# kit-overrides: working tree against HEAD\nFindings: critical 0 · major 1 · minor 0\n\nKit overrides and hand-set typography') &&
+      /\| K-1 \| `src\/Card\.tsx` \| .*font weight.*text case/.test(enReport) &&
+      /\n## Could not verify\n- styles assembled at runtime/.test(enReport) &&
+      !/[а-яё]/i.test(enReport),
+    enReport,
+  )
+  check('EN kit-overrides report: read back (summary, language, "Could not verify" counted by the digest)', jc.findingCounts(enReport, 'stage-1-kit-overrides.md').major === 1 && jc.languageViolation(enReport, 'stage-1-kit-overrides.md', 'en') === null)
+  check('EN kit-overrides report: a rerun keeps the "Findings outcome" of the previous run', /## Findings outcome\n- K-1 — fixed/.test(kits.renderReport([], { language: 'en', previous: '# old\n## Findings outcome\n- K-1 — fixed: src/Card.tsx:1\n' })))
+}
 utimesSync(eReport, soon, soon)
 const noKitLedgerEn = eCommit('git add -A && git commit -m "T-13: card"')
 check('EN force commit: report without an outcome — denied', noKitLedgerEn.decision === 'deny' && /stage-1-kit-overrides\.md/.test(noKitLedgerEn.text), noKitLedgerEn.text)
@@ -901,7 +932,7 @@ const EJOURNALED = `${PARITY_EN}- [x] commit: \`${eCardSha.slice(0, 8)}\` T-13: 
 const eGate = () => runHook('journal-gate.mjs', { cwd: eApp, tool_name: 'Edit', tool_input: { file_path: join(eTask, 'STAGES.md') } })
 write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: EJOURNALED, heading: `## Force run ${today} — completed ${today}` }) })
 const redGateEn = eGate()
-check('EN "completed" without a CI gate run — returned', redGateEn.decision === 'block' && /Смоук|Smoke/.test(redGateEn.text) && /не запускался/.test(redGateEn.text), redGateEn.text)
+check('EN "completed" without a CI gate run — returned', redGateEn.decision === 'block' && /Смоук|Smoke/.test(redGateEn.text) && /never ran/.test(redGateEn.text), redGateEn.text)
 const eConfig = readFileSync(join(eApp, '.claude/pipeline.config.md'), 'utf8')
 check('EN gate table "CI gates" is read', same(gates.gateCommands(eConfig).map(({ name }) => name), ['Smoke']))
 write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: EJOURNALED, heading: `## Force run ${today} — completed with blockers ${today}`, blockers: '\n- B1 — Smoke: needs staging, does not start locally' }) })
@@ -911,7 +942,7 @@ check('EN "completed with blockers": the red gate is not named — violation', g
 spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'node -e "process.exit(0)"'], { cwd: eApp, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
 write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: EJOURNALED, heading: `## Force run ${today} — completed ${today}` }) })
 const greenGateEn = eGate()
-check('EN gate is green on HEAD — closing passes, gates are in the summary', greenGateEn.decision === 'message' && /Гейты CI на HEAD \(1 из 1/.test(greenGateEn.text), `${greenGateEn.decision}: ${greenGateEn.text.slice(0, 300)}`)
+check('EN gate is green on HEAD — closing passes, gates are in the summary', greenGateEn.decision === 'message' && /CI gates on HEAD \(1 of 1/.test(greenGateEn.text), `${greenGateEn.decision}: ${greenGateEn.text.slice(0, 300)}`)
 const eRebuilt = runHook('session-start.mjs', { cwd: eApp }).text
 check('EN session-start: the state line carries the force mark and the task', /T-13/.test(eRebuilt) || eRebuilt === '', eRebuilt)
 rmSync(eRoot, { recursive: true, force: true })
@@ -957,8 +988,8 @@ const EN_LIKES = [
   ['- `AC-5.3` WHEN save THEN as before — [verify: devtools-verify]', 'AC-5.3'],
   ['- `AC-5.4` WHEN opened THEN as in the old page — [verify: devtools-verify]', 'AC-5.4'],
   ['- `AC-5.5` WHEN opened THEN as it is now in the drawer — [verify: pro-review]', 'AC-5.5'],
-  ['- Decision: the active "Save" — same as now in the drawer', 'решение'],
-  ['- Decided: copy the old layout, as currently shown', 'решение'],
+  ['- Decision: the active "Save" — same as now in the drawer', '*'],
+  ['- Decided: copy the old layout, as currently shown', '*'],
   ['- D11: "Save" — same as the expert (expert-lead-card-sheet.tsx:227)', null],
   ['- `AC-2.1` WHEN card THEN gaps like in the mockup — [verify: figma-compare]', null],
   ['- `AC-2.1` WHEN card THEN gaps same as in the design — [verify: figma-compare]', null],
@@ -974,7 +1005,7 @@ const EN_LIKES = [
 ]
 for (const [line, want] of EN_LIKES) {
   const got = jc.likeViolation(line)
-  check(`EN "same as X" ${line.slice(2, 50)} → ${want}`, want === null ? got === null : got !== null && (want === 'решение' || got.id === want), JSON.stringify(got))
+  check(`EN "same as X" ${line.slice(2, 50)} → ${want}`, want === null ? got === null : got !== null && (want === '*' || got.id === want), JSON.stringify(got))
 }
 const EN_SKIPS = [
   ['Checks: pro-review-7a.md; proto-compare and devtools-verify — skip: the MCP Chrome is busy with another session', true],
@@ -1046,6 +1077,7 @@ check('EN outcome "user decision" without a date or quote — ledger-unknown', j
 
 // «Could not verify»: пустой список по-английски не попадает в сводку прогона.
 const { runDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+const { describe: describeGate } = await import(join(PLUGIN, 'ci-gates.mjs'))
 const digestFor = (items) => {
   const dir = mkdtempSync(join(tmpdir(), 'digest-en-'))
   mkdirSync(join(dir, 'T-30/checks'), { recursive: true })
@@ -1056,7 +1088,7 @@ const digestFor = (items) => {
   utimesSync(report, later, later)
   const text = runDigest(join(dir, 'T-30'), mkdtempSync(join(tmpdir(), 'digest-en-data-')), null)
   rmSync(dir, { recursive: true, force: true })
-  return text.match(/^### Не проверено \((\d+)\)/m)?.[1]
+  return text.match(/^### Not verified \((\d+)\)/m)?.[1]
 }
 const DIGEST_EMPTY = [['none'], ['None.'], ['nothing'], ['no items'], ['all verified'], ['All checked.'], ['everything is verified'], ['нет'], ['ничего']]
 for (const items of DIGEST_EMPTY) check(`digest: «Could not verify» "${items[0]}" — nothing unverified`, digestFor(items) === '0', String(digestFor(items)))
@@ -1119,11 +1151,11 @@ const lgWrite = (stagesText, report) => {
   return runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Write', tool_input: { file_path: lgReport } })
 }
 const lgRu = lgWrite(lgStages('en'), RU_REPORT)
-check('journal-gate: RU report in an EN task — returned to the author', lgRu.decision === 'block' && /pro-review-1\.md/.test(lgRu.text) && /языке задачи/.test(lgRu.text), lgRu.text)
+check('journal-gate: RU report in an EN task — returned to the author', lgRu.decision === 'block' && /pro-review-1\.md/.test(lgRu.text) && /task language/.test(lgRu.text), lgRu.text)
 check('journal-gate: EN report in an EN task — passes', lgWrite(lgStages('en'), EN_REPORT).decision === 'allow')
 check('journal-gate: EN report quoting Russian UI texts in an EN task — passes', lgWrite(lgStages('en'), EN_QUOTED).decision === 'allow')
 const lgEn = lgWrite(lgStages('ru'), EN_REPORT)
-check('journal-gate: EN report in a RU task — returned to the author', lgEn.decision === 'block' && /языке задачи/.test(lgEn.text), lgEn.text)
+check('journal-gate: EN report in a RU task — returned to the author', lgEn.decision === 'block' && /task language/.test(lgEn.text), lgEn.text)
 check('journal-gate: RU report in a RU task — passes', lgWrite(lgStages('ru'), RU_REPORT).decision === 'allow')
 check('journal-gate: task without a language line and without headings — report language is not checked', lgWrite('# T-31: task\nBranch: `T-31/feat/l`\n\n## Status: stage 1\n', RU_REPORT).decision === 'allow')
 // Язык проверяется только у отчёта, созданного после снимка задачи (имя отчёта не из снимка): старый отчёт старой задачи правят без возврата.
@@ -1149,7 +1181,7 @@ appendFileSync(lgOld2, '\n- M-2\n')
 check('journal-gate: old EN report in a RU task, appended via Bash path (fresh mtime) — no language return', runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Bash', tool_input: { command: 'cat >> report' } }).decision === 'allow')
 write(lgApp, { '.claude/tasks/T-32/checks/pro-review-1.md': EN_REPORT })
 const lgNewRun = runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Write', tool_input: { file_path: join(lgApp, '.claude/tasks/T-32/checks/pro-review-1.md') } })
-check('journal-gate: new EN report (created after the snapshot) in a RU task — returned', lgNewRun.decision === 'block' && /языке задачи/.test(lgNewRun.text), lgNewRun.text)
+check('journal-gate: new EN report (created after the snapshot) in a RU task — returned', lgNewRun.decision === 'block' && /task language/.test(lgNewRun.text), lgNewRun.text)
 // снимок v2 без имён отчётов: миграция записывает текущие отчёты как старые
 const lgSnap = join(DATA, 'journal-baseline')
 const lgSnapFile = readdirSync(lgSnap).map((n) => join(lgSnap, n)).find((f) => JSON.parse(readFileSync(f, 'utf8')).taskDir?.endsWith('T-32'))
@@ -1184,7 +1216,7 @@ check('run-check: {files:vue} — только это расширение', /ne
 const several = spawnSync('/bin/sh', ['-c', `'${process.execPath}' '${RUN_CHECK}' -- printf '%s|' {files:ts+vue}`], { cwd: rcRepo, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_LOCK_DIR: locks } })
 check('run-check: {files:ts+vue} переживает шелл (запятую он раскрыл бы)', /a\.ts\|/.test(several.stdout) && /new card\.vue\|/.test(several.stdout), several.stdout + several.stderr)
 const none = rc(['--', 'false', '{files:py}'])
-check('run-check: файлов нет — команда не запускается, код 0', none.status === 0 && /пропущено/.test(none.stdout))
+check('run-check: файлов нет — команда не запускается, код 0', none.status === 0 && /skipped/.test(none.stdout))
 check('run-check: код выхода — код команды', rc(['--', 'exit 3']).status === 3)
 check('run-check: git через обёртку не запускается', rc(['--', 'git', 'commit', '-m', 'x']).status === 2 && rc(['--', 'echo x && git push']).status === 2)
 check('run-check: режим из resources в конфиге', (() => {
@@ -1193,7 +1225,7 @@ check('run-check: режим из resources в конфиге', (() => {
 })())
 const first = spawnSync('/bin/sh', ['-c', `STAGE_PIPELINE_RESOURCES=low STAGE_PIPELINE_LOCK_DIR='${locks}' '${process.execPath}' '${RUN_CHECK}' -- 'sleep 2; date +%s%N' & sleep 0.5; STAGE_PIPELINE_RESOURCES=low STAGE_PIPELINE_LOCK_DIR='${locks}' '${process.execPath}' '${RUN_CHECK}' -- 'date +%s%N'; wait`], { cwd: rcRepo, encoding: 'utf8' })
 const stamps = first.stdout.match(/^\d{15,}$/gm) ?? []
-check('run-check: в low второй прогон ждёт первый (очередь на машину)', /жду очереди/.test(first.stdout) && stamps.length === 2 && Number(stamps[1]) >= Number(stamps[0]), first.stdout)
+check('run-check: в low второй прогон ждёт первый (очередь на машину)', /waiting in the queue/.test(first.stdout) && stamps.length === 2 && Number(stamps[1]) >= Number(stamps[0]), first.stdout)
 mkdirSync(join(locks, 'heavy.lock'), { recursive: true })
 writeFileSync(join(locks, 'heavy.lock', 'owner.json'), JSON.stringify({ pid: 999999, repo: 'x', command: 'y', started: Date.now() }))
 const stale = rc(['--', 'echo ok'], { STAGE_PIPELINE_RESOURCES: 'low' })
@@ -1297,6 +1329,48 @@ check('EN archive: a stage with "Full record: STAGES-ARCHIVE.md" is already fold
 const olderEn = planArchive(`# T\n\n## Journal\nOlder entries (3): STAGES-ARCHIVE.md — "Journal".\n\n${entriesEn.join('\n')}\n`)
 check('EN archive: "Older entries (N)" counter is read and replaced, not duplicated', olderEn.movedJournal.length === 2 && (olderEn.result.match(/^(?:Старые записи|Older entries) \(/gm) ?? []).length === 1 && /\(5\)/.test(olderEn.result), olderEn.result.split('\n').slice(0, 6).join('|'))
 
+// ── 0.16 (AC-3.3): texts that scripts write into task files — in the task language, read back by the same scripts ──
+check('archive text: an en task — the stub and the counter are English', /^Full record: STAGES-ARCHIVE\.md — "Stage 1: first {2}\[status: done\]"$/m.test(planEn.result) && /^Older entries \(2\): STAGES-ARCHIVE\.md — "Journal"\.$/m.test(planEn.result) && !/[а-яё]/i.test(planEn.result), planEn.result)
+check('archive text: a ru task — the stub and the counter are as before, byte for byte', /^Полная запись: STAGES-ARCHIVE\.md — «Этап 1: первый {2}\[status: done\]»$/m.test(plan.result) && /^Старые записи \(2\): STAGES-ARCHIVE\.md — «Журнал»\.$/m.test(plan.result) && !/Full record|Older entries/.test(plan.result), plan.result)
+for (const [lang, text, head, moved, journal, entryWord] of [
+  ['en', sourceEn, '# Stage archive\n\nFull records of closed stages, moved from STAGES.md.', '<!-- moved ', '## Journal', 'entry 13'],
+  ['ru', source, '# Архив этапов\n\nПолные записи закрытых этапов, перенесённые из STAGES.md.', '<!-- перенесено ', '## Журнал', 'запись 13'],
+]) {
+  const dir = mkdtempSync(join(tmpdir(), `archive-${lang}-`))
+  writeFileSync(join(dir, 'STAGES.md'), text)
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'archive-stages.mjs'), join(dir, 'STAGES.md'), '--apply'], { encoding: 'utf8' })
+  const archive = readFileSync(join(dir, 'STAGES-ARCHIVE.md'), 'utf8')
+  check(`archive --apply (${lang} task): the archive header and markers are in the task language`, run.status === 0 && archive.startsWith(head) && archive.includes(moved) && archive.includes(`${journal}\n${moved}`) && archive.includes(entryWord), archive.slice(0, 300))
+  check(`archive --apply (${lang} task): the console is English`, /^Moved stages: \d+, journal entries: \d+, STAGES\.md: \d+ KB → \d+ KB/.test(run.stdout) && /\nArchive: .*\nBackup: /.test(run.stdout) && !/[а-яё]/i.test(run.stdout.split('\n').filter((row) => !row.startsWith('  ###')).join('\n')), run.stdout)
+  const folded = readFileSync(join(dir, 'STAGES.md'), 'utf8')
+  const again = spawnSync(process.execPath, [join(PLUGIN, 'archive-stages.mjs'), join(dir, 'STAGES.md')], { encoding: 'utf8' })
+  check(`archive (${lang} task): the folded file is read back — nothing more to move`, !planArchive(folded).moved.length && !planArchive(folded).movedJournal.length && /Nothing to archive/.test(again.stdout), again.stdout)
+  rmSync(dir, { recursive: true, force: true })
+}
+{
+  // The run summary: headings in the task language; the same script reads the reports of both languages.
+  const digestOf = (language, headLines, reportName, report) => {
+    const dir = mkdtempSync(join(tmpdir(), `digest-${language}-`))
+    mkdirSync(join(dir, 'T-31/checks'), { recursive: true })
+    writeFileSync(join(dir, 'T-31/STAGES.md'), headLines)
+    const path = join(dir, 'T-31/checks', reportName)
+    writeFileSync(path, report)
+    const later = new Date(Date.now() + 60_000)
+    utimesSync(path, later, later)
+    const text = runDigest(join(dir, 'T-31'), mkdtempSync(join(tmpdir(), 'digest-data-')), null)
+    rmSync(dir, { recursive: true, force: true })
+    return text
+  }
+  const found = [{ file: 'src/Card.tsx', hits: [{ kind: 'font weight', token: 'font-bold', line: 1 }] }]
+  const enText = digestOf('en', '# T-31: task\nLanguage: en\n\n## Status: stage 1\n\n## ⚠ Awaiting user confirmation\n- default sort order\n', 'stage-1-kit-overrides.md', kits.renderReport(found, { language: 'en' }))
+  check('digest: an en task — English headings', /^### Blockers — your answer needed \(0\)\n- none$/m.test(enText) && /^### Not verified \(1\)$/m.test(enText) && /^### Accepted on my own — check, expensive rollbacks first \(\d+\)$/m.test(enText) && !/[а-яё]/i.test(enText), enText)
+  const ruText = digestOf('ru', '# T-31: задача\nЯзык: ru\n\n## Статус: этап 1\n\n## ⚠ Ожидают подтверждения пользователя\n- дефолт сортировки\n', 'stage-1-kit-overrides.md', kits.renderReport(found, { language: 'ru' }))
+  check('digest: a ru task — the old Russian headings, byte for byte', /^### Блокеры — нужен твой ответ \(0\)\n- нет$/m.test(ruText) && /^### Не проверено \(1\)$/m.test(ruText) && /^### Принято само — проверь, дорогие откаты первыми \(\d+\)$/m.test(ruText) && !/Blockers|Not verified/.test(ruText), ruText)
+  const bare = digestOf('x', '# T-31: task\n\n## Status: stage 1\n', 'pro-review-1.md', '# pro-review\nFindings: critical 0 · major 0 · minor 0\n')
+  check('digest: a task without a language — Russian, as before', /^### Блокеры — нужен твой ответ \(0\)$/m.test(bare), bare)
+  check('describe: the gate text is English by default, Russian for a ru task', describeGate({ name: 'smoke', command: 'yarn smoke', status: 'red', code: 1 }) === '"smoke" (`yarn smoke`) — red, code 1' && describeGate({ name: 'smoke', command: 'yarn smoke', status: 'red', code: 1 }, 'ru') === '«smoke» (`yarn smoke`) — красный, код 1')
+}
+
 // ── ретро ────────────────────────────────────────────────────────────────────
 const retroRoot = mkdtempSync(join(tmpdir(), 'retro-test-'))
 write(retroRoot, {
@@ -1321,8 +1395,8 @@ write(retroRoot, {
 })
 const retro = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot], { encoding: 'utf8' })
 check('ретро: не падает на diff=—', retro.status === 0, retro.stderr.trim())
-check('ретро: metrics из журнала разнесены по этапам, 2.1 — отдельный этап', /этапов: 3, этапов со строкой metrics: 3/.test(retro.stdout), retro.stdout.split('\n')[2])
-check('ретро: находки просуммированы по всем этапам', /находок всего: 14/.test(retro.stdout))
+check('ретро: metrics из журнала разнесены по этапам, 2.1 — отдельный этап', /stages: 3, stages with a metrics: line: 3/.test(retro.stdout), retro.stdout.split('\n')[2])
+check('ретро: находки просуммированы по всем этапам', /findings in total: 14/.test(retro.stdout))
 check('ретро: размер по добавленным строкам', /\| ≤300 \| 1 \|/.test(retro.stdout) && /\| 301–1000 \| 1 \|/.test(retro.stdout))
 check('ретро: старое имя отчёта deps-2.md засчитано', /\| deps-audit \| 0 \| 0 \| 1 \|/.test(retro.stdout))
 rmSync(retroRoot, { recursive: true, force: true })

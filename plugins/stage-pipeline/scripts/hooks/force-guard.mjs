@@ -2,17 +2,20 @@ import { askMatch, askRules, nameKill } from './permission-rules.mjs'
 import { readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
- * В force-прогоне пользователя у экрана нет, и вызов, который ждёт подтверждения, стоит прогону столько,
- * сколько пользователь не смотрит в терминал. В одном прогоне (03.10.2026) два `pkill` в субагентах простояли
- * 22 и 37 минут: `Bash(pkill *)` стоит в ask профиля разрешений, а ask сильнее allow — даже в auto mode.
- * Весь прогон ждал, хотя оба процесса агенты подняли сами и могли погасить по PID.
+ * In a force run the user is not at the screen, and a call that waits for confirmation costs the run as
+ * long as the user is not looking at the terminal. In one run (2026-10-03) two `pkill` calls in subagents
+ * stood for 22 and 37 minutes: `Bash(pkill *)` is in the ask list of the permission profile, and ask beats
+ * allow — even in auto mode. The whole run waited, although the agents had started both processes
+ * themselves and could have stopped them by PID.
  *
- * Хук превращает такую остановку в отказ с объяснением тем же ходом:
- * - `pkill`/`killall` — всегда: снимают по имени, в том числе чужое. Свой процесс гасится по PID;
- * - подкоманда под `ask` в settings пользователя или проекта (`git push`, `reset --hard`, `gh`…) — force её
- *   либо не делает вовсе (stage-force, Шаг 3), либо её делает пользователь: команда уходит в блокеры прогона.
- * Вне force и вне репо с пайплайном хук молчит: там пользователь рядом, и вопрос — нормальная часть работы.
- * Задача — только текущей ветки, как у git-guard.
+ * The hook turns such a stop into a denial with an explanation in the same turn:
+ * - `pkill`/`killall` — always: they kill by name, including processes that are not yours. Your own
+ *   process is stopped by PID;
+ * - a subcommand under `ask` in the user's or project's settings (`git push`, `reset --hard`, `gh`…) — force
+ *   either does not do it at all (stage-force, Step 3), or the user does it: the command goes into the run's blockers.
+ * Outside force and outside a repo with the pipeline the hook stays silent: the user is nearby there, and a
+ * question is a normal part of the work.
+ * The task is only the current branch's, as in git-guard.
  */
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
@@ -29,18 +32,18 @@ if (!task?.forceActive) process.exit(0)
 
 if (killer) {
   deny(
-    `stage-pipeline: force-прогон ${task.ticket} — \`${killer}\` снимает процессы по имени, в том числе чужие (dev-сервер пользователя, соседняя сессия), ` +
-      'и стоит в ask: прогон ждал бы подтверждения, пока пользователь не вернётся. Гаси только то, что запустил сам, и по PID: ' +
-      'при запуске `<команда> > <лог> 2>&1 & echo $!`, в конце `kill <PID>`; фоновую задачу Bash — по её id. PID не сохранил — ' +
-      '`lsof -ti :<порт>` только для порта, который ты сам занял, и `kill` по номеру. Процесс, который запустил не ты, не трогай — назови его в сводке.',
+    `stage-pipeline: force run ${task.ticket} — \`${killer}\` kills processes by name, including ones that are not yours (the user's dev server, a neighbouring session), ` +
+      'and is in ask: the run would wait for confirmation until the user comes back. Stop only what you started yourself, and by PID: ' +
+      'at launch `<command> > <log> 2>&1 & echo $!`, at the end `kill <PID>`; a background Bash task by its id. If you did not save the PID — ' +
+      '`lsof -ti :<port>` only for a port you took yourself, and `kill` by number. Do not touch a process that you did not start — name it in the summary.',
   )
 }
 deny(
-  `stage-pipeline: force-прогон ${task.ticket} — \`${asked.command}\` попадает под ask-правило \`${asked.rule}\` (${asked.source}): ` +
-    'вызов ждал бы подтверждения, а пользователь в force у экрана не сидит. Не ищи обход тем же действием другой командой. ' +
-    'Действие, которого force не делает (push, PR, reset --hard, clean — /stage-force, Шаг 3), пропусти. Без него не закрыть критерий — ' +
-    'запиши блокером: оркестратор — строкой в «Блокеры:» блока Force-прогона, субагент — в `Блокер:` сводки (команда и зачем), ' +
-    'и продолжай то, что от него не зависит (/stage-force, Шаг 2).',
+  `stage-pipeline: force run ${task.ticket} — \`${asked.command}\` falls under the ask rule \`${asked.rule}\` (${asked.source}): ` +
+    'the call would wait for confirmation, and in force the user is not at the screen. Do not look for a way around it by doing the same action with another command. ' +
+    'Skip an action that force does not do (push, PR, reset --hard, clean — /stage-force, Step 3). If a criterion cannot be closed without it — ' +
+    'record it as a blocker: the orchestrator as a line in `Blockers:` of the Force run block, a subagent in the `Not done / blocker:` line of its summary (the command and why), ' +
+    'and carry on with what does not depend on it (/stage-force, Step 2).',
 )
 
 function deny(reason) {

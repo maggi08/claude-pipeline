@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Ретро пайплайна по фактам из файлов задач, а не по памяти.
+ * Pipeline retro from the facts in task files, not from memory.
  *
  *   node retro.mjs <repo | task_dir | STAGES.md> [...]
  *
- * Источники: строки `metrics:` из журналов STAGES.md / STAGES-ARCHIVE.md (формат —
- * /stage-check, Шаг 4.1), чеклисты пайплайна этапов и отчёты в checks/. Задачи до
- * появления строки `metrics:` дают только чеклисты и отчёты — это тоже видно в выводе.
+ * Sources: `metrics:` lines from the journals of STAGES.md / STAGES-ARCHIVE.md (format —
+ * /stage-check, Step 4.1), the stage pipeline checklists and the reports in checks/. Tasks from before
+ * the `metrics:` line appeared give only checklists and reports — this is visible in the output too.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -15,7 +15,7 @@ import { STAGE_HEADING, STAGE_MENTION } from './markers.mjs'
 
 const targets = process.argv.slice(2)
 if (!targets.length || targets.includes('--help')) {
-  console.log('Использование: node retro.mjs <repo | task_dir | STAGES.md> [...]')
+  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...]')
   process.exit(targets.length ? 0 : 2)
 }
 
@@ -23,12 +23,12 @@ const taskDirs = new Set()
 for (const target of targets.map((t) => resolve(t))) collectTaskDirs(target)
 
 if (!taskDirs.size) {
-  console.error('Не найдено ни одного STAGES.md')
+  console.error('No STAGES.md found')
   process.exit(1)
 }
 
 const CHECKERS = ['figma-compare', 'proto-compare', 'devtools-verify', 'pro-review', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'figma-spec', 'proto-spec']
-// Имена отчётов до единой схемы `<checker>-<stage>.md` — их писали сами скиллы, в живых задачах они остаются.
+// Report names from before the single `<checker>-<stage>.md` scheme — the skills wrote them themselves, in live tasks they remain.
 const REPORT_ALIASES = [
   [/(^|[/_-])deps-/, 'deps-audit'],
   [/(^|[/_-])i18n-/, 'i18n-sweep'],
@@ -44,7 +44,7 @@ const checker = (name) => {
 const totals = { tasks: 0, stages: 0, withMetrics: 0, findings: 0, dropped: 0, iterations: 0, fresh: 0, escalations: 0 }
 const acOutcomes = { done: 0, userReview: 0, live: 0 }
 const iterationHistogram = new Map()
-// Размер этапа (поле diff=) против находок и раундов: подтверждает или опровергает ориентир «~300 / >1000 строк».
+// The stage size (the diff= field) against findings and rounds: confirms or refutes the guideline "~300 / >1000 lines".
 const SIZE_BUCKETS = [
   { label: '≤300', max: 300 },
   { label: '301–1000', max: 1000 },
@@ -62,7 +62,7 @@ for (const dir of taskDirs) {
     .map((path) => readFileSync(path, 'utf8'))
     .join('\n')
 
-  // Этап из STAGES.md и его полная запись из архива — один этап: берём самый полный блок.
+  // A stage from STAGES.md and its full record from the archive are one stage: take the fullest block.
   const stageBlocks = new Map()
   for (const { number, block } of stageBlocksOf(text)) {
     if (!stageBlocks.has(number) || block.length > stageBlocks.get(number).length) stageBlocks.set(number, block)
@@ -86,7 +86,7 @@ for (const dir of taskDirs) {
         stagesWithFloor++
         floorViolations += Number(fields.floor) || 0
       }
-      // `diff=+412/-30` (размер — по добавленным, удаления не в счёт) или старое `diff=442`.
+      // `diff=+412/-30` (the size counts added lines, deletions do not count) or the old `diff=442`.
       const added = Number(fields.diff?.match(/^\+?(\d+)/)?.[1])
       if (Number.isFinite(added)) {
         const bucket = bySize.find((b) => added <= b.max)
@@ -99,7 +99,7 @@ for (const dir of taskDirs) {
       for (const name of listField(fields.skipped)) checker(name).skipped++
       continue
     }
-    // Этап закрыт до формата metrics: — остаётся только его чеклист пайплайна.
+    // The stage was closed before the metrics: format — only its pipeline checklist remains.
     for (const [, mark, name, rest] of block.matchAll(/^- \[([ xX])\] ([a-z0-9-]+)(.*)$/gm)) {
       if (!isChecker(name)) continue
       if (/\(skip|\[skip/.test(rest)) checker(name).skipped++
@@ -111,8 +111,8 @@ for (const dir of taskDirs) {
   acOutcomes.userReview += (text.match(/AC-\d+\.\d+ ⏳/g) ?? []).length
   acOutcomes.live += (text.match(/AC-\d+\.\d+ \[live: user-side\]/g) ?? []).length
 
-  // Имена отчётов в живых задачах разъехались (pro-review-2.md, stage2-pro-review.md, stage-2/pro-review.md),
-  // поэтому чекер ищется в имени файла где угодно, а не по точному шаблону.
+  // Report names in live tasks diverged (pro-review-2.md, stage2-pro-review.md, stage-2/pro-review.md),
+  // so the checker is searched for anywhere in the file name, not by an exact pattern.
   for (const file of walkMarkdown(join(dir, 'checks'))) {
     const name = CHECKERS.find((candidate) => file.includes(candidate)) ?? REPORT_ALIASES.find(([pattern]) => pattern.test(file))?.[1]
     if (name) checker(name).reports++
@@ -122,9 +122,9 @@ for (const dir of taskDirs) {
 }
 
 /**
- * Блоки этапов: `### Этап 3 …` / `## Этап A0 …` до следующего заголовка того же или более высокого уровня.
- * Если в файле есть заголовки этапов со `[status: …]`, этапами считаются только они — иначе
- * журнальные подзаголовки «### Этап 6 — ход» посчитались бы вторым этапом 6.
+ * Stage blocks: `### Stage 3 …` / `## Stage A0 …` (or the Russian form) up to the next heading of the same or a higher level.
+ * If the file has stage headings with `[status: …]`, only they count as stages — otherwise
+ * journal subheadings "### Stage 6 — progress" would count as a second stage 6.
  */
 function stageBlocksOf(text) {
   const lines = text.split('\n')
@@ -138,9 +138,9 @@ function stageBlocksOf(text) {
 }
 
 /**
- * Строки `metrics:` — где бы они ни стояли. /stage-check пишет строку последней в запись «Журнала», а не в блок
- * этапа, поэтому этап берётся из поля `stage=`, иначе — из блока этапа, где строка стоит, иначе — из ближайшего
- * «этап N» выше в той же записи журнала.
+ * `metrics:` lines — wherever they stand. /stage-check writes the line last in a "Journal" entry, not in the stage
+ * block, so the stage is taken from the `stage=` field, otherwise from the stage block the line stands in, otherwise from the nearest
+ * "stage N" above in the same journal entry.
  */
 function metricsLines(text, stageBlocks) {
   const lines = text.split('\n')
@@ -196,45 +196,45 @@ function collectTaskDirs(path) {
 
 const pct = (part, whole) => (whole ? `${Math.round((part / whole) * 100)}%` : '—')
 
-console.log(`# Ретро пайплайна\n`)
-console.log(`Задач: ${totals.tasks}, этапов: ${totals.stages}, этапов со строкой metrics: ${totals.withMetrics}`)
+console.log(`# Pipeline retro\n`)
+console.log(`Tasks: ${totals.tasks}, stages: ${totals.stages}, stages with a metrics: line: ${totals.withMetrics}`)
 if (totals.withMetrics < totals.stages) {
-  console.log(`(у ${totals.stages - totals.withMetrics} этапов метрик нет — закрыты до формата metrics: или без /stage-check)`)
+  console.log(`(${totals.stages - totals.withMetrics} stages have no metrics — closed before the metrics: format or without /stage-check)`)
 }
 console.log('')
 console.log('## Fix-loop')
-console.log(`- находок всего: ${totals.findings}, отброшено как ложные: ${totals.dropped} (${pct(totals.dropped, totals.findings)})`)
-console.log(`- раундов fix-loop: ${totals.iterations}, в среднем на этап: ${totals.withMetrics ? (totals.iterations / totals.withMetrics).toFixed(1) : '—'}`)
-console.log(`- этапов со свежим прогоном чекера: ${totals.fresh} (${pct(totals.fresh, totals.withMetrics)})`)
-console.log(`- эскалаций: ${totals.escalations}`)
+console.log(`- findings in total: ${totals.findings}, dropped as false: ${totals.dropped} (${pct(totals.dropped, totals.findings)})`)
+console.log(`- fix-loop rounds: ${totals.iterations}, on average per stage: ${totals.withMetrics ? (totals.iterations / totals.withMetrics).toFixed(1) : '—'}`)
+console.log(`- stages with a fresh checker run: ${totals.fresh} (${pct(totals.fresh, totals.withMetrics)})`)
+console.log(`- escalations: ${totals.escalations}`)
 if (iterationHistogram.size) {
   const hist = [...iterationHistogram.entries()].sort((a, b) => a[0] - b[0]).map(([n, c]) => `${n}→${c}`)
-  console.log(`- распределение раундов (раундов→этапов): ${hist.join(', ')}`)
+  console.log(`- round distribution (rounds→stages): ${hist.join(', ')}`)
 }
-if (stagesWithFloor) console.log(`- floor-guard: нарушений на первом прогоне ${floorViolations} на ${stagesWithFloor} этапах`)
+if (stagesWithFloor) console.log(`- floor-guard: ${floorViolations} violations on the first run across ${stagesWithFloor} stages`)
 
 const sized = bySize.filter((bucket) => bucket.stages)
 if (sized.length) {
   console.log('')
-  console.log('## Размер этапа (строк дифа) против fix-loop')
-  console.log('| Размер | Этапов | Находок на этап | Раундов на этап | Свежий прогон |')
+  console.log('## Stage size (diff lines) against fix-loop')
+  console.log('| Size | Stages | Findings per stage | Rounds per stage | Fresh run |')
   console.log('|---|---|---|---|---|')
   for (const b of sized) {
     console.log(`| ${b.label} | ${b.stages} | ${(b.findings / b.stages).toFixed(1)} | ${(b.iterations / b.stages).toFixed(1)} | ${pct(b.fresh, b.stages)} |`)
   }
 }
 console.log('')
-console.log('## Чекеры')
-console.log('| Чекер | Запусков | Skip | Отчётов в checks/ | Доля skip |')
+console.log('## Checkers')
+console.log('| Checker | Runs | Skip | Reports in checks/ | Skip share |')
 console.log('|---|---|---|---|---|')
 for (const [name, c] of [...perChecker.entries()].sort()) {
   console.log(`| ${name} | ${c.ran} | ${c.skipped} | ${c.reports} | ${pct(c.skipped, c.ran + c.skipped)} |`)
 }
 console.log('')
-console.log('## Критерии приёмки')
-console.log(`- закрыто чекером (✅): ${acOutcomes.done}, ушло в user-review (⏳): ${acOutcomes.userReview}, live user-side: ${acOutcomes.live}`)
+console.log('## Acceptance criteria')
+console.log(`- closed by a checker (✅): ${acOutcomes.done}, went to user-review (⏳): ${acOutcomes.userReview}, live user-side: ${acOutcomes.live}`)
 
 const oversized = stagesSizes.filter((task) => task.kb > STAGES_BUDGET_KB).sort((a, b) => b.kb - a.kb)
 console.log('')
-console.log(`## STAGES.md больше ${STAGES_BUDGET_KB} KB (читается каждой сессией — архивировать done-этапы, /stage-check Шаг 4.2)`)
-console.log(oversized.length ? oversized.map((task) => `- ${task.ticket}: ${task.kb} KB`).join('\n') : '- нет')
+console.log(`## STAGES.md larger than ${STAGES_BUDGET_KB} KB (read by every session — archive the done stages, /stage-check Step 4.2)`)
+console.log(oversized.length ? oversized.map((task) => `- ${task.ticket}: ${task.kb} KB`).join('\n') : '- none')
