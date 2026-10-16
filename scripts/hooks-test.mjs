@@ -1417,6 +1417,64 @@ for (const [lang, text, head, moved, journal, entryWord] of [
   rmSync(vRoot, { recursive: true, force: true })
 }
 
+// ── validate.mjs: cross-references and Cyrillic outside the allowlist (AC-15.4) ──
+// A temporary git repo with one skill; validate.mjs and the real allowlist are copied into it and run as in CI.
+{
+  const here = dirname(fileURLToPath(import.meta.url))
+  const xRoot = mkdtempSync(join(tmpdir(), 'validate-xref-test-'))
+  write(xRoot, {
+    'scripts/validate.mjs': readFileSync(join(here, 'validate.mjs'), 'utf8'),
+    'scripts/cyrillic-allowlist.json': readFileSync(join(here, 'cyrillic-allowlist.json'), 'utf8'),
+    '.claude-plugin/marketplace.json': JSON.stringify({ plugins: [{ name: 'stage-pipeline', source: './plugins/stage-pipeline' }] }),
+    'plugins/stage-pipeline/.claude-plugin/plugin.json': JSON.stringify({ name: 'stage-pipeline', version: '1.0.0', description: 'x' }),
+    'plugins/stage-pipeline/skills/stage-check/SKILL.md': '---\nname: stage-check\ndescription: Close a stage.\n---\n\n## Step 9: Close\n\n**Findings outcome** — one line.\n',
+    'plugins/stage-pipeline/agents/b.md': '---\nname: b\ndescription: x\n---\n',
+    'CHANGELOG.md': '## 1.0.0\n',
+  })
+  spawnSync('git', ['init', '-q'], { cwd: xRoot })
+  const validateWithSkill = (extra, description = 'Close a stage.') => {
+    write(xRoot, { 'plugins/stage-pipeline/skills/other/SKILL.md': `---\nname: other\ndescription: ${description}\n---\n\n${extra}\n` })
+    spawnSync('git', ['add', '-A'], { cwd: xRoot })
+    const run = spawnSync(process.execPath, [join(xRoot, 'scripts/validate.mjs')], { encoding: 'utf8' })
+    return { ok: run.status === 0, out: run.stderr + run.stdout }
+  }
+  const OTHER = 'plugins/stage-pipeline/skills/other/SKILL.md'
+  const XREF = [
+    ['a reference to a missing step fails with the path and the line', 'See /stage-check, Step 9.9 for details.', false, new RegExp(`${OTHER}:6.*Step 9\\.9`)],
+    ['a reference to an existing step passes', 'See /stage-check, Step 9 for details.', true],
+    ['a reference to a missing section fails', 'See `skills/stage-check`, "No such section".', false, new RegExp(`${OTHER}:6`)],
+    ['a reference to a bold run-in label passes', 'See `skills/stage-check`, "Findings outcome".', true],
+  ]
+  for (const [name, body, wantOk, where] of XREF) {
+    const got = validateWithSkill(body)
+    check(`validate: xref — ${name}`, got.ok === wantOk && (wantOk || where.test(got.out)), got.out)
+  }
+  const ruParagraph = validateWithSkill('Это русский абзац вне белого списка.')
+  check('validate: cyrillic — a Russian paragraph in a skill fails with the path and the line', !ruParagraph.ok && new RegExp(`${OTHER}:6.*Cyrillic`).test(ruParagraph.out), ruParagraph.out)
+  const ruTail = validateWithSkill('Plain English.', 'Close a stage. RU triggers — «закрой этап», «проверь этап»')
+  check('validate: cyrillic — the RU triggers tail of a description passes', ruTail.ok, ruTail.out)
+  const ruHead = validateWithSkill('Plain English.', 'Закрой этап. RU triggers — «закрой этап»')
+  check('validate: cyrillic — Russian before the RU triggers label in a description fails', !ruHead.ok && /Cyrillic/.test(ruHead.out), ruHead.out)
+  const tail = validateWithSkill('See /stage-check, Steps 9 and 9.9 for details.')
+  check('validate: xref — the tail of a step list is checked (Steps 9 and 9.9 fails on 9.9)', !tail.ok && /Step 9\.9/.test(tail.out) && !/Step 9»/.test(tail.out), tail.out)
+  const skillForm = validateWithSkill('See the stage-check skill, Step 9.9 for details.')
+  check('validate: xref — the form "<skill> skill, Step N" is checked', !skillForm.ok && /Step 9\.9/.test(skillForm.out), skillForm.out)
+  const skillFormOk = validateWithSkill('See the stage-check skill, Step 9 for details.')
+  check('validate: xref — the form "<skill> skill, Step N" passes on an existing step', skillFormOk.ok, skillFormOk.out)
+  // an untracked file (not added to git) is scanned too
+  write(xRoot, { 'plugins/stage-pipeline/references/new.md': 'Это русский абзац в неотслеживаемом файле.\n' })
+  const untracked = spawnSync(process.execPath, [join(xRoot, 'scripts/validate.mjs')], { encoding: 'utf8' })
+  check('validate: cyrillic — an untracked file with a Russian paragraph fails', untracked.status !== 0 && /references\/new\.md:1.*Cyrillic/.test(untracked.stderr + untracked.stdout), untracked.stderr + untracked.stdout)
+  rmSync(join(xRoot, 'plugins/stage-pipeline/references/new.md'))
+  // a Russian reason in the allowlist is not allowed, a Russian line regex is
+  const allowlist = JSON.parse(readFileSync(join(xRoot, 'scripts/cyrillic-allowlist.json'), 'utf8'))
+  allowlist.rules.push({ glob: 'nothing/**', reason: 'русская причина' })
+  write(xRoot, { 'scripts/cyrillic-allowlist.json': JSON.stringify(allowlist, null, 2) + '\n' })
+  const ruReason = spawnSync(process.execPath, [join(xRoot, 'scripts/validate.mjs')], { encoding: 'utf8' })
+  check('validate: cyrillic — a Russian reason in the allowlist fails', ruReason.status !== 0 && /cyrillic-allowlist\.json:\d+.*Cyrillic/.test(ruReason.stderr + ruReason.stdout), ruReason.stderr + ruReason.stdout)
+  rmSync(xRoot, { recursive: true, force: true })
+}
+
 // ── retro ────────────────────────────────────────────────────────────────────
 // The STAGES.md fixture is Russian (the second supported task language, D1).
 const retroRoot = mkdtempSync(join(tmpdir(), 'retro-test-'))

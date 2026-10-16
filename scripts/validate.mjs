@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const errors = []
@@ -105,6 +106,7 @@ function validatePluginTree(pluginDir) {
   validateNoProjectIds(pluginDir)
   validateStageChecklist(pluginDir)
   validateSizeBudget(pluginDir)
+  validateXrefs(pluginDir)
 }
 
 function validateMcp(pluginDir) {
@@ -373,6 +375,151 @@ function walkMarkdown(dir) {
     return name.endsWith('.md') ? [path] : []
   })
 }
+
+/**
+ * Cross-references inside the plugin: "/stage-check, Step 4.4" and "`references/x.md`, "Section"" must lead to an
+ * existing heading (or a bold run-in label). A renamed step or section otherwise leaves a reference that
+ * points nowhere, and nobody notices until the model follows it. Sources: everything under the plugin
+ * (md, mjs, json) and the root README.md / ROLLOUT.md. The Russian step form is still read.
+ */
+function validateXrefs(pluginDir) {
+  const skillsDir = join(ROOT, pluginDir, 'skills')
+  if (!existsSync(skillsDir)) return
+  const skills = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')))
+  if (!skills.length) return
+  const norm = (s) => s.replace(/[`*_]/g, '').replace(/[«»"“”]/g, '').replace(/\s+/g, ' ').replace(/[.:\s]+$/, '').trim().toLowerCase()
+  const outlines = new Map()
+  const outline = (file) => {
+    if (outlines.has(file)) return outlines.get(file)
+    const result = { headings: [], bold: [], steps: new Set() }
+    let fence = null
+    let section = null
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      const f = line.match(/^\s*(`{3,}|~{3,})/)
+      if (f) {
+        fence = fence ? (f[1][0] === fence ? null : fence) : f[1][0]
+        continue
+      }
+      if (fence) continue
+      const h = line.match(/^(#{1,6})\s+(.*?)\s*$/)
+      if (h) {
+        result.headings.push(norm(h[2]))
+        const s = h[2].match(/^(?:Step|Шаг)\s+(\d+(?:\.\d+)?)/i)
+        section = s ? s[1] : null
+        if (s) result.steps.add(s[1])
+        continue
+      }
+      // "N. item" inside "Step N" is the sub-step N.M
+      const item = section && line.match(/^\s{0,3}(\d+)\.\s/)
+      if (item && !section.includes('.')) result.steps.add(`${section}.${item[1]}`)
+      const bold = line.match(/^\s*(?:[-*]\s+|\d+\.\s+)?\*\*([^*]+?)\*\*/)
+      if (bold) result.bold.push(norm(bold[1]))
+    }
+    outlines.set(file, result)
+    return result
+  }
+  const walkFiles = (dir) =>
+    readdirSync(dir).flatMap((name) => {
+      if (name === 'node_modules' || name === '.git') return []
+      const path = join(dir, name)
+      if (statSync(path).isDirectory()) return walkFiles(path)
+      return /\.(md|mjs|json)$/.test(name) ? [path] : []
+    })
+  const sources = [...walkFiles(join(ROOT, pluginDir)), ...['README.md', 'ROLLOUT.md'].map((name) => join(ROOT, name)).filter((path) => existsSync(path))]
+  const names = skills.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const stepNo = '\\d+(?:\\.\\d+)?'
+  const stepRe = new RegExp(`(?<![\\w-])\`?\\/?(${names})\`?(?:\\s+skill)?,?\\s+\`?(?:Steps?|Шаг[иа]?)\\s+(${stepNo}(?:\\s*[–-]\\s*${stepNo})?(?:(?:,\\s*(?:and\\s+|и\\s+)?|\\s+(?:and|и)\\s+)${stepNo}(?:\\s*[–-]\\s*${stepNo})?)*)`, 'gi')
+  const sectionRe = /(`?[\w.${}\/<>-]+`?)\s*,\s*(?:step\s+|шаг\s+)?(?:«([^»\n]+)»|"([^"\n]+)"|“([^”\n]+)”)/gi
+  const skillFile = (name) => join(skillsDir, name, 'SKILL.md')
+  const mdTarget = (src, token) => {
+    const skillDir = src.slice(ROOT.length + 1).match(/^(plugins\/[^/]+\/skills\/[^/]+)\//)?.[1]
+    const candidates = [join(ROOT, pluginDir, token), join(dirname(src), token), skillDir && join(ROOT, skillDir, token), join(ROOT, token)]
+    return candidates.find((path) => path && existsSync(path) && statSync(path).isFile()) ?? null
+  }
+  for (const src of sources) {
+    const rel = src.slice(ROOT.length + 1)
+    readFileSync(src, 'utf8').split('\n').forEach((line, i) => {
+      const where = `${rel}:${i + 1}`
+      for (const m of line.matchAll(stepRe)) {
+        for (const step of m[2].match(/\d+(?:\.\d+)?/g)) {
+          if (!outline(skillFile(m[1])).steps.has(step)) fail(where, `reference «${m[1]}, Step ${step}» — no such step in skills/${m[1]}/SKILL.md`)
+        }
+      }
+      for (const m of line.matchAll(sectionRe)) {
+        const token = m[1].replace(/`/g, '')
+        const name = m[2] ?? m[3] ?? m[4]
+        const bare = token.replace(/^\$\{CLAUDE_PLUGIN_ROOT\}\//, '').replace(/^\//, '').replace(/^skills\//, '')
+        let target = null
+        if (skills.includes(bare)) target = skillFile(bare)
+        else if (/\.md$/.test(token)) {
+          target = mdTarget(src, token)
+          if (!target) {
+            fail(where, `reference «${token}, "${name}"» — file not found`)
+            continue
+          }
+        } else continue
+        const query = norm(name).replace(/^(?:step|шаг)\s+/, '')
+        const o = outline(target)
+        if (!o.headings.some((h) => h.includes(query)) && !o.bold.some((h) => h.includes(query))) {
+          fail(where, `reference «${token}, "${name}"» — no such heading or bold label in ${target.slice(ROOT.length + 1)}`)
+        }
+      }
+    })
+  }
+}
+
+/**
+ * Cyrillic outside the allowlist (scripts/cyrillic-allowlist.json). The plugin is English; Russian stays only where
+ * it is the second supported task language or a trigger phrase: each rule there is a glob, an optional
+ * line regex and a reason. Scans tracked and untracked, not ignored files (`git ls-files --cached --others --exclude-standard`); outside a git checkout it is skipped with a warning, and fails under CI.
+ */
+function validateCyrillic() {
+  const listed = spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 })
+  if (listed.status !== 0) {
+    if (process.env.CI) return fail('scripts/validate.mjs', 'Cyrillic check cannot run: not a git checkout')
+    console.warn('Cyrillic check skipped: not a git checkout')
+    return
+  }
+  const allowlistPath = join(ROOT, 'scripts/cyrillic-allowlist.json')
+  if (!existsSync(allowlistPath)) return fail('scripts/cyrillic-allowlist.json', 'no allowlist — Cyrillic cannot be checked')
+  const globToRegExp = (glob) => {
+    let out = ''
+    for (let i = 0; i < glob.length; i++) {
+      const ch = glob[i]
+      if (ch === '*') {
+        if (glob[i + 1] === '*') {
+          i++
+          if (glob[i + 1] === '/') {
+            i++
+            out += '(?:.*/)?'
+          } else out += '.*'
+        } else out += '[^/]*'
+      } else if (ch === '?') out += '[^/]'
+      else out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    }
+    return new RegExp(`^${out}$`)
+  }
+  const data = readJson('scripts/cyrillic-allowlist.json')
+  const rules = (data?.rules ?? []).map((rule) => {
+    if (!rule.reason) fail('scripts/cyrillic-allowlist.json', `rule for «${rule.glob}» has no reason`)
+    return { glob: globToRegExp(rule.glob), line: rule.line ? new RegExp(rule.line, 'u') : null }
+  })
+  for (const path of listed.stdout.split('\0').filter(Boolean)) {
+    const abs = join(ROOT, path)
+    if (!existsSync(abs) || statSync(abs).isDirectory()) continue
+    const buffer = readFileSync(abs)
+    if (buffer.includes(0)) continue
+    const applicable = rules.filter((rule) => rule.glob.test(path))
+    if (applicable.some((rule) => !rule.line)) continue
+    const hits = []
+    buffer.toString('utf8').split('\n').forEach((line, i) => {
+      if (/[\u0400-\u052F]/.test(line) && !applicable.some((rule) => rule.line.test(line))) hits.push(i + 1)
+    })
+    if (hits.length) fail(`${path}:${hits.slice(0, 8).join(',')}`, `Cyrillic outside the allowlist in ${hits.length} line(s) — translate it or add a rule with a reason to scripts/cyrillic-allowlist.json`)
+  }
+}
+
+validateCyrillic()
 
 if (errors.length) {
   console.error(`✘ Validation failed (${errors.length}):\n`)
