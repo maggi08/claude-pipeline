@@ -1,46 +1,48 @@
-# Отчёт чекера и итог находок
+# Checker report and findings outcome
 
-Первую часть читают все чекеры: это формат отчёта. Вторую читает оркестратор: это итог находок после fix-loop. Обе проверяет `scripts/journal-check.mjs`, а применяют хуки: journal-gate при записи отчёта и журнала, git-guard на force-коммите. Нарушение возвращается тому, кто записал отчёт или журнал, тем же ходом.
+A checker report is written in the language of the task (the "Language:" line in the STAGES.md header). The service markers that scripts read — the summary line, the headings "Findings outcome" and "Could not verify" — are English for an English task; for a Russian task take their Russian forms from the marker table in references/language.md.
 
-Откуда это взялось. В трёх задачах в трёх репо, разобранных 04.10, большую часть того, что пользователь нашёл после «готово», чекеры уже нашли раньше. Оркестратор записал находки в «оставляю», «принят как компромисс», «в Ожидают подтверждения», «вопрос Владу». В одной задаче так прошли 5 из 8 дефектов, в другой из 12 отложенных находок 11 потом пришлось исправлять.
+The first part is read by every checker: it is the report format. The second is read by the orchestrator: it is the findings outcome after the fix loop. Both are checked by `scripts/journal-check.mjs` and enforced by hooks: journal-gate when a report or the journal is written, git-guard on a force commit. A violation goes back to whoever wrote the report or the journal, in the same turn.
 
-## Отчёт чекера
+Where this comes from. In three tasks in three repos reviewed on 2026-10-04, most of what the user found after "done" had already been found by the checkers. The orchestrator wrote the findings off as "leaving it", "accepted as a compromise", "into Awaiting user confirmation", "a question for Vlad". In one task 5 of 8 defects went that way; in another, 11 of 12 deferred findings later had to be fixed anyway.
 
-1. **Сводка — второй строкой, после заголовка, в одной форме:** `Находки: critical N · major N · minor N`. После неё можно дописать вердикт. Без такой строки находки не сосчитать, и хук вернёт отчёт.
-2. **Severity — только `critical`, `major` или `minor`.** «Вопрос», «уточнить у бэкенда», «minor-major», «вне фронта» — не severity. Оцени последствия для пользователя и поставь одну из трёх. Вопрос к продукту или бэкенду допиши в текст находки. Пример: в одной задаче devtools-verify записал расхождение баллов на 20 «выводом» без severity, и через сутки это стало правкой пользователя.
-3. **FAIL по критерию — тоже находка**, даже если строки в таблице под него нет.
-4. **Секция «Не удалось проверить» обязательна.** Пустая — так и напиши: «всё из переданного проверено». В рантайм-чекере «нет данных», «нет броней на аккаунте» и «нет тестовых лидов» — не причина: состояние подставляется (`skills/devtools-verify`, «Состояния без данных»).
+## Checker report
 
-## Итог находок — пишет оркестратор
+1. **The summary is the second line, right after the title, in one form:** `Findings: critical N · major N · minor N`. A verdict may follow it. Without this line findings cannot be counted, and the hook returns the report.
+2. **Severity is only `critical`, `major` or `minor`.** "Question", "ask the backend", "minor-major", "not frontend" are not severities. Weigh the consequences for the user and pick one of the three. Put a question for product or backend into the text of the finding. Example: in one task devtools-verify recorded a 20-point score mismatch as a "conclusion" with no severity, and a day later it became a user's fix.
+3. **A FAIL on a criterion is a finding too**, even if the table has no row for it.
+4. **The "Could not verify" section is mandatory.** If it is empty, say so: "everything verified" (of what was passed in). In a runtime checker, "no data", "no bookings on the account" and "no test leads" are not a reason: the state is put in place (`skills/devtools-verify`, "States without data").
 
-После fix-loop, до коммита этапа, в конец каждого отчёта, где есть critical, major или FAIL, добавляется секция:
+## Findings outcome — written by the orchestrator
+
+After the fix loop, before the stage commit, a section is appended to the end of every report that has critical, major or FAIL:
 
 ```markdown
-## Итог находок
-- M-1 — исправлено: use-express-form.ts:104, перепроверено fix-раундом 1
-- #2 — ложная: 109×32 — нативный размер full-logo.svg, в макете 92 — та же картинка под маской (node 463:199)
+## Findings outcome
+- M-1 — fixed: use-express-form.ts:104, rechecked by fix round 1
+- #2 — false: 109×32 is the native size of full-logo.svg, the mockup shows 92 — the same image under a mask (node 463:199)
 - AC-5.9 — B1
 ```
 
-Строка нужна на каждую critical- и major-находку и на каждый FAIL. ID — как в отчёте: `M-1`, `#2`, `F10`, `AC-5.9`. Для minor строка необязательна, но minor без итога попадёт в сводку прогона как «не исправлено».
+One line is needed for every critical and major finding and for every FAIL. The ID is as in the report: `M-1`, `#2`, `F10`, `AC-5.9`. A line is optional for a minor, but a minor without an outcome lands in the run summary as "not fixed".
 
-Допустимые итоги:
+Allowed outcomes:
 
-- **`исправлено: <file:line или чем перепроверено>`**.
-- **`ложная: <доказательство>`** — замер, строка кода, кадр. «Давняя», «не регресс», «было до задачи» — тоже ложная для этой задачи, но только с доказательством на базе: sha базы или прод-URL с замером. Слова «давний» без проверки на базе мало: в одной задаче такой hydration-mismatch записали в промпты четырёх чекеров как «не находка», а на базе его так никто и не проверил.
-- **`B<n>`** — блокер force-прогона (`/stage-force`, Шаг 2). В обычном режиме — `решение пользователя <дата или «цитата»>`.
+- **`fixed: <file:line or how it was rechecked>`**.
+- **`false: <proof>`** — a measurement, a line of code, a frame. "Pre-existing", "not a regression", "existed before the task" also make a finding false for this task, but only with proof on the base: the base sha, or a prod URL with a measurement. The word "pre-existing" without a check on the base is not enough: in one task such a hydration mismatch was written into the prompts of four checkers as "not a finding", and nobody ever checked it on the base.
+- **`B<n>`** — a blocker of the force run (`/stage-force`, Step 2). In normal mode — `user decision <date or "quote">`.
 
-Не итог (хук вернёт): «оставляю», «принят как компромисс», «в Ожидают подтверждения», «не чиним», «в кит», «в FINDINGS», «отдельной задачей», «вопрос дизайнеру / продукту / бэкенду», «вне скоупа» без доказательства. Всё это — решение не исправлять, а его принимает пользователь, а не тот, чью работу проверяли. Находка, которую fix-loop не исправил, — блокер, а не строка в «Ожидают подтверждения». «Ожидают» — для продуктовых решений без дефекта: новый дефолт, текст, порядок.
+Not an outcome (the hook returns it): "leaving it", "accepted as a compromise", "into Awaiting user confirmation", "won't fix", "to the kit", "to FINDINGS", "as a separate task", "a question for design / product / backend", "out of scope" without proof. All of these are a decision not to fix, and the user makes it, not the one whose work was checked. A finding that the fix loop did not fix is a blocker, not a line in "Awaiting user confirmation". "Awaiting" is for product decisions with no defect: a new default, a text, an order.
 
-## Где это проверяется
+## Where this is checked
 
-- **journal-gate, запись отчёта:** нет строки сводки; запрещённый итог; «давний» без доказательства; у devtools-verify — нет строки `geometry`, нет `style-diff` у этапа с «Эталоном вида», «нет данных» вместо подстановки.
-- **journal-gate, журнал:**
-  - отметка `[x] <чекер> (checks/<отчёт>.md …)` при неполном итоге в этом отчёте;
-  - ✅ с оговоркой «не снят», «не проверено», «только по коду», «частично»;
-  - заголовок блока Force-прогона «завершён» при открытых блокерах или отчётах без итога.
-- **git-guard, force-коммит:** новые отчёты задачи без полного итога; переопределения кита в дифе без отчёта `kit-overrides`.
+- **journal-gate, report write:** no summary line; a forbidden outcome; "pre-existing" without proof; for devtools-verify — no `geometry` line, no `style-diff` on a stage with a "Visual reference", "no data" instead of putting the state in place.
+- **journal-gate, journal:**
+  - a mark `[x] <checker> (checks/<report>.md …)` while the outcome in that report is incomplete;
+  - ✅ with a caveat "not captured", "not verified", "from code only", "partly";
+  - a Force run block heading "completed" while blockers are open or reports have no outcome.
+- **git-guard, force commit:** new reports of the task without a complete outcome; kit overrides in the diff without a `kit-overrides` report.
 
-Отчёт `checks/stage-<N>-kit-overrides.md` пишет не агент, а скрипт `scripts/kit-override-scan.mjs --out …`: каждый файл с переопределениями кита — major. Итог — тот же: исправлено (вид из кита), ложная — с `путь:строка` эталонной секции, которая делает так же, или решение пользователя «вид как в прототипе». Повторный скан после фиксов итог не стирает.
+The report `checks/stage-<N>-kit-overrides.md` is written not by an agent but by the script `scripts/kit-override-scan.mjs --out …`: every file with kit overrides is a major. The outcome is the same: fixed (the look from the kit), false — with the `path:line` of a reference section that does the same, or a user decision "the look as in the prototype". A repeat scan after the fixes does not erase the outcome.
 
-Проверяются только отчёты, записанные после того, как плагин впервые увидел задачу на этой версии. Старые задачи переписывать не нужно.
+Only reports written after the plugin first saw the task on this version are checked. Old tasks need not be rewritten.

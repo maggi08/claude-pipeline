@@ -1,16 +1,16 @@
-# Тяжёлые проверки — lint, test, type_check, build
+# Heavy checks — lint, test, type_check, build
 
-Команды из конфига идут по всему репозиторию. На этапе это минуты CPU и гигабайты памяти, а повторённые после каждой правки, в каждом раунде fix-loop и параллельно с dev-сервером и браузером — главный тормоз реализации. На слабой машине или при 3–4 параллельных проектах — ещё и своп. Правило: на этапе — охват по дифу и один прогон, весь проект — один раз в финале задачи.
+Commands from the config run over the whole repository. On a stage that is minutes of CPU and gigabytes of memory, and when repeated after every edit, in every round of the fix loop and in parallel with the dev server and the browser they are the main brake on implementation. On a weak machine or with 3–4 projects in parallel — swap as well. The rule: on a stage — scope by the diff and one run; the whole project — once, at the end of the task.
 
-**Запуск — через `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-check.mjs -- <команда>`.** Он подставляет в `{files}` изменённые и новые файлы кода этапа, пропускает команду, когда таких нет, и в режиме `low` ставит тяжёлые прогоны всех проектов машины в очередь с пониженным приоритетом. Режим — `node …/run-check.mjs --mode`: `resources: low | normal` из `pipeline.config.local.md`, без поля — `low` при ОЗУ ≤ 16 GB.
+**Run through `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-check.mjs -- <command>`.** It substitutes the stage's changed and new code files into `{files}`, skips the command when there are none, and in `low` mode puts the heavy runs of all the machine's projects into a queue with lowered priority. The mode — `node …/run-check.mjs --mode`: `resources: low | normal` from `pipeline.config.local.md`; without the field — `low` at RAM ≤ 16 GB.
 
-| Когда | lint | test | type_check | build |
+| When | lint | test | type_check | build |
 |---|---|---|---|---|
-| во время правок | нет | нет | нет | нет |
-| конец implement и каждой итерации fix-loop | `lint_files` по дифу; поля нет — `lint`, один раз | `test_related` по дифу; поля нет — `test`, только если этап трогал логику (стор, утилита, API-слой) | один раз, весь проект — ошибки рождаются и в чужих файлах; сверка с baseline | только если этап трогал манифест или конфиг сборки |
-| `/stage-check`, Шаг 1 | не повторять, если дерево не менялось после прогона в implement (тот же `git status --porcelain`) | то же | то же | — |
-| финальные проверки задачи | `lint` целиком | `test` целиком | `type_check` целиком | `build` |
+| while editing | no | no | no | no |
+| end of implement and of every fix loop iteration | `lint_files` on the diff; no such field — `lint`, once | `test_related` on the diff; no such field — `test`, only if the stage touched logic (a store, a utility, the API layer) | once, the whole project — errors are born in other people's files too; compare with the baseline | only if the stage touched the manifest or the build config |
+| `/stage-check`, Step 1 | do not repeat if the tree has not changed since the run in implement (the same `git status --porcelain`) | same | same | — |
+| final checks of the task | `lint` in full | `test` in full | `type_check` in full | `build` |
 
-`lint_files` и `test_related` — необязательные поля конфига с `{files}` (`yarn eslint {files}`, `yarn vitest related --run {files}`, `yarn jest --findRelatedTests {files}`); без них работает старая команда на весь проект, только реже.
+`lint_files` and `test_related` are optional config fields with `{files}` (`yarn eslint {files}`, `yarn vitest related --run {files}`, `yarn jest --findRelatedTests {files}`); without them the old command for the whole project works, only less often.
 
-**Dev-сервер нужен только devtools-verify.** В режиме `low` на время lint/test/type_check/build он остановлен: сначала детерминированные проверки и статические чекеры (pro-review, figma-compare), потом dev-сервер → devtools-verify → сервер гасится; живая перепроверка fix-loop — так же. Гасишь только тот сервер, который сам запустил, — по PID (`… & echo $!` при запуске) или id фоновой задачи, не `pkill`: в force его отклонит хук. Сервер пользователя не трогаешь; если он лишний — в обычном режиме попроси его остановить. В force проверяй на нём, ведь рабочее дерево то же. Если нужен другой env, а второй инстанс не поднимается (Next держит `.next/dev/lock`), — devtools-verify skip с причиной, а не вопрос. В режиме `normal` — как раньше: сервер можно держать, чекеры идут параллельно.
+**The dev server is needed only by devtools-verify.** In `low` mode it is stopped for the duration of lint/test/type_check/build: first the deterministic checks and the static checkers (pro-review, figma-compare), then the dev server → devtools-verify → the server is stopped; the live recheck of the fix loop goes the same way. You stop only the server you started yourself — by PID (`… & echo $!` at start) or by the id of the background task, not with `pkill`: in force the hook rejects it. The user's server you do not touch; if it is in the way — in normal mode ask the user to stop it. In force, check on it, since the working tree is the same. If another env is needed and a second instance does not come up (Next holds `.next/dev/lock`) — devtools-verify skip with a reason, not a question. In `normal` mode — as before: the server can be kept, checkers run in parallel.

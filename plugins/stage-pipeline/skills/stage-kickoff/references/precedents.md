@@ -1,19 +1,19 @@
-# Прецеденты правил /stage-kickoff
+# Precedents of the /stage-kickoff rules
 
-Откуда взялось каждое правило. Для исполнения скилла файл не нужен — правила в `SKILL.md` самодостаточны; он нужен, когда правило хочется ослабить или переписать.
+Where each rule came from. The file is not needed to run the skill — the rules in `SKILL.md` are self-contained; it is needed when you want to relax or rewrite a rule.
 
-## Шаг 2
+## Step 2
 
-Непустой блок «Ожидают подтверждения» не показали на kickoff — продуктовое изменение дожило до QA: два полных цикла имплементации гейтинга стартового экрана.
+A non-empty "Awaiting user confirmation" block was not shown at kickoff — a product change lived to QA: two full cycles of implementing the start screen's gating.
 
-## Шаг 4
+## Step 4
 
-Opt-in гейтинг выбран в AskUserQuestion «на словах» и отменён на следующий день после первого живого прогона.
+Opt-in gating was chosen "in words" in AskUserQuestion and reversed the next day after the first live run.
 
-## Шаг 1. Прочитать этап
+## Step 1. Read the stage
 
-Цена пропуска гейта задокументирована дважды: в одной задаче «уточнить стекло» провисело вопросом шесть этапов и вернулось второй порцией дизайн-правок по пяти компонентам уже после PR; в другой — формат года, порядок плейсхолдеров и чекбоксы согласия всплывали повторно, потому что ни один критерий их не фиксировал.
+The cost of skipping the gate is documented twice: in one task "settle the glass skin" hung as a question for six stages and came back as a second portion of design edits across five components already after the PR; in another, the year format, the order of placeholders and the consent checkboxes surfaced again and again because no criterion pinned them down.
 
-## Шаг 4. Забрать бизнес/UX-ввод
+## Step 4. Collect business/UX input
 
-в одной задаче вариант поверхности отменён на этапе 1, потому что proto-spec нашёл, что его в CSS не существует (правильный ход, задача сэкономила круг); в другой тот же вопрос повис пунктом Q5 «уточнить стекло» на шесть этапов, реализовали базовые правила вместо темы, зашитой в класс на `<html>`, и это вернулось второй порцией дизайн-правок по пяти компонентам уже после PR.
+in one task a surface variant was cancelled at stage 1 because proto-spec found that it does not exist in the CSS (the right move, the task saved a round); in another the same question hung as item Q5 "settle the glass skin" for six stages, the base rules were implemented instead of the theme baked into a class on `<html>`, and it came back as a second portion of design edits across five components already after the PR.
