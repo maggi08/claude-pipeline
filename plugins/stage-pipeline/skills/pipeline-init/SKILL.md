@@ -4,106 +4,107 @@ description: Инициализировать stage-пайплайн в ново
 disable-model-invocation: true
 ---
 
-# Pipeline Init — конфиг пайплайна под конкретный репозиторий
+# Pipeline Init — the pipeline config for a specific repository
 
-Цель: пайплайн-скиллы generic и не знают ничего про конкретный проект. Всё специфичное (пути, команды, источники правды) они читают из `<repo>/.claude/pipeline.config.md`. Эта команда изучает репозиторий и **генерирует этот конфиг**, чтобы в новом проекте пайплайн заработал в его контексте.
+The goal: the pipeline skills are generic and know nothing about a concrete project. Everything project-specific (paths, commands, sources of truth) they read from `<repo>/.claude/pipeline.config.md`. This command studies the repository and **generates that config**, so that the pipeline works in the new project's context.
 
-Запускать один раз на проект (или когда поменялся стек/команды/пути).
+Run it once per project (or when the stack, commands or paths change).
 
-## Процедура
+## Procedure
 
-Исследуй репозиторий напрямую (Read/Glob/Grep), без фан-аута субагентов:
+Study the repository directly (Read/Glob/Grep), without fanning out to subagents:
 
-1. **Стек и пакет-менеджер** — `package.json` (deps: nuxt/vue/react/next/svelte/…; `packageManager`), lock-файл (`yarn.lock`→yarn, `pnpm-lock.yaml`→pnpm, `package-lock.json`→npm).
-2. **Команды** — скрипты `dev`/`build`/`lint`/`type-check`(или `typecheck`)/`test` из `package.json`; `bundle_size` — скрипт `size`/`size-limit`/`bundlesize`/`bundle-size` там же, нет такого — `—`. Плюс команды по файлам этапа с `{files}` (их подставляет `run-check.mjs`, `${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`): `lint_files` — линтер из devDependencies напрямую (`<pm> eslint {files}`, `<pm> biome check {files}`, `ruff check {files}`), `test_related` — `<pm> vitest related --run {files}` / `<pm> jest --findRelatedTests {files}`; прогони на одном файле и запиши рабочую форму, не завелось — `—`. Если type-check есть — предложи прогнать один раз и записать **baseline** число ошибок (в проектах бывает легаси-долг; чекеры сравнивают с baseline, а не с нулём). Два обязательных санити-чека:
-   - **Монорепо: type_check реально покрывает каждый workspace?** Скрипты с топологическим порядком (`yarn workspaces foreach -t`, turbo/nx) МОЛЧА пропускают зависимые пакеты, когда падает их зависимость. Проверка: прямой `tsc -p <app>/tsconfig.json --noEmit` главного приложения vs вывод общего скрипта; подозрительно быстрый прогон (~секунды на большом приложении) = признак пропуска. В конфиг фиксируй ПРЯМУЮ per-workspace команду, не только общий скрипт (урок: одно из приложений монорепо не тайпчекалось ни локально, ни в CI — сломанный коммит прожил незамеченным).
-   - **Baseline sanity.** Ненулевой baseline не принимай молча — прочитай сами ошибки. «Модуль X не экспортирует Y» про локальные пакеты (`file:`-tarball, workspace ui-lib) — чаще устаревшая установка, чем легаси-долг: проверь свежесть (дата tgz, версия vs исходники соседнего репо) и предложи переустановку ДО фиксации baseline (урок: «baseline 16+3» сутки считался командным долгом, оказался устаревшим tgz UI-кита).
-3. **Статические анализаторы** — есть ли в репо детерминированный инструмент, который находит то, что чекеры иначе ищут грепом: `knip`, `ts-prune`, `unimported`, `depcheck`, `madge`. Ищи в devDependencies, в скриптах и в конфигах (`knip.json`, `.knip.*`, `.depcheckrc`, `.madgerc`). Нашёл — прогони один раз и запиши в конфиг ТОЧНУЮ рабочую команду; не запускается или шумит на весь репозиторий — пометь это прямо в конфиге. **Новую зависимость ради чекера не предлагай** — это решение владельца репо; разовый `npx`-прогон предложить можно, но в конфиг пиши только то, что в этом репо реально работает. Ничего нет — ставь `—`: `dead-code` и `deps-audit` тогда работают грепом, как и раньше.
-4. **Dev-сервер** — из `dev`-скрипта + дефолты фреймворка (Nuxt 3000, Vite 5173, Next 3000) + признаки HTTPS (`ssl/`, `https:setup`, mkcert) → собери URL (протокол+хост+порт).
-5. **Дизайн-источники правды** (для figma-compare/spec): токены/тема (`glob` по `**/theme/*`, `tokens*`, `design-tokens*`, `tailwind.config.*`), UI-библиотека (deps вида `@*/ui*`, префикс компонентов), брейкпоинты (из `tailwind.config`), иконки (папка + конвенция авто-импорта), i18n (`locales/`, i18n-конфиг, хелпер перевода).
-6. **Раскладка кода** (для дедуп-аудита/feature-checker): `components/`, `composables/`|`hooks/`, `page-components/`, `store/`|`stores/`, `server/api/`, тесты. Отметь «эталон для сверки» (существующая реализация, с которой матчить редизайн), если пользователь назвал.
-7. **Платформы/связанные репо** (опц.): один репо или мульти-контекст (desktop/adaptive/webview, соседние репозитории).
-8. **MCP-зависимости — проверить.** Пайплайну для `figma-compare`/`figma-spec` нужен Figma MCP, для `devtools-verify` — Chrome DevTools MCP. Оба приезжают в `.mcp.json` плагина, поэтому подключать руками обычно не нужно — достаточно `claude mcp list` (ждём «✓ Connected») и разрешить серверы плагина, если Claude Code спрашивает подтверждение.
-   - `figma` не подключается — это локальный сервер десктоп-Figma: приложение должно быть запущено, Dev Mode MCP Server включён (Figma → Preferences). Проверка порта: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3845/mcp`.
-   - `chrome-devtools` поднимается сам через `npx` при первом вызове; нужен Node ≥ 18 и установленный Chrome.
-   Не молчи о том, что требует действия пользователя. Проекту без Figma/UI-редизайна `figma` и `chrome-devtools` не нужны — не гоняй его настраивать их впустую.
+1. **Stack and package manager** — `package.json` (deps: nuxt/vue/react/next/svelte/…; `packageManager`), the lock file (`yarn.lock`→yarn, `pnpm-lock.yaml`→pnpm, `package-lock.json`→npm).
+2. **Commands** — the `dev`/`build`/`lint`/`type-check` (or `typecheck`)/`test` scripts from `package.json`; `bundle_size` — a `size`/`size-limit`/`bundlesize`/`bundle-size` script in the same place, none — `—`. Plus the per-stage-files commands with `{files}` (`run-check.mjs` substitutes them, `${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`): `lint_files` — the linter from devDependencies directly (`<pm> eslint {files}`, `<pm> biome check {files}`, `ruff check {files}`), `test_related` — `<pm> vitest related --run {files}` / `<pm> jest --findRelatedTests {files}`; run it on one file and record the form that works, if it does not start — `—`. If there is a type-check, offer to run it once and record the **baseline** error count (projects often carry legacy debt; checkers compare against the baseline, not against zero). Two mandatory sanity checks:
+   - **Monorepo: does type_check really cover every workspace?** Scripts with a topological order (`yarn workspaces foreach -t`, turbo/nx) SILENTLY skip dependent packages when their dependency fails. The check: a direct `tsc -p <app>/tsconfig.json --noEmit` of the main app vs the output of the shared script; a suspiciously fast run (~seconds for a large app) is a sign of skipping. Record the DIRECT per-workspace command in the config, not only the shared script (lesson: one of the monorepo's apps was type-checked neither locally nor in CI — a broken commit lived unnoticed).
+   - **Baseline sanity.** Do not accept a non-zero baseline silently — read the errors themselves. "Module X does not export Y" about local packages (a `file:` tarball, a workspace ui-lib) is more often a stale install than legacy debt: check freshness (the tgz date, the version vs the sources of the neighboring repo) and offer a reinstall BEFORE fixing the baseline (lesson: "baseline 16+3" was counted as the team's debt for a day, and turned out to be a stale tgz of the UI kit).
+3. **Static analyzers** — whether the repo has a deterministic tool that finds what checkers would otherwise look for with grep: `knip`, `ts-prune`, `unimported`, `depcheck`, `madge`. Look in devDependencies, in scripts and in configs (`knip.json`, `.knip.*`, `.depcheckrc`, `.madgerc`). If you find one, run it once and record the EXACT working command in the config; if it does not run or is noisy across the whole repository, note that right in the config. **Do not suggest a new dependency for the sake of a checker** — that is the repo owner's decision; a one-off `npx` run may be suggested, but write into the config only what really works in this repo. Nothing there — put `—`: `dead-code` and `deps-audit` then work by grep, as before.
+4. **Dev server** — from the `dev` script + framework defaults (Nuxt 3000, Vite 5173, Next 3000) + HTTPS signs (`ssl/`, `https:setup`, mkcert) → assemble the URL (protocol+host+port).
+5. **Design sources of truth** (for figma-compare/spec): tokens/theme (`glob` over `**/theme/*`, `tokens*`, `design-tokens*`, `tailwind.config.*`), the UI library (deps like `@*/ui*`, the component prefix), breakpoints (from `tailwind.config`), icons (the folder + the auto-import convention), i18n (`locales/`, the i18n config, the translation helper).
+6. **Code layout** (for the dedup audit/feature-checker): `components/`, `composables/`|`hooks/`, `page-components/`, `store/`|`stores/`, `server/api/`, tests. Note the "reuse baseline" (an existing implementation to match a redesign against), if the user named one.
+7. **Platforms/related repos** (optional): one repo or multi-context (desktop/adaptive/webview, neighboring repositories).
+8. **MCP dependencies — check.** The pipeline needs the Figma MCP for `figma-compare`/`figma-spec` and the Chrome DevTools MCP for `devtools-verify`. Both come in the plugin's `.mcp.json`, so connecting them by hand is usually not needed — `claude mcp list` is enough (expect "✓ Connected"), and approve the plugin's servers if Claude Code asks for confirmation.
+   - `figma` does not connect — it is a local desktop-Figma server: the app must be running, Dev Mode MCP Server enabled (Figma → Preferences). Port check: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3845/mcp`.
+   - `chrome-devtools` starts by itself via `npx` on the first call; it needs Node ≥ 18 and an installed Chrome.
+   Do not stay silent about what needs the user's action. A project without Figma/UI redesign does not need `figma` and `chrome-devtools` — do not spend effort setting them up.
 
-9. **Разрешения — иначе пайплайн спрашивает подтверждение на каждом шаге.** Профиль разрешений лежит в плагине (`permissions/base.json`) и доливается в settings скриптом; записи `Skill(stage-pipeline:*)` и `mcp__*` он генерирует из самого плагина, так что новый скилл вписывать руками не надо.
+9. **Permissions — otherwise the pipeline asks for confirmation at every step.** The permissions profile lives in the plugin (`permissions/base.json`) and is poured into settings by a script; it generates the `Skill(stage-pipeline:*)` and `mcp__*` entries from the plugin itself, so a new skill does not have to be added by hand.
 
    ```bash
-   node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs           # отчёт: чего не хватает (ничего не пишет)
-   node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs --apply   # дописать в ~/.claude/settings.json
+   node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs           # report: what is missing (writes nothing)
+   node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs --apply   # append to ~/.claude/settings.json
    ```
 
-   Порядок жёсткий: сначала прогон без флагов, **покажи пользователю список того, что добавится, и применяй только с его согласия** — это правка его личных настроек, а не файла в репо. Скрипт только доливает: чужих записей не трогает, `allow` не ставит поверх уже стоящих `deny`/`ask` (сообщает конфликтом), перед записью кладёт бэкап рядом.
+   The order is strict: first the run without flags, **show the user the list of what will be added and apply only with their consent** — this edits their personal settings, not a file in the repo. The script only adds: it does not touch other people's entries, does not put an `allow` over `deny`/`ask` already in place (it reports a conflict), and puts a backup next to the file before writing.
 
-   - **User-скоуп (по умолчанию) — правильное место.** Плагин включён во всех репозиториях; разрешения, положенные в `<repo>/.claude/settings.local.json`, придётся заводить заново в каждом новом проекте.
-   - **Группы**: `pipeline` (скиллы + MCP), `fs-read`, `shell-tools`, `fs-write`, `vcs`, `js-toolchain`, `devserver` — по умолчанию; `docker`, `web` — по `--groups`. Пользователь не хочет широкий Bash-аллоулист — `--minimal` даёт только `pipeline`, остальное продолжит спрашиваться. `shell-tools` (`sed`, `awk`, `find`, `xargs`) вынесена из `fs-read` отдельно именно потому, что это не чтение: `sed -i` пишет файл, `find -exec` и `xargs` запускают произвольную команду — без неё набор честно read-only.
-   - **Проектное — в project-скоуп, а не в общий профиль**: соседние репо и репо плагина (`--scope project --dirs ../ui-lib,../prototypes`, попадают в `additionalDirectories`) и нестандартные команды этого репо (`Bash(../../node_modules/.bin/tsc *)` в монорепо) — их допиши руками в `<repo>/.claude/settings.local.json`.
-   - **`deny`/`ask` — часть профиля, не довесок.** `git push`, `reset --hard`, `git clean`, `gh`, `pkill` и чтение `.env` остаются вопросом; force-push, публикация пакета, деплой, `ssh`/`scp`/`rsync` и чтение `~/.ssh`, `~/.aws`, credentials — запрещены. На этих запретах стоит `/stage-force`: без них автономный прогон получает право публиковать.
-   - **Скажи вслух, чем этот `deny` НЕ является.** Профиль разрешает `node`, `npx`, `python3` — то есть произвольное исполнение кода, и обойти любой запрет из списка тривиально. `deny` здесь защищает от случайной команды агента, а не от злонамеренной; пользователю, которому нужна настоящая граница, нужен sandbox, а не аллоулист. Обещать больше, чем профиль даёт, — хуже, чем не ставить его вовсе.
-   - **`Bash(...)` — префиксное совпадение, пробел перед `*` литеральный.** `Bash(rm -rf dist *)` не покрывает `rm -rf dist` (нет аргумента после), зато покрывает `rm -rf dist /чужой/путь`; `Bash(curl -s http://localhost *)` не покрывает `curl -s http://localhost:3000/`. Дописывая проектные записи руками, проверь форму на реальной команде, а не на глаз.
-   - Разрешения читаются при старте сессии — после `--apply` скажи пользователю перезапустить Claude Code, иначе он решит, что не сработало.
+   - **User scope (the default) is the right place.** The plugin is enabled in all repositories; permissions put into `<repo>/.claude/settings.local.json` would have to be set up again in every new project.
+   - **Groups**: `pipeline` (skills + MCP), `fs-read`, `shell-tools`, `fs-write`, `vcs`, `js-toolchain`, `devserver` — by default; `docker`, `web` — via `--groups`. A user who does not want a broad Bash allowlist: `--minimal` gives only `pipeline`, the rest will keep asking. `shell-tools` (`sed`, `awk`, `find`, `xargs`) is split out of `fs-read` precisely because it is not reading: `sed -i` writes a file, `find -exec` and `xargs` run an arbitrary command — without it the set is honestly read-only.
+   - **Project-specific goes into the project scope, not into the shared profile**: neighboring repos and the plugin repo (`--scope project --dirs ../ui-lib,../prototypes`, they land in `additionalDirectories`) and this repo's non-standard commands (`Bash(../../node_modules/.bin/tsc *)` in a monorepo) — add them by hand to `<repo>/.claude/settings.local.json`.
+   - **`deny`/`ask` are part of the profile, not an add-on.** `git push`, `reset --hard`, `git clean`, `gh`, `pkill` and reading `.env` stay a question; force-push, package publishing, deploy, `ssh`/`scp`/`rsync` and reading `~/.ssh`, `~/.aws`, credentials are forbidden. `/stage-force` stands on these bans: without them an autonomous run gets the right to publish.
+   - **Say out loud what this `deny` is NOT.** The profile allows `node`, `npx`, `python3` — that is, arbitrary code execution, and bypassing any ban on the list is trivial. Here `deny` protects against an accidental agent command, not a malicious one; a user who needs a real boundary needs a sandbox, not an allowlist. Promising more than the profile gives is worse than not setting it up at all.
+   - **`Bash(...)` is a prefix match, the space before `*` is literal.** `Bash(rm -rf dist *)` does not cover `rm -rf dist` (no argument after it), but it does cover `rm -rf dist /someone/elses/path`; `Bash(curl -s http://localhost *)` does not cover `curl -s http://localhost:3000/`. When adding project entries by hand, check the form on a real command, not by eye.
+   - Permissions are read at session start — after `--apply` tell the user to restart Claude Code, otherwise they will decide it did not work.
 
-## Выход: `.claude/pipeline.config.md`
+## Output: `.claude/pipeline.config.md`
 
-Создай `<repo>/.claude/pipeline.config.md` по шаблону ниже. Заполни обнаруженным; неуверенные значения помечай `# TODO: подтвердить`. `slug` = имя корневой папки репо.
+Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what you found; mark uncertain values with `# TODO: confirm`. `slug` = the name of the repo's root folder.
 
-**Раскладка «репо-локально» (по умолчанию):** всё, что связано с задачами и проектной памятью, живёт В РЕПО, под `<repo>/.claude/` — так метаданные хранятся рядом с кодом, делятся по тикетам и (если нужно) едут в git/команду. Сами скиллы и агенты в репо не копируются — они приезжают плагином `stage-pipeline` и работают во всех репо.
-- `task_path` по умолчанию `<repo>/.claude/tasks/` — STAGES.md/specs/checks/DESIGN-QUESTIONS по тикетам.
-- `memory_path` по умолчанию `<repo>/.claude/memory/` — проектная память (решения/грабли/договорённости этого репо). ⚠ Это НЕ харнесс-автопамять `~/.claude/projects/...` (та по системному пути, авто-вспоминается и остаётся для кросс-репных user-префов) — репо-локальную память пайплайн читает явно в начале задачи.
-- Скриншоты чекеров тяжёлые — добавь `<repo>/.claude/tasks/**/checks/screens/` в `.gitignore`, если задачи коммитятся.
+**The "repo-local" layout (the default):** everything tied to tasks and project memory lives IN THE REPO, under `<repo>/.claude/` — this way the metadata sits next to the code, is shared by ticket and (if needed) travels in git/to the team. The skills and agents themselves are not copied into the repo — they come with the `stage-pipeline` plugin and work in all repos.
+- `task_path` defaults to `<repo>/.claude/tasks/` — STAGES.md/specs/checks/DESIGN-QUESTIONS by ticket.
+- `memory_path` defaults to `<repo>/.claude/memory/` — project memory (decisions/pitfalls/agreements of this repo). ⚠ This is NOT the harness auto-memory `~/.claude/projects/...` (that one is at a system path, is recalled automatically and stays for cross-repo user preferences) — the pipeline reads the repo-local memory explicitly at the start of a task.
+- Checker screenshots are heavy — add `<repo>/.claude/tasks/**/checks/screens/` to `.gitignore` if tasks are committed.
 
 ```markdown
 # Pipeline config — <project>
-<!-- Читается пайплайн-скиллами. Правь руками при изменении проекта. -->
+<!-- Read by the pipeline skills. Edit by hand when the project changes. -->
 
 ## Project
 - slug: <repo-basename>
-- stack: <напр. Nuxt 4 / Vue 3 / Pinia / TS>
+- stack: <e.g. Nuxt 4 / Vue 3 / Pinia / TS>
 - package_manager: <yarn 1.x | npm | pnpm>
-- main_branch: <dev | main | master>   # ветка, В КОТОРУЮ открывается PR (если PR идут в dev — dev, не main); merge-base для whole-branch pro-review, dead-code, wrapup
+- main_branch: <dev | main | master>   # the branch the PR is opened INTO (if PRs go to dev — dev, not main); the merge-base for whole-branch pro-review, dead-code, wrapup
+- language: <ru | en>   # optional: the default language of new tasks (the task files are written in it); leave out — the language of the message that starts the task decides. Unknown — delete the line, do not leave the placeholder. Rules: ${CLAUDE_PLUGIN_ROOT}/references/language.md
 
 ## Task state
-- task_path: .claude/tasks/     # в репо: STAGES.md / specs/ / checks/ / DESIGN-QUESTIONS.md по тикетам
-- memory_path: .claude/memory/  # в репо: проектная память (решения/грабли этого репо)
+- task_path: .claude/tasks/     # in the repo: STAGES.md / specs/ / checks/ / DESIGN-QUESTIONS.md by ticket
+- memory_path: .claude/memory/  # in the repo: project memory (decisions/pitfalls of this repo)
 
 ## Commands
 - dev: <yarn dev>
 - build: <yarn build>
 - lint: <yarn lint>
-- type_check: <прямая per-workspace команда, напр. cd apps/x && ../../node_modules/.bin/tsc -p tsconfig.json --noEmit>  # baseline: <N | не замерен>; общий монорепо-скрипт может молча пропускать workspace'ы (см. процедуру, п.2)
+- type_check: <a direct per-workspace command, e.g. cd apps/x && ../../node_modules/.bin/tsc -p tsconfig.json --noEmit>  # baseline: <N | not measured>; the shared monorepo script may silently skip workspaces (see the procedure, item 2)
 - test: <yarn test>
-- lint_files: <yarn eslint {files} | —>        # lint по файлам этапа (run-check.mjs подставит изменённые); — → на этапе целиком `lint`
-- test_related: <yarn vitest related --run {files} | yarn jest --findRelatedTests {files} | —>  # тесты, связанные с файлами этапа
-- bundle_size: <команда, печатающая размер бандла, напр. `yarn build && du -sk dist` или `size-limit` | —>  # есть → stage-plan заводит metrics-baseline/metrics-guard; — → пунктов нет
-- e2e: <`yarn e2e:test` | —>   # гейт CI, если ниже нет таблицы «Гейты CI»; так же `smoke:`
+- lint_files: <yarn eslint {files} | —>        # lint by the stage's files (run-check.mjs substitutes the changed ones); — → `lint` on the whole stage
+- test_related: <yarn vitest related --run {files} | yarn jest --findRelatedTests {files} | —>  # tests related to the stage's files
+- bundle_size: <a command that prints the bundle size, e.g. `yarn build && du -sk dist` or `size-limit` | —>  # set → stage-plan adds metrics-baseline/metrics-guard; — → no such items
+- e2e: <`yarn e2e:test` | —>   # a CI gate if there is no "CI gates" table below; likewise `smoke:`
 
-## Гейты CI (опц. — что CI гоняет на PR и ронять нельзя)
-<!-- Финальные проверки гоняют каждую команду на HEAD (`ci-gates.mjs --run`), force не закрывается «завершён»,
-     пока они не зелёные. Список — из джоб CI на pull request; деплой, публикация и шаги с секретами — не гейты. -->
-| Проверка | Команда | Что ловит |
+## CI gates (optional — what CI runs on a PR and must not be broken)
+<!-- The final checks run every command on HEAD (`ci-gates.mjs --run`), and force is not closed as "completed"
+     until they are green. The list comes from the CI jobs on a pull request; deploy, publishing and steps with secrets are not gates. -->
+| Check | Command | What it catches |
 |---|---|---|
-| <Смоук> | `<pnpm --filter smoke exec playwright test>` | <маршруты, отказ по роли> |
+| <Smoke> | `<pnpm --filter smoke exec playwright test>` | <routes, a refusal by role> |
 
 ## Models
-- review_model: opus   # whole-branch pro-review и свежий прогон чекера в fix-loop — самая сильная модель; в force она ещё и не та, что у maker (`stage-implement` = sonnet); sonnet | opus | haiku
+- review_model: opus   # whole-branch pro-review and the fresh checker run in the fix loop — the strongest model; in force it is also not the maker's (`stage-implement` = sonnet); sonnet | opus | haiku
 
 ## Static analysis (dead-code / deps-audit)
-<!-- Даёт КАНДИДАТОВ по всему репо; чекер пересекает вывод с дифом и подтверждает сам. -->
-- unused_code: <yarn knip | npx ts-prune | —>          # осиротевшие экспорты, файлы, типы
-- unused_deps: <yarn depcheck | yarn knip --dependencies | —>  # зависимости без импортов
-- import_graph: <npx madge --circular <src> | —>       # циклы и граф импортов
+<!-- Gives CANDIDATES across the whole repo; the checker intersects the output with the diff and confirms on its own. -->
+- unused_code: <yarn knip | npx ts-prune | —>          # orphaned exports, files, types
+- unused_deps: <yarn depcheck | yarn knip --dependencies | —>  # dependencies without imports
+- import_graph: <npx madge --circular <src> | —>       # cycles and the import graph
 
 ## Dev server
-- url: <https://localhost:3000>        # протокол+хост+порт для devtools-verify
+- url: <https://localhost:3000>        # protocol+host+port for devtools-verify
 
 ## Design sources of truth (figma-compare / figma-spec)
 - tokens: <config/theme/tokens.ts | —>
 - palette: <config/theme/colors.ts | —>
-- ui_lib: <@scope/ui-lib, префикс UI*, компоненты в node_modules/.../runtime/components/ | —>  # каталог кита внутри репо — путём в бэктиках: kit-override-scan его не сканирует; в самом репо кита — строка `- kit_overrides: off`
-- breakpoints: <xs ≤420, sm ≤767, md ≤1023, lg ≥1024 — из tailwind.config | —>
-- icons: <assets/icons/ авто-импорт, префикс Icon* | —>
+- ui_lib: <@scope/ui-lib, prefix UI*, components in node_modules/.../runtime/components/ | —>  # the kit's directory inside the repo — a path in backticks: kit-override-scan does not scan it; in the kit's own repo — the line `- kit_overrides: off`
+- breakpoints: <xs ≤420, sm ≤767, md ≤1023, lg ≥1024 — from tailwind.config | —>
+- icons: <assets/icons/ auto-import, prefix Icon* | —>
 - i18n: <locales/ (ru, kk), useLang() | —>
 
 ## Code layout (dedup audit / feature-checker)
@@ -113,22 +114,22 @@ disable-model-invocation: true
 - stores: <store/ | stores/ | —>
 - server_api: <server/api/ | —>
 - tests: <tests/ | —>
-- reuse_baseline: <существующая реализация для сверки, напр. components/<feature>/ | —>
+- reuse_baseline: <an existing implementation to compare against, e.g. components/<feature>/ | —>
 
-## Platforms / related repos (опц., мульти-контекст)
+## Platforms / related repos (optional, multi-context)
 - desktop: <this repo | —>
 - adaptive: <this repo | —>
 - webview: <../<webview-repo> | —>
 
 ## Conventions
-- Конвенции проекта — в CLAUDE.md (pro-review рубрика A читает его). Нет CLAUDE.md — предложи `/init`.
+- The project conventions are in CLAUDE.md (pro-review rubric A reads it). No CLAUDE.md — suggest `/init`.
 ```
 
-## После генерации
+## After generation
 
-1. Покажи пользователю заполненный конфиг и **спроси про поля, которые не удалось определить** (dev-URL, эталон переиспользования, baseline type-check, webview-репо).
-2. Отчитайся по MCP (шаг 8): что подключено и живо, что требует действия пользователя (запустить Figma desktop, одобрить серверы плагина).
-3. Покажи отчёт скрипта разрешений (шаг 9) и, получив согласие, примени его. Не применил — скажи прямо, что подтверждения будут спрашиваться на каждом чекере, и оставь готовую команду.
-4. Нет CLAUDE.md — предложи Claude Code `/init`, чтобы pro-review было на что опереться.
+1. Show the user the filled-in config and **ask about the fields you could not determine** (dev URL, the reuse baseline, the type-check baseline, the webview repo, the default task `language`: `ru` or `en`).
+2. Report on MCP (step 8): what is connected and alive, what needs the user's action (start Figma desktop, approve the plugin's servers).
+3. Show the permissions script's report (step 9) and, with consent, apply it. Not applied — say plainly that confirmations will be asked at every checker, and leave the ready command.
+4. No CLAUDE.md — suggest Claude Code `/init`, so that pro-review has something to rely on.
 
-С этого момента пайплайн-скиллы в этом репозитории читают `.claude/pipeline.config.md` и работают в его контексте. Порядок работы дальше — в `${CLAUDE_PLUGIN_ROOT}/README.md` (init → feature-checker → stage-plan → цикл этапов).
+From this moment the pipeline skills in this repository read `.claude/pipeline.config.md` and work in its context. The order of work from here is in `${CLAUDE_PLUGIN_ROOT}/README.md` (init → feature-checker → stage-plan → the stage loop).

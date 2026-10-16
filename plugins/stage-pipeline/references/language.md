@@ -21,7 +21,7 @@ Every task has one language: English (`en`) or Russian (`ru`). Nothing else is s
 
 ## Marker table
 
-The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run block and `pipeline.config.md`. Write the column of the task language. Unchanged in both languages: `[verify: …]`, `[live: …]`, `⏳`, `✅`, `❌`, `AC-*`, `B<n>`, `M-<n>`, `D<n>`, `PASS`, `FAIL`, checker names, pipeline line keywords (`kickoff`, `implement`, `user-review`, `commit:`, `metrics:`, `skip`), `[status: todo | in-progress | done | cancelled]`.
+The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run block and `pipeline.config.md`, plus the FEATURE-MAP template (read by the model: `/feature-checker` reuses a map written in either language). Write the column of the task language. Unchanged in both languages: `[verify: …]`, `[live: …]`, `⏳`, `✅`, `❌`, `AC-*`, `B<n>`, `M-<n>`, `D<n>`, `PASS`, `FAIL`, checker names, pipeline line keywords (`kickoff`, `implement`, `user-review`, `commit:`, `metrics:`, `skip`), `[status: todo | in-progress | done | cancelled]`.
 
 | Where | English | Russian |
 |---|---|---|
@@ -81,3 +81,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Config gate command: none | `none` | `нет` |
 | Config field, kit overrides off | `kit_overrides: off` (also `false`, `no`, `disabled`) | `kit_overrides: нет` |
 | Config field | `language: en` | `language: ru` |
+| FEATURE-MAP header | `# Feature map: …` / `Date:` / `Repos:` / `Base:` | `# Feature map: …` / `Дата:` / `Репо:` / `База:` |
+| FEATURE-MAP section (read by figma-compare, proto-compare, stage-force, stage-implement) | `## Orientation` | `## Ориентация` |
+| FEATURE-MAP Orientation fields | `Essence:`, `Entry points:`, `Data:`, `Flags:`, `Careful:` | `Суть:`, `Точки входа:`, `Данные:`, `Флаги:`, `Осторожно:` |
+| FEATURE-MAP sections | `## Entry points`, `## Data architecture`, `## Platform matrix`, `## Webview bridges`, `## Risk zones`, `## Reuse candidates` | `## Точки входа`, `## Архитектура данных`, `## Матрица платформ`, `## Webview-бриджи`, `## Зоны риска`, `## Кандидаты на переиспользование` |

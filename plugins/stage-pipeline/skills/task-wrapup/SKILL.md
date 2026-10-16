@@ -4,80 +4,82 @@ description: Финал задачи — свести журнал всех эт
 disable-model-invocation: true
 ---
 
-# Task Wrapup — описание PR/MR из журнала задачи
+# Task Wrapup — a PR/MR description from the task journal
 
-Задача прошла N этапов, каждый со своими решениями, находками чекеров и фиксами. Всё это лежит в STAGES.md, STAGES-ARCHIVE.md и `checks/*.md`. Ревьюер этого не читал и читать не будет — ему нужен один текст, из которого понятно, что изменилось, почему так и куда смотреть.
+The task has gone through N stages, each with its own decisions, checker findings and fixes. All of it lies in STAGES.md, STAGES-ARCHIVE.md and `checks/*.md`. The reviewer has not read it and will not: they need one text that makes clear what changed, why it is so and where to look.
 
-Этот скилл **только готовит текст**. Создание PR, пуш и комментирование — за пользователем.
+This skill **only prepares the text**. Creating the PR, pushing and commenting are up to the user.
 
-Запускается **только вручную** (`disable-model-invocation`): описание нужно не к каждой задаче, поэтому ни `/stage-force`, ни финальные проверки его сами не зовут.
+It is run **only manually** (`disable-model-invocation`): a description is not needed for every task, so neither `/stage-force` nor the final checks call it themselves.
 
-> **Project config.** `main_branch`, `<task_dir>`, платформы и команды — из `<repo>/.claude/pipeline.config.md`.
+> **Project config.** `main_branch`, `<task_dir>`, the platforms and the commands — from `<repo>/.claude/pipeline.config.md`.
 
-## Шаг 1. Собрать фактуру
+> **Description language.** The PR/MR text is written in the language of the target repo's history (`git log <main_branch> --oneline -20`) or as the user asks — not in the task's language, which only decides the language of the task directory (`${CLAUDE_PLUGIN_ROOT}/references/language.md`, `skills/stage-check/references/commit-message.md`). The section names below are given in English; in a Russian-language description translate them.
 
-- `git log <main_branch>..HEAD --oneline` — что реально в ветке.
-- `git diff --stat $(git merge-base <main_branch> HEAD)...HEAD` — масштаб и затронутые области.
-- STAGES.md: статусы этапов, «Журнал», блок «⚠ Ожидают подтверждения», «Не включено в план».
-- `checks/*.md`: вердикты чекеров, что чинилось, слепые зоны.
-- Шаблон PR репозитория, если он есть (`.github/pull_request_template.md`, `.gitlab/merge_request_templates/`) — заполняй его, а не свою структуру.
+## Step 1. Collect the facts
 
-**Платформа определяет слово.** GitHub — PR, GitLab — MR; смотри `git remote -v`, не угадывай. Формулировки коммитов и заголовка — по стилю уже существующих в репо (`git log <main_branch> --oneline -20`).
+- `git log <main_branch>..HEAD --oneline` — what is really in the branch.
+- `git diff --stat $(git merge-base <main_branch> HEAD)...HEAD` — the scale and the affected areas.
+- STAGES.md: the stage statuses, the "Journal", the "⚠ Awaiting user confirmation" block, "Not included in the plan" (in a ru task they carry the Russian names from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md`).
+- `checks/*.md`: the checkers' verdicts, what was fixed, blind spots.
+- The repository's PR template, if there is one (`.github/pull_request_template.md`, `.gitlab/merge_request_templates/`) — fill it in, not your own structure.
 
-## Шаг 2. Написать описание
+**The platform determines the word.** GitHub — PR, GitLab — MR; look at `git remote -v`, do not guess. The wording of commits and of the title — in the style of those already in the repo (`git log <main_branch> --oneline -20`).
 
-Структура по умолчанию (если в репо нет своего шаблона):
+## Step 2. Write the description
+
+The default structure (if the repo has no template of its own):
 
 ```markdown
-## Что и зачем
-<2–4 строки: какая задача решается и что увидит пользователь. Не пересказ дифа.>
+## What and why
+<2–4 lines: which task is solved and what the user will see. Not a retelling of the diff.>
 
-## Изменения
-<По смысловым блокам, а не по этапам и не по файлам. Этапы — внутренняя механика,
-ревьюеру они не нужны. 5–10 пунктов, каждый — одна строка.>
+## Changes
+<By meaningful blocks, not by stages and not by files. Stages are internal mechanics,
+the reviewer does not need them. 5–10 items, each one line.>
 
-## Как проверить
-<Конкретные шаги: URL/экран, состояние, что должно произойти. Собирается из `AC-*` всех
-этапов (TEST-PLAN.md уже сведён по ID) — но ID в текст не выноси, ревьюер их не знает:
-из критерия остаётся сценарий. Отдельно — как воспроизвести нетривиальные состояния и
-что осталось с исходом `⏳`/`[live: user-side]` — это то, что проверить сможет только он.>
+## How to test
+<Concrete steps: URL/screen, state, what must happen. Assembled from the `AC-*` of all
+stages (TEST-PLAN.md is already merged by ID) — but do not put IDs into the text, the reviewer does not know them:
+what remains of a criterion is a scenario. Separately — how to reproduce non-trivial states and
+what is left with the outcome `⏳`/`[live: user-side]` — this is what only they can check.>
 
-## На что смотреть ревьюеру
-<Осознанные решения, у которых была альтернатива; места, где менялся общий код и
-радиус шире задачи; всё, что чекеры пометили как слепую зону.>
+## What the reviewer should look at
+<Conscious decisions that had an alternative; places where shared code changed and
+the radius is wider than the task; everything the checkers marked as a blind spot.>
 
-## Не входит
-<Что сознательно не делали и почему; вынесенное в отдельные тикеты.>
+## Out of scope
+<What was deliberately not done and why; what was moved to separate tickets.>
 
-## Открытые вопросы
-<Из DESIGN-QUESTIONS.md и блока «Ожидают подтверждения» — что ещё не подтверждено
-и кем должно быть.>
+## Open questions
+<From DESIGN-QUESTIONS.md and the "Awaiting user confirmation" block — what is not yet confirmed
+and by whom it must be.>
 ```
 
-Правила:
+Rules:
 
-- **Пиши для человека, который не видел задачу.** Не ссылайся на номера этапов и внутренние имена чекеров.
-- **Осознанные решения — с причиной.** «Тема из класса на `<html>`, потому что она зашита во всех флоу-файлах прототипа» — полезно; «реализован дизайн» — нет.
-- **Слепые зоны называй прямо.** Что не удалось проверить и почему — самая ценная часть для ревьюера и единственная, которую он не восстановит сам.
-- **Ничего не выдумывай.** Каждый пункт должен иметь опору в журнале, дифе или отчёте чекера. Нечем подтвердить — не пиши.
-- Скриншоты из `checks/screens/` — перечисли пути; вставлять их в текст не нужно, пользователь приложит сам.
+- **Write for a person who has not seen the task.** Do not refer to stage numbers and the checkers' internal names.
+- **Conscious decisions — with the reason.** "The theme comes from a class on `<html>`, because it is hardwired in all the prototype's flow files" is useful; "the design is implemented" is not.
+- **Name the blind spots plainly.** What could not be verified and why is the most valuable part for the reviewer and the only one they cannot restore themselves.
+- **Do not invent anything.** Every item must have support in the journal, the diff or a checker report. Nothing to back it — do not write it.
+- Screenshots from `checks/screens/` — list the paths; there is no need to embed them in the text, the user will attach them themselves.
 
-## Шаг 3. Предполётная проверка
+## Step 3. Pre-flight check
 
-Перед выдачей текста прогони и покажи одной строкой каждое:
+Before handing out the text, run and show each one in a single line:
 
-- `lint`, `type_check` (против baseline), `test`, сборка — на состоянии HEAD, не рабочего дерева: пункт `full-checks` финальных проверок (на этапах они шли по дифу).
-- Незакоммиченное в дереве: `git status --short`. Непусто — скажи явно, это риск потери при ребейзе.
-- Блок «⚠ Ожидают подтверждения» пуст? Непустой — вынеси его пункты в раздел «Открытые вопросы» описания.
-- Критерии `AC-*` всех этапов имеют исход? Оставшиеся `⏳`/`[live: user-side]` — в «Как проверить» отдельными строками: это ровно то, что ревьюер должен проверить руками, и молча оно не проверится.
-- Финальный whole-branch pro-review пройден? Не пройден — предложи запустить до открытия PR агентом `pro-review` в whole-branch mode на `review_model` (`/stage-check`, Шаг 3.3), а не скиллом в главном контексте: он ловит класс дефектов, невидимый постадийным чекерам (радиус общего компонента, дубли между этапами, сломанный HEAD под чистым деревом).
-- `/task-converge` пройден и вернул «сошлось»? Вернул находки — описание PR преждевременно: сначала догон. Это единственная проверка, отвечающая на «задача действительно закончена», а не «сделанное сделано правильно».
+- `lint`, `type_check` (against the baseline), `test`, the build — on the state of HEAD, not of the working tree: the `full-checks` item of the final checks (on the stages they went by the diff).
+- Uncommitted in the tree: `git status --short`. Non-empty — say so explicitly, it is a risk of loss on a rebase.
+- Is the "⚠ Awaiting user confirmation" block empty? Non-empty — move its items to the "Open questions" section of the description.
+- Do the `AC-*` criteria of all stages have an outcome? The remaining `⏳`/`[live: user-side]` — into "How to test" as separate lines: this is exactly what the reviewer must check by hand, and silently it will not be checked.
+- Has the final whole-branch pro-review passed? Not passed — suggest running it before opening the PR with the `pro-review` agent in whole-branch mode on `review_model` (`/stage-check`, Step 3.3), not with the skill in the main context: it catches a class of defects invisible to the per-stage checkers (the radius of a shared component, duplicates between stages, a broken HEAD under a clean tree).
+- Has `/task-converge` passed and returned "converged"? It returned findings — the PR description is premature: catch-up first. This is the only check that answers "is the task really finished", not "is what was done done right".
 
-## Выход
+## Output
 
-1. Готовый текст описания — **в чат блоком для копирования** и файлом `<task_dir>/<TICKET>/PR.md`.
-2. Предлагаемый заголовок PR/MR — в стиле репозитория.
-3. Одна строка: результаты предполётной проверки.
-4. Одна строка напоминания: пуш и создание PR — вручную (`git push`, дальше веб-интерфейс или `gh`/`glab` командой пользователя).
+1. The ready description text — **in the chat as a block for copying** and as the file `<task_dir>/<TICKET>/PR.md`.
+2. The proposed PR/MR title — in the repository's style.
+3. One line: the results of the pre-flight check.
+4. One reminder line: pushing and creating the PR are done manually (`git push`, then the web interface or `gh`/`glab` by the user's command).
 
-Не запускай `git push`, `gh pr create`, `glab mr create` и не комментируй существующие PR — даже как «подготовку». Текст и есть результат этого шага.
+Do not run `git push`, `gh pr create`, `glab mr create` and do not comment on existing PRs — even as "preparation". The text is the result of this step.

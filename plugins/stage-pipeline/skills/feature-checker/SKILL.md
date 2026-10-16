@@ -3,89 +3,91 @@ name: feature-checker
 description: Построить карту существующей фичи по всем её контекстам/платформам (из pipeline.config.md) — что уже реализовано, как работает, что шарится. Use when starting a task on an existing feature, a redesign, or when the user asks "как сейчас работает X" / "что уже сделано по X". Первый шаг пайплайна перед /stage-plan.
 ---
 
-# Feature Checker — карта существующей фичи
+# Feature Checker — a map of the existing feature
 
-Цель: до начала любой работы над фичей получить полную карту того, что уже есть, чтобы планировщик (/stage-plan) мог отличить «переиспользуй» от «пиши с нуля».
+The goal: before any work on a feature starts, get a complete map of what already exists, so that the planner (/stage-plan) can tell "reuse" from "write from scratch".
 
-## Вход
+## Input
 
-- Название фичи / тикет (WEB-XXXX, KC-XXX) и/или описание от пользователя.
-- Если непонятно, о какой фиче речь — задай уточняющий вопрос ДО исследования.
+- The feature name / ticket (WEB-XXXX, KC-XXX) and/or a description from the user.
+- If it is unclear which feature is meant — ask a clarifying question BEFORE the research.
 
-> **Project config.** Контексты/репозитории, раскладку кода, UI-lib и `<task_dir>` бери из `<repo>/.claude/pipeline.config.md` (нет файла — `/pipeline-init`).
+> **Project config.** Take the contexts/repositories, the code layout, the UI lib and `<task_dir>` from `<repo>/.claude/pipeline.config.md` (no file — `/pipeline-init`).
 
-## Сначала — не строит ли уже кто-то эту карту
+> **Task language.** FEATURE-MAP.md is a file of the task and is written in the task's language, `en` or `ru`. If `<task_dir>/<TICKET>/STAGES.md` exists, the language is its `Language:` line. Otherwise (the usual case — the map comes before the plan) the order is the same as for a new task: an explicit request of the user > `language:` in the config > the language of the message that started the task. The headings and the header fields of the template below are the English forms; for a ru task take them from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md` (the "FEATURE-MAP" rows). The prose is in the task language. A STAGES.md without a `Language:` line is resolved by the rule in `${CLAUDE_PLUGIN_ROOT}/references/language.md`.
 
-Карта фичи переживает задачу, которая её построила. Прежде чем читать репозиторий, поищи готовую: `<task_dir>/*/FEATURE-MAP.md` — ту же фичу мог разбирать другой тикет. Нашлось несколько — бери **одну, с самым свежим `База:`** (по дате коммита SHA, а не по дате в шапке: шапку правят руками, коммит нет), остальные не смотри. Нашлась — не строй заново, обнови:
+## First — is someone already building this map
 
-1. Возьми `База:` из её шапки и посмотри, что с тех пор изменилось в её файлах: `git diff <sha>..HEAD --stat -- <пути из карты>`.
-2. Пусто — карта актуальна. Обнови дату и SHA, скопируй её в директорию своего тикета и переходи к резюме.
-3. Есть изменения — перечитай ТОЛЬКО затронутые разделы, остальное перенеси как есть. В конце запиши новый SHA.
-4. Шапки с `База:` нет (карта старого формата), SHA не находится в истории (ветку перебазировали) или половина путей уже не существует — строй заново.
+A feature map outlives the task that built it. Before reading the repository, look for a ready one: `<task_dir>/*/FEATURE-MAP.md` — another ticket may have studied the same feature. If several are found — take **one, with the freshest `Base:`** (by the commit date of the SHA, not by the date in the header: the header is edited by hand, the commit is not), do not look at the rest. If one is found — do not build it again, update it (`Base:` or its Russian form from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md` — both are read, whatever the language of that map):
 
-Это главная экономия скилла: вторая задача по той же фиче не должна перечитывать репозиторий целиком. В резюме пользователю скажи прямо, **из какого тикета взял карту**, что переиспользовал и что перечитал — иначе через три задачи по одной фиче нельзя будет понять, какая из копий велась, а какая брошена.
+1. Take `Base:` from its header and see what has changed since then in its files: `git diff <sha>..HEAD --stat -- <paths from the map>`.
+2. Empty — the map is current. Update the date and the SHA, copy it into your ticket's directory (in your task's language, if the map is in the other one) and go on to the summary.
+3. There are changes — re-read ONLY the affected sections, carry the rest over as is, and translate the carried-over sections into your task's language too if the map is in the other one, so the file does not end up mixed. At the end write the new SHA.
+4. There is no header with `Base:` (a map of the old format), the SHA is not found in the history (the branch was rebased) or half of the paths no longer exist — build it anew.
 
-## Контексты платформ (из конфига)
+This is the skill's main saving: a second task on the same feature must not re-read the whole repository. In the summary to the user say plainly **which ticket the map was taken from**, what was reused and what was re-read — otherwise, three tasks later on one feature, it will be impossible to tell which of the copies was maintained and which was abandoned.
 
-Фича может жить в одном или нескольких контекстах — их список и репозитории в секции «Platforms» конфига. Одиночный репо — один контекст, исследуй только его. Мульти-контекст (типовая раскладка): **Desktop + Adaptive** в одном репо (часто те же страницы с адаптивной вёрсткой), **Webview** — отдельный репо (общается с нативом через postMessage-бриджи + platform cookie). UI-компоненты — из `ui_lib` конфига (префикс `UI*` и т.п.).
+## Platform contexts (from the config)
 
-## Что искать (по каждому репо, где фича существует)
+A feature can live in one or several contexts — their list and the repositories are in the "Platforms" section of the config. A single repo — one context, study only it. Multi-context (a typical layout): **Desktop + Adaptive** in one repo (often the same pages with responsive layout), **Webview** — a separate repo (talks to the native app through postMessage bridges + a platform cookie). UI components — from the config's `ui_lib` (the `UI*` prefix and the like).
 
-Исследуй напрямую (Glob/Grep/Read), без фан-аута субагентов:
+## What to look for (in each repo where the feature exists)
 
-1. **Роуты и страницы**: роутинг фреймворка (`pages/`, `app/`, файл роутов) и постраничные компоненты по `page_components` из конфига, используемые layouts.
-2. **Компоненты**: локальные + какие `UI*` компоненты из ui-lib используются.
-3. **Данные**: `composables` и `stores` из конфига, API-слой проекта (тот, что назван в `CLAUDE.md`/Conventions — не голые fetch), эндпоинты `server_api`.
-4. **Feature flags**: механизм флагов проекта (из `CLAUDE.md`/Conventions) — какие флаги гейтят фичу.
-5. **Webview-бриджи**: postMessage-вызовы, platform cookie, native-специфичные ветки.
-6. **i18n**: ключи фичи во всех локалях из поля `i18n` конфига.
-7. **Различия платформ/контекстов**: где контексты расходятся (v-if по breakpoint, отдельные компоненты, детект устройства и т.п.), что дублируется между репозиториями конфига.
-8. **История**: `git log --oneline --all --grep=<TICKET>` и по ключевым файлам — какие тикеты трогали фичу, есть ли reverts (признак проблемной зоны).
+Study directly (Glob/Grep/Read), without fanning out to subagents:
 
-## Выход: FEATURE-MAP.md
+1. **Routes and pages**: the framework routing (`pages/`, `app/`, the routes file) and the per-page components by the config's `page_components`, used by layouts.
+2. **Components**: local ones + which `UI*` components from the ui-lib are used.
+3. **Data**: the config's `composables` and `stores`, the project's API layer (the one named in `CLAUDE.md`/Conventions — not bare fetch), the `server_api` endpoints.
+4. **Feature flags**: the project's flag mechanism (from `CLAUDE.md`/Conventions) — which flags gate the feature.
+5. **Webview bridges**: postMessage calls, the platform cookie, native-specific branches.
+6. **i18n**: the feature's keys in all locales from the config's `i18n` field.
+7. **Differences between platforms/contexts**: where the contexts diverge (v-if by breakpoint, separate components, device detection and the like), what is duplicated between the config's repositories.
+8. **History**: `git log --oneline --all --grep=<TICKET>` and by the key files — which tickets touched the feature, whether there are reverts (a sign of a problem zone).
 
-Сохрани в `<task_dir>/<TICKET>/FEATURE-MAP.md` (создай директорию; если тикета нет — kebab-case имя фичи). Структура:
+## Output: FEATURE-MAP.md
+
+Save to `<task_dir>/<TICKET>/FEATURE-MAP.md` (create the directory; no ticket — the feature's name in kebab-case). The structure:
 
 ```markdown
-# Feature map: <название> (<TICKET>)
-Дата: <дата>  Репо: <из секции Platforms конфига>
-База: <git rev-parse --short HEAD> (<ветка>)   <!-- по этому SHA следующая задача поймёт, что в карте протухло -->
+# Feature map: <name> (<TICKET>)
+Date: <date>  Repos: <from the config's Platforms section>
+Base: <git rev-parse --short HEAD> (<branch>)   <!-- by this SHA the next task will understand what in the map has gone stale -->
 
-## Ориентация
-<!-- ≤25 строк. Самодостаточный индекс: по нему находят нужный файл, не читая карту целиком.
-     Чекерам хватает этого блока. Дублирование с разделами ниже осознанное:
-     тут индекс, там детали — правя раздел, поправь и строку здесь. -->
+## Orientation
+<!-- ≤25 lines. A self-sufficient index: it is used to find the right file without reading the whole map.
+     This block is enough for checkers. The duplication with the sections below is deliberate:
+     here is the index, there are the details — when you edit a section, fix the line here too. -->
 
-- **Суть:** <2–3 предложения: что за фича и как она работает сейчас>
-- **Точки входа:** <роут → `file:line`>, по строке на платформу
-- **Данные:** <стор / composable / эндпоинт — по пути на каждый>
-- **Флаги:** <флаг → что гейтит | —>
-- **Осторожно:** <зоны риска одной строкой: reverts, SSR-ловушки, легаси | —>
+- **Essence:** <2–3 sentences: what the feature is and how it works now>
+- **Entry points:** <route → `file:line`>, one line per platform
+- **Data:** <store / composable / endpoint — a path for each>
+- **Flags:** <flag → what it gates | —>
+- **Careful:** <risk zones in one line: reverts, SSR traps, legacy | —>
 
-## Точки входа
-| Платформа | Роут/экран | Файлы |
+## Entry points
+| Platform | Route/screen | Files |
 
-## Архитектура данных
-сторы, composables, API-эндпоинты, флаги
+## Data architecture
+stores, composables, API endpoints, flags
 
-## Матрица платформ
-| Аспект | Desktop | Adaptive | Webview |
-(что общее, что своё, что дублировано)
+## Platform matrix
+| Aspect | Desktop | Adaptive | Webview |
+(what is shared, what is its own, what is duplicated)
 
-## Webview-бриджи
-(если есть)
+## Webview bridges
+(if any)
 
-## Зоны риска
-reverts в истории, SSR-ловушки, легаси ($http), TODO-зоны
+## Risk zones
+reverts in the history, SSR traps, legacy ($http), TODO zones
 
-## Кандидаты на переиспользование
-конкретные компоненты/composables, которые новая работа должна взять как есть
+## Reuse candidates
+specific components/composables that the new work must take as is
 ```
 
-«Ориентация» не длиннее 25 строк — это её смысл, а не пожелание. Не влезает — значит, в шапку поехали детали: верни их в разделы ниже и оставь наверху путь, по которому их найдут.
+"Orientation" is no longer than 25 lines — that is its point, not a wish. It does not fit — it means details have crept into the header: return them to the sections below and leave at the top the path by which they will be found.
 
-Пиши только факты из кода со ссылками `file:line` — не предположения. Если фичи на какой-то платформе нет — так и запиши, это тоже результат.
+Write only facts from the code with `file:line` references — not assumptions. If the feature does not exist on some platform — write that down, it is a result too.
 
-Шапку с `База:` заполняй всегда — без неё следующая задача не сможет обновить карту и построит её заново.
+Always fill in the header with `Base:` — without it the next task will not be able to update the map and will build it anew.
 
-В конце дай пользователю краткое резюме (5–10 предложений) и путь к FEATURE-MAP.md.
+At the end give the user a short summary (5–10 sentences) and the path to FEATURE-MAP.md.
