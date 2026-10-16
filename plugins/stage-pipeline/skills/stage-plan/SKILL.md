@@ -5,7 +5,7 @@ description: Split a big task (a redesign / a feature with a multi-screen Figma)
 
 # Stage Plan — splitting a task into stages
 
-Goal: turn a multi-screen Figma file plus a feature map into a staged plan in which every stage goes through one cycle: **/stage-kickoff (opening: plan + business input + sign-off) → implement → checker subagents (figma-compare ∥ pro-review, + devtools-verify) → user-review → /stage-check (closing: fix loop + journal + commit) → `/clear` by the user** (in `/stage-force` stages run as subagents and context does not pile up). STAGES.md is the task's memory between sessions: every new session starts by reading it.
+Goal: turn a multi-screen Figma file plus a feature map into a staged plan in which every stage goes through one cycle: **/stage-kickoff (opening: plan + business input + sign-off) → implement → checker subagents (figma-compare ∥ pro-review, + devtools-verify) → user-review → /stage-check (closing: fix-loop + journal + commit) → `/clear` by the user** (in `/stage-force` stages run as subagents and context does not pile up). STAGES.md is the task's memory between sessions: every new session starts by reading it.
 
 Once the plan is ready there are two ways through it: the usual one (a stop at every stage) and `/stage-force` (all questions in one batch at the start, then a run to the end without stops, automatic commits, no push and no PR). The choice of mode does not change the plan itself: force reads the same STAGES.md and the same acceptance criteria.
 
@@ -34,7 +34,7 @@ This list is the input for the "Design source coverage" table (Step 4): every no
 
 Rules:
 - A screen + all its states = always one stage (the user's rule).
-- **What counts as a screen and what as a state is decided by the design source's registry, not by implementation convenience.** A separate Figma frame or a separate screen-id in the SPEC registry = a separate screen. Merging two of them into one component with variants (an overlay, a `variant` prop, a branch inside an existing screen) is allowed only by an explicit user decision recorded in the stage. Otherwise the fork "is this one screen or two" surfaces at user-review and costs a full architectural rework of an already implemented stage — together with the checkers, tests and their fix loops.
+- **What counts as a screen and what as a state is decided by the design source's registry, not by implementation convenience.** A separate Figma frame or a separate screen-id in the SPEC registry = a separate screen. Merging two of them into one component with variants (an overlay, a `variant` prop, a branch inside an existing screen) is allowed only by an explicit user decision recorded in the stage. Otherwise the fork "is this one screen or two" surfaces at user-review and costs a full architectural rework of an already implemented stage — together with the checkers, tests and their fix-loops.
 - Related steps of one flow (e.g. steps 1–2 of a wizard with a shared component) — one stage, if splitting costs more than doing them together.
 - A stage must be committable: after it `type_check` converges with the baseline, lint and tests on the diff are green, nothing is broken, even if the feature is not finished. `build` at a stage — only if the stage touched the manifest or the build config; everything in full — in the final checks (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`).
 - Order: foundation first (shared components, layout, tokens), then screens from the main one to the secondary ones.
@@ -121,7 +121,7 @@ Pipeline:
 
 ## Final checks (after all stages)
 - [ ] full-checks: `lint`, `type_check` (against baseline), `test`, `build` from the config — in full, once, on HEAD, via `run-check.mjs` (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`); at the stages they ran on the diff
-- [ ] ci-gates: the CI gates from the config ("CI gates" table or `e2e`/`smoke` in Commands) — `node ${CLAUDE_PLUGIN_ROOT}/scripts/ci-gates.mjs --run` on HEAD after the last fix; red is a fix loop finding, cannot run locally — a blocker. If the config has no gates, do not add the item
+- [ ] ci-gates: the CI gates from the config ("CI gates" table or `e2e`/`smoke` in Commands) — `node ${CLAUDE_PLUGIN_ROOT}/scripts/ci-gates.mjs --run` on HEAD after the last fix; red is a fix-loop finding, cannot run locally — a blocker. If the config has no gates, do not add the item
 - [ ] floor-guard: `node ${CLAUDE_PLUGIN_ROOT}/scripts/floor-guard.mjs --base origin/<main_branch>` — not a single muted checker, weakened test or stub across the whole branch; `floor-ok` exceptions go to "Awaiting user confirmation"
 - [ ] pro-review whole-branch (the `pro-review` agent in whole-branch mode on `review_model`, `opus` by default, via the `model` parameter — the selection rule is in `/stage-check`, Step 3.3; the whole branch from the merge-base with `origin/<main_branch>` — the PR target, e.g. `dev`; with a fresh eye it catches what the per-stage `--stage` cannot see — duplicates between stages, the blast radius of shared modules, a broken committed HEAD)
 - [ ] security-review

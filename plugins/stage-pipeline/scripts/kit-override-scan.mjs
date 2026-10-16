@@ -199,7 +199,7 @@ function git(cwd, ...args) {
 }
 
 /** The language of the report to write: the task whose `checks/` it goes into (`<task>/checks/<file>`), else the current branch's task; unknown — ru. */
-function reportLanguage(reportPath, root) {
+function taskLanguageFor(reportPath, root) {
   const stages = join(dirname(dirname(reportPath)), 'STAGES.md')
   try {
     if (existsSync(stages)) return taskLanguage(readFileSync(stages, 'utf8')) ?? 'ru'
@@ -232,7 +232,7 @@ function main(args) {
   const out = option('--out')
   if (out) {
     const path = resolve(out)
-    const language = reportLanguage(path, root)
+    const language = taskLanguageFor(path, root)
     const title = base ? (language === 'en' ? `branch off ${base}` : `ветка от ${base}`) : undefined
     writeFileSync(path, renderReport(found, { title, previous: existsSync(path) ? readFileSync(path, 'utf8') : '', language }))
     console.log(`kit-override-scan: ${found.length} file(s) with overrides → ${path}`)

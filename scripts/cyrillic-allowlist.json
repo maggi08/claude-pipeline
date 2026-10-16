@@ -7,37 +7,37 @@
     {
       "glob": "plugins/stage-pipeline/references/language.md",
       "line": "^\\|",
-      "reason": "the RU column of the marker table (RU ⇄ EN, D1): the forms the parsers read; table rows only"
+      "reason": "the RU column of the marker table (RU ⇄ EN): the forms the parsers read; table rows only"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/markers.mjs",
       "line": "^(?!\\s*(?://|\\*|/\\*))",
-      "reason": "RU alternatives of the structural-marker regexes (RU|EN pairs, D1); comment lines are not covered"
+      "reason": "RU alternatives of the structural-marker regexes (RU|EN pairs); comment lines are not covered"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/journal-check.mjs",
       "line": "^\\s*(?:const (?:deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
-      "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones, D1); messages are not covered"
+      "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones); messages are not covered"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/archive-stages.mjs",
       "line": "^\\s*(?:stub|older|header|moved|journal): ",
-      "reason": "archive texts written into a ru task, byte for byte as before (D1)"
+      "reason": "archive texts written into a ru task, byte for byte as before"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/ci-gates.mjs",
       "line": "^\\s*(?:ru: \\{ green|\\? `«\\$\\{gate\\.name\\}»)",
-      "reason": "gate description in the run digest of a ru task (D1)"
+      "reason": "gate description in the run digest of a ru task"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/kit-override-scan.mjs",
       "line": "^\\s+(?:'[a-z ]+'|[a-z]+): '[а-я ]+',$",
-      "reason": "Russian labels of override kinds in the kit-overrides report of a ru task (D1)"
+      "reason": "Russian labels of override kinds in the kit-overrides report of a ru task"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/kit-override-scan.mjs",
       "line": "^\\s*(?:title: 'рабочее|summary: \\(n\\) => `Находки|'Переопределения кита|'переопределение остаётся|columns: \\['\\| # \\| Файл|none: 'Переопределений|unverified: '## Не|'- стили, собранные|const title = base \\?)",
-      "reason": "kit-overrides report text written into a ru task, byte for byte as before (D1)"
+      "reason": "kit-overrides report text written into a ru task, byte for byte as before"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/report-language.mjs",
@@ -47,12 +47,12 @@
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
       "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted): ",
-      "reason": "run digest headings written for a ru task, byte for byte as before (D1)"
+      "reason": "run digest headings written for a ru task, byte for byte as before"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
       "line": "^\\s*(?:'ledger-(?:parked|unproven|unknown)': |`checks/\\$\\{name\\}: \\$\\{what\\}, а итогов|`\\(\\$\\{LEDGER_DOC\\}\\)\\. Находку)",
-      "reason": "the lines of the \"findings without outcome\" section of a ru task's run digest, byte for byte as the base hook messages (D1)"
+      "reason": "the lines of the \"findings without outcome\" section of a ru task's run digest, byte for byte as the base hook messages"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
@@ -62,7 +62,7 @@
     {
       "glob": "scripts/hooks-test.mjs",
       "line": "^(?!\\s*(?://|\\*|/\\*))(?!.*check\\('[^']*[Ѐ-ӿ])(?!.*\\S\\s+//.*[Ѐ-ӿ])",
-      "reason": "Russian fixtures of the second supported task language (D1): STAGES.md/report/commit-message inputs and the expected Russian output; comment lines are not covered; a Russian check name and a trailing Russian comment after code are not covered (see the next rule for the quoted-token names)"
+      "reason": "Russian fixtures of the second supported task language: STAGES.md/report/commit-message inputs and the expected Russian output; comment lines are not covered; a Russian check name and a trailing Russian comment after code are not covered (see the next rule for the quoted-token names)"
     },
     {
       "glob": "scripts/hooks-test.mjs",
@@ -77,27 +77,27 @@
     {
       "glob": "scripts/routing.mjs",
       "line": "^(?:\\s*'[а-яё ]+ ?' \\+$|const ENDINGS = /\\(иями|\\s*\\.replaceAll\\('ё', 'е'\\)$|\\s*\\.split\\(/\\[\\^a-zа-я0-9\\]\\+/\\))",
-      "reason": "Russian stop words, stemming endings and the tokenizer alphabet stay (D2): descriptions keep a Russian tail of triggers, routing.json keeps Russian phrases"
+      "reason": "Russian stop words, stemming endings and the tokenizer alphabet stay: descriptions keep a Russian tail of triggers, routing.json keeps Russian phrases"
     },
     {
       "glob": "scripts/validate.mjs",
       "line": "^(?:\\s*// A count in any form, Russian or English|\\s*// \"Шаг 4 скилла\" /| \\* Not a count: |\\s*'скилл\\|skill': |\\s*'агент\\|agent': |\\s*const notAfter = '(?:[^Ѐ-ӿ]|\\[(?:Шш|Ээ|Пп)\\](?:аг|тап|ункт)\\[а-я\\]\\*)*'$|\\s*const phraseEnd = '(?:[^Ѐ-ӿ]|\\(?:и\\|)*'$|\\s*return new RegExp\\(`\\$\\{notAfter\\}(?:[^Ѐ-ӿ]|\\(\\?:ов\\|а\\)|\\[а-яё\\])*`\\)$)",
-      "reason": "the Russian form of the \"N skills / N agents\" showcase count and its exceptions, next to the English one (D1, AC-4.2)"
+      "reason": "the Russian form of the \"N skills / N agents\" showcase count and its exceptions, next to the English one"
     },
     {
       "glob": "plugins/stage-pipeline/skills/*/SKILL.md",
       "line": "^description:[^\\u0400-\\u04FF]* RU triggers — ",
-      "reason": "the Russian tail of trigger phrases (D2): a description line is allowed to hold Cyrillic only after the label \" RU triggers — \"; the English part before it must have none"
+      "reason": "the Russian tail of trigger phrases: a description line is allowed to hold Cyrillic only after the label \" RU triggers — \"; the English part before it must have none"
     },
     {
       "glob": "plugins/stage-pipeline/agents/*.md",
       "line": "^description:[^\\u0400-\\u04FF]* RU triggers — ",
-      "reason": "the Russian tail of trigger phrases (D2): a description line is allowed to hold Cyrillic only after the label \" RU triggers — \"; the English part before it must have none"
+      "reason": "the Russian tail of trigger phrases: a description line is allowed to hold Cyrillic only after the label \" RU triggers — \"; the English part before it must have none"
     },
     {
       "glob": "evals/routing.json",
       "line": "^\\s*\\{ \"prompt\": \"",
-      "reason": "Russian phrases of routing.json stay next to the English ones (D2); only the case lines"
+      "reason": "Russian phrases of routing.json stay next to the English ones; only the case lines"
     },
     {
       "glob": "evals/cases/routing-*/case.json",

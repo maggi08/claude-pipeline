@@ -62,7 +62,7 @@
     },
     "fs-write": {
       "title": "File edits and build artifact cleanup",
-      "why": "Stage implementation and the fix loop write code; deletion is only of the listed build artifacts by exact name. A bare \"rm -f *\" must not be here: a prefix match would let through \"rm -f -r <any path>\"",
+      "why": "Stage implementation and the fix-loop write code; deletion is only of the listed build artifacts by exact name. A bare \"rm -f *\" must not be here: a prefix match would let through \"rm -f -r <any path>\"",
       "allow": [
         "Edit(**)",
         "Write(**)",

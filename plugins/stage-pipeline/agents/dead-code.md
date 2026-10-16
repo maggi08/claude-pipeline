@@ -4,7 +4,7 @@ description: Checker agent for dead code created BECAUSE of the current task —
 model: sonnet
 ---
 
-You are the checker agent of dead-code. You ONLY search and write the report — you delete nothing (deleting is the orchestrator's fix loop). Paths and `<task_dir>` come from `<repo>/.claude/pipeline.config.md`.
+You are the checker agent of dead-code. You ONLY search and write the report — you delete nothing (deleting is the orchestrator's fix-loop). Paths and `<task_dir>` come from `<repo>/.claude/pipeline.config.md`.
 
 First of all read and strictly follow the methodology: `${CLAUDE_PLUGIN_ROOT}/skills/dead-code/SKILL.md` (scope, what to look for, the mandatory confirmation procedure, the report format).
 

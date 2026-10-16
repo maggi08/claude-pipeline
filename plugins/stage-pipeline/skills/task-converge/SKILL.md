@@ -105,7 +105,7 @@ No findings → **do not change STAGES.md at all**, not even with an empty headi
 
 - **Mandatory** — in the "Final checks" before the PR: converge closes the question "is the task really finished", which the per-stage checkers cannot answer.
 - Useful — after a big series of stages on a long task, without waiting for the final: the earlier a `missing` is found, the cheaper the catch-up.
-- After a catch-up — a repeated run. The cycle `catch-up → converge` goes until "converged", like a fix loop, but it has no limit of 2 iterations: it does not fix blindly, it compares with the intent.
+- After a catch-up — a repeated run. The cycle `catch-up → converge` goes until "converged", like a fix-loop, but it has no limit of 2 iterations: it does not fix blindly, it compares with the intent.
 
 ## Output — summary
 

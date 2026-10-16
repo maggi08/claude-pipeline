@@ -88,7 +88,7 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 | <Smoke> | `<pnpm --filter smoke exec playwright test>` | <routes, a refusal by role> |
 
 ## Models
-- review_model: opus   # whole-branch pro-review and the fresh checker run in the fix loop — the strongest model; in force it is also not the maker's (`stage-implement` = sonnet); sonnet | opus | haiku
+- review_model: opus   # whole-branch pro-review and the fresh checker run in the fix-loop — the strongest model; in force it is also not the maker's (`stage-implement` = sonnet); sonnet | opus | haiku
 
 ## Static analysis (dead-code / deps-audit)
 <!-- Gives CANDIDATES across the whole repo; the checker intersects the output with the diff and confirms on its own. -->

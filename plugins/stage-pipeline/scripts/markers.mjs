@@ -1,9 +1,9 @@
 /**
  * Structural markers that scripts and hooks read from STAGES.md, STAGES-ARCHIVE.md, checks/,
  * the Force block and pipeline.config.md — each in an RU|EN form. A task is written in one of two languages,
- * and the parser accepts both (Russian is the second supported language, D1): live tasks are not rewritten for a new plugin version.
+ * and the parser accepts both (Russian is the second supported language): live tasks are not rewritten for a new plugin version.
  *
- * English forms come from .claude/tasks/EN-1/GLOSSARY.md (the core and section A). The phrase heuristics of
+ * English forms come from the marker table in plugins/stage-pipeline/references/language.md. The phrase heuristics of
  * journal-check (outcomes, caveats, "no data") are not here. The texts that scripts WRITE
  * stay with the scripts.
  */

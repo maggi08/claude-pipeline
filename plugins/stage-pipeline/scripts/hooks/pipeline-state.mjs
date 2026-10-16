@@ -293,7 +293,7 @@ export function readConfig(root) {
 }
 
 /**
- * Task branches — from the `Branch:`/`Branches:`/`Branch:` line in the STAGES.md header: names in backticks,
+ * Task branches — from the `Branch:`/`Branches:` line in the STAGES.md header: names in backticks,
  * and without backticks the first word if it looks like a branch name. The tail of the line — where the branch
  * was cut from and where the PR goes ("merged into `dev`", "off `redesign-2.0`") — does not belong to the task:
  * otherwise the task would become current for everyone sitting on the base branch. An explicit `Branch: master`

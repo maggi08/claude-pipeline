@@ -160,7 +160,7 @@ const REF = /[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|less|html?|md|
 const DECISION = /^\s*(?:[-*]|\d+\.|\|)?\s*\**(?:D\d+\b|Решени[ея]|Решено|Решили|Decisions?\b|Decided\b|We\s+decided\b)/i
 
 /**
- * A criterion or decision refers to a model in words — "like the expert", "as it is now in the drawer", "as it was" —
+ * A criterion or decision refers to an example in words — "like the expert", "as it is now in the drawer", "as it was" —
  * without a path to it. In one task the decision "like the expert" (where saving is active even without a status change)
  * became "as it is now in the drawer" when the stage opened, and the form could not be saved without changing the status.
  * A link to a mockup passes for a criterion with a design checker: the checker has the stage's nodes.
@@ -177,7 +177,7 @@ export function likeViolation(line) {
     rule: 'ac-like-ref',
     id,
     message:
-      `${id}: "${`${match[0]}${after}`.trim().slice(0, 40)}…" without a reference to the model — write the \`path:line\` (or the mockup node-id) of what you refer to. ` +
+      `${id}: "${`${match[0]}${after}`.trim().slice(0, 40)}…" without a reference to the example — write the \`path:line\` (or the mockup node-id) of what you refer to. ` +
       'For an action with conditions — also a "state × action → what goes to the server, what the user sees" table (stage-plan, Step 3).',
   }
 }
@@ -418,7 +418,7 @@ export function runtimeViolations(text, name, taskDir = null) {
   return found
 }
 
-/** A report is not written in the task language (D9). `language` is `task.language`; `null` — a task without a language, not checked. */
+/** A report is not written in the task language. `language` is `task.language`; `null` — a task without a language, not checked. */
 export function languageViolation(text, name, language) {
   const mismatch = languageMismatch(text, language)
   if (!mismatch) return null

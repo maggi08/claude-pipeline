@@ -90,4 +90,4 @@ Findings: critical N · major N · minor N — PASS | N divergences
 ```
 
 Every row carries an exact `file:line` and the exact value from the prototype. No divergences — an explicit PASS with the list of what was checked.
-`AC` is the ID of the acceptance criterion from STAGES.md that this row closes (`AC-2.4`); no criterion for it — put `—`. Without the ID the second iteration of the fix loop does not understand what exactly is being rechecked, and the fixes drift from the plan.
+`AC` is the ID of the acceptance criterion from STAGES.md that this row closes (`AC-2.4`); no criterion for it — put `—`. Without the ID the second iteration of the fix-loop does not understand what exactly is being rechecked, and the fixes drift from the plan.

@@ -23,6 +23,12 @@ The language of the work itself belongs to the task, not to the plugin.
 - **Russian phrases still call the skills.** Skill descriptions are English with a short tail of Russian trigger phrases, and the routing eval keeps the Russian phrases and has an English one for every skill.
 - **The Russian "none" in `kit_overrides:` now really switches the scan off.** That form never matched; now `off`, `false`, `no`, the Russian "none" and `disabled` all work.
 - **Checker report templates follow one contract** (`references/checker-report.md`): the figma-compare, proto-compare, dead-code, deps-audit, i18n-sweep and ds-parity templates got the `Findings: …` summary line and the "Could not verify" section. devtools-verify got a template of its own.
+- **Stricter gates for older tasks.** These change the behavior of the journal and Force-run hooks for tasks that already exist:
+  - Lifting a blocker with "user decision" or "user answer" (and the Russian forms of both) now needs a date or a quotation of the answer next to it.
+  - A finding outcome in the future tense or with a negation ("will be fixed", "not fixed") is no longer counted as fixed.
+  - A Force run heading whose date is neither ISO (`YYYY-MM-DD`) nor day.month.year now needs a `Confirmed:` line, like a heading with a readable date.
+  - A PASS line needs its evidence within 300 characters of the criterion id.
+  - The gates are faster on long files: the cubic-time regex that looked for `Confirmed:` is gone.
 - CI: `validate.mjs` checks that every "/skill, Step N" reference leads to an existing step or section, and fails on Cyrillic outside the allowlist (`scripts/cyrillic-allowlist.json`) with the path and the line.
 
 **What to do on upgrade:** nothing. If you want a default language for new tasks, add `language: ru` or `language: en` to `pipeline.config.md`.

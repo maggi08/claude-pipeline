@@ -7,7 +7,7 @@
  * and a hook that sees other people's tasks blocks parallel work.
  *
  * Russian inputs (STAGES.md text, reports, commit messages) are kept on purpose: they are the fixtures of the second
- * supported task language (Russian, D1). The English twins next to them must give the same results.
+ * supported task language (Russian). The English twins next to them must give the same results.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
@@ -79,7 +79,7 @@ for (const [command, want] of SCOPES) {
 check('scope: a path — with the directory of the call', commitScope(gitInvocations('cd src && git add a.ts', CWD)).specs[0]?.dir === '/repo/src')
 
 // ── config and the STAGES.md header ──────────────────────────────────────────
-// The header, status and Force block fixtures below are Russian on purpose (the second supported task language, D1).
+// The header, status and Force block fixtures below are Russian on purpose (the second supported task language).
 const TASK_PATHS = [
   ['- task_path: `.claude/tasks/` — один каталог на монорепо', '/r/.claude/tasks'],
   ['- task_path: ~/.claude/team-tasks/   # вне репо', join(homedir(), '.claude/team-tasks')],
@@ -184,7 +184,7 @@ check('markers: stage mention needs a word boundary', !markers.STAGE_MENTION.tes
 check('markers: Parity table — the word, not the ds-parity skill name', markers.PARITY_TABLE.test('| Parity | was `Old` |') && markers.PARITY_TABLE.test('| Паритет | было |') && !markers.PARITY_TABLE.test('- [x] ds-parity (checks/ds-parity-1.md)'))
 
 // ── criterion closing rules ──────────────────────────────────────────────────
-// Russian fixtures of the second supported task language (D1). The lines are live forms from STAGES.md: the outcome before the wording and after, a deferred check, smoke, a user decision.
+// Russian fixtures of the second supported task language. The lines are live forms from STAGES.md: the outcome before the wording and after, a deferred check, smoke, a user decision.
 const REPORTS = ['devtools-verify-2.md', 'pro-review-2.md']
 const AC_LINES = [
   ['- `AC-4.5` WHEN обязательное поле пустое THEN «Сохранить» неактивна — [verify: devtools-verify] ✅ pro-review по коду · ⏳ user-review', 'ac-checker'],
@@ -231,7 +231,7 @@ for (const [text, want] of PASSES) {
 }
 
 // ── git-guard and session-start on a live repo ──────────────────────────────
-// The STAGES.md fixtures here are Russian (the second supported task language, D1).
+// The STAGES.md fixtures here are Russian (the second supported task language).
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
 const write = (root, files) => {
   for (const [path, content] of Object.entries(files)) {
@@ -327,7 +327,7 @@ check('repo without the pipeline: a signature in the commit is none of our busin
 rmSync(root, { recursive: true, force: true })
 
 // ── 0.12 gates: the journal, subagent launches, signatures, a task over two repos ──────
-// Russian fixtures (the second supported task language, D1).
+// Russian fixtures (the second supported task language).
 const runHook = (name, input) => {
   const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8' })
   if (!run.stdout.trim()) return { decision: 'allow', text: run.stderr }
@@ -460,7 +460,7 @@ check('session-start: base — the nearest integration branch, another PR does n
 rmSync(gRoot, { recursive: true, force: true })
 
 // ── 0.13: force does not wait for confirmations ──────────────────────────────
-// Russian fixtures (the second supported task language, D1).
+// Russian fixtures (the second supported task language).
 const { askMatch, bashRulePattern, nameKill } = await import(join(PLUGIN, 'hooks/permission-rules.mjs'))
 const KILLS = [
   ['pkill -f "http.server 3199"; cd /repo; node floor-guard.mjs', 'pkill -f http.server 3199'],
@@ -538,7 +538,7 @@ check('force "завершён с блокерами" — closed, the hook is si
 rmSync(fRoot, { recursive: true, force: true })
 
 // ── 0.14: findings outcome, unverified, frames ───────────────────────────────
-// Russian fixtures (the second supported task language, D1).
+// Russian fixtures (the second supported task language).
 const jc = await import(join(PLUGIN, 'journal-check.mjs'))
 const COUNTS = [
   ['# pro-review\nНаходки: critical 1 · major 2 · minor 3\n', 'pro-review-1.md', [1, 2, 3]],
@@ -660,7 +660,7 @@ const writeReport = (name, text) => {
   utimesSync(join(lTask, 'checks', name), future, future)
 }
 writeReport('pro-review-1.md', REVIEW)
-check('writing a report with findings without an outcome is not a block (the outcome is written after the fix loop)', lGate('checks/pro-review-1.md').decision === 'allow', lGate('checks/pro-review-1.md').text)
+check('writing a report with findings without an outcome is not a block (the outcome is written after the fix-loop)', lGate('checks/pro-review-1.md').decision === 'allow', lGate('checks/pro-review-1.md').text)
 const denied = runHook('git-guard.mjs', { cwd: lApp, tool_input: { command: 'git commit --allow-empty -m x' } })
 check('force commit: a new report without an outcome — denied', denied.decision === 'deny' && /pro-review-1\.md/.test(denied.text), denied.text)
 writeReport('pro-review-1.md', `${REVIEW}\n## Итог находок\n- M-1 — оставляю\n- M-2 — исправлено: b.ts:4\n`)
@@ -731,7 +731,7 @@ check('frames-guard: other agents are left alone', frames('stage-pipeline:pro-re
 rmSync(lRoot, { recursive: true, force: true })
 
 // ── 0.15: criteria in the plan, the kit view, CI gates, work after "done" ──────
-// Russian fixtures (the second supported task language, D1).
+// Russian fixtures (the second supported task language).
 const LIKES = [
   ['- `AC-5.3` WHEN сохранить THEN как у эксперта — [verify: devtools-verify]', 'AC-5.3'],
   ['- D11: «Сохранить» — как у эксперта (expert-lead-card-sheet.tsx:227)', null],
@@ -804,7 +804,7 @@ const kReport = join(kTask, 'checks/stage-1-kit-overrides.md')
 mkdirSync(dirname(kReport), { recursive: true })
 spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', kReport], { cwd: kApp })
 {
-  // The report is a task file: its language is the task language (D1). A ru task gets the old text, byte for byte.
+  // The report is a task file: its language is the task language. A ru task gets the old text, byte for byte.
   const ruReport = readFileSync(kReport, 'utf8')
   check(
     'kit-overrides: the report of a ru task is in Russian, as before',
@@ -960,7 +960,7 @@ const eRebuilt = runHook('session-start.mjs', { cwd: eApp }).text
 check('EN session-start: the state line carries the force mark and the task', /T-13/.test(eRebuilt) || eRebuilt === '', eRebuilt)
 rmSync(eRoot, { recursive: true, force: true })
 
-// ── 0.16 / EN-1 stage 2: English phrase heuristics and the report language ───────────
+// ── 0.16: English phrase heuristics and the report language ───────────
 // For each heuristic there is a positive English fixture with the same result as its Russian twin above,
 // and a negative one: a legitimate English line without a hit. The Russian fixtures above were not changed.
 const EN_CAVEATS = [
@@ -1107,7 +1107,7 @@ const DIGEST_EMPTY = [['none'], ['None.'], ['nothing'], ['no items'], ['all veri
 for (const items of DIGEST_EMPTY) check(`digest: «Could not verify» "${items[0]}" — nothing unverified`, digestFor(items) === '0', String(digestFor(items)))
 for (const item of ['none of the states could be opened', 'AC-3.2 — no data on the stand', 'nothing was captured for dark', 'everything verified except the dark theme', 'all verified, but 1024 is not checked']) check(`digest: a real item "${item.slice(0, 36)}" is counted`, digestFor([item]) === '1', String(digestFor([item])))
 
-// Report language (D9): prose in the task language; code, paths, ids, UI quotes and short reports do not count.
+// Report language: prose in the task language; code, paths, ids, UI quotes and short reports do not count.
 const lines = (text, count) => Array.from({ length: count }, () => text).join('\n')
 const RU_PROSE = 'Проверил карточку этапа: компонент рендерится без ошибок, отступы совпадают с макетом, а пустое состояние списка показывает заглушку.'
 const EN_PROSE = 'Checked the stage card: the component renders without errors, the gaps match the mockup and the empty list state shows a placeholder.'
@@ -1246,7 +1246,7 @@ check('run-check: the lock of a dead process is taken over', stale.status === 0 
 rmSync(rcRoot, { recursive: true, force: true })
 
 // ── STAGES.md archiving ──────────────────────────────────────────────────────
-// The source is a Russian STAGES.md (the second supported task language, D1); the English twin is below.
+// The source is a Russian STAGES.md (the second supported task language); the English twin is below.
 const entries = Array.from({ length: 10 }, (_, i) => `- **${String(22 - i).padStart(2, '0')}.08.2026** — запись ${22 - i}\n  подробности ${22 - i}`)
 const source = [
   '# T: задача',
@@ -1480,7 +1480,7 @@ for (const [lang, text, head, moved, journal, entryWord] of [
 }
 
 // ── retro ────────────────────────────────────────────────────────────────────
-// The STAGES.md fixture is Russian (the second supported task language, D1).
+// The STAGES.md fixture is Russian (the second supported task language).
 const retroRoot = mkdtempSync(join(tmpdir(), 'retro-test-'))
 write(retroRoot, {
   'T/STAGES.md': [

@@ -2,7 +2,7 @@
 
 A checker report is written in the language of the task (the "Language:" line in the STAGES.md header). The service markers that scripts read — the summary line, the headings "Findings outcome" and "Could not verify" — are English for an English task; for a Russian task take their Russian forms from the marker table in references/language.md.
 
-The first part is read by every checker: it is the report format. The second is read by the orchestrator: it is the findings outcome after the fix loop. Both are checked by `scripts/journal-check.mjs` and enforced by hooks: journal-gate when a report or the journal is written, git-guard on a force commit. A violation goes back to whoever wrote the report or the journal, in the same turn.
+The first part is read by every checker: it is the report format. The second is read by the orchestrator: it is the findings outcome after the fix-loop. Both are checked by `scripts/journal-check.mjs` and enforced by hooks: journal-gate when a report or the journal is written, git-guard on a force commit. A violation goes back to whoever wrote the report or the journal, in the same turn.
 
 Where this comes from. In three tasks in three repos reviewed on 2026-10-04, most of what the user found after "done" had already been found by the checkers. The orchestrator wrote the findings off as "leaving it", "accepted as a compromise", "into Awaiting user confirmation", "a question for Vlad". In one task 5 of 8 defects went that way; in another, 11 of 12 deferred findings later had to be fixed anyway.
 
@@ -15,7 +15,7 @@ Where this comes from. In three tasks in three repos reviewed on 2026-10-04, mos
 
 ## Findings outcome — written by the orchestrator
 
-After the fix loop, before the stage commit, a section is appended to the end of every report that has critical, major or FAIL:
+After the fix-loop, before the stage commit, a section is appended to the end of every report that has critical, major or FAIL:
 
 ```markdown
 ## Findings outcome
@@ -32,7 +32,7 @@ Allowed outcomes:
 - **`false: <proof>`** — a measurement, a line of code, a frame. "Pre-existing", "not a regression", "existed before the task" also make a finding false for this task, but only with proof on the base: the base sha, or a prod URL with a measurement. The word "pre-existing" without a check on the base is not enough: in one task such a hydration mismatch was written into the prompts of four checkers as "not a finding", and nobody ever checked it on the base.
 - **`B<n>`** — a blocker of the force run (`/stage-force`, Step 2). In normal mode — `user decision <date or "quote">`.
 
-Not an outcome (the hook returns it): "leaving it", "accepted as a compromise", "into Awaiting user confirmation", "won't fix", "to the kit", "to FINDINGS", "as a separate task", "a question for design / product / backend", "out of scope" without proof. All of these are a decision not to fix, and the user makes it, not the one whose work was checked. A finding that the fix loop did not fix is a blocker, not a line in "Awaiting user confirmation". "Awaiting" is for product decisions with no defect: a new default, a text, an order.
+Not an outcome (the hook returns it): "leaving it", "accepted as a compromise", "into Awaiting user confirmation", "won't fix", "to the kit", "to FINDINGS", "as a separate task", "a question for design / product / backend", "out of scope" without proof. All of these are a decision not to fix, and the user makes it, not the one whose work was checked. A finding that the fix-loop did not fix is a blocker, not a line in "Awaiting user confirmation". "Awaiting" is for product decisions with no defect: a new default, a text, an order.
 
 ## Where this is checked
 

@@ -1,5 +1,5 @@
 /**
- * The language of a checker report's prose (D9): journal-gate sends back to its author a `checks/` report not written in the task language.
+ * The language of a checker report's prose: journal-gate sends back to its author a `checks/` report not written in the task language (see plugins/stage-pipeline/references/language.md).
  *
  * Prose words are counted: Cyrillic against Latin. Not counted: code blocks, inline backticks, quotes «…» and "…",
  * links, paths, identifiers (`AC-3.1`, `M-1`, `B1`, `devtools-verify`, camelCase), severity words and PASS/FAIL.
@@ -7,16 +7,16 @@
  */
 
 /** Fewer prose words — the language is not determined. */
-export const MIN_WORDS = 40
+const MIN_WORDS = 40
 /** A ru task: the report is sent back if the Cyrillic share of the prose is below this. */
-export const RU_SHARE_MAX = 0.2
+const RU_SHARE_MAX = 0.2
 /** An en task: the report is sent back if the Cyrillic share of the prose is above this. */
-export const EN_SHARE_MAX = 0.5
+const EN_SHARE_MAX = 0.5
 
 const STOP = new Set(['critical', 'major', 'minor', 'high', 'medium', 'low', 'severity', 'pass', 'fail', 'skip', 'todo', 'ok', 'etc'])
 
 /** The report text without what is not prose. */
-export function stripNonProse(text) {
+function stripNonProse(text) {
   // An unclosed "<!--" is not a comment: without "-->" in the text the pattern is not run (a lazy scan from each "<!--" is quadratic).
   const source = text.includes('-->') ? text.replace(/<!--[\s\S]*?-->/g, ' ') : text
   return source
@@ -41,7 +41,7 @@ function trimNonWord(raw) {
 }
 
 /** Prose words: `{ ru, en }`. */
-export function proseWords(text) {
+function proseWords(text) {
   let ru = 0
   let en = 0
   for (const raw of stripNonProse(text).split(/\s+/)) {
