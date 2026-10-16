@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Stage Pipeline</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -428,123 +429,123 @@
 <div class="deck">
 
   <!-- 1 -->
-  <section class="slide title-slide is-active" aria-label="Титул">
+  <section class="slide title-slide is-active" aria-label="Title">
     <div class="rule-accent"></div>
     <h1>stage-pipeline</h1>
     <p class="dek" style="font-size:1.32em;color:var(--ink-2);max-width:44ch;margin-top:.7em">
-      Поэтапный maker/checker-воркфлоу для Claude Code. Про то, как перестать отдавать на ревью то,
-      что ещё не готово — и почему это ловит не человек.
+      A staged maker/checker workflow for Claude Code. How to stop handing off for review
+      what isn't ready yet — and why it isn't a human who catches it.
     </p>
     <div class="meta">
-      <span class="pill">3 проекта</span>
-      <span class="pill">16 задач</span>
-      <span class="pill">161 отчёт чекеров</span>
-      <span class="pill">18 скиллов · 12 агентов</span>
+      <span class="pill">3 projects</span>
+      <span class="pill">16 tasks</span>
+      <span class="pill">161 checker reports</span>
+      <span class="pill">18 skills · 12 agents</span>
       <span class="pill">v0.15.2</span>
     </div>
-    <div class="sig">Магжан Мусаин · 21.07 → 21.08.2026 · плагин <b>stage-pipeline@magzhan</b></div>
+    <div class="sig">Magzhan Mussaiyn · 21 Jul → 21 Aug 2026 · plugin <b>stage-pipeline@magzhan</b></div>
   </section>
   <div class="notes is-active">
-    <span class="label">Заметки</span>
-    Заход: «месяц назад я начал делать десктоп-редизайн создания объявления и понял, что задача физически не влезает ни в один контекст.
-    Из попытки это обойти вырос инструмент, который с тех пор прошёл три проекта». Сразу сказать, что в конце будет
-    инструкция по установке и шпаргалка. Клавиши: ←/→ листать, <b>S</b> — заметки.
+    <span class="label">Notes</span>
+    Opening: "a month ago I started on a desktop redesign of listing creation and realized the task physically doesn't fit in any single context.
+    A tool grew out of trying to get around that, and since then it has gone through three projects". Say right away that at the end
+    there will be an install guide and a cheatsheet. Keys: ←/→ to flip, <b>S</b> for notes.
   </div>
 
   <!-- 2 -->
-  <section class="slide" aria-label="Проблема">
-    <div class="eyebrow"><span class="num">01</span><span>Проблема</span><span class="spacer"></span><span>зачем это вообще</span></div>
-    <h2>Пять болей, которые повторяются на каждой большой задаче</h2>
+  <section class="slide" aria-label="Problem">
+    <div class="eyebrow"><span class="num">01</span><span>Problem</span><span class="spacer"></span><span>why this at all</span></div>
+    <h2>Five pains that repeat on every big task</h2>
     <div class="body">
       <div class="grid-5" style="flex:1;min-height:0;grid-auto-rows:minmax(0,1fr)">
         <div class="card">
-          <span class="kicker">Контекст</span>
-          <h3>Задача не влезает в одну сессию</h3>
-          <p>Многоэкранный редизайн — это десятки сессий за недели. Модель не помнит вчерашнее, человек пересказывает
-            одно и то же, решения принимаются заново и по-другому.</p>
+          <span class="kicker">Context</span>
+          <h3>The task doesn't fit in one session</h3>
+          <p>A multi-screen redesign is dozens of sessions over weeks. The model doesn't remember yesterday, the human retells
+            the same things, decisions get made again and differently.</p>
         </div>
         <div class="card">
-          <span class="kicker">Нарезка</span>
-          <h3>Дизайн подаём по кусочкам вручную</h3>
-          <p>«Вот этот компонент. Теперь этот экран. Теперь его состояние». Нарезать многоэкранный макет на посильные
-            куски и следить за порядком — работа человека, и она повторяется на каждой задаче.</p>
+          <span class="kicker">Slicing</span>
+          <h3>Design is fed in by hand, piece by piece</h3>
+          <p>"Here's this component. Now this screen. Now its state". Cutting a multi-screen mockup into manageable
+            pieces and keeping the order is human work, repeated on every task.</p>
         </div>
         <div class="card">
-          <span class="kicker">Качество</span>
-          <h3>«Готово» ≠ готово</h3>
-          <p>Отступ уехал на 6px, hydration сломался, тосты немые, драфт не восстановился. Находит это ревьюер,
-            тестировщик или прод — то есть в самый дорогой момент.</p>
+          <span class="kicker">Quality</span>
+          <h3>"Done" ≠ done</h3>
+          <p>A margin is off by 6px, hydration broke, toasts are silent, the draft didn't restore. A reviewer,
+            a tester or prod finds it — at the most expensive moment.</p>
         </div>
         <div class="card">
-          <span class="kicker">Ритм работы</span>
-          <h3>Бесконечный промптинг по кругу</h3>
-          <p>«Сделай это. Теперь вот это. Нет, поправь предыдущее. А верни как было». Каждый круг ложится новым дифом
-            поверх непроверенного старого: ни один кусок не закрыт, к вечеру неясно, что из сделанного ещё верно,
-            и задача не заканчивается — она затухает.</p>
+          <span class="kicker">Work rhythm</span>
+          <h3>Endless prompting in circles</h3>
+          <p>"Do this. Now this. No, fix the previous one. And put it back as it was". Each round lands as a new diff
+            on top of an unchecked old one: no piece is closed, by evening it's unclear what of the work is still right,
+            and the task doesn't finish — it fades out.</p>
         </div>
         <div class="card">
-          <span class="kicker">Знание</span>
-          <h3>Почему так сделано — нигде</h3>
-          <p>Через две недели ни автор, ни ревьюер не помнят, какая была развилка и почему выбрали этот вариант.
-            На ревью всё объясняется устно и заново.</p>
+          <span class="kicker">Knowledge</span>
+          <h3>Why it was done this way — nowhere</h3>
+          <p>Two weeks later neither the author nor the reviewer remembers what the fork was and why this option won.
+            In review everything gets explained orally, again.</p>
         </div>
       </div>
-      <p class="footnote">Ни одна из пяти не про «модель плохо пишет код» — все пять про процесс вокруг написания кода.
-        Теперь на вход достаточно отдать ссылку на <b>целую страницу Figma</b>: фреймы инвентаризируются сами, раскладываются
-        по этапам, и каждый этап отдельно реализуется и проверяется.</p>
+      <p class="footnote">None of the five is about "the model writes bad code" — all five are about the process around writing code.
+        Now a link to a <b>whole Figma page</b> is enough as input: frames are inventoried on their own, split
+        into stages, and each stage is implemented and checked separately.</p>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Здесь важно поймать кивки: спросить у зала, у кого на ревью прилетало «а почему тут 16 вместо 10».
-    Подчеркнуть последний тезис — это водораздел: пайплайн не улучшает генерацию кода, он меняет то, что происходит до и после неё.
+    <span class="label">Notes</span>
+    This is where to catch the nods: ask the room who has had a review comment like "why 16 here instead of 10".
+    Stress the last point — it's the watershed: the pipeline doesn't improve code generation, it changes what happens before and after it.
   </div>
 
   <!-- 3 -->
-  <section class="slide" aria-label="Идея">
-    <div class="eyebrow"><span class="num">02</span><span>Идея</span><span class="spacer"></span><span>loop engineering</span></div>
-    <h2>Три принципа, из которых собрано всё остальное</h2>
+  <section class="slide" aria-label="Idea">
+    <div class="eyebrow"><span class="num">02</span><span>Idea</span><span class="spacer"></span><span>loop engineering</span></div>
+    <h2>Three principles everything else is built from</h2>
     <div class="body">
       <div class="cols cols-3" style="flex:1">
         <div class="card" style="height:100%">
-          <span class="kicker">01 — Разделение ролей</span>
-          <h3>Мейкер и чекер — разные контексты</h3>
-          <p>Тот, кто писал код, не проверит его непредвзято: он видит свой замысел, а не то, что получилось.
-            Каждый чекер — отдельный субагент с <b>чистым контекстом</b>: он не участвовал в реализации и не знает, чем её оправдывали.</p>
-          <p style="color:var(--muted)">Побочный эффект оказался важнее экономии контекста, ради которой это делалось.</p>
+          <span class="kicker">01 — Separation of roles</span>
+          <h3>Maker and checker — different contexts</h3>
+          <p>Whoever wrote the code can't check it without bias: they see their intent, not what came out.
+            Each checker is a separate subagent with a <b>clean context</b>: it took no part in the implementation and doesn't know how it was justified.</p>
+          <p style="color:var(--muted)">The side effect turned out more important than the context savings it was done for.</p>
         </div>
         <div class="card" style="height:100%">
-          <span class="kicker">02 — Состояние</span>
-          <h3>Память задачи живёт в файлах</h3>
-          <p><code>STAGES.md</code> переживает <code>/clear</code>, смену сессии и месяц работы. План, решения,
-            статусы этапов, ссылки на отчёты — на диске, а не в контексте.</p>
-          <p style="color:var(--muted)">Одна задача прожила 42 этапа и 76 коммитов. Ни одна сессия не помнила предыдущую — и это не мешало.</p>
+          <span class="kicker">02 — State</span>
+          <h3>The task's memory lives in files</h3>
+          <p><code>STAGES.md</code> survives <code>/clear</code>, a change of session and a month of work. The plan, decisions,
+            stage statuses, links to reports — on disk, not in context.</p>
+          <p style="color:var(--muted)">One task lived through 42 stages and 76 commits. No session remembered the previous one — and it didn't matter.</p>
         </div>
         <div class="card" style="height:100%">
-          <span class="kicker">03 — Квант работы</span>
-          <h3>Этап = экран и все его стейты</h3>
-          <p>Не «сделать фичу», а «сделать шаг загрузки фото: дефолт, загрузка, ошибка, успех». Этап открывается планом
-            и sign-off, закрывается чекерами и коммитом.</p>
-          <p style="color:var(--muted)">Единица, которая помещается в контекст целиком и проверяется целиком.</p>
+          <span class="kicker">03 — Unit of work</span>
+          <h3>Stage = a screen and all its states</h3>
+          <p>Not "build the feature" but "build the photo upload step: default, loading, error, success". A stage opens with a plan
+            and sign-off, and closes with checkers and a commit.</p>
+          <p style="color:var(--muted)">A unit that fits in context whole and is checked whole.</p>
         </div>
       </div>
-      <p class="footnote">Источник подхода — статья Cobus Greyling «Loop Engineering». Всё остальное — наши грабли, разложенные по скиллам.</p>
+      <p class="footnote">The approach comes from Cobus Greyling's article "Loop Engineering". Everything else is our own pitfalls, laid out as skills.</p>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Ключевая фраза для зала: «чекер с чистым контекстом не заражён решениями мейкера». Мы пришли к субагентам ради экономии
-    токенов, а получили другое качество находок. Если спросят про «а не проще ли попросить модель перепроверить себя» —
-    ответ: пробовали, она защищает своё решение; отдельный агент без истории спорит с кодом, а не с собой.
+    <span class="label">Notes</span>
+    Key phrase for the room: "a clean-context checker isn't infected by the maker's decisions". We came to subagents to save
+    tokens and got a different quality of findings. If asked "isn't it simpler to ask the model to re-check itself" —
+    answer: we tried, it defends its own decision; a separate agent with no history argues with the code, not with itself.
   </div>
 
   <!-- 4 -->
-  <section class="slide" aria-label="Цикл этапа">
-    <div class="eyebrow"><span class="num">03</span><span>Механика</span><span class="spacer"></span><span>цикл одного этапа</span></div>
-    <h2>Как проходит один этап</h2>
+  <section class="slide" aria-label="Stage cycle">
+    <div class="eyebrow"><span class="num">03</span><span>Mechanics</span><span class="spacer"></span><span>one stage's cycle</span></div>
+    <h2>How one stage goes</h2>
     <div class="body">
       <figure>
-        <div class="svg-fit"><svg viewBox="0 0 980 596" role="img" aria-label="Схема цикла этапа: kickoff, спека, реализация, три параллельных чекера, fix-loop с возвратом в реализацию, user-review, коммит и очистка контекста" preserveAspectRatio="xMidYMid meet">
+        <div class="svg-fit"><svg viewBox="0 0 980 596" role="img" aria-label="Stage cycle diagram: kickoff, spec, implementation, three parallel checkers, fix-loop returning to implementation, user-review, commit and context clear" preserveAspectRatio="xMidYMid meet">
           <defs>
             <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
@@ -568,86 +569,86 @@
           </g>
 
           <rect x="250" y="14" width="480" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
-          <text x="490" y="41" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">/stage-kickoff — план, решения, sign-off</text>
+          <text x="490" y="41" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">/stage-kickoff — plan, decisions, sign-off</text>
 
           <rect x="250" y="106" width="480" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
-          <text x="490" y="133" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">figma-spec | proto-spec — спека экрана</text>
+          <text x="490" y="133" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">figma-spec | proto-spec — screen spec</text>
 
           <rect x="250" y="198" width="480" height="44" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.6"></rect>
-          <text x="490" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" fill="var(--accent-ink)">implement — код по спеке</text>
+          <text x="490" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" fill="var(--accent-ink)">implement — code per spec</text>
 
           <rect x="40" y="276" width="260" height="56" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
           <text x="170" y="299" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="15" fill="currentColor">figma-compare</text>
-          <text x="170" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">макет ↔ код</text>
+          <text x="170" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">mockup ↔ code</text>
 
           <rect x="360" y="276" width="260" height="56" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
           <text x="490" y="299" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="15" fill="currentColor">pro-review</text>
-          <text x="490" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">корректность и конвенции</text>
+          <text x="490" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">correctness and conventions</text>
 
           <rect x="680" y="276" width="260" height="56" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
           <text x="810" y="299" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="15" fill="currentColor">devtools-verify</text>
-          <text x="810" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">рантайм в браузере</text>
+          <text x="810" y="318" text-anchor="middle" font-size="13.5" fill="var(--muted)">runtime in the browser</text>
 
-          <text x="490" y="360" text-anchor="middle" font-size="13.5" fill="var(--muted)">+ по признаку: dead-code · i18n-sweep · deps-audit</text>
+          <text x="490" y="360" text-anchor="middle" font-size="13.5" fill="var(--muted)">+ by trigger: dead-code · i18n-sweep · deps-audit</text>
 
           <rect x="330" y="414" width="320" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
-          <text x="490" y="441" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">fix-loop ≤ 2 итерации</text>
+          <text x="490" y="441" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">fix-loop ≤ 2 iterations</text>
 
           <path d="M 650 436 L 958 436 L 958 220 L 734 220" fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ar)" color="var(--accent)"></path>
-          <text x="846" y="209" text-anchor="middle" font-size="13.5" fill="var(--accent-ink)" font-family="IBM Plex Mono, monospace">чиним</text>
+          <text x="846" y="209" text-anchor="middle" font-size="13.5" fill="var(--accent-ink)" font-family="IBM Plex Mono, monospace">fixing</text>
 
           <rect x="330" y="506" width="320" height="44" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
-          <text x="490" y="533" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">user-review — человек смотрит</text>
+          <text x="490" y="533" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="500" fill="currentColor">user-review — a human looks</text>
 
           <text x="672" y="533" text-anchor="start" font-size="14.5" fill="var(--muted)">→ <tspan font-family="IBM Plex Mono, monospace" fill="currentColor">/stage-check</tspan></text>
-          <text x="672" y="552" text-anchor="start" font-size="13.5" fill="var(--muted)">журнал + коммит + /clear</text>
+          <text x="672" y="552" text-anchor="start" font-size="13.5" fill="var(--muted)">journal + commit + /clear</text>
 
-          <text x="500" y="80" text-anchor="start" font-size="13.5" fill="var(--muted)">этап открыт</text>
-          <text x="500" y="172" text-anchor="start" font-size="13.5" fill="var(--muted)">токены, размеры, копия</text>
-          <text x="500" y="264" text-anchor="start" font-size="13.5" fill="var(--muted)">диф этапа</text>
-          <text x="500" y="402" text-anchor="start" font-size="13.5" fill="var(--muted)">подтверждённые находки</text>
-          <text x="500" y="494" text-anchor="start" font-size="13.5" fill="var(--muted)">осталось только то, что видно глазами</text>
+          <text x="500" y="80" text-anchor="start" font-size="13.5" fill="var(--muted)">stage open</text>
+          <text x="500" y="172" text-anchor="start" font-size="13.5" fill="var(--muted)">tokens, sizes, copy</text>
+          <text x="500" y="264" text-anchor="start" font-size="13.5" fill="var(--muted)">stage diff</text>
+          <text x="500" y="402" text-anchor="start" font-size="13.5" fill="var(--muted)">confirmed findings</text>
+          <text x="500" y="494" text-anchor="start" font-size="13.5" fill="var(--muted)">only what the eye sees is left</text>
         </svg></div>
-        <figcaption>Три чекера идут параллельно и независимо. Этап не закрывается, пока есть critical или вердикт <b>Request changes</b>.</figcaption>
+        <figcaption>The three checkers run in parallel and independently. A stage doesn't close while there is a critical or the verdict is <b>Request changes</b>.</figcaption>
       </figure>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Проговорить два жёстких правила цикла: <b>не начинать implement без sign-off</b> (иначе правки прилетят в середине)
-    и <b>не закрывать этап с critical</b>. Fix-loop ограничен двумя итерациями специально: если за два прохода не сошлось,
-    чинить дальше вслепую бессмысленно. Третья попытка — не третья итерация, а свежий субагент чекера с чистым
-    контекстом: после двух раундов оркестратор перепроверяет уже свои попытки, а не код. Не сошлось и там —
-    это не баг реализации, а расхождение в требованиях, и его несут человеку.
+    <span class="label">Notes</span>
+    Go over the two hard rules of the cycle: <b>don't start implement without sign-off</b> (otherwise edits land mid-stage)
+    and <b>don't close a stage with a critical</b>. The fix-loop is capped at two iterations on purpose: if it hasn't converged in two passes,
+    fixing further blind is pointless. The third attempt isn't a third iteration but a fresh checker subagent with a clean
+    context: after two rounds the orchestrator is re-checking its own attempts, not the code. If it doesn't converge there either,
+    it isn't an implementation bug but a discrepancy in the requirements, and it is taken to a human.
   </div>
 
   <!-- 5 -->
-  <section class="slide" aria-label="Что использует">
-    <div class="eyebrow"><span class="num">04</span><span>Механика</span><span class="spacer"></span><span>входы и гигиена контекста</span></div>
-    <h2>Что пайплайн использует — и почему тяжёлое не попадает в главный контекст</h2>
+  <section class="slide" aria-label="What it uses">
+    <div class="eyebrow"><span class="num">04</span><span>Mechanics</span><span class="spacer"></span><span>inputs and context hygiene</span></div>
+    <h2>What the pipeline uses — and why the heavy stuff stays out of the main context</h2>
     <div class="body">
       <div class="cols cols-1-2 fill" style="flex:1;min-height:0;grid-template-columns:1fr 1.28fr">
         <div style="display:flex;flex-direction:column;gap:.7em">
           <ul class="plain">
-            <li><b>Figma Dev Mode MCP</b> — токены, координаты нод, скриншоты</li>
-            <li><b>Chrome DevTools MCP</b> — консоль, живая страница, замеры</li>
-            <li><b>git</b> — диф этапа и диф всего бранча</li>
-            <li><b>pipeline.config.md</b> — профиль проекта: пути, команды, dev-URL, брейкпоинты, baseline</li>
-            <li><b>CLAUDE.md</b> — конвенции репо; рубрика ревью живёт здесь, не в плагине</li>
-            <li><b>AskUserQuestion</b> — развилки задаются батчем</li>
+            <li><b>Figma Dev Mode MCP</b> — tokens, node coordinates, screenshots</li>
+            <li><b>Chrome DevTools MCP</b> — console, live page, measurements</li>
+            <li><b>git</b> — the stage diff and the whole-branch diff</li>
+            <li><b>pipeline.config.md</b> — project profile: paths, commands, dev URL, breakpoints, baseline</li>
+            <li><b>CLAUDE.md</b> — repo conventions; the review rubric lives here, not in the plugin</li>
+            <li><b>AskUserQuestion</b> — forks are asked in a batch</li>
           </ul>
         </div>
         <figure>
-          <div class="svg-fit"><svg viewBox="0 0 700 430" role="img" aria-label="Схема: тяжёлые данные из MCP и git попадают только в субагентов, наружу выходят компактные отчёты в файлы и сводка оркестратору" preserveAspectRatio="xMidYMid meet">
+          <div class="svg-fit"><svg viewBox="0 0 700 430" role="img" aria-label="Diagram: heavy data from MCP and git goes only into subagents; compact reports in files and a summary to the orchestrator come out" preserveAspectRatio="xMidYMid meet">
             <defs>
               <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
               </marker>
             </defs>
 
-            <text x="14" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">ИСТОЧНИК</text>
-            <text x="250" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">СУБАГЕНТ · свой контекст</text>
-            <text x="556" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">НАРУЖУ</text>
+            <text x="14" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">SOURCE</text>
+            <text x="250" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">SUBAGENT · own context</text>
+            <text x="556" y="24" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">OUT</text>
 
             <g font-size="13" fill="currentColor" font-family="IBM Plex Mono, monospace">
               <rect x="14" y="52" width="150" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
@@ -663,9 +664,9 @@
               <line x1="164" y1="168" x2="246" y2="168"></line>
               <line x1="164" y1="264" x2="246" y2="264"></line>
             </g>
-            <text x="176" y="62" font-size="11.5" fill="var(--muted)">дамп нод</text>
-            <text x="176" y="158" font-size="11.5" fill="var(--muted)">снапшоты</text>
-            <text x="176" y="254" font-size="11.5" fill="var(--muted)">весь диф</text>
+            <text x="176" y="62" font-size="11.5" fill="var(--muted)">node dump</text>
+            <text x="176" y="158" font-size="11.5" fill="var(--muted)">snapshots</text>
+            <text x="176" y="254" font-size="11.5" fill="var(--muted)">whole diff</text>
 
             <g font-size="13" fill="currentColor" font-family="IBM Plex Mono, monospace">
               <rect x="248" y="52" width="200" height="40" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 3"></rect>
@@ -684,319 +685,319 @@
 
             <rect x="554" y="96" width="132" height="76" rx="3" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.4"></rect>
             <text x="620" y="126" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12.5" fill="var(--accent-ink)">checks/*.md</text>
-            <text x="620" y="146" text-anchor="middle" font-size="11.5" fill="var(--muted)">компактный</text>
-            <text x="620" y="162" text-anchor="middle" font-size="11.5" fill="var(--muted)">отчёт</text>
+            <text x="620" y="146" text-anchor="middle" font-size="11.5" fill="var(--muted)">compact</text>
+            <text x="620" y="162" text-anchor="middle" font-size="11.5" fill="var(--muted)">report</text>
 
             <rect x="248" y="330" width="438" height="52" rx="3" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"></rect>
-            <text x="467" y="352" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="currentColor">главный контекст (оркестратор)</text>
-            <text x="467" y="371" text-anchor="middle" font-size="12" fill="var(--muted)">видит только сводку и список находок — не сырые данные</text>
+            <text x="467" y="352" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13.5" fill="currentColor">main context (orchestrator)</text>
+            <text x="467" y="371" text-anchor="middle" font-size="12" fill="var(--muted)">sees only the summary and the findings list — not raw data</text>
 
             <g fill="none" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#ar2)" color="var(--accent)">
               <path d="M 620 172 L 620 300 L 467 300 L 467 328"></path>
             </g>
 
             <line x1="14" y1="404" x2="34" y2="404" stroke="currentColor" stroke-width="2.4"></line>
-            <text x="42" y="408" font-size="11.5" fill="var(--muted)">тяжёлые данные (десятки тысяч токенов)</text>
+            <text x="42" y="408" font-size="11.5" fill="var(--muted)">heavy data (tens of thousands of tokens)</text>
             <line x1="330" y1="404" x2="350" y2="404" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="5 4"></line>
-            <text x="358" y="408" font-size="11.5" fill="var(--muted)">компактный вывод (сотни токенов)</text>
+            <text x="358" y="408" font-size="11.5" fill="var(--muted)">compact output (hundreds of tokens)</text>
           </svg></div>
-          <figcaption>Замеры <code>/usage</code>: Figma MCP съедал 33% контекста, chrome-devtools — 49% за день. После переноса в субагентов — ~2% и ~0%.</figcaption>
+          <figcaption>Measured with <code>/usage</code>: Figma MCP ate 33% of context, chrome-devtools — 49% in a day. After moving them into subagents — ~2% and ~0%.</figcaption>
         </figure>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Это ответ на вопрос «а не сожрёт ли пайплайн лимиты». Наоборот: субагенты стоят ~2–3% расхода, а дорогое — длинные
-    сессии и распухшие файлы. Правила гигиены: <code>/clear</code> после коммита этапа, архивация журнала, <code>evaluate_script</code>
-    вместо скриншотов для замеров.
+    <span class="label">Notes</span>
+    This answers "won't the pipeline eat our limits". Quite the opposite: subagents cost ~2–3% of usage, and the expensive part is long
+    sessions and bloated files. Hygiene rules: <code>/clear</code> after a stage commit, journal archiving, <code>evaluate_script</code>
+    instead of screenshots for measurements.
   </div>
 
   <!-- 6 -->
-  <section class="slide" aria-label="Структура файлов">
-    <div class="eyebrow"><span class="num">05</span><span>Механика</span><span class="spacer"></span><span>что где лежит</span></div>
-    <h2>Структура: плагин снаружи, состояние задачи внутри репо</h2>
+  <section class="slide" aria-label="File structure">
+    <div class="eyebrow"><span class="num">05</span><span>Mechanics</span><span class="spacer"></span><span>what lives where</span></div>
+    <h2>Structure: the plugin outside, the task state inside the repo</h2>
     <div class="body">
       <div class="cols cols-2-1" style="flex:1;min-height:0">
         <pre>
-<span class="cm"># ставится один раз, работает во всех репо</span>
+<span class="cm"># installed once, works in every repo</span>
 <b>stage-pipeline@magzhan</b>
-├── skills/     16 команд
-├── agents/      9 чекеров
+├── skills/     16 commands
+├── agents/      9 checkers
 └── .mcp.json    figma · chrome-devtools
 
-<span class="cm"># в проекте, создаёт /pipeline-init</span>
+<span class="cm"># in the project, created by /pipeline-init</span>
 <b>&lt;repo&gt;/.claude/</b>
-├── <b>pipeline.config.md</b>  <span class="cm">профиль проекта:</span>
-│      <span class="cm">пути · команды · dev-URL · baseline</span>
-└── <b>tasks/&lt;ТИКЕТ&gt;/</b>
-    ├── FEATURE-MAP.md      <span class="cm">что уже есть</span>
-    ├── <b>STAGES.md</b>           <span class="cm">план и журнал</span>
-    ├── specs/              <span class="cm">спека экрана</span>
-    ├── checks/             <span class="cm">отчёты чекеров</span>
-    ├── DESIGN-QUESTIONS.md <span class="cm">дизайнеру</span>
-    └── PR.md               <span class="cm">описание MR</span></pre>
+├── <b>pipeline.config.md</b>  <span class="cm">project profile:</span>
+│      <span class="cm">paths · commands · dev URL · baseline</span>
+└── <b>tasks/&lt;TICKET&gt;/</b>
+    ├── FEATURE-MAP.md      <span class="cm">what already exists</span>
+    ├── <b>STAGES.md</b>           <span class="cm">plan and journal</span>
+    ├── specs/              <span class="cm">screen spec</span>
+    ├── checks/             <span class="cm">checker reports</span>
+    ├── DESIGN-QUESTIONS.md <span class="cm">for the designer</span>
+    └── PR.md               <span class="cm">MR description</span></pre>
         <div style="display:flex;flex-direction:column;gap:.9em">
           <div class="card">
-            <span class="kicker">Граница</span>
-            <h3>Что нельзя класть в плагин</h3>
-            <p>Рубрика одного проекта в общем скилле давала ложные Major в другом. Проектные правила — в
-              <code>CLAUDE.md</code> и <code>pipeline.config.md</code>.</p>
+            <span class="kicker">Boundary</span>
+            <h3>What must not go into the plugin</h3>
+            <p>One project's rubric in a shared skill gave false Majors in another. Project rules go in
+              <code>CLAUDE.md</code> and <code>pipeline.config.md</code>.</p>
           </div>
           <div class="card">
-            <span class="kicker">Приватность</span>
-            <h3>Журналы задач не коммитятся</h3>
-            <p><code>tasks/</code> в gitignore: это рабочая память разработчика. Наружу выходит только <code>PR.md</code>.</p>
+            <span class="kicker">Privacy</span>
+            <h3>Task journals aren't committed</h3>
+            <p><code>tasks/</code> is in gitignore: it's the developer's working memory. Only <code>PR.md</code> goes out.</p>
           </div>
           <div class="card">
-            <span class="kicker">Переносимость</span>
-            <h3>Один конфиг — любой стек</h3>
-            <p>Три разных стека работают на одних скиллах. Отличие — только <code>pipeline.config.md</code>,
-              который генерит <code>/pipeline-init</code>.</p>
+            <span class="kicker">Portability</span>
+            <h3>One config — any stack</h3>
+            <p>Three different stacks run on the same skills. The only difference is <code>pipeline.config.md</code>,
+              which <code>/pipeline-init</code> generates.</p>
           </div>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Если спросят «а почему journal не в репо» — история: мы пробовали хранить весь пайплайн в <code>.claude/</code> репозитория,
-    коммит не влили в dev, <code>.gitignore</code> гасил папку целиком, и <code>git clean</code> снёс всё дважды. Отсюда плагин.
+    <span class="label">Notes</span>
+    If asked "why isn't the journal in the repo" — the story: we tried keeping the whole pipeline in the repository's <code>.claude/</code>,
+    the commit wasn't merged into dev, <code>.gitignore</code> hid the whole folder, and <code>git clean</code> wiped everything twice. Hence the plugin.
   </div>
 
   <!-- 7 -->
-  <section class="slide" aria-label="Каталог скиллов">
-    <div class="eyebrow"><span class="num">06</span><span>Каталог</span><span class="spacer"></span><span>18 скиллов</span></div>
-    <h2>Скиллы: команды, которые вы набираете руками</h2>
+  <section class="slide" aria-label="Skills catalog">
+    <div class="eyebrow"><span class="num">06</span><span>Catalog</span><span class="spacer"></span><span>18 skills</span></div>
+    <h2>Skills: the commands you type by hand</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
         <table>
-          <thead><tr><th>Команда</th><th>Что делает</th><th>Когда</th></tr></thead>
+          <thead><tr><th>Command</th><th>What it does</th><th>When</th></tr></thead>
           <tbody>
-            <tr><td class="name">/pipeline-init</td><td>изучает репо и генерит <code>pipeline.config.md</code>, из которого читают все остальные</td><td class="when">1 раз на репо</td></tr>
-            <tr><td class="name">/pipeline-doctor</td><td>проверяет окружение: MCP, соседние репо, dev-сервер, type-check baseline</td><td class="when">при сбоях</td></tr>
-            <tr><td class="name">/feature-checker</td><td>карта существующей фичи по всем платформам → <code>FEATURE-MAP.md</code>: что переиспользовать, что писать</td><td class="when">старт задачи</td></tr>
-            <tr><td class="name">/stage-plan</td><td>режет задачу на этапы (экран + стейты = этап), критерии приёмки WHEN/THEN → <code>STAGES.md</code></td><td class="when">старт задачи</td></tr>
-            <tr><td class="name">/stage-kickoff</td><td>открывает этап: план, накопленные TODO и вопросы, бизнес-ввод, sign-off перед кодом</td><td class="when">начало этапа</td></tr>
-            <tr><td class="name">/stage-check</td><td>закрывает этап: запускает чекеров, гоняет fix-loop ≤2, пишет журнал, готовит текст коммита</td><td class="when">конец этапа</td></tr>
-            <tr><td class="name">/stage-force</td><td>автономный прогон всей задачи: вопросы одним батчем на старте, дальше без остановок</td><td class="when">вместо цикла</td></tr>
-            <tr><td class="name">/pro-review</td><td>senior-ревью — по умолчанию весь бранч относительно main</td><td class="when">вручную</td></tr>
-            <tr><td class="name">/figma-compare · /proto-compare</td><td>сверка кода с макетом или с HTML-прототипом</td><td class="when">вручную</td></tr>
-            <tr><td class="name">/devtools-verify</td><td>рантайм-проверка в браузере</td><td class="when">вручную</td></tr>
-            <tr><td class="name">/root-cause</td><td>отладка до корневой причины: фикс не сработал, симптом без объяснения, белая страница</td><td class="when">при дефекте</td></tr>
-            <tr><td class="name">/dead-code · /i18n-sweep · /deps-audit</td><td>узкие проходы: мусор от задачи, интернационализация, зависимости</td><td class="when">вручную</td></tr>
-            <tr><td class="name">/ds-parity</td><td>дубли с дизайн-системой: что заменить китовым компонентом, что вынести В кит</td><td class="when">перед PR</td></tr>
-            <tr><td class="name">/task-converge</td><td>код на HEAD против намерения всей задачи: что из обещанного не сделано и что сделано, но не просили</td><td class="when">перед PR</td></tr>
-            <tr><td class="name">/task-wrapup</td><td>сводит журнал всех этапов в <code>PR.md</code>: что и зачем, как проверить, слепые зоны</td><td class="when">вручную, когда нужно описание</td></tr>
+            <tr><td class="name">/pipeline-init</td><td>studies the repo and generates <code>pipeline.config.md</code>, which all the others read from</td><td class="when">once per repo</td></tr>
+            <tr><td class="name">/pipeline-doctor</td><td>checks the environment: MCP, sibling repos, dev server, type-check baseline</td><td class="when">on failures</td></tr>
+            <tr><td class="name">/feature-checker</td><td>a map of an existing feature on all platforms → <code>FEATURE-MAP.md</code>: reuse vs write</td><td class="when">task start</td></tr>
+            <tr><td class="name">/stage-plan</td><td>splits the task into stages (screen + states), WHEN/THEN criteria → <code>STAGES.md</code></td><td class="when">task start</td></tr>
+            <tr><td class="name">/stage-kickoff</td><td>opens a stage: plan, accumulated TODOs and questions, business input, sign-off</td><td class="when">stage start</td></tr>
+            <tr><td class="name">/stage-check</td><td>closes a stage: runs checkers, fix-loop ≤2, writes the journal, drafts the commit text</td><td class="when">stage end</td></tr>
+            <tr><td class="name">/stage-force</td><td>autonomous run of the whole task: questions in one batch at the start, then no stops</td><td class="when">instead of the cycle</td></tr>
+            <tr><td class="name">/pro-review</td><td>senior review — by default the whole branch against main</td><td class="when">manual</td></tr>
+            <tr><td class="name">/figma-compare · /proto-compare</td><td>checks code against a mockup or an HTML prototype</td><td class="when">manual</td></tr>
+            <tr><td class="name">/devtools-verify</td><td>runtime check in the browser</td><td class="when">manual</td></tr>
+            <tr><td class="name">/root-cause</td><td>root-cause debugging: a fix didn't work, unexplained symptom, blank page</td><td class="when">on a defect</td></tr>
+            <tr><td class="name">/dead-code · /i18n-sweep · /deps-audit</td><td>narrow passes: junk from the task, internationalization, dependencies</td><td class="when">manual</td></tr>
+            <tr><td class="name">/ds-parity</td><td>design-system duplicates: replace with kit, move INTO kit</td><td class="when">before PR</td></tr>
+            <tr><td class="name">/task-converge</td><td>code at HEAD vs the whole task's intent: promised but not done, done but not asked for</td><td class="when">before PR</td></tr>
+            <tr><td class="name">/task-wrapup</td><td>rolls the stage journals into <code>PR.md</code>: what and why, how to verify, blind spots</td><td class="when">manual, when you need a description</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="footnote">Проверки продублированы скиллами намеренно: в цикле их вызывает оркестратор сам, но любую можно дёрнуть руками вне пайплайна.</p>
+      <p class="footnote">The checks are duplicated as skills on purpose: in the cycle the orchestrator calls them itself, but any of them can be run by hand outside the pipeline.</p>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Не зачитывать таблицу целиком. Сказать: «запоминать надо четыре — <b>/feature-checker</b>, <b>/stage-plan</b>,
-    <b>/stage-kickoff</b>, <b>/stage-check</b>. Остальное вызывается само или лежит на всякий случай».
-    Отдельно отметить <code>/pro-review</code>: его можно взять как самостоятельный инструмент, даже не заводя весь пайплайн.
+    <span class="label">Notes</span>
+    Don't read the table out in full. Say: "there are four to remember — <b>/feature-checker</b>, <b>/stage-plan</b>,
+    <b>/stage-kickoff</b>, <b>/stage-check</b>. The rest are called automatically or lie around just in case".
+    Single out <code>/pro-review</code>: it can be taken as a standalone tool, without setting up the whole pipeline.
   </div>
 
   <!-- 8 -->
-  <section class="slide" aria-label="Каталог агентов">
-    <div class="eyebrow"><span class="num">07</span><span>Каталог</span><span class="spacer"></span><span>12 агентов</span></div>
-    <h2>Агенты: субагенты, которых оркестратор запускает сам</h2>
+  <section class="slide" aria-label="Agents catalog">
+    <div class="eyebrow"><span class="num">07</span><span>Catalog</span><span class="spacer"></span><span>12 agents</span></div>
+    <h2>Agents: subagents the orchestrator launches itself</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
         <table>
-          <thead><tr><th>Агент</th><th>Что делает</th><th>Запуск</th></tr></thead>
+          <thead><tr><th>Agent</th><th>What it does</th><th>Launch</th></tr></thead>
           <tbody>
-            <tr><td class="name">stage-implement</td><td>maker: реализация этапа или раунда фиксов fix-loop в чистом контексте (sonnet) — в главный контекст идёт только сводка</td><td class="when">в /stage-force</td></tr>
-            <tr><td class="name">figma-spec</td><td>вытаскивает из Figma компактную спеку экрана: токены, размеры, копия, стейты</td><td class="when">до кода</td></tr>
-            <tr><td class="name">proto-spec</td><td>то же из HTML-прототипа + SPEC.md — для проектов без Figma</td><td class="when">до кода</td></tr>
-            <tr><td class="name">docs-lookup</td><td>API библиотеки по установленному пакету (типы, CHANGELOG) под версию из локфайла — вместо памяти модели</td><td class="when">неуверенность в API</td></tr>
-            <tr><td class="name">figma-compare</td><td>pixel-perfect сверка кода с макетом: цвета, отступы, радиусы, тени, типографика, структура</td><td class="when">после кода</td></tr>
-            <tr><td class="name">proto-compare</td><td>то же против прототипа, плюс поведение по SPEC.md (переходы, CTA, guard'ы)</td><td class="when">после кода</td></tr>
-            <tr><td class="name">devtools-verify</td><td>рантайм: консоль и hydration, light/dark, ширины 1440/1280/1024, живое состояние</td><td class="when">после кода</td></tr>
-            <tr><td class="name">pro-review</td><td>корректность, безопасность, конвенции репо, дубли, нейминг — с адверсариальной перепроверкой каждого finding</td><td class="when">всегда</td></tr>
-            <tr><td class="name">dead-code</td><td>что осиротело <b>из-за этого дифа</b>: символы, файлы, ключи локалей, ассеты</td><td class="when">что-то удалялось</td></tr>
-            <tr><td class="name">i18n-sweep</td><td>хардкод пользовательского текста, неполные локали, склеенные ключи, формат чисел и дат без локали</td><td class="when">появился текст</td></tr>
-            <tr><td class="name">deps-audit</td><td>новые зависимости и ассеты: оправданность, эквивалент в репо, раздел манифеста, вес</td><td class="when">тронут манифест</td></tr>
-            <tr><td class="name">task-converge</td><td>единственный, кто не смотрит в диф: сверяет состояние кода с критериями всех этапов — <code>missing</code> / <code>partial</code> / <code>contradicts</code> / <code>unrequested</code></td><td class="when">перед PR</td></tr>
+            <tr><td class="name">stage-implement</td><td>maker: implements a stage or a fix-loop fix round in a clean context (sonnet) — only a summary reaches the main context</td><td class="when">in /stage-force</td></tr>
+            <tr><td class="name">figma-spec</td><td>pulls a compact screen spec out of Figma: tokens, sizes, copy, states</td><td class="when">before code</td></tr>
+            <tr><td class="name">proto-spec</td><td>the same from an HTML prototype + SPEC.md — for projects without Figma</td><td class="when">before code</td></tr>
+            <tr><td class="name">docs-lookup</td><td>library API from the installed package (types, CHANGELOG) for the lockfile version — instead of the model's memory</td><td class="when">unsure about an API</td></tr>
+            <tr><td class="name">figma-compare</td><td>pixel-perfect check of code against the mockup: colors, spacing, radii, shadows, typography, structure</td><td class="when">after code</td></tr>
+            <tr><td class="name">proto-compare</td><td>the same against a prototype, plus behavior per SPEC.md (transitions, CTAs, guards)</td><td class="when">after code</td></tr>
+            <tr><td class="name">devtools-verify</td><td>runtime: console and hydration, light/dark, widths 1440/1280/1024, live state</td><td class="when">after code</td></tr>
+            <tr><td class="name">pro-review</td><td>correctness, security, repo conventions, duplicates, naming — with an adversarial re-check of every finding</td><td class="when">always</td></tr>
+            <tr><td class="name">dead-code</td><td>what was orphaned <b>by this diff</b>: symbols, files, locale keys, assets</td><td class="when">something was deleted</td></tr>
+            <tr><td class="name">i18n-sweep</td><td>hardcoded user text, incomplete locales, concatenated keys, number and date format without a locale</td><td class="when">text appeared</td></tr>
+            <tr><td class="name">deps-audit</td><td>new dependencies and assets: justification, an equivalent in the repo, manifest section, weight</td><td class="when">manifest touched</td></tr>
+            <tr><td class="name">task-converge</td><td>the only one that doesn't look at the diff: compares the code state with the criteria of all stages — <code>missing</code> / <code>partial</code> / <code>contradicts</code> / <code>unrequested</code></td><td class="when">before PR</td></tr>
           </tbody>
         </table>
       </div>
       <div class="cols cols-2" style="flex:none">
-        <p class="footnote"><b>Запуск по признаку.</b> Нет признака — <code>[skip: нет признака]</code>, субагент не тратится.
-          Три узких чекера намеренно не пересекаются с pro-review: тот отвечает за корректность, эти — каждый за свой класс мусора.</p>
-        <p class="footnote"><b>Подмена под проект.</b> Секция «Checker overrides» в конфиге меняет
-          <code>figma-*</code> на <code>proto-*</code> — остальной цикл не меняется, Figma MCP такому репо не нужен вообще.</p>
-        <p class="footnote"><b>Почему <code>task-converge</code> отдельно.</b> Все остальные смотрят в диф и отвечают
-          на «правильно ли сделано сделанное». Критерий, который не взял на себя ни один этап, в дифе не появляется —
-          его отсутствие невидимо по определению, и ловит его только сверка с намерением.</p>
+        <p class="footnote"><b>Launched by a trigger.</b> No trigger — <code>[skip: no trigger]</code>, no subagent is spent.
+          The three narrow checkers deliberately don't overlap with pro-review: it answers for correctness, they — each for its own class of junk.</p>
+        <p class="footnote"><b>Project override.</b> The "Checker overrides" section in the config swaps
+          <code>figma-*</code> for <code>proto-*</code> — the rest of the cycle doesn't change, and such a repo doesn't need Figma MCP at all.</p>
+        <p class="footnote"><b>Why <code>task-converge</code> is separate.</b> All the others look at the diff and answer
+          "is what was done done right". A criterion that no stage took on never shows up in the diff —
+          its absence is invisible by definition, and only a check against the intent catches it.</p>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Каждый критерий приёмки в <code>STAGES.md</code> несёт номер (<code>AC-2.4</code>) и тег того, кто способен его проверить.
-    Из этого получается три вещи: отчёт чекера ссылается на ID, а не пересказывает критерий своими словами; этап нельзя
-    закрыть с критерием без исхода; <code>TEST-PLAN.md</code> собирается механически, а не перечитыванием всех этапов.
-    Критерий, который проверить нечем, — дефект плана, и он ловится на kickoff, а не после PR.
-    Главное про <b>pro-review</b>: он не выдаёт список подозрений. Каждый finding он потом пытается опровергнуть сам
-    и оставляет только то, для чего смог написать сценарий вход → дефект. Поэтому его вердикт можно читать как ревью коллеги,
-    а не как линтер.
+    <span class="label">Notes</span>
+    Every acceptance criterion in <code>STAGES.md</code> carries a number (<code>AC-2.4</code>) and a tag of whoever is able to check it.
+    Three things follow: a checker report refers to the ID instead of retelling the criterion in its own words; a stage can't be
+    closed with a criterion that has no outcome; <code>TEST-PLAN.md</code> is assembled mechanically, not by rereading all the stages.
+    A criterion with nothing to check it is a plan defect, and it gets caught at kickoff, not after the PR.
+    The main thing about <b>pro-review</b>: it doesn't hand out a list of suspicions. It then tries to refute every finding itself
+    and keeps only what it could write an input → defect scenario for. So its verdict can be read like a colleague's review,
+    not like a linter.
   </div>
 
   <!-- 9 -->
-  <section class="slide" aria-label="Как начать">
-    <div class="eyebrow"><span class="num">08</span><span>Практика</span><span class="spacer"></span><span>установка за 5 минут</span></div>
-    <h2>Как начать у себя</h2>
+  <section class="slide" aria-label="Getting started">
+    <div class="eyebrow"><span class="num">08</span><span>Practice</span><span class="spacer"></span><span>install in 5 minutes</span></div>
+    <h2>How to start on your side</h2>
     <div class="body">
       <div class="cols cols-2-1" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:1em">
           <pre>
-<span class="cm"># 1. подключить маркетплейс и поставить плагин</span>
+<span class="cm"># 1. add the marketplace and install the plugin</span>
 claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 
-<span class="cm"># 2. перезапустить Claude Code и проверить</span>
+<span class="cm"># 2. restart Claude Code and check</span>
 claude plugin details stage-pipeline
 
-<span class="cm"># 3. в целевом репозитории</span>
-/pipeline-doctor   <span class="cm">← окружение</span>
-/pipeline-init     <span class="cm">← конфиг проекта</span>
+<span class="cm"># 3. in the target repository</span>
+/pipeline-doctor   <span class="cm">← environment</span>
+/pipeline-init     <span class="cm">← project config</span>
 
-<span class="cm"># 4. первая задача</span>
-/feature-checker &lt;тикет&gt;  <span class="cm">→ FEATURE-MAP</span>
-/stage-plan               <span class="cm">→ STAGES.md</span>
-/stage-kickoff            <span class="cm">→ поехали</span></pre>
-          <p class="footnote">Обновление — <code>claude plugin update stage-pipeline</code> и перезапуск.</p>
+<span class="cm"># 4. the first task</span>
+/feature-checker &lt;ticket&gt;  <span class="cm">→ FEATURE-MAP</span>
+/stage-plan                <span class="cm">→ STAGES.md</span>
+/stage-kickoff             <span class="cm">→ off we go</span></pre>
+          <p class="footnote">To update — <code>claude plugin update stage-pipeline</code> and restart.</p>
         </div>
         <div style="display:flex;flex-direction:column;gap:.9em">
           <div class="card">
-            <span class="kicker">Доступ</span>
-            <h3>Ничего не нужно</h3>
-            <p>Репозиторий публичный: ни ника на GitHub, ни SSH-ключа, ни <code>gh auth</code> для установки
-              и обновлений не требуется.</p>
+            <span class="kicker">Access</span>
+            <h3>Nothing needed</h3>
+            <p>The repository is public: no GitHub username, no SSH key, no <code>gh auth</code> is needed to install
+              and update.</p>
           </div>
           <div class="card">
-            <span class="kicker">Разрешения</span>
-            <h3>Один раз на машину</h3>
-            <p><code>/pipeline-init</code> предложит разложить профиль разрешений плагина — иначе каждый чекер
-              на каждом этапе спрашивает подтверждение. Скрипт только доливает недостающее и показывает список
-              до записи; <code>/pipeline-doctor</code> потом проверяет его через <code>--check</code>.</p>
+            <span class="kicker">Permissions</span>
+            <h3>Once per machine</h3>
+            <p><code>/pipeline-init</code> will offer to set up the plugin's permission profile — otherwise every checker
+              asks for confirmation at every stage. The script only tops up what's missing and shows the list
+              before writing; <code>/pipeline-doctor</code> then verifies it with <code>--check</code>.</p>
           </div>
           <div class="card">
-            <span class="kicker">Требуется</span>
-            <h3>Что нужно для чекеров</h3>
-            <p><code>figma-*</code> — Figma desktop с <b>Enable Dev Mode MCP Server</b> и открытым файлом.
-              <code>devtools-verify</code> — живой dev-сервер. Оба MCP приезжают с плагином.</p>
+            <span class="kicker">Required</span>
+            <h3>What the checkers need</h3>
+            <p><code>figma-*</code> — Figma desktop with <b>Enable Dev Mode MCP Server</b> and the file open.
+              <code>devtools-verify</code> — a live dev server. Both MCPs come with the plugin.</p>
           </div>
           <div class="card">
-            <span class="kicker">Минимальный вход</span>
-            <h3>Можно не всё сразу</h3>
-            <p>Не нужен весь цикл — берите <code>/feature-checker</code> перед задачей и <code>/pro-review</code> перед MR:
-              работает без конфига и без Figma.</p>
+            <span class="kicker">Minimal entry</span>
+            <h3>You don't need it all at once</h3>
+            <p>Don't need the whole cycle — take <code>/feature-checker</code> before a task and <code>/pro-review</code> before an MR:
+              it works without a config and without Figma.</p>
           </div>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Здесь можно предложить прямо на встрече: «скиньте мне ники в GitHub, к вечеру у всех будет доступ».
-    Если зал холодный — сделать упор на последнюю карточку: порог входа в два скилла, конфиг не обязателен.
+    <span class="label">Notes</span>
+    Here you can offer right at the meeting: "send me your GitHub usernames, by evening everyone will have access".
+    If the room is cold — lean on the last card: an entry threshold of two skills, no config needed.
   </div>
 
   <!-- 10 -->
-  <section class="slide" aria-label="Два режима">
-    <div class="eyebrow"><span class="num">09</span><span>Практика</span><span class="spacer"></span><span>ручной режим и force</span></div>
-    <h2>Два режима: где вы в цикле и где вас нет</h2>
+  <section class="slide" aria-label="Two modes">
+    <div class="eyebrow"><span class="num">09</span><span>Practice</span><span class="spacer"></span><span>manual mode and force</span></div>
+    <h2>Two modes: where you are in the cycle and where you aren't</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
         <div class="card" style="height:100%">
-          <span class="kicker">Обычный режим</span>
-          <h3>Две остановки на каждом этапе</h3>
+          <span class="kicker">Normal mode</span>
+          <h3>Two stops at every stage</h3>
           <ul class="plain" style="margin-top:.4em">
-            <li><b>Kickoff:</b> агент показывает план этапа и накопленные вопросы — вы принимаете решения и даёте sign-off</li>
-            <li><b>User-review:</b> смотрите результат глазами до коммита</li>
-            <li>Всё между этим — реализация, чекеры, фиксы — идёт само</li>
+            <li><b>Kickoff:</b> the agent shows the stage plan and accumulated questions — you make decisions and give sign-off</li>
+            <li><b>Review:</b> you look at the result with your own eyes before the commit</li>
+            <li>Everything in between — implementation, checkers, fixes — runs by itself</li>
           </ul>
-          <p style="margin-top:.5em;color:var(--muted)">Подходит, когда развилки дорогие: новый флоу, спорный UX, чужая зона кода.</p>
+          <p style="margin-top:.5em;color:var(--muted)">Fits when forks are expensive: a new flow, contested UX, someone else's code area.</p>
         </div>
         <div class="card" style="height:100%">
           <span class="kicker">/stage-force</span>
-          <h3>Остановки перенесены в начало</h3>
+          <h3>The stops are moved to the start</h3>
           <ul class="plain" style="margin-top:.4em">
-            <li>Все вопросы по всем этапам — <b>одним батчем на старте</b></li>
-            <li>Что осталось — оформляется допущением: «принято X, потому что Y, обратимо через Z»</li>
-            <li>Дальше реализация, чекеры, фиксы, коммиты — до конца задачи</li>
-            <li><b>Всегда запрещено:</b> <code>git push</code>, создание PR, деплой</li>
-            <li><b>Посередине не спрашивает:</b> обратимое решает сам, необратимую развилку, исчерпанный fix-loop, красную сборку и конфликт источников откладывает блокером и доделывает остальное; блокеры и принятые решения — в сводке в конце</li>
+            <li>All questions for all stages — <b>in one batch at the start</b></li>
+            <li>Whatever is left is written up as an assumption: "accepted X because Y, reversible via Z"</li>
+            <li>Then implementation, checkers, fixes, commits — to the end of the task</li>
+            <li><b>Always forbidden:</b> <code>git push</code>, creating a PR, deploy</li>
+            <li><b>Silent:</b> decides the reversible itself; parks an irreversible fork, an exhausted fix-loop, a red build and a conflict of sources as a blocker and finishes the rest; blockers and accepted decisions go in the summary at the end</li>
           </ul>
-          <p style="margin-top:.5em;color:var(--muted)">Первый реальный прогон: 7 решений собраны двумя батчами, 6 допущений с откатом, 6 коммитов.</p>
+          <p style="margin-top:.5em;color:var(--muted)">The first real run: 7 decisions collected in two batches, 6 assumptions with a rollback, 6 commits.</p>
         </div>
       </div>
-      <p class="footnote">Force придумался не от удобства, а по замеру: ожидание на остановках занимало больше времени, чем сами этапы.</p>
+      <p class="footnote">Force wasn't invented for convenience but from a measurement: waiting at stops took more time than the stages themselves.</p>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Force — самая рискованная часть, поэтому честно: он не убирает контроль, он переносит его. Запреты жёсткие
-    (никакого push и PR), а всё принятое самостоятельно записано в журнал с путём отката, так что развернуть можно любое решение.
+    <span class="label">Notes</span>
+    Force is the riskiest part, so honestly: it doesn't remove control, it moves it. The prohibitions are hard
+    (no push, no PR), and everything accepted on its own is written in the journal with a rollback path, so any decision can be reversed.
   </div>
 
   <!-- 11 -->
-  <section class="slide" aria-label="Демо">
-    <div class="eyebrow"><span class="num">10</span><span>Демо</span><span class="spacer"></span><span>5 минут вживую</span></div>
-    <h2>Демо: показываю на реальной задаче</h2>
+  <section class="slide" aria-label="Demo">
+    <div class="eyebrow"><span class="num">10</span><span>Demo</span><span class="spacer"></span><span>5 minutes live</span></div>
+    <h2>Demo: I show it on a real task</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.85em">
           <div class="card">
             <span class="kicker">01</span>
-            <h3>Память задачи</h3>
-            <p><code>tasks/&lt;тикет&gt;/STAGES.md</code> — решения с обоснованиями, этапы со статусами, контракты слоёв.
-              С этого стартует любая новая сессия.</p>
+            <h3>The task's memory</h3>
+            <p><code>tasks/&lt;ticket&gt;/STAGES.md</code> — decisions with reasons, stages with statuses, layer contracts.
+              Any new session starts from here.</p>
           </div>
           <div class="card">
             <span class="kicker">02</span>
-            <h3>Запуск проверки</h3>
-            <p><code>/stage-check</code> на живом дифе: видно, как расходятся субагенты и каждый пишет свой файл в <code>checks/</code>.</p>
+            <h3>Launching a check</h3>
+            <p><code>/stage-check</code> on a live diff: you can see the subagents fan out and each write its own file in <code>checks/</code>.</p>
           </div>
           <div class="card">
             <span class="kicker">03</span>
-            <h3>Выхлоп</h3>
-            <p><code>checks/pro-review.md</code> и <code>figma-compare.md</code> — находки с точностью до
-              <code>файл:строка</code> и то, что признано не находкой.</p>
+            <h3>The output</h3>
+            <p><code>checks/pro-review.md</code> and <code>figma-compare.md</code> — findings down to
+              <code>file:line</code> and what was ruled not a finding.</p>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:.85em">
           <div class="card">
             <span class="kicker">04</span>
-            <h3>Готовое описание MR</h3>
-            <p><code>PR.md</code> от <code>/task-wrapup</code>: что и зачем, как проверить, слепые зоны, открытые вопросы.</p>
+            <h3>A ready MR description</h3>
+            <p><code>PR.md</code> from <code>/task-wrapup</code>: what and why, how to verify, blind spots, open questions.</p>
           </div>
           <div class="card" style="border-style:dashed">
-            <span class="kicker">Запасной путь</span>
-            <h3>Если MCP не поднялся</h3>
-            <p>Показываю готовые отчёты из <code>checks/</code> — их 161, читаются так же, как живой прогон.</p>
+            <span class="kicker">Fallback</span>
+            <h3>If MCP doesn't come up</h3>
+            <p>I show ready reports from <code>checks/</code> — there are 161, and they read the same as a live run.</p>
           </div>
-          <p class="footnote">Демо-задача: три контекста (desktop / adaptive / webview), 20 файлов дифа.</p>
+          <p class="footnote">Demo task: three contexts (desktop / adaptive / webview), 20 files in the diff.</p>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Перед встречей: открыть Figma desktop с нужным файлом, поднять dev-сервер, заранее сделать <code>/clear</code>.
-    Не запускать полный <code>/stage-check</code> целиком, если время поджимает — достаточно показать старт и уйти в готовый отчёт.
+    <span class="label">Notes</span>
+    Before the meeting: open Figma desktop with the right file, bring up the dev server, do a <code>/clear</code> in advance.
+    Don't run a full <code>/stage-check</code> end to end if time is tight — it's enough to show the start and move to a ready report.
   </div>
 
   <!-- 12 -->
-  <section class="slide" aria-label="Пример отчёта">
-    <div class="eyebrow"><span class="num">11</span><span>Демо</span><span class="spacer"></span><span>как выглядит находка</span></div>
-    <h2>Реальный отчёт: pro-review по ветке задачи</h2>
+  <section class="slide" aria-label="Report example">
+    <div class="eyebrow"><span class="num">11</span><span>Demo</span><span class="spacer"></span><span>what a finding looks like</span></div>
+    <h2>A real report: pro-review on a task branch</h2>
     <div class="body">
       <div class="cols cols-2-1" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.8em;min-height:0">
@@ -1004,350 +1005,350 @@ claude plugin details stage-pipeline
             <span class="pill"><span class="sev o">0</span> critical</span>
             <span class="pill"><span class="sev m">4</span> major</span>
             <span class="pill"><span class="sev n">1</span> minor</span>
-            <span class="pill" style="border-color:var(--major);color:var(--major)">вердикт: Request changes</span>
+            <span class="pill" style="border-color:var(--major);color:var(--major)">verdict: Request changes</span>
           </div>
           <div class="card" style="min-height:0;overflow:auto">
             <span class="kicker" style="color:var(--major)">🟠 major</span>
             <h3 style="font-family:var(--mono);font-size:1em;font-weight:500">composables/feature/usePhotoScan.ts:112</h3>
-            <p><code>isScanning</code> — только <code>pending</code> сетевого запроса: ожидание нативного экрана оно не покрывает,
-              и кнопка остаётся активной. Повторный тап запускает второй <code>scan()</code> — второй вызов бриджа и второй
-              набор слушателей. Натив пришлёт одно событие, получат его оба → два тоста и две отправки аналитики.</p>
-            <p><b>Фикс:</b> busy-флаг на всю <code>scan()</code> (guard + finally), <code>isScanning = isBusy || pending</code>.</p>
+            <p><code>isScanning</code> is only the network request's <code>pending</code>: it doesn't cover waiting for the native screen,
+              and the button stays active. A repeated tap starts a second <code>scan()</code> — a second bridge call and a second
+              set of listeners. Native will send one event, both will receive it → two toasts and two analytics sends.</p>
+            <p><b>Fix:</b> a busy flag for the whole <code>scan()</code> (guard + finally), <code>isScanning = isBusy || pending</code>.</p>
           </div>
-          <p class="footnote">Ещё в этом прогоне: утечка камеры при закрытии до резолва <code>getUserMedia</code>;
-            тело запроса читается в память до проверки размера; протечка слоя между модулями.</p>
+          <p class="footnote">Also in this run: a camera leak when closing before <code>getUserMedia</code> resolves;
+            the request body is read into memory before the size check; a layer leak between modules.</p>
         </div>
         <div style="display:flex;flex-direction:column;gap:.9em">
           <div class="card">
-            <span class="kicker">Что было проверено</span>
-            <p>20 файлов целиком, а не хунки. <code>type-check</code> — 218, совпадает с baseline. <code>lint</code> чисто.
-              Каждый finding перепроверен сценарием вход → дефект.</p>
+            <span class="kicker">What was checked</span>
+            <p>20 files in full, not hunks. <code>type-check</code> — 218, matches baseline. <code>lint</code> clean.
+              Every finding re-checked with an input → defect scenario.</p>
           </div>
           <div class="card">
-            <span class="kicker">Чего не было</span>
-            <p>Отдельный блок: что агент осознанно <b>не</b> флагует и почему — вне скоупа, решено пользователем,
-              ждёт бэкенд. Экономит спор на ревью.</p>
+            <span class="kicker">What isn't flagged</span>
+            <p>A separate block: what the agent deliberately does <b>not</b> flag and why — out of scope, decided by the user,
+              waiting on the backend. Saves an argument in review.</p>
           </div>
           <div class="card" style="background:var(--accent-soft);border-color:var(--accent)">
-            <span class="kicker">Смысл</span>
-            <p>Все четыре major находятся человеком тоже — но на ревью, через день, когда переключение контекста уже стоит дорого.</p>
+            <span class="kicker">The point</span>
+            <p>A human finds all four majors too — but in review, a day later, when the context switch already costs a lot.</p>
           </div>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Обратить внимание на конкретику: не «возможна гонка», а точный сценарий — два тапа, два слушателя, два тоста,
-    и сразу предложенный фикс. Это разница между линтером и ревьюером. И на секцию «не флагую» — агент показывает
-    границы своей ответственности сам.
+    <span class="label">Notes</span>
+    Point out the specifics: not "a race is possible" but an exact scenario — two taps, two listeners, two toasts,
+    and a fix proposed right away. That's the difference between a linter and a reviewer. And the "not flagged" section —
+    the agent shows the limits of its own responsibility itself.
   </div>
 
   <!-- 13 -->
-  <section class="slide" aria-label="Результаты">
-    <div class="eyebrow"><span class="num">12</span><span>Итоги</span><span class="spacer"></span><span>месяц работы, три проекта</span></div>
-    <h2>Что получилось в цифрах</h2>
+  <section class="slide" aria-label="Results">
+    <div class="eyebrow"><span class="num">12</span><span>Results</span><span class="spacer"></span><span>a month of work, three projects</span></div>
+    <h2>What we got, in numbers</h2>
     <div class="body">
       <div class="stat-grid">
-        <div class="stat"><span class="n">3</span><span class="l">проекта на разных стеках</span></div>
-        <div class="stat"><span class="n">16</span><span class="l">задач прошло через пайплайн</span></div>
-        <div class="stat"><span class="n">161</span><span class="l">отчёт чекеров в <code>checks/</code></span></div>
-        <div class="stat"><span class="n">193</span><span class="l">находки с числовым вердиктом</span></div>
+        <div class="stat"><span class="n">3</span><span class="l">projects on different stacks</span></div>
+        <div class="stat"><span class="n">16</span><span class="l">tasks went through the pipeline</span></div>
+        <div class="stat"><span class="n">161</span><span class="l">checker reports in <code>checks/</code></span></div>
+        <div class="stat"><span class="n">193</span><span class="l">findings with a numeric verdict</span></div>
       </div>
       <div class="cols cols-2-1 fill" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.8em;min-height:0;justify-content:space-between">
-          <span class="kicker">68 прогонов чекеров с числовым вердиктом</span>
+          <span class="kicker">68 checker runs with a numeric verdict</span>
           <div class="cols cols-3" style="gap:.7em">
             <div class="stat"><span class="n" style="color:var(--critical)">23</span><span class="l">critical</span></div>
             <div class="stat"><span class="n" style="color:var(--major)">101</span><span class="l">major</span></div>
             <div class="stat"><span class="n" style="color:var(--minor)">69</span><span class="l">minor</span></div>
           </div>
           <div class="card">
-            <span class="kicker">pro-review · 56 прогонов</span>
+            <span class="kicker">pro-review · 56 runs</span>
             <p>15 Approve · 19 Approve with comments · <b style="color:var(--major)">22 Request changes</b></p>
           </div>
-          <p class="footnote">Контекст в главном окне: Figma MCP 33% → ~2%, chrome-devtools 49% → ~0%.
-            Субагенты при этом стоят ~3% расхода.</p>
+          <p class="footnote">Context in the main window: Figma MCP 33% → ~2%, chrome-devtools 49% → ~0%.
+            Subagents cost ~3% of usage.</p>
         </div>
         <div class="stat hero" style="justify-content:center">
           <span class="n">39%</span>
-          <span class="l" style="font-size:1em;line-height:1.4">этапов не были готовы в тот момент, когда мейкер считал их готовыми.<br><br>
-            Это самая честная цифра пайплайна: она измеряет не качество кода, а разрыв между «я закончил» и «это можно показывать».</span>
+          <span class="l" style="font-size:1em;line-height:1.4">of stages weren't ready at the moment the maker considered them ready.<br><br>
+            This is the pipeline's most honest number: it measures not code quality but the gap between "I'm done" and "this can be shown".</span>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Ударная цифра — 39%. Если спросят «а это не потому, что агент придирается» — ответ: каждый finding перепроверяется
-    адверсариально, и в отчётах есть отдельный раздел про то, что признано <b>не</b> находкой. Плюс i18n-sweep однажды
-    честно пометил ключи Amplitude как «не пользовательский текст» — узкий чекер умеет не создавать лишнюю работу.
+    <span class="label">Notes</span>
+    The punchy number is 39%. If asked "isn't that because the agent nitpicks" — answer: every finding is re-checked
+    adversarially, and the reports have a separate section on what was ruled <b>not</b> a finding. Plus i18n-sweep once
+    honestly marked the Amplitude keys as "not user text" — a narrow checker knows how not to create extra work.
   </div>
 
   <!-- 14 -->
-  <section class="slide" aria-label="Находки">
-    <div class="eyebrow"><span class="num">13</span><span>Итоги</span><span class="spacer"></span><span>что ловилось на самом деле</span></div>
-    <h2>Что бы уехало в прод без чекеров</h2>
+  <section class="slide" aria-label="Findings">
+    <div class="eyebrow"><span class="num">13</span><span>Results</span><span class="spacer"></span><span>what actually got caught</span></div>
+    <h2>What would have gone to prod without the checkers</h2>
     <div class="body">
       <div class="cols cols-3" style="flex:1;min-height:0">
         <div class="card" style="height:100%">
-          <span class="kicker" style="color:var(--critical)">devtools-verify · рантайм</span>
+          <span class="kicker" style="color:var(--critical)">devtools-verify · runtime</span>
           <ul class="plain" style="margin-top:.3em">
-            <li>hydration mismatch из-за двух корневых <code>ClientOnly</code></li>
-            <li>драфт из localStorage молча перетирался SSR-стором</li>
-            <li>превью фото пропадали при перезагрузке</li>
-            <li>layout не монтировал Toast — <b>все тосты нового флоу были немыми</b></li>
-            <li>прогресс-бар схлопывался на 1024px</li>
+            <li>hydration mismatch from two root <code>ClientOnly</code></li>
+            <li>a draft from localStorage was silently overwritten by the SSR store</li>
+            <li>photo previews vanished on reload</li>
+            <li>the layout didn't mount Toast — <b>all toasts of the new flow were silent</b></li>
+            <li>the progress bar collapsed at 1024px</li>
           </ul>
         </div>
         <div class="card" style="height:100%">
-          <span class="kicker" style="color:var(--major)">pro-review · код</span>
+          <span class="kicker" style="color:var(--major)">pro-review · code</span>
           <ul class="plain" style="margin-top:.3em">
-            <li>двойной Enter в окне перехода 120 мс → дубль события аналитики</li>
-            <li>Enter мёртв на пустом шаге «Фото»</li>
-            <li><code>uploadVideo</code> написан на деприкейтнутом <code>$http</code> вместо <code>$api</code></li>
-            <li>видео на позиции обложки ломало инвариант «главное фото первым»</li>
+            <li>double Enter in the 120 ms transition window → a duplicate analytics event</li>
+            <li>Enter is dead on the empty "Photo" step</li>
+            <li><code>uploadVideo</code> written on the deprecated <code>$http</code> instead of <code>$api</code></li>
+            <li>a video in the cover position broke the "main photo first" invariant</li>
           </ul>
         </div>
         <div class="card" style="height:100%">
-          <span class="kicker">figma-compare · макет</span>
+          <span class="kicker">figma-compare · mockup</span>
           <ul class="plain" style="margin-top:.3em">
-            <li>~50 расхождений за задачу, все закрыты до показа человеку</li>
-            <li>самодельный SVG-спиннер вместо компонента кита</li>
-            <li>межряд 36px у цветов, padding иконка-текст 16px, row-gap сеток</li>
-            <li>единый <code>gap-4</code> там, где в макете два разных зазора: 16 и 10</li>
+            <li>~50 discrepancies per task, all closed before a human saw it</li>
+            <li>a hand-made SVG spinner instead of a kit component</li>
+            <li>36px row gap for colors, 16px icon-text padding, grid row-gap</li>
+            <li>a single <code>gap-4</code> where the mockup has two different gaps: 16 and 10</li>
           </ul>
         </div>
       </div>
-      <p class="footnote">Побочный эффект дедуп-правила: 11 общих composables между десктопом и адаптивом,
-        один скрипт ужался с 285 строк до 55.</p>
+      <p class="footnote">A side effect of the dedup rule: 11 shared composables between desktop and adaptive,
+        one script shrank from 285 lines to 55.</p>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Слайд для тех, кто скептичен: это не абстрактные «улучшения качества», а список конкретных багов с адресами.
-    Немые тосты — любимый пример: фича формально работала, а пользователь не видел ни одного подтверждения.
+    <span class="label">Notes</span>
+    A slide for the skeptics: these aren't abstract "quality improvements" but a list of concrete bugs with addresses.
+    The silent toasts are the favorite example: the feature formally worked, and the user saw no confirmation at all.
   </div>
 
   <!-- 15 -->
-  <section class="slide" aria-label="Как строили">
-    <div class="eyebrow"><span class="num">14</span><span>Процесс</span><span class="spacer"></span><span>v0 → v8 за месяц</span></div>
-    <h2>Как это строилось: каждая версия — реакция на замер или на провал</h2>
+  <section class="slide" aria-label="How it was built">
+    <div class="eyebrow"><span class="num">14</span><span>Process</span><span class="spacer"></span><span>v0 → v8 in a month</span></div>
+    <h2>How it was built: each version a reaction to a measurement or a failure</h2>
     <div class="body">
       <div class="timeline" style="flex:1;min-height:0;overflow:auto">
-        <div class="tl-row"><span class="v">v0</span><span class="d">21.07</span><span class="t">Утренний промпт «проанализируй мои промпты за прошлые дни» + статья про loop engineering → за одно утро спроектированы <b>feature-checker, figma-compare, stage-plan, stage-check</b>. К обеду — первый план по реальной Figma.</span></div>
-        <div class="tl-row"><span class="v">v1</span><span class="d">22.07</span><span class="t"><b>Замер:</b> Figma MCP съедает 33% контекста → спека и сверка стали субагентами. Побочный эффект оказался ценнее: чистый контекст находит больше.</span></div>
-        <div class="tl-row"><span class="v">v2</span><span class="d">24.07</span><span class="t"><b>Замер:</b> chrome-devtools — 49% дневного расхода → рантайм-проверка тоже в субагента; <code>evaluate_script</code> вместо скриншотов; правила text-fidelity против ложных находок на плейсхолдерах.</span></div>
-        <div class="tl-row"><span class="v">v3</span><span class="d">24.07</span><span class="t"><b>Боль:</b> решения прилетали в середине этапа → <b>stage-kickoff</b> (sign-off до кода) и <b>pro-review</b> в цикл. Тогда же вся специфика проекта вынесена в <code>pipeline.config.md</code>.</span></div>
-        <div class="tl-row"><span class="v">v4</span><span class="d">27.07</span><span class="t">Попытка раздать команде через <code>.claude/</code> в репозитории: канонический <code>.mcp.json</code>, <code>/pipeline-doctor</code>, плейбук.</span></div>
-        <div class="tl-row"><span class="v">v5</span><span class="d">29.07</span><span class="t"><b>Замер:</b> 177M cache-read за 4 дня, средний контекст 234k → архивация журнала (150KB → 43KB), <code>/clear</code> вместо <code>/compact</code>, метка <code>logic-only</code> — она открыла пайплайну аналитику и баг-фиксы.</span></div>
-        <div class="tl-row"><span class="v">v6</span><span class="d">03.08</span><span class="t"><b>Провал:</b> раздача через репо не сработала — коммит не влит в dev, <code>.gitignore</code> гасил папку, <code>git clean</code> снёс всё дважды → <b>плагин и личный маркетплейс</b>, не зависящие от чужого <code>.gitignore</code>.</span></div>
-        <div class="tl-row"><span class="v">v7</span><span class="d">04.08</span><span class="t"><b>Ретро двух задач:</b> прототип рендерит несколько скинов из одного файла, нерешённый каскад давал и ложные critical, и пропуск целого скина → правило «определи вариант до чтения CSS», инвентарь элементов в обе стороны.</span></div>
-        <div class="tl-row"><span class="v">v8</span><span class="d">16.08</span><span class="t"><b>Замер:</b> ожидание на остановках — основная часть простоя → <b>/stage-force</b>, три узких чекера с запуском по признаку, <b>/task-wrapup</b> → PR.md.</span></div>
+        <div class="tl-row"><span class="v">v0</span><span class="d">21 Jul</span><span class="t">A morning prompt "analyze my prompts from past days" + an article on loop engineering → in one morning <b>feature-checker, figma-compare, stage-plan, stage-check</b> were designed. By noon — the first plan from a real Figma.</span></div>
+        <div class="tl-row"><span class="v">v1</span><span class="d">22.07</span><span class="t"><b>Measurement:</b> Figma MCP eats 33% of context → the spec and the comparison became subagents. The side effect proved more valuable: a clean context finds more.</span></div>
+        <div class="tl-row"><span class="v">v2</span><span class="d">24.07</span><span class="t"><b>Measurement:</b> chrome-devtools — 49% of daily usage → the runtime check moved into a subagent too; <code>evaluate_script</code> instead of screenshots; text-fidelity rules against false findings on placeholders.</span></div>
+        <div class="tl-row"><span class="v">v3</span><span class="d">24.07</span><span class="t"><b>Pain:</b> decisions landed mid-stage → <b>stage-kickoff</b> (sign-off before code) and <b>pro-review</b> into the cycle. That's when all project specifics moved into <code>pipeline.config.md</code>.</span></div>
+        <div class="tl-row"><span class="v">v4</span><span class="d">27.07</span><span class="t">An attempt to hand it to the team via <code>.claude/</code> in the repository: a canonical <code>.mcp.json</code>, <code>/pipeline-doctor</code>, a playbook.</span></div>
+        <div class="tl-row"><span class="v">v5</span><span class="d">29.07</span><span class="t"><b>Measurement:</b> 177M cache-read in 4 days, average context 234k → journal archiving (150KB → 43KB), <code>/clear</code> instead of <code>/compact</code>, the <code>logic-only</code> label — it opened analytics and bug fixes to the pipeline.</span></div>
+        <div class="tl-row"><span class="v">v6</span><span class="d">3 Aug</span><span class="t"><b>Failure:</b> distribution via the repo didn't work — the commit wasn't merged into dev, <code>.gitignore</code> hid the folder, <code>git clean</code> wiped everything twice → <b>a plugin and a personal marketplace</b> independent of someone else's <code>.gitignore</code>.</span></div>
+        <div class="tl-row"><span class="v">v7</span><span class="d">4 Aug</span><span class="t"><b>Retro of two tasks:</b> a prototype renders several skins from one file, an unresolved cascade gave both false criticals and a missed whole skin → the rule "determine the variant before reading CSS", an element inventory in both directions.</span></div>
+        <div class="tl-row"><span class="v">v8</span><span class="d">16 Aug</span><span class="t"><b>Measurement:</b> waiting at stops is most of the idle time → <b>/stage-force</b>, three narrow checkers launched by a trigger, <b>/task-wrapup</b> → PR.md.</span></div>
       </div>
-      <p class="footnote">Ни одна версия не выросла из «а давайте добавим фичу». Все девять — из числа, жалобы или потери.</p>
+      <p class="footnote">No version grew out of "let's add a feature". All nine came from a number, a complaint or a loss.</p>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Это самый переносимый слайд: метод построения важнее самого инструмента. Схема простая — замерить <code>/usage</code>,
-    найти, что дороже всего, вынести это из главного контекста; после каждой задачи спросить «что пошло не так и какое правило
-    это чинит». Так же можно строить любой свой скилл.
+    <span class="label">Notes</span>
+    This is the most portable slide: the method of building matters more than the tool itself. The scheme is simple — measure <code>/usage</code>,
+    find what costs the most, move it out of the main context; after every task ask "what went wrong and which rule
+    fixes it". Any skill of your own can be built the same way.
   </div>
 
   <!-- 16 -->
-  <section class="slide" aria-label="Промпты">
-    <div class="eyebrow"><span class="num">15</span><span>Процесс</span><span class="spacer"></span><span>что говорить агенту</span></div>
-    <h2>Промпты, которые реально двигали процесс</h2>
+  <section class="slide" aria-label="Prompts">
+    <div class="eyebrow"><span class="num">15</span><span>Process</span><span class="spacer"></span><span>what to tell the agent</span></div>
+    <h2>Prompts that really moved the process</h2>
     <div class="body">
       <div class="cols cols-3" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.7em">
-          <span class="kicker">Тип 1 — принести факт снаружи</span>
-          <div class="quote"><em>«вот это то что команда usage отдала, нам нужно что либо улучшить здесь?»</em><span class="src">22.07 → чекеры стали субагентами</span></div>
-          <div class="quote"><em>«у других разработчиков может отличаться название mcp figma и devtools»</em><span class="src">27.07 → канонический .mcp.json + /pipeline-doctor</span></div>
+          <span class="kicker">Type 1 — bring a fact from outside</span>
+          <div class="quote"><em>“this is what the usage command gave, do we need to improve anything here?”</em><span class="src">22.07 → checkers became subagents</span></div>
+          <div class="quote"><em>“other developers may have different names for the figma and devtools mcp”</em><span class="src">27.07 → canonical .mcp.json + /pipeline-doctor</span></div>
         </div>
         <div style="display:flex;flex-direction:column;gap:.7em">
-          <span class="kicker">Тип 2 — проверить до реализации</span>
-          <div class="quote"><em>«давай сначала проверим есть ли delete метод»</em><span class="src">27.07 → метода не оказалось, код не написали зря</span></div>
-          <div class="quote"><em>«проверяешь ли ты все файлы на дубликацию логики с тем что мы используем в classified»</em><span class="src">22.07 → дедуп стал шагом каждого этапа, 11 общих composables</span></div>
+          <span class="kicker">Type 2 — check before implementing</span>
+          <div class="quote"><em>“let's first check whether there is a delete method”</em><span class="src">27.07 → there wasn't one, no code was written in vain</span></div>
+          <div class="quote"><em>“do you check all the files for duplication of logic with what we use in classified”</em><span class="src">22.07 → dedup became a step of every stage, 11 shared composables</span></div>
         </div>
         <div style="display:flex;flex-direction:column;gap:.7em">
-          <span class="kicker">Тип 3 — посмотреть на сам процесс</span>
-          <div class="quote"><em>«Analyze my day by day work prompts and which kind of problems we are solving every day… And how we can automatize our work?»</em><span class="src">21.07, 05:07 → из этого промпта вырос весь пайплайн</span></div>
-          <div class="quote"><em>«давай проанализируем что было сделано и что было не учтено»</em><span class="src">22.07 → ретро на второй день работы</span></div>
+          <span class="kicker">Type 3 — look at the process itself</span>
+          <div class="quote"><em>“Analyze my day by day work prompts and which kind of problems we are solving every day… And how we can automatize our work?”</em><span class="src">21 Jul, 05:07 → the whole pipeline grew from this prompt</span></div>
+          <div class="quote"><em>“let's analyze what was done and what was not accounted for”</em><span class="src">22.07 → a retro on the second day of work</span></div>
         </div>
       </div>
       <div class="card" style="flex:none;background:var(--accent-soft);border-color:var(--accent)">
-        <p><b>Что изменилось во втором периоде.</b> Когда пайплайн научился быстро производить работу, узким местом стало не «как сделать»,
-          а «чего не делать». Самыми ценными стали решения, сужающие скоуп: <em>«не будем делать»</em>, <em>«вынести в отдельную задачу»</em>,
-          <em>«границы: явно НЕ делаем»</em>.</p>
+        <p><b>What changed in the second period.</b> Once the pipeline learned to produce work fast, the bottleneck became not "how to do it"
+          but "what not to do". The most valuable decisions were the ones that narrow scope: <em>“we won't do this”</em>, <em>“move to a separate task”</em>,
+          <em>“boundaries: explicitly NOT doing”</em>.</p>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Третий тип — самый редкий и самый ценный: попросить агента посмотреть на вашу собственную работу.
-    Предложить залу попробовать буквально этот промпт на своей неделе — у каждого найдётся свой повторяющийся шаг,
-    который просится в скилл.
+    <span class="label">Notes</span>
+    The third type is the rarest and the most valuable: ask the agent to look at your own work.
+    Suggest the room try literally this prompt on their own week — everyone has a repeating step of their own
+    that's begging to become a skill.
   </div>
 
   <!-- 17 -->
-  <section class="slide" aria-label="Ограничения">
-    <div class="eyebrow"><span class="num">16</span><span>Честно</span><span class="spacer"></span><span>слабые места и грабли</span></div>
-    <h2>Где это не работает и что стоило дороже всего</h2>
+  <section class="slide" aria-label="Limitations">
+    <div class="eyebrow"><span class="num">16</span><span>Honestly</span><span class="spacer"></span><span>weak spots and pitfalls</span></div>
+    <h2>Where it doesn't work and what cost the most</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.85em">
           <div class="card" style="border-left:2px solid var(--critical)">
-            <span class="kicker" style="color:var(--critical)">Потеря покрытия</span>
-            <h3>Рантайм-чекер в core выключен</h3>
-            <p>Конфликтует с живым dev-сервером, поэтому проверяю руками. Компенсация — lint, type-check против baseline,
-              тесты, прод-сборка. Работает, но <b>это потеря покрытия, а не улучшение</b>.</p>
+            <span class="kicker" style="color:var(--critical)">Lost coverage</span>
+            <h3>The runtime checker is off in core</h3>
+            <p>It conflicts with the live dev server, so I check by hand. The compensation is lint, type-check against baseline,
+              tests, a prod build. It works, but <b>it's a loss of coverage, not an improvement</b>.</p>
           </div>
           <div class="card">
-            <span class="kicker">Не построено</span>
-            <h3>a11y-чекера нет</h3>
-            <p>В бэклоге с 24.07, приоритет так и не поднялся. Появится требование — сделаем.</p>
+            <span class="kicker">Not built</span>
+            <h3>No a11y checker</h3>
+            <p>In the backlog since 24.07, the priority never rose. If a requirement appears — we'll build it.</p>
           </div>
           <div class="card">
-            <span class="kicker">Граница</span>
-            <h3>Общий инструмент ≠ проектная норма</h3>
-            <p>Рубрика одного проекта в скилле плагина даёт ложные Major в другом. Проектные правила — только
-              в <code>CLAUDE.md</code>.</p>
+            <span class="kicker">Boundary</span>
+            <h3>A shared tool ≠ a project norm</h3>
+            <p>One project's rubric in a plugin skill gives false Majors in another. Project rules go only
+              in <code>CLAUDE.md</code>.</p>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:.6em">
-          <span class="kicker">Окружение стоило дороже, чем ошибки модели</span>
+          <span class="kicker">The environment cost more than the model's mistakes</span>
           <ul class="plain">
-            <li><b>dev-URL был записан неверно</b> — <code>:3001</code> вместо <code>:3000</code>; чекер месяц мог ходить в мёртвый адрес</li>
-            <li><b>«✓ Connected» не значит «тулы доступны»</b> — Figma MCP молчит без открытого файла; лечится перезапуском сессии, а не сервера</li>
-            <li><b>Соседний чекаут ≠ установленный пакет</b> — 0.0.147 в чекауте против 0.0.151 в <code>node_modules</code>: два <code>:deep()</code>-override не матчили ничего</li>
-            <li><b><code>yarn build</code> при живом <code>yarn dev</code> роняет dev-сервер</b>; у Vite умирает esbuild-воркер — все страницы 500 до рестарта</li>
-            <li><b>type-check baseline дрейфует</b> — 215 → 216 → 218; мерить на <code>git stash</code>, а не верить записанному</li>
+            <li><b>The dev URL was recorded wrong</b> — <code>:3001</code> instead of <code>:3000</code>; the checker could have been hitting a dead address for a month</li>
+            <li><b>"✓ Connected" doesn't mean "tools are available"</b> — Figma MCP is silent without an open file; fixed by restarting the session, not the server</li>
+            <li><b>A neighboring checkout ≠ the installed package</b> — 0.0.147 in the checkout vs 0.0.151 in <code>node_modules</code>: two <code>:deep()</code> overrides matched nothing</li>
+            <li><b><code>yarn build</code> with a live <code>yarn dev</code> kills the dev server</b>; with Vite the esbuild worker dies — every page 500s until restart</li>
+            <li><b>The type-check baseline drifts</b> — 215 → 216 → 218; measure on <code>git stash</code>, don't trust the recorded number</li>
           </ul>
-          <p class="footnote">Каждый пункт стоил минимум одного испорченного прогона — все они теперь в чек-листе <code>/pipeline-doctor</code>.</p>
+          <p class="footnote">Each item cost at least one spoiled run — all of them are now in the <code>/pipeline-doctor</code> checklist.</p>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Этот слайд повышает доверие к остальным. Не защищаться: сказать прямо, что главный добытчик critical-багов в core
-    сейчас не работает, и это открытый вопрос — либо отдельный профиль и порт под чекер, либо честно закрепить ручную проверку в конфиге.
+    <span class="label">Notes</span>
+    This slide raises trust in the rest. Don't get defensive: say plainly that the main source of critical bugs in core
+    isn't working right now, and that's an open question — either a separate profile and port for the checker, or honestly pin manual checking in the config.
   </div>
 
   <!-- 18 -->
-  <section class="slide" aria-label="Что дальше">
-    <div class="eyebrow"><span class="num">17</span><span>Дальше</span><span class="spacer"></span><span>что нужно от команды</span></div>
-    <h2>Что дальше</h2>
+  <section class="slide" aria-label="What next">
+    <div class="eyebrow"><span class="num">17</span><span>Next</span><span class="spacer"></span><span>what we need from the team</span></div>
+    <h2>What next</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.85em">
           <div class="card" style="background:var(--accent-soft);border-color:var(--accent)">
-            <span class="kicker">Шаг 1 — от вас</span>
-            <h3>Поставить и прогнать одну задачу целиком</h3>
-            <p>Лучше всего заходит редизайн или многоэкранная фича. Пришлите ник на GitHub — открою доступ сегодня.</p>
+            <span class="kicker">Step 1 — from you</span>
+            <h3>Install it and run one whole task</h3>
+            <p>A redesign or a multi-screen feature works best. Send me your GitHub username — I'll open access today.</p>
           </div>
           <div class="card">
-            <span class="kicker">Шаг 2 — от вас</span>
-            <h3>Сказать, где не подошло</h3>
-            <p>Скиллы — обычные markdown-файлы, правки принимаются PR-ом. Свои проектные правила — в <code>CLAUDE.md</code>.</p>
+            <span class="kicker">Step 2 — from you</span>
+            <h3>Tell us where it didn't fit</h3>
+            <p>Skills are plain markdown files, edits are accepted as a PR. Your own project rules go in <code>CLAUDE.md</code>.</p>
           </div>
           <div class="card">
-            <span class="kicker">Шаг 3 — общее</span>
-            <h3>Собрать общие грабли</h3>
-            <p>Одна и та же находка в нескольких проектах — кандидат в новый узкий чекер, как было с <code>dead-code</code>.</p>
+            <span class="kicker">Step 3 — together</span>
+            <h3>Collect shared pitfalls</h3>
+            <p>The same finding in several projects is a candidate for a new narrow checker, as happened with <code>dead-code</code>.</p>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:.85em">
-          <span class="kicker">Открытые вопросы — их решаем вместе</span>
+          <span class="kicker">Open questions — we decide them together</span>
           <ul class="plain">
-            <li><b>Дистрибуция.</b> Плагин — на публичном GitHub, каталог команды — в GitLab. Зеркалить ли сам код в корпоративный GitLab?</li>
-            <li><b>Рантайм-проверка.</b> Отдельный профиль Chrome и порт под чекер — или оставить ручной?</li>
-            <li><b>a11y-чекер.</b> Обязательный шаг или по требованию?</li>
-            <li><b>Общая рубрика ревью.</b> Что закрепить в <code>CLAUDE.md</code> всех фронтовых репо?</li>
+            <li><b>Distribution.</b> The plugin is on public GitHub, the team catalog is in GitLab. Should the code itself be mirrored to the corporate GitLab?</li>
+            <li><b>Runtime check.</b> A separate Chrome profile and port for the checker — or keep it manual?</li>
+            <li><b>a11y checker.</b> A mandatory step or on demand?</li>
+            <li><b>Shared review rubric.</b> What to pin in <code>CLAUDE.md</code> of all frontend repos?</li>
           </ul>
           <div class="card" style="margin-top:auto">
-            <span class="kicker">Материалы</span>
-            <p>История метода со всеми замерами — <code>PIPELINE-HISTORY.md</code>. Шпаргалка по командам — следующий слайд
-              и отдельная страница.</p>
+            <span class="kicker">Materials</span>
+            <p>The method's history with all the measurements — <code>PIPELINE-HISTORY.md</code>. The command cheatsheet — the next slide
+              and a separate page.</p>
           </div>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Закрыть встречу конкретным действием, а не «пользуйтесь»: собрать ники на GitHub прямо в чате
-    и договориться о дате, к которой каждый прогонит одну задачу. Без этого инструмент останется личным — так уже было один раз.
+    <span class="label">Notes</span>
+    Close the meeting with a concrete action, not "go use it": collect GitHub usernames right in the chat
+    and agree on a date by which everyone runs one task. Without that the tool stays personal — that has happened once already.
   </div>
 
   <!-- 19 -->
-  <section class="slide" aria-label="Шпаргалка">
-    <div class="eyebrow"><span class="num">18</span><span>Шпаргалка</span><span class="spacer"></span><span>одна страница</span></div>
-    <h2>Шпаргалка</h2>
+  <section class="slide" aria-label="Cheatsheet">
+    <div class="eyebrow"><span class="num">18</span><span>Cheatsheet</span><span class="spacer"></span><span>one page</span></div>
+    <h2>Cheatsheet</h2>
     <div class="body">
       <div class="cols cols-3" style="flex:1;min-height:0">
         <div style="display:flex;flex-direction:column;gap:.7em">
-          <span class="kicker">Один раз</span>
+          <span class="kicker">Once</span>
           <pre style="font-size:.82em">claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
-<span class="cm"># рестарт Claude Code</span>
+<span class="cm"># restart Claude Code</span>
 /pipeline-doctor
 /pipeline-init</pre>
-          <span class="kicker">На задачу</span>
-          <pre style="font-size:.82em">/feature-checker &lt;тикет&gt;   <span class="cm">FEATURE-MAP</span>
-/stage-plan                <span class="cm">STAGES.md</span></pre>
-          <span class="kicker">На этап</span>
-          <pre style="font-size:.82em">/stage-kickoff   <span class="cm">план + sign-off</span>
-<span class="cm">… реализация …</span>
-/stage-check     <span class="cm">чекеры + коммит</span>
+          <span class="kicker">Per task</span>
+          <pre style="font-size:.82em">/feature-checker &lt;ticket&gt;   <span class="cm">FEATURE-MAP</span>
+/stage-plan                 <span class="cm">STAGES.md</span></pre>
+          <span class="kicker">Per stage</span>
+          <pre style="font-size:.82em">/stage-kickoff   <span class="cm">plan + sign-off</span>
+<span class="cm">… implementation …</span>
+/stage-check     <span class="cm">checkers + commit</span>
 /clear</pre>
         </div>
         <div style="display:flex;flex-direction:column;gap:.7em">
-          <span class="kicker">Автономно</span>
-          <pre style="font-size:.82em">/stage-force   <span class="cm">вопросы батчем,</span>
-               <span class="cm">дальше без остановок</span>
-               <span class="cm">push и PR запрещены</span></pre>
-          <span class="kicker">Перед MR</span>
-          <pre style="font-size:.82em">/pro-review     <span class="cm">весь бранч</span>
-/ds-parity      <span class="cm">дубли с китом</span>
-/dead-code      <span class="cm">мусор от задачи</span>
+          <span class="kicker">Autonomous</span>
+          <pre style="font-size:.82em">/stage-force   <span class="cm">questions in a batch,</span>
+               <span class="cm">then no stops</span>
+               <span class="cm">push and PR forbidden</span></pre>
+          <span class="kicker">Before the MR</span>
+          <pre style="font-size:.82em">/pro-review     <span class="cm">whole branch</span>
+/ds-parity      <span class="cm">duplicates with the kit</span>
+/dead-code      <span class="cm">junk from the task</span>
 /task-wrapup    <span class="cm">→ PR.md</span></pre>
-          <span class="kicker">Если чекеры молчат</span>
+          <span class="kicker">If checkers are silent</span>
           <pre style="font-size:.82em">/pipeline-doctor
-<span class="cm"># Figma: открыть нужный файл</span>
-<span class="cm"># и перезапустить сессию</span></pre>
+<span class="cm"># Figma: open the right file</span>
+<span class="cm"># and restart the session</span></pre>
         </div>
         <div style="display:flex;flex-direction:column;gap:.7em">
-          <span class="kicker">Правила, которые экономят время</span>
+          <span class="kicker">Rules that save time</span>
           <ul class="plain" style="font-size:.94em">
-            <li>1 экран + все его стейты = 1 этап</li>
-            <li>Не начинать код без sign-off на kickoff</li>
-            <li>Не закрывать этап с critical или вердиктом Request changes</li>
-            <li>Вопросы дизайнеру копить в <code>DESIGN-QUESTIONS.md</code> и закрывать батчем</li>
-            <li>Идею не по теме этапа — в TODO журнала, а не в текущий диф</li>
-            <li>После коммита этапа — <code>/clear</code>: состояние уже в файлах</li>
-            <li>Проектные правила ревью — в <code>CLAUDE.md</code>, не в скилл</li>
-            <li>Сообщение коммита — по сути изменения, без «этап N»</li>
+            <li>1 screen + all its states = 1 stage</li>
+            <li>Don't start code without sign-off at kickoff</li>
+            <li>Don't close a stage with a critical or a Request changes verdict</li>
+            <li>Accumulate designer questions in <code>DESIGN-QUESTIONS.md</code> and close them in a batch</li>
+            <li>An off-topic idea goes to the journal's TODO, not into the current diff</li>
+            <li>After a stage commit — <code>/clear</code>: the state is already in files</li>
+            <li>Project review rules go in <code>CLAUDE.md</code>, not in a skill</li>
+            <li>Commit message — about the substance of the change, no "stage N"</li>
           </ul>
         </div>
       </div>
     </div>
   </section>
   <div class="notes">
-    <span class="label">Заметки</span>
-    Сказать, что эта страница есть отдельной ссылкой — её можно закрепить в рабочем чате.
-    На этом слайде можно стоять, пока идут вопросы.
+    <span class="label">Notes</span>
+    Say that this page also exists as a separate link — it can be pinned in the team chat.
+    You can stay on this slide while questions come in.
   </div>
 
 </div>
 
 <div class="bar">
-  <button id="prev" aria-label="Предыдущий слайд">←</button>
-  <button id="next" aria-label="Следующий слайд">→</button>
+  <button id="prev" aria-label="Previous slide">←</button>
+  <button id="next" aria-label="Next slide">→</button>
   <div class="ticks" id="ticks" aria-hidden="true"></div>
-  <button id="notesBtn" aria-label="Показать заметки докладчика">заметки · S</button>
+  <button id="notesBtn" aria-label="Show speaker notes">notes · S</button>
   <span class="count" id="count">1 / 19</span>
 </div>
 
@@ -1387,7 +1388,7 @@ claude plugin install stage-pipeline@magzhan
       else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(i - 1); }
       else if (e.key === 'Home') { go(0); }
       else if (e.key === 'End') { go(slides.length - 1); }
-      else if (e.key === 's' || e.key === 'S' || e.key === 'ы' || e.key === 'Ы') { document.body.classList.toggle('notes-on'); }
+      else if (e.key === 's' || e.key === 'S' || e.key === '\u044b' || e.key === '\u042b') { document.body.classList.toggle('notes-on'); }
     });
 
     var start = parseInt((location.hash || '').replace('#', ''), 10);
