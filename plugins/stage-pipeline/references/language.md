@@ -66,7 +66,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Force block field | `Boundaries:` | `Границы:` |
 | Force block field (the line the hooks require) | `Confirmed: <date> — <what>` | `Подтверждено: <дата> — <что>` |
 | Force block field | `Blockers:` | `Блокеры:` |
-| Blocker line `B<n> — …` closed by the words | `lifted by`, `resolved by`, `closed by`, `answered by`, `user answer`, `user decision` (the last two lift a blocker only with a date or a quotation: "user decision 2026-10-17: v2", `user answer "token is set"`; a bare request does not) | `снят`, `решён`, `закрыт`, `отвечен`, `ответ пользователя`, `решение пользователя` |
+| Blocker line `B<n> — …` closed by the words | `lifted by`, `resolved by`, `closed by`, `answered by`, `user answer`, `user decision` (the last two lift a blocker only with a date or a quotation: "user decision 2026-10-17: v2", `user answer "token is set"`; a bare request does not) | `снят`, `решён`, `закрыт`, `отвечен`, `ответ пользователя`, `решение пользователя` (последние два снимают блокер только с датой или цитатой: «решение пользователя 17.10.2026», `ответ пользователя «токен задан»`; голый запрос не снимает) |
 | Report, line 2 | `Findings: critical N · major N · minor N` | `Находки: critical N · major N · minor N` |
 | Report section | `## Findings outcome` | `## Итог находок` |
 | Verdict line, criterion not reached | `not checked` | `не проверено` |

@@ -69,14 +69,15 @@ export const forceHeadings = (text) => [...text.matchAll(/^## (?:Force-прог�
 export const FORCE_BLOCK_PRESENT = /^## (?:Force-прогон|Force run)/m
 /** "completed" or "complete" (or the Russian form) — the run is closed. "complete" is accepted on purpose: a heading that closes the run in
  * neither form would leave it both open (forceActive) and not checked on close (forceCloseViolations).
- * It closes only before a date, "with blockers" or at the end of the heading after a dash ("— complete"; "stage 3 complete" is progress): "— complete the migration" is an ordinary title word. */
-export const CLOSED_WORD = /заверш|\bcomplete(?:d)?\b(?=\s*(?:with\s+blockers\b|\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}))|(?<=[—–:-]\s*)\bcomplete(?:d)?\s*$/im
+ * "completed" right after a dash or a colon closes with any tail ("— completed on 2026-10-18", "— completed (B1 open)", "— completed, with blockers").
+ * "complete" closes only before a date, "with blockers" or at the end of the heading after a dash ("— complete"; "stage 3 complete" is progress): "— complete the migration" is an ordinary title word. */
+export const CLOSED_WORD = /заверш|\bcomplete(?:d)?\b(?=\s*(?:with\s+blockers\b|\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}))|(?<=(?:\s[—–-]|[—–:])\s*)\bcompleted\b|(?<=(?:\s[—–-]|[—–:])\s*)\bcomplete\s*$/im
 /** "completed with blockers" (or the Russian form). */
 export const WITH_BLOCKERS = /с\s+блокер|with\s+blockers/i
 /** In a status line: "force run … completed" (or the Russian form), without "not". */
 const FORCE_CLOSED_RU = 'force-прогон[^.;\\n]{0,40}?завершён'
 // English: only "force run" + an optional date + "completed" — "force run 2026-10-17, stage 3 completed" is progress, not a close.
-const FORCE_CLOSED_EN = 'force run(?:[ \\t]+(?:is|was))?(?:[ \\t]+(?:\\d{4}-\\d{2}-\\d{2}\\w?|\\d{1,2}\\.\\d{1,2}(?:\\.\\d{2,4})?))?[ \\t]*[—–:,-]?[ \\t]*completed'
+const FORCE_CLOSED_EN = 'force run(?:[ \\t]+(?:is|was))?(?:[ \\t]+(?:\\d{4}-\\d{2}-\\d{2}\\w?|\\d{1,2}\\.\\d{1,2}(?:\\.\\d{2,4})?))?(?:[ \\t]*[—–:,-])?[ \\t]*completed'
 export const STATUS_FORCE_CLOSED = re(`${FORCE_CLOSED_RU}|${FORCE_CLOSED_EN}`, 'i')
 /** The same plus a tail that cuts the date (up to 20 characters). */
 export const STATUS_FORCE_CLOSED_WITH_DATE = re(`${FORCE_CLOSED_RU}[^.;\\n]{0,20}|${FORCE_CLOSED_EN}[^.;\\n]{0,20}`, 'i')
@@ -89,17 +90,23 @@ export const MODE_WORD = 'режим|mode'
 
 /** A blocker `B<n> — …`. */
 export const BLOCKER_LINE = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**\s*[—–:-]/
+// A request for the user's answer ("needs a user decision", "waiting for a user answer", and the Russian forms): it lifts nothing, even if the line also says "closed by".
+const USER_REQUEST = '\\b(?:needs?|needed|waiting\\s+for|waits?\\s+for|requires?|required)\\s+(?:an?\\s+|the\\s+)?user\\s+(?:answer|decision)\\b'
+const NO_REQUEST_AFTER = `(?![^\\n]{0,200}${USER_REQUEST})`
+const NO_REQUEST_BEFORE = `(?<!${USER_REQUEST}[^\\n]{0,200})`
+const NOT_BEFORE = '(?<!\\bnot\\s)'
+const DATE_OR_QUOTE = '(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})'
 /** A blocker is lifted: `lifted by`, `resolved by`, `user decision` … and their Russian forms. */
 export const BLOCKER_LIFTED = new RegExp(
   [
     'снят|закрыт|отвечен',
     // The Russian "resolved" (masculine, neuter, feminine) as a word of its own, without a negation before it: the noun "decision" and "not resolved" do not lift.
     '(?<![а-яё])(?<!не\\s)реш[её]н[оа]?(?![а-яё])',
-    // "Needs the user's decision/answer: …" is a request, not a lift: a date or a quote is needed.
-    '(?:ответ|решение)\\s+пользователя[^\\n]{0,120}?(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})',
-    '\\b(?:lifted|closed|answered)\\s+by|\\bresolved\\s+by|(?<![\\w-])resolved:',
-    // "waiting for a user answer", "needs a user decision: v1 or v2" are requests; a date or a quote makes it a lift.
-    '\\buser\\s+(?:answer|decision)\\b[^\\n]{0,120}?(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})',
+    // "Needs the user's decision/answer …" is a request, not a lift: the date or the quote must follow the words at once, and a request word must not stand before them (the Russian forms too).
+    `(?<!(?:нужно|нужен|нужна|ждёт|ждет|требуется)\\s+)(?:ответ|решение)\\s+пользователя\\s*[:—–-]?\\s*${DATE_OR_QUOTE}`,
+    `${NO_REQUEST_BEFORE}${NOT_BEFORE}\\b(?:lifted|closed|answered)\\s+by${NO_REQUEST_AFTER}|${NO_REQUEST_BEFORE}${NOT_BEFORE}\\bresolved\\s+by${NO_REQUEST_AFTER}|(?<![\\w-])${NOT_BEFORE}resolved:`,
+    // "waiting for a user answer", "needs a user decision — I recommend "v2"" are requests; a date or a quote right after the words makes it a lift.
+    `(?<!\\b(?:needs?|needed|waiting\\s+for|waits?\\s+for|requires?|required)\\s+(?:an?\\s+|the\\s+)?)\\buser\\s+(?:answer|decision)\\s*[:—–-]?\\s*${DATE_OR_QUOTE}`,
   ].join('|'),
   'i',
 )

@@ -144,9 +144,13 @@ export function openForceBlock(stages) {
   const end = rest.search(/^## /m)
   const date = headingDate(last[0])
   // A date the parser did not understand ("Oct 17, 2026", "10/17/2026") is a new block, not an old one: fail closed, `Confirmed:` is required.
-  const unreadDate = date === null && /\d{4}|\d{1,2}[/.-]\d{1,2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i.test(last[0])
+  const unreadDate = date === null && UNREAD_DATE.test(last[0])
   return { heading: last[0], date, unreadDate, body: end === -1 ? rest : rest.slice(0, end) }
 }
+
+// Something that looks like a date, not any digits and not a month-like word ("deck", "may need a rebase", "stages 4-6" are not dates): a year, d/m/y, d.m, "17 October", "Oct 17".
+const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+const UNREAD_DATE = new RegExp(`\\b(?:19|20)\\d{2}\\b|\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b|\\b\\d{1,2}[/.]\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\b|\\b${MONTH}\\s+\\d{1,2}\\b`, 'i')
 
 function headingDate(heading) {
   const iso = heading.match(/(\d{4})-(\d{2})-(\d{2})/)

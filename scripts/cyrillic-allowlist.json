@@ -16,7 +16,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/journal-check.mjs",
-      "line": "^\\s*(?:const (?:deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
+      "line": "^\\s*(?:const (?:FIXED_WORD|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
       "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones); messages are not covered"
     },
     {
@@ -56,7 +56,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^\\s*if \\(/\\^\\\\s\\*\\(\\?:\\[-\\*\\]\\|\\\\d\\+\\\\\\.\\)\\\\s\\+\\\\S/\\.test\\(line\\) && !/\\^\\(\\?:нет",
+      "line": "^\\s*if \\(/\\^\\(\\?:нет",
       "reason": "RU forms of \"nothing unverified\" next to the EN ones"
     },
     {

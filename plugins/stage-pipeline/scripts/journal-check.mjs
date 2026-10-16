@@ -41,6 +41,9 @@ import { languageMismatch } from './report-language.mjs'
 const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
 const AC_ID = /AC-\d/
 
+/** Code in backticks and quoted text ("…", «…», “…”) are identifiers or copy, not the wording of an outcome ("the untested import is removed"). */
+export const stripQuoted = (text) => text.replace(/`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^»\n]{0,200}»|“[^”\n]{0,200}”/g, ' ')
+
 export function requiredCheckers(line) {
   const tags = [...line.matchAll(/\[verify:\s*([^\]]+)\]/gi)].map((match) => match[1])
   return LIVE_CHECKERS.filter((checker) => tags.some((tag) => tag.includes(checker)))
@@ -57,14 +60,14 @@ export function acViolation(line, reports = null) {
   const required = requiredCheckers(line)
   if (!required.length) return null
   const outcome = line.slice(line.indexOf('✅') + 1).replace(/\[verify:[^\]]*\]/gi, '')
-  // Code in backticks and quoted text are identifiers or copy, not the wording of the outcome ("the untested import is removed").
-  const prose = outcome.replace(/`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^»\n]{0,200}»|“[^”\n]{0,200}”/g, ' ')
+  const prose = stripQuoted(outcome)
   const id = line.match(/AC-[\w.]+/)[0]
-  const deferred = /\[live:|решени[а-яё]* пользователя|user\s+decision/i.test(outcome) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(outcome))
+  // `[live: user-side]` is a marker, written in backticks too: it is read from the whole outcome; the words of a decision and "⏳ checker" — from the prose.
+  const deferred = /\[live:/.test(outcome) || /решени[а-яё]* пользователя|user\s+decision/i.test(prose) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(prose))
   if (deferred) return null
   const named = required.filter((checker) => outcome.includes(checker))
   // A runtime criterion is also closed by a live check without a subagent (a smoke run, "checked live"); a design criterion only by a checker comparison.
-  const live = required.includes('devtools-verify') && /\bsmoke\b|живь[её]м|вживую|в браузере|(?<!\bnot\s)(?<!n['’]t\s)\b(?:checked|tested|verified|confirmed|ran|run|done)\s+live\b|\blive\s+(?:check|run|smoke|test|session)\b|in\s+(?:the|a)\s+(?:live\s+)?browser/i.test(outcome)
+  const live = required.includes('devtools-verify') && /\bsmoke\b|живь[её]м|вживую|в браузере|(?<!\bnot\s)(?<!n['’]t\s)\b(?:checked|tested|verified|confirmed|ran|run|done)\s+live\b|\blive\s+(?:check|run|smoke|test|session)\b|in\s+(?:the|a)\s+(?:live\s+)?browser/i.test(prose)
   if (!named.length && !live) {
     const shown = outcome.replace(/\s+/g, ' ').trim().slice(0, 60)
     return {
@@ -114,9 +117,9 @@ export function skipViolation(line) {
 const CAVEAT_RU = 'не\\s+снят|не\\s+проверен|не\\s+проверял|не\\s+смотрел|не\\s+открывал|только\\s+по\\s+коду|частично|не\\s+удалось\\s+(?:проверить|снять|открыть|посмотреть)'
 // "checkbox is not checked by default", "drawer not opened on load" describe the interface, not what was verified: a control word before "not checked/opened" is not a caveat.
 const UI_STATE =
-  "(?<!\\b(?:checkbox|box|toggle|radio|radio\\s+button|switch|option|row|item|drawer|modal|menu|dropdown|accordion|popover|sidebar)\\s+(?:(?:is|are|was|stays|remains)\\s+)?)"
+  "(?<!\\b(?:checkbox|box|toggle|radio|radio\\s+button|switch|option|row|item|drawer|modal|menu|dropdown|accordion|popover|sidebar|dialog|sheet|tab|window|page|link|panel|terms|consent|agreement)\\s+(?:(?:is|are|was|stays|remains)\\s+)?)"
 const CAVEAT_EN =
-  `\\bnot\\s+(?:captured|verified|tested)\\b|\\b(?:untested|unverified)\\b|${UI_STATE}\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first)\\b)|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)`
+  `\\bnot\\s+(?:captured|verified|tested)\\b|\\b(?:is|are|was|were|left|stays?|remains?)\\s+(?:unverified|untested)\\b|\\b(?:unverified|untested)\\s*(?=[;,.)—–:]|$)|\\b(?:unverified|untested)\\s+(?:at|on|in|for|under)\\s+\\d|${UI_STATE}\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first|twice|again|repeatedly|more\\s+than\\s+once)\\b)|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)`
 const CAVEAT = new RegExp(`${CAVEAT_RU}|${CAVEAT_EN}`, 'i')
 // "No data" instead of putting a state in place: 46 "[live: user-side]" in one task, the user found six defects among them.
 const NO_DATA = /нет\s+(?:подходящ[а-яё]*\s+|живых\s+|тестов[а-яё]*\s+)?(?:данных|брон[а-яё]*|лид[а-яё]*|записей|объявлен[а-яё]*|заказ[а-яё]*)(?![а-яё])|нет\s+на\s+аккаунте|\bno\s+(?:suitable\s+|matching\s+|live\s+|test\s+)?(?:data|bookings|leads|records|listings|orders)\b(?!\s+(?:loss|lost|was\s+lost|were\s+lost|changed?)\b)|\bnot\s+on\s+the\s+account|\bno\s+such\s+data/i
@@ -125,8 +128,7 @@ const STUBBED = /подмен|подстав|заглушк|фикстур|stub|
 export function caveatViolation(line) {
   if (!AC_ID.test(line) || !line.includes('✅')) return null
   const outcome = line.slice(line.indexOf('✅') + 1).replace(/\[verify:[^\]]*\]/gi, '')
-  // Code in backticks and quoted text are identifiers or copy, not the wording of the outcome ("the untested import is removed").
-  const prose = outcome.replace(/`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^»\n]{0,200}»|“[^”\n]{0,200}”/g, ' ')
+  const prose = stripQuoted(outcome)
   if (/⏳|\[live:|\[blocked/i.test(outcome) || !CAVEAT.test(prose)) return null
   const id = line.match(/AC-[\w.]+/)[0]
   return {
@@ -286,13 +288,24 @@ const PARKED =
 const PRE_EXISTING = /давн|не\s+регресс|pre-?existing|было\s+до|до\s+задачи|long-?standing|not\s+a\s+regression|existed\s+before|(?:was|were)\s+(?:already\s+)?there\s+before|before\s+this\s+task|predat(?:es|ed)/i
 const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![а-яё])|\bprod\b|на\s+базе|\bproduction\b|\bon\s+(?:the\s+)?base\b/i
 
+const FIXED_WORD = /исправлен|починен|удал[её]н|(?<!\bnot\s)(?<!n['’]t\s)\b(?:fixed|removed|resolved|repaired)\b/i
+const refused = (text) => PARKED.test(text) || PARKED_FILE.test(text) || NOT_FIXED_YET.test(text)
+/** The wording of an outcome: the clause up to the first ":" or dash after the outcome word ("fixed: a.ts:10 — the promise is not resolved twice" → "fixed"). The description of the fix is not the outcome. */
+function outcomeHead(clause) {
+  const word = FIXED_WORD.exec(clause)
+  if (!word) return clause
+  const end = word.index + word[0].length
+  const cut = clause.slice(end).search(/:|\s[—–-]\s/)
+  return cut === -1 ? clause : clause.slice(0, end + cut)
+}
+
 /** The outcome of one "Findings outcome" line: fixed | false | blocker | user — an outcome; parked | unproven | unknown — none. */
 export function disposition(entry) {
   const proven = PRE_EXISTING.test(entry) && BASE_EVIDENCE.test(entry)
   if (PRE_EXISTING.test(entry) && !proven) return 'unproven'
-  // Code in backticks is an identifier, not the wording of an outcome ("`deferred` promise resolves in finally").
-  const prose = entry.replace(/`[^`\n]*`/g, ' ')
-  if ((PARKED.test(prose) || PARKED_FILE.test(prose) || NOT_FIXED_YET.test(prose)) && !proven) return 'parked'
+  // Code and quotes are identifiers and copy; a refusal is looked for in the head of the outcome and in the clauses after ";" ("fixed: a.ts:1; fix the tests later"), not in the description of the fix.
+  const [first, ...rest] = stripQuoted(entry).split(';')
+  if ((refused(outcomeHead(first)) || rest.some(refused)) && !proven) return 'parked'
   if (/исправлен|починен|удал[её]н|(?<!\bnot\s)(?<!n['’]t\s)\b(?:fixed|removed|resolved|repaired)\b/i.test(entry)) return 'fixed'
   if (proven || /ложн|не\s+подтвердил|не\s+воспроизв|(?:^\s*(?:[-*]|\d+\.)?\s*|[—–]\s*|\s-\s+)false\s*[:(]|\bfalse\s+positive\b|\bnot\s+confirmed\b|\b(?:could\s+not|couldn['’]t|cannot|unable\s+to)\s+reproduce|\bnot\s+reproduc(?:ed|ible)/i.test(entry)) return 'false'
   if (/\bB\d+\b/.test(entry)) return 'blocker'

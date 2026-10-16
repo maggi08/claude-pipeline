@@ -50,7 +50,7 @@ const TEXT = {
     minor: (n) => `### Minor без итога (${n})`,
     accepted: (n) => `### Принято само — проверь, дорогие откаты первыми (${n})`,
     // The lines of the "Findings without outcome" section, from the violation's data (journal-check, ledgerViolations); as before the English hook messages.
-    ledger: ({ rule, name, shown, what, accepted }) =>
+    ledger: ({ rule, id: name, shown, what, accepted }) =>
       ({
         'ledger-parked': `checks/${name}: «${shown}» — это решение не исправлять, его принимает пользователь. Итог — исправлено, ложная (с доказательством) или блокер B<n> (${LEDGER_DOC}).`,
         'ledger-unproven': `checks/${name}: «${shown}» — «давнее» без доказательства на базе. Проверь на sha базы или на проде и впиши замер, иначе это находка задачи.`,
@@ -70,6 +70,15 @@ const TEXT = {
     accepted: (n) => `### Accepted on my own — check, expensive rollbacks first (${n})`,
     ledger: ({ message }) => message,
   },
+}
+/** "None", "nothing left", "all widths verified (by code)": the section lists nothing. The "all … verified" form is checked without backtracking: the tail is cut off by hand. */
+function nothingLeft(text) {
+  const plain = text.trim().replace(/\.$/, '')
+  if (/^(?:нет|ничего|всё .*проверено|none|nothing(?:\s+left(?!.*\b(?:not|except|but)\b).*)?|no\s+items)$/i.test(plain)) return true
+  if (!/^(?:all|everything)\b/i.test(plain) || /\b(?:not|except|but|unverified)\b|n['’]t\b/i.test(plain)) return false
+  const open = plain.lastIndexOf('(')
+  const head = plain.endsWith(')') && open !== -1 && !plain.slice(open, -1).includes(')') ? plain.slice(0, open).trimEnd() : plain
+  return /\b(?:verified|checked)$/i.test(head)
 }
 const bullet = (line) => line.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').trim()
 
@@ -103,7 +112,7 @@ export function runDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const body = text.slice(start).split('\n').slice(1)
     const end = body.findIndex((line) => /^#{1,3}\s/.test(line))
     for (const line of end === -1 ? body : body.slice(0, end)) {
-      if (/^\s*(?:[-*]|\d+\.)\s+\S/.test(line) && !/^(?:нет|ничего|всё .*проверено|none|nothing(?:\s+left(?!.*\b(?:not|except|but)\b).*)?|no\s+items|(?:all|everything)\b(?!.*\b(?:not|except|but|unverified)\b|.*n['’]t\b).*\b(?:verified|checked)\b(?:\s*\([^)]*\))?)\.?$/i.test(bullet(line))) unverified.push(`- ${name}: ${bullet(line)}`)
+      if (/^\s*(?:[-*]|\d+\.)\s+\S/.test(line) && !nothingLeft(bullet(line))) unverified.push(`- ${name}: ${bullet(line)}`)
     }
   }
   const journal = journalText(taskDir)

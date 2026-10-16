@@ -59,7 +59,7 @@ function proseWords(text) {
 }
 
 /** `{ ru, en, share }`, where share is the Cyrillic share of the prose; `share: null` — too little prose. */
-export function reportLanguage(text) {
+function reportLanguage(text) {
   const { ru, en } = proseWords(text)
   return { ru, en, share: ru + en < MIN_WORDS ? null : ru / (ru + en) }
 }

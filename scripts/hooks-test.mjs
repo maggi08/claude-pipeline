@@ -1600,6 +1600,117 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('a metrics line "skipped=devtools-verify,…" is not a skip of a design checker', jc.skipViolation('  metrics: checkers=figma-compare,pro-review skipped=devtools-verify,dead-code findings=7') === null)
   }
 
+  // 11. Second review of the branch (AC-18.1): every finding with a positive and a negative case.
+  {
+    // M-1: the ru digest names the report ("checks/pro-review-1.md: …"), as on the base; en does too.
+    const dir = mkdtempSync(join(tmpdir(), 'digest-name-'))
+    const digestIn = (header, report) => {
+      mkdirSync(join(dir, 'T-33/checks'), { recursive: true })
+      writeFileSync(join(dir, 'T-33/STAGES.md'), header)
+      writeFileSync(join(dir, 'T-33/checks/pro-review-1.md'), report)
+      const later = new Date(Date.now() + 60_000)
+      utimesSync(join(dir, 'T-33/checks/pro-review-1.md'), later, later)
+      return runDigest(join(dir, 'T-33'), mkdtempSync(join(tmpdir(), 'digest-name-data-')), null)
+    }
+    const REPORT = 'Findings: critical 0 · major 2 · minor 0\n\n## Findings outcome\n- M-1 — leaving it as is\n- M-2 — unclear\n- M-3 — pre-existing\n'
+    const ru = digestIn('# T-33: задача\nЯзык: ru\n\n## Статус: этап 1\n', REPORT)
+    const en = digestIn('# T-33: task\nLanguage: en\n\n## Status: stage 1\n', REPORT)
+    check('digest ru: every "without outcome" line names the report, none says "undefined"', (ru.match(/checks\/pro-review-1\.md: /g) ?? []).length === 4 && !/undefined/.test(ru), ru)
+    check('digest en: the same, with the report name', (en.match(/checks\/pro-review-1\.md: /g) ?? []).length === 4 && !/undefined/.test(en), en)
+    check(
+      'digest ru: the lines are the base 3ea2473 ones, byte for byte',
+      ru.includes('- checks/pro-review-1.md: «M-1 — leaving it as is» — это решение не исправлять, его принимает пользователь. Итог — исправлено, ложная (с доказательством) или блокер B<n> (references/checker-report.md).') &&
+        ru.includes('- checks/pro-review-1.md: «M-3 — pre-existing» — «давнее» без доказательства на базе. Проверь на sha базы или на проде и впиши замер, иначе это находка задачи.') &&
+        ru.includes('- checks/pro-review-1.md: итог «M-2 — unclear» не распознан — допустимы «исправлено: …», «ложная: …», «B<n>», «решение пользователя <дата>» (references/checker-report.md).') &&
+        ru.includes('- checks/pro-review-1.md: major 2, а итогов в «## Итог находок» — 0. Каждая находка закрывается строкой: исправлено / ложная / B<n> (references/checker-report.md). Находку, которую fix-loop не исправил, не откладывают — это блокер.'),
+      ru,
+    )
+    rmSync(dir, { recursive: true, force: true })
+
+    // m-2: a request for an answer with a quote or a date further on, "not resolved:", "not closed by" — the blocker stays open; a date or a quote right after the words lifts.
+    const open = (line) => jc.openBlockers(`- B0 — x — lifted by the user\n${line}\n`).length === 1
+    for (const line of [
+      '- B1 — AC-3.2 (stage 3) — the backend contract is unknown — needs a user decision — I recommend "move to v2": v1 is deprecated — stage 4 depends on it',
+      '- B2 — AC-4.1 (stage 4) — rejected git push --force — needs a user decision: run "git push --force-with-lease" yourself — recommend yes — nothing else',
+      '- B1 — not resolved: waiting',
+      '- B1 — not closed by the backend',
+      '- B1 — the endpoint is closed by the backend firewall — need a user answer',
+      '- B1 — need a user answer: v1 or v2 (see 2026-10-16)',
+      '- B1 — waiting for a user answer 2026-10-16',
+      '- B1 — AC-3.2 (этап 3) — контракт неизвестен — нужно решение пользователя — рекомендация: «перейти на v2» — от него зависит этап 4',
+      '- B1 — нужен ответ пользователя — рекомендация 16.10.2026',
+    ])
+      check(`blocker request stays open: ${line.slice(2, 60)}`, open(line), line)
+    for (const line of ['- B1 — user decision 2026-10-16: v2', '- B1 — user answer "token is set"', '- B1 — closed by the user', '- B1 — resolved: backend confirmed', '- B1 — решение пользователя 16.10.2026', '- B1 — решение пользователя «v2»', '- B1 — ответ пользователя: «токен задан»'])
+      check(`blocker lifted: ${line.slice(2, 60)}`, !open(line), line)
+
+    // m-3: "completed" after a dash or a colon closes with any tail; "complete" stays narrow.
+    for (const heading of ['## Force run 2026-10-17 — completed on 2026-10-18', '## Force run 2026-10-17 — completed.', '## Force run 2026-10-17 — completed (B1 open)', '## Force run 2026-10-17 — completed, with blockers', '## Force run 2026-10-17: completed on the 18th'])
+      check(`EN heading "${heading.slice(3)}" — closes the run`, !forceActive(`${heading}\n`) && markers.CLOSED_WORD.test(heading), heading)
+    for (const heading of ['## Force run — stage 3 completed', '## Force run 2026-10-17 — auto-completed tasks', '## Force run — complete the migration', '## Force run — complete redesign of the page', '## Force run — complete (B1 open)'])
+      check(`EN heading "${heading.slice(3)}" — stays open`, forceActive(`${heading}\n`) && !markers.CLOSED_WORD.test(heading), heading)
+
+    // m-4: quotes and the description of a fix are not the outcome; a refusal in the head or after ";" is.
+    for (const entry of [
+      'исправлено этапом 16: markers.mjs — «не исправлено» больше не засчитывается',
+      'fixed: a.ts:10 — the "won\'t fix" label is removed from the UI',
+      'fixed: a.ts:10 — the promise is not resolved twice anymore',
+      'fixed: header.vue:12 — the header was not fixed on scroll, now sticky',
+      'исправлено: a.ts:10 — ошибка, которая не исправлена бэком, теперь показывается тостом',
+      'fixed: the deferred import is now eager (a.ts:3)',
+      'fixed: a.ts:5 — renders later items lazily',
+      'fixed: b.ts:2 — keeping the cache warm',
+      'fixed: a.ts:1 — “postponed” label removed',
+    ])
+      check(`outcome "${entry.slice(0, 50)}" is fixed`, jc.disposition(`- M-1 — ${entry}`) === 'fixed', jc.disposition(`- M-1 — ${entry}`))
+    for (const entry of ['fixed: a.ts:1; поправим тесты', 'fixed: a.ts:1; the rest later', 'исправлено: a.ts:1; остальное в findings', 'not yet fixed — a.ts:10', 'не исправлено: a.ts:10 — позже', 'leaving it as is — fixed elsewhere', 'will be fixed in a follow-up PR: a.ts:10', 'исправим позже: a.ts:10'])
+      check(`outcome "${entry.slice(0, 50)}" is not fixed`, !['fixed', 'false', 'blocker', 'user'].includes(jc.disposition(`- M-1 — ${entry}`)), jc.disposition(`- M-1 — ${entry}`))
+    check('stripQuoted cuts backticks and the three kinds of quotes', jc.stripQuoted('a `b` "c" «d» “e” f').replace(/\s+/g, ' ') === 'a f')
+
+    // m-5: subject words and states of the interface are not a caveat.
+    const AC5 = '- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify 1440/1280'
+    for (const tail of [': an unverified account sees the banner', ': unverified phones get the OTP step (auth.ts:40)', ': the dialog is not opened twice on a double click', ': the bottom sheet is not opened after logout', ': submit stays disabled while terms are not checked', ': the tab is not opened again', ': the consent link is not checked by default'])
+      check(`EN "${tail.slice(2, 50)}" is not a caveat`, jc.caveatViolation(`${AC5}${tail}`) === null, tail)
+    for (const tail of [': dark theme stays unverified', ': 1024 is untested', ': dark theme unverified', ', untested at 1024', ': unverified; rest ok', ': the drawer opens, 1024 not opened'])
+      check(`EN "${tail.slice(2, 50)}" is a caveat`, Boolean(jc.caveatViolation(`${AC5}${tail}`)), tail)
+
+    // m-6: a quoted "smoke test" / "tested live" does not close a runtime criterion.
+    const AC6 = (outcome) => `- \`AC-3.1\` WHEN open THEN ok — [verify: devtools-verify] ✅ ${outcome}`
+    for (const outcome of ['pro-review: copy «smoke test» renders (Badge.vue:12)', 'pro-review: the "tested live" badge renders (Badge.vue:12)', 'pro-review: `smoke` flag renamed (a.ts:1)'])
+      check(`quoted live word "${outcome.slice(11, 40)}" does not close a runtime criterion`, jc.acViolation(AC6(outcome))?.rule === 'ac-checker', outcome)
+    for (const outcome of ['pro-review: smoke test of the page, renders', 'pro-review: tested live in the browser', 'devtools-verify 1440/1280', '⏳ devtools-verify']) {
+      const v = jc.acViolation(AC6(outcome), ['devtools-verify-3.md'])
+      check(`honest outcome "${outcome.slice(0, 40)}" passes`, v === null, v?.rule)
+    }
+    check('`[live: user-side]` in backticks still defers a runtime criterion', jc.acViolation(AC6('pro-review: the part behind the login — `[live: user-side]`')) === null)
+    check('a quoted "user decision" does not defer a runtime criterion', jc.acViolation(AC6('pro-review: copy "user decision" renders'))?.rule === 'ac-checker')
+
+    // nit: a heading without a date is not an "unreadable date".
+    const unreadH = (heading) => openForceBlock(`${heading}\nMode: autonomous.\n\n`)?.unreadDate
+    for (const heading of ['## Force run — deck translation', '## Force run — second run, separate branch', '## Force run — may need a rebase', '## Force-прогон этапы 4-6', '## Force run — stages 4-6, v4'])
+      check(`Force heading "${heading.slice(3)}" has no date to read: no fail-closed flag`, unreadH(heading) === false, heading)
+    for (const heading of ['## Force run Oct 17, 2026', '## Force run 10/17/2026', '## Force run 17 October 2026', '## Force run 17th of Oct 2026', '## Force run 17/10/2026'])
+      check(`Force heading "${heading.slice(3)}" — an unread date: fail closed`, unreadH(heading) === true, heading)
+
+    // m-7: the "nothing left" form of the digest in linear time, on the pathological tail of the old regexp.
+    const sectionDir = mkdtempSync(join(tmpdir(), 'digest-lin-'))
+    const timeDigest = (item) => {
+      mkdirSync(join(sectionDir, 'T-34/checks'), { recursive: true })
+      writeFileSync(join(sectionDir, 'T-34/STAGES.md'), '# T-34: task\nLanguage: en\n\n## Status: stage 1\n')
+      writeFileSync(join(sectionDir, 'T-34/checks/pro-review-1.md'), `Findings: critical 0 · major 0 · minor 0\n\n## Could not verify\n- ${item}\n`)
+      const later = new Date(Date.now() + 60_000)
+      utimesSync(join(sectionDir, 'T-34/checks/pro-review-1.md'), later, later)
+      const start = performance.now()
+      const text = runDigest(join(sectionDir, 'T-34'), mkdtempSync(join(tmpdir(), 'digest-lin-data-')), null)
+      return { ms: performance.now() - start, text }
+    }
+    const heavy = [`all ${' '.repeat(50_000)}`, `all ${'verified ('.repeat(5_000)}`, `all ${'verified '.repeat(5_000)}`, `everything ${'checked ('.repeat(5_000)}x`]
+    const worstDigest = Math.max(...heavy.map((item) => timeDigest(item).ms))
+    check('digest "nothing left" regexp: 50 000 characters < 100 ms', worstDigest < 100, `${worstDigest.toFixed(0)} ms`)
+    check('digest "nothing left": "all verified (by code)" is empty, "all verified except 1024" is an item', /### Not verified \(0\)/.test(timeDigest('all widths verified (by code)').text) && /### Not verified \(1\)/.test(timeDigest('all verified except 1024').text))
+    rmSync(sectionDir, { recursive: true, force: true })
+  }
+
   // 5. Linear time (AC-16.2): 50 000 characters of pathological input — every pattern under 100 ms.
   {
     const { languageMismatch } = await import(join(PLUGIN, 'report-language.mjs'))
@@ -1616,6 +1727,8 @@ rmSync(retroRoot, { recursive: true, force: true })
       'report language': (t) => languageMismatch(t, 'ru'), acViolation: (t) => jc.acViolation(`- \`AC-1.1\` ${t} ✅ ${t}`), skipViolation: (t) => jc.skipViolation(`figma-compare ${t} skip: ${t}`),
       caveatViolation: (t) => jc.caveatViolation(`- \`AC-1.1\` ✅ ${t}`), noDataViolation: (t) => jc.noDataViolation(`- \`AC-1.1\` ⏳ ${t}`), likeViolation: (t) => jc.likeViolation(`- \`AC-1.1\` WHEN ${t}`),
       disposition: (t) => jc.disposition(`- M-1 — ${t}`), barePasses: (t) => jc.barePasses(t), failedCriteria: (t) => jc.failedCriteria(t), findingCounts: (t) => jc.findingCounts(t, 'pro-review-1.md'),
+      'force status': (t) => forceActive(`## Status: force run${t}\n`), 'force heading': (t) => forceActive(`## Force run${t}\n`),
+      'acViolation with a tag': (t) => jc.acViolation(`- \`AC-1.1\` [verify: devtools-verify] ✅ ${t}`), 'acViolation tag + quote': (t) => jc.acViolation(`- \`AC-1.1\` [verify: devtools-verify] ✅ "${t}`),
       openBlockers: (t) => jc.openBlockers(t), 'runtime report': (t) => jc.runtimeViolations(`# devtools-verify\n${t}`, 'devtools-verify-1.md'),
     }
     for (const [name, run] of Object.entries(SUBJECTS)) {
