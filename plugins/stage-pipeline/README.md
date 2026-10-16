@@ -1,175 +1,183 @@
 # stage-pipeline
 
-Поэтапный workflow для крупных задач с многоэкранным дизайном (редизайны, большие фичи): maker/checker с чистым контекстом у проверяющих, состояние — в файлах, гигиена контекста.
+A staged workflow for large tasks with a multi-screen design (redesigns, big features): maker/checker with a clean context for the checkers, state kept in files, context hygiene.
 
-Скиллы и агенты приезжают плагином и работают в любом репозитории; специфика проекта живёт в `<repo>/.claude/pipeline.config.md`, который генерит `/pipeline-init`.
+Skills and agents come with the plugin and work in any repository; project specifics live in `<repo>/.claude/pipeline.config.md`, which `/pipeline-init` generates.
 
-## Установка
+## Language
+
+- The plugin is written in English: skills, agents, references, scripts and hook messages.
+- The language of a task is the line `Language:` in the STAGES.md header. A new task gets it by the user's request, else by `language:` in `pipeline.config.md`, else by the language of the message that started the task.
+- Only `ru` and `en` are supported. Russian tasks keep going in Russian as before; hooks and scripts read both languages.
+- In chat the model talks to you in your language, whatever the task language is. Commits and PR descriptions follow the language of the repo history (or your request), not the task language.
+- Details and the table of service markers: [references/language.md](references/language.md).
+
+## Installation
 
 ```bash
 claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 ```
 
-Без `--scope` попадает в `~/.claude/settings.json` и включается во всех репозиториях. Нужен только в одном репо — те же команды с `--scope project`. После установки — перезапуск Claude Code.
+Without `--scope` it goes into `~/.claude/settings.json` and is enabled in all repositories. If you need it in one repository only, use the same commands with `--scope project`. After the installation, restart Claude Code.
 
-Репозиторий публичный — доступы и клонирование не нужны. Вариант «маркетплейс из локального клона» (для машины, где плагин правится) — в [README маркетплейса](../../README.md).
+The repository is public — no access rights and no cloning needed. The "marketplace from a local clone" variant (for the machine where the plugin is edited) is in the [marketplace README](../../README.md).
 
-Плагин привозит с собой MCP-серверы `figma` (Dev Mode из десктоп-Figma) и `chrome-devtools` — руками подключать не нужно, но Figma desktop должна быть запущена с включённым **Enable Dev Mode MCP Server**. API сторонних библиотек сверяется не внешним сервисом, а по установленному пакету (типы и CHANGELOG в `node_modules` под версию из локфайла) — ключи и авторизация не нужны. Проверка окружения — `/pipeline-doctor`.
+The plugin brings its own MCP servers `figma` (Dev Mode from desktop Figma) and `chrome-devtools` — there is no need to connect them by hand, but Figma desktop must be running with **Enable Dev Mode MCP Server** turned on. Third-party library APIs are checked not by an external service but against the installed package (the types and CHANGELOG in `node_modules` for the version from the lockfile) — no keys and no authorization needed. Environment check: `/pipeline-doctor`.
 
-### Разрешения
+### Permissions
 
-Чтобы чекеры не спрашивали подтверждение на каждом шаге, у плагина есть готовый профиль разрешений (`permissions/base.json`) и скрипт, который доливает его в settings:
+So that the checkers do not ask for confirmation at every step, the plugin has a ready permission profile (`permissions/base.json`) and a script that merges it into settings:
 
 ```bash
 PERMS=$(ls -d ~/.claude/plugins/cache/*/stage-pipeline/*/scripts/permissions.mjs | sort -V | tail -1)
-node "$PERMS"           # что добавится (ничего не пишет)
-node "$PERMS" --apply   # дописать в ~/.claude/settings.json
+node "$PERMS"           # what would be added (writes nothing)
+node "$PERMS" --apply   # append to ~/.claude/settings.json
 ```
 
-(из сессии Claude Code путь короче — `${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs`; кэш плагина версионированный, поэтому в шелле берём последнюю версию)
+(from a Claude Code session the path is shorter — `${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs`; the plugin cache is versioned, so in a shell we take the latest version)
 
-Записи `Skill(stage-pipeline:*)` и `mcp__*` генерируются из самого плагина, поэтому новый скилл появляется в разрешениях сам. Скрипт только доливает недостающее: чужие записи не трогает, `allow` не ставит поверх уже стоящих `deny`/`ask` (сообщает конфликтом и считает такую запись отсутствующей — `--check` на ней возвращает 1), перед записью делает бэкап. Профиль везёт с собой и запреты, на которых стоит `/stage-force`: `push`/`reset --hard`/`clean`/`gh`/`glab`/`pkill` и чтение `.env` — в `ask`, force-push, публикация и деплой — в `deny`. Не нужен широкий Bash-аллоулист — `--minimal` разрешит только скиллы и MCP. Пути соседних репо — отдельно, в project-скоуп: `--scope project --apply --dirs ../ui-lib,../prototypes`.
+The `Skill(stage-pipeline:*)` and `mcp__*` entries are generated from the plugin itself, so a new skill shows up in the permissions on its own. The script only adds what is missing: it does not touch other people's entries, does not put an `allow` over `deny`/`ask` entries already in place (it reports a conflict and counts such an entry as missing — `--check` returns 1 on it), and makes a backup before writing. The profile also carries the prohibitions that `/stage-force` stands on: `push`/`reset --hard`/`clean`/`gh`/`glab`/`pkill` and reading `.env` go to `ask`; force-push, publishing and deploy go to `deny`. If you do not need a broad Bash allowlist, `--minimal` allows only skills and MCP. Paths of neighbouring repositories go separately, into the project scope: `--scope project --apply --dirs ../ui-lib,../prototypes`.
 
-`deny` в профиле — защита от случайной команды агента, а не граница безопасности: профиль разрешает `node`/`npx`/`python3`, то есть произвольное исполнение, и обойти любой запрет из него тривиально. Кому нужна настоящая граница — нужен sandbox, а не аллоулист.
+The `deny` list in the profile protects against an accidental agent command; it is not a security boundary: the profile allows `node`/`npx`/`python3`, that is, arbitrary execution, and getting around any prohibition from it is trivial. Whoever needs a real boundary needs a sandbox, not an allowlist.
 
-Это же делает `/pipeline-init` при инициализации проекта (с показом списка и подтверждением), а `/pipeline-doctor` проверяет через `--check`.
+`/pipeline-init` does the same when it initializes a project (showing the list and asking for confirmation), and `/pipeline-doctor` checks it through `--check`.
 
-Проверить окружение: `/pipeline-doctor`.
+Check the environment: `/pipeline-doctor`.
 
-### Хуки
+### Hooks
 
-Работают только в репо с `.claude/pipeline.config.md`, в остальных молчат, и смотрят только на задачу текущей ветки — по строке ``Ветка: `<branch>` `` в шапке STAGES.md, без неё — по тикету в имени ветки. Задачи других веток хук не видит: параллельные задачи, worktree и сессии друг другу не мешают, старые брошенные задачи ничего не блокируют (`STAGES.md`, не менявшийся 21 день, хук не видит).
+They work only in a repository with `.claude/pipeline.config.md` and stay silent elsewhere, and they look only at the task of the current branch — by the line ``Branch: `<branch>` `` in the STAGES.md header, and without it by the ticket in the branch name. The hook does not see the tasks of other branches: parallel tasks, worktrees and sessions do not get in each other's way, and old abandoned tasks block nothing (a `STAGES.md` that has not changed for 21 days is invisible to the hook).
 
-Задача на два репо (core + вебвью) лежит в каталоге задач одного из них. Во втором репо хуки находят её по реестру каталогов задач (его пополняет session-start), если тикет (`ABC-12`) стоит в имени ветки и STAGES.md называет этот репо по имени.
+A task spanning two repositories (core + webview) lives in the task directory of one of them. In the second repository the hooks find it through the registry of task directories (session-start fills it), if the ticket (`ABC-12`) is in the branch name and STAGES.md names this repository.
 
-- **session-start** — в начале сессии кладёт в контекст строку статуса задачи текущей ветки и напоминает свернуть STAGES.md больше 40 KB. После закрытого force называет коммиты, которых журнал не знает ни по SHA, ни по заголовку, ни по содержимому (пересобранный без подписи коммит — тот же): на всех ветках задачи (из шапки и с тикетом в имени; влитые сквошем пропускаются) и в интеграционной ветке в первые 14 дней после закрытия — твои коммиты в файлах задачи под другим тикетом. Это работа мимо чекеров, её прогоняют догоняющим этапом. Про недавно закрытую задачу другой ветки такая строка приходит один раз.
-- **git-guard** — на ветке задачи в обычном режиме `git add`/`git commit` агента отклоняются при любом статусе этапа: агент выдаёт готовое сообщение коммита, коммитишь ты сам. В force-режиме (незакрытый блок «Force-прогон» в STAGES.md — без «завершён» в заголовке) агент делает `git add` + `git commit` сам, без вопросов, — но коммит проходит через `floor-guard` и отклоняется, если в дифе заглушён чекер, ослаблен тест или оставлена заглушка. Проверяется то, что войдёт в коммит: индекс, пути из `git add` той же команды, все отслеживаемые при `-a`, всё дерево — только при `git add -A` без путей. Force-коммит отклоняется и тогда, когда у находки чекера нет итога — «## Итог находок» в отчёте (`references/checker-report.md`); когда коммит удаляет UI-компонент, имени которого нет в таблице паритета STAGES.md; когда в дифе переопределения кита (`font-bold`, `uppercase`, `text-[…]`, `rounded-[…]`, `!important`…), а отчёта `kit-overrides` с этими файлами нет. Коммит со служебной подписью (`Co-Authored-By`, «Generated with …») отклоняется на любой ветке репо с пайплайном.
-- **agent-guard** — перед запуском субагента. Whole-branch `pro-review` без `model`, равного `review_model` из конфига (по умолчанию `opus`), отклоняется. `stage-implement` не стартует в force-прогоне, пока в его блоке нет строки `Подтверждено: <дата> — ответы интервью` (stage-force, Шаг 0; отдельного «да» после интервью не спрашивается); блоки, открытые до 0.12, не трогаются.
-- **force-guard** — перед Bash-командой в force-прогоне. Вызов, который встал бы на подтверждении, отклоняется сразу, с объяснением, а не ждёт, пока ты вернёшься к терминалу. Это `pkill`/`killall` (агент гасит свой процесс по PID) и подкоманды под `ask` в settings пользователя и проекта (`git push`, `reset --hard`, `gh`…), которые агент записывает в блокеры прогона. Вне force хук молчит: там ты рядом, и вопрос — нормальная часть работы.
-- **journal-gate** — после правки STAGES.md или отчёта в `checks/`. Возвращает агенту нарушения тем же ходом:
-  - в журнале: критерий с тегом `devtools-verify`/`figma-compare`/`proto-compare` закрыт ✅, а исход называет другого проверяющего или никого; дизайн-чекер пропущен по причине браузера; ✅ с оговоркой («не снят», «только по коду»); «не проверено, нет данных» вместо подстановки состояния; «как у X» в критерии или решении без `путь:строка` X; отметка чекера `[x]` при неполном итоге его находок;
-  - в отчёте: PASS без замера; нет строки `Находки: critical N · major N · minor N`; итог «оставляю», «в Ожидают», «давний» без проверки на базе; у devtools-verify — нет строк `geometry`, а у этапа с «Эталоном вида» — строк `style-diff`;
-  - закрытие блока «Force-прогон» как «завершён» при открытых блокерах, находках без итога или незелёном гейте CI на текущем HEAD; «завершён с блокерами» — если каждый незелёный гейт назван блокером. При закрытии в контекст кладётся сводка прогона (`run-digest.mjs`, с гейтами CI) — она идёт в итоговое сообщение целиком.
+- **session-start** — at the start of a session puts into the context a status line for the task of the current branch and reminds you to shrink a STAGES.md larger than 40 KB. After a closed force run it names the commits that the journal does not know by SHA, by title or by content (a commit rebuilt without a signature counts as the same one): on all branches of the task (from the header and with the ticket in the name; squash-merged ones are skipped) and, in the integration branch, during the first 14 days after closing — your commits in the task files under another ticket. This is work done past the checkers; it is run through a catch-up stage. For a recently closed task of another branch such a line arrives once.
+- **git-guard** — on a task branch in normal mode the agent's `git add`/`git commit` are rejected at any stage status: the agent hands over a ready commit message and you commit yourself. In force mode (an unclosed "Force run" block in STAGES.md — without "completed" in the heading) the agent runs `git add` + `git commit` itself, without asking — but the commit goes through `floor-guard` and is rejected if the diff has a silenced checker, a weakened test or a leftover stub. What is checked is what will go into the commit: the index, the paths from the `git add` of the same command, all tracked files with `-a`, the whole tree only with `git add -A` without paths. A force commit is also rejected when a checker finding has no outcome — "## Findings outcome" in the report (`references/checker-report.md`); when the commit deletes a UI component whose name is not in the Parity table of STAGES.md; when the diff has kit overrides (`font-bold`, `uppercase`, `text-[…]`, `rounded-[…]`, `!important`…) and there is no `kit-overrides` report with these files. A commit with a service signature (`Co-Authored-By`, "Generated with …") is rejected on any branch of a repository with the pipeline.
+- **agent-guard** — before a subagent starts. A whole-branch `pro-review` without `model` equal to `review_model` from the config (`opus` by default) is rejected. `stage-implement` does not start in a force run until its block has the line `Confirmed: <date> — interview answers` (stage-force, Step 0; no separate "yes" is asked after the interview); blocks opened before 0.12 are not touched.
+- **force-guard** — before a Bash command in a force run. A call that would stop on a confirmation is rejected at once, with an explanation, instead of waiting until you come back to the terminal. These are `pkill`/`killall` (the agent stops its process by PID) and subcommands under `ask` in the user and project settings (`git push`, `reset --hard`, `gh`…), which the agent records as run blockers. Outside force the hook is silent: you are nearby there, and a question is a normal part of the work.
+- **journal-gate** — after an edit of STAGES.md or of a report in `checks/`. Returns violations to the agent in the same turn:
+  - in the journal: a criterion tagged `devtools-verify`/`figma-compare`/`proto-compare` is closed ✅ while the outcome names another checker or nobody; a design checker is skipped for a browser reason; ✅ with a caveat ("not captured", "code only"); "not verified, no data" instead of staging the state; "like X" in a criterion or a decision without `path:line` of X; a checker marked `[x]` while the outcome of its findings is incomplete;
+  - in a report: PASS without a measurement; no line `Findings: critical N · major N · minor N`; an outcome "leaving it", "awaiting", "long-standing" without a check on the base; for devtools-verify — no `geometry` lines, and for a stage with a "Visual reference" — no `style-diff` lines;
+  - closing a "Force run" block as "completed" while blockers are open, findings have no outcome or the CI gate on the current HEAD is not green; "completed with blockers" — if every non-green gate is named a blocker. On closing, a run summary (`run-digest.mjs`, with the CI gates) is put into the context — it goes into the final message whole.
 
-  Смотрит только строки и отчёты, которых не было, когда плагин впервые увидел задачу: старые этапы переписывать не нужно.
-- **frames-guard** — когда devtools-verify заканчивает работу. Не отпускает агента, пока он не открыл каждый снятый им кадр: дефект, который пользователь нашёл после «готово», бывал на кадре, который никто не открывал.
+  It looks only at lines and reports that did not exist when the plugin first saw the task: old stages need not be rewritten.
+- **frames-guard** — when devtools-verify finishes. It does not let the agent go until it has opened every frame it captured: a defect that the user found after "done" has sat on a frame nobody opened.
 
-### Скрипты
+### Scripts
 
-- `scripts/archive-stages.mjs <STAGES.md> [--apply]` — свернуть закрытые этапы и старый журнал в `STAGES-ARCHIVE.md` (зовётся из `/stage-check`, Шаг 4.2).
-- `scripts/run-check.mjs -- <команда с {files}>` — lint/test/type_check/build этапа: только изменённые файлы, на машине с ОЗУ ≤ 16 GB — по очереди между проектами и с пониженным приоритетом (`references/heavy-checks.md`; `--mode` — режим машины). Команда целиком на чистом дереве записывает свой результат по дереву коммита — по нему хук видит гейты CI.
-- `scripts/ci-gates.mjs [--run]` — гейты CI из конфига (таблица «## Гейты CI» или `e2e`/`smoke` в Commands) и их состояние на HEAD; `--run` прогоняет незелёные через `run-check.mjs`. Зовётся из финальных проверок.
-- `scripts/kit-override-scan.mjs [--base <ref>] [--out <отчёт>]` — переопределения кита и ручная типографика в добавленных строках; с `--out` пишет отчёт `kit-overrides` в формате чекера (каждый файл — major, дальше «Итог находок»). Каталог кита из `ui_lib` не сканируется; в репо самого кита — `kit_overrides: off` в конфиге.
-- `scripts/floor-guard.mjs [--base <ref>] [--pathspec-from-stdin]` — планка качества по дифу: заглушённые чекеры, `as any`, ослабленные тесты и конфиги, заглушки, секреты; первая строка — размер дифа (зовётся из `/stage-check`, `stage-implement` и хука на force-коммите — хук передаёт пути коммита через stdin). Нарушения в неотслеживаемых файлах помечены «не в git».
-- `scripts/journal-check.mjs <task_dir>/<TICKET> [--ledger]` — те же правила, что у journal-gate, по всей задаче целиком, включая архив и `checks/`; `--ledger` — ещё сводка и итог находок во всех отчётах (у старых задач их нет по построению).
-- `scripts/run-digest.mjs <task_dir>/<TICKET>` — сводка прогона из журнала и отчётов: блокеры, находки без итога, всё непроверенное, minor без итога, «принято само». Её вставляет в итоговое сообщение `/stage-force`.
-- `scripts/retro.mjs <repo>` — ретро по файлам задач: ложные находки, раунды fix-loop, skip по чекерам, исходы `AC-*`, раздутые STAGES.md. Метрики берёт из строки `metrics:` журнала этапа.
+- `scripts/archive-stages.mjs <STAGES.md> [--apply]` — fold closed stages and the old journal into `STAGES-ARCHIVE.md` (called from `/stage-check`, Step 4.2).
+- `scripts/run-check.mjs -- <command with {files}>` — a stage's lint/test/type_check/build: only the changed files; on a machine with RAM ≤ 16 GB — one after another across projects and at a lowered priority (`references/heavy-checks.md`; `--mode` — the machine mode). A whole command on a clean tree records its result under the commit's tree — the hook sees the CI gates through it.
+- `scripts/ci-gates.mjs [--run]` — the CI gates from the config (the "## CI gates" table or `e2e`/`smoke` in Commands) and their state on HEAD; `--run` runs the non-green ones through `run-check.mjs`. Called from the final checks.
+- `scripts/kit-override-scan.mjs [--base <ref>] [--out <report>]` — kit overrides and manual typography in the added lines; with `--out` it writes a `kit-overrides` report in the checker format (every file is major, then "Findings outcome"). The kit directory from `ui_lib` is not scanned; in the kit's own repository — `kit_overrides: off` in the config.
+- `scripts/floor-guard.mjs [--base <ref>] [--pathspec-from-stdin]` — the quality floor over the diff: silenced checkers, `as any`, weakened tests and configs, stubs, secrets; the first line is the diff size (called from `/stage-check`, `stage-implement` and the hook on a force commit — the hook passes the commit paths through stdin). Violations in untracked files are marked "not in git".
+- `scripts/journal-check.mjs <task_dir>/<TICKET> [--ledger]` — the same rules as journal-gate, over the whole task, including the archive and `checks/`; `--ledger` adds a summary and the findings outcome in all reports (old tasks have none by construction).
+- `scripts/run-digest.mjs <task_dir>/<TICKET>` — the run summary from the journal and the reports: blockers, findings without an outcome, everything unverified, minor without an outcome, "accepted on its own". `/stage-force` inserts it into the final message.
+- `scripts/retro.mjs <repo>` — a retro over the task files: false findings, fix-loop rounds, skips per checker, `AC-*` outcomes, bloated STAGES.md files. Takes metrics from the `metrics:` line of the stage journal.
 
-## 0. Один раз на репозиторий — `/pipeline-init`
+## 0. Once per repository — `/pipeline-init`
 
-Изучает проект и создаёт `<repo>/.claude/pipeline.config.md` (пути, команды, dev-URL, дизайн-источники, раскладку кода, платформы, `task_path`/`memory_path`). Нет `CLAUDE.md` — предложит `/init`. Заодно предлагает разложить разрешения пайплайна в user-скоуп (см. «Разрешения» выше) — один раз на машину, а не в каждом репозитории.
+Studies the project and creates `<repo>/.claude/pipeline.config.md` (paths, commands, dev URL, design sources, code layout, platforms, `task_path`/`memory_path`). If there is no `CLAUDE.md`, it offers `/init`. It also offers to lay the pipeline permissions into the user scope (see "Permissions" above) — once per machine, not in every repository.
 
-## 1. Один раз на задачу
+## 1. Once per task
 
-1. **`/feature-checker <тикет/фича>`** → `FEATURE-MAP.md` — карта того, что уже есть (переиспользовать vs писать с нуля). Нужен для планирования.
-2. **`/stage-plan`** → `STAGES.md` — разбивка на этапы (1 экран + его стейты = 1 этап), критерии приёмки WHEN/THEN, порядок. Требует FEATURE-MAP.
+1. **`/feature-checker <ticket/feature>`** → `FEATURE-MAP.md` — a map of what already exists (reuse vs write from scratch). Needed for planning.
+2. **`/stage-plan`** → `STAGES.md` — splitting into stages (1 screen + its states = 1 stage), WHEN/THEN acceptance criteria, the order. Requires FEATURE-MAP.
 
-Критерии нумеруются (`AC-<этап>.<n>`) и несут тег верификатора — кто способен их проверить: `figma-compare`, `devtools-verify`, `pro-review`, `user-review`, `live: user-side`. Из этого получаются три вещи, которых иначе нет: таблица покрытия дизайн-источника (ни один экран не потерян молча), ссылки на ID в отчётах чекеров (fix-loop знает, что перепроверяет) и механическая сборка TEST-PLAN.md вместо перечитывания всех этапов. Критерий без верификатора — дефект плана: проверить его нечем.
+Criteria are numbered (`AC-<stage>.<n>`) and carry a verifier tag — who is able to check them: `figma-compare`, `devtools-verify`, `pro-review`, `user-review`, `live: user-side`. This gives three things that would not exist otherwise: a design source coverage table (no screen is lost silently), ID references in checker reports (the fix-loop knows what it rechecks) and a mechanical assembly of TEST-PLAN.md instead of rereading all stages. A criterion without a verifier is a defect of the plan: there is nothing to check it with.
 
-## 2. Цикл КАЖДОГО этапа
+## 2. The loop of EACH stage
 
 ```
-/stage-kickoff   → показать план этапа + свести с накопленным (TODO/DESIGN-QUESTIONS/
-                   решения) + собрать бизнес-ввод + sign-off  → запускает figma-spec (спека)
-   implement     → писать код (переиспользуя, что нашёл feature-checker)
-   checkers      → параллельно: figma-compare ∥ pro-review (статические, субагенты)
-                   + devtools-verify (рантайм, субагент; dev-сервер держит оркестратор)
-                   + узкие по признаку: dead-code / i18n-sweep / deps-audit
-   fix-loop ≤2   → чинить подтверждённое, точечно перепроверять
-   user-review   → показать пользователю, ждать одобрения (обязательно)
-/stage-check     → журнал в STAGES.md + сообщение коммита
-   /clear        → вводит пользователь (модель /clear и /compact вызвать не может);
-                   новая сессия стартует со строки статуса от хука и STAGES.md
+/stage-kickoff   → show the stage plan + merge with what has piled up (TODO/DESIGN-QUESTIONS/
+                   decisions) + collect business input + sign-off  → runs figma-spec (the spec)
+   implement     → write code (reusing what feature-checker found)
+   checkers      → in parallel: figma-compare ∥ pro-review (static, subagents)
+                   + devtools-verify (runtime, subagent; the dev server is held by the orchestrator)
+                   + narrow ones by a trigger: dead-code / i18n-sweep / deps-audit
+   fix-loop ≤2   → fix what is confirmed, recheck point by point
+   user-review   → show the user, wait for approval (mandatory)
+/stage-check     → journal in STAGES.md + commit message
+   /clear        → typed by the user (the model cannot call /clear or /compact);
+                   the new session starts from the status line of the hook and STAGES.md
 ```
 
-Правило: не начинать implement без sign-off (kickoff); не отмечать этап done с critical-находками, вердиктом pro-review = Request changes или открытыми эскалациями.
+Rule: do not start implement without a sign-off (kickoff); do not mark a stage done with critical findings, a pro-review verdict of Request changes or open escalations.
 
-Сообщение коммита готовится на КАЖДОМ этапе — по сути изменения, а не «этап N», и без служебных подписей об авторстве инструмента.
+The commit message is prepared at EVERY stage — by the substance of the change, not "stage N", and without service signatures about the tool's authorship.
 
-## 2b. Автономный прогон — `/stage-force`
+## 2b. Autonomous run — `/stage-force`
 
-Тот же план и те же чекеры, но остановки перенесены в начало: все вопросы по всем этапам задаются одним батчем, дальше прогон идёт до конца — реализация, чекеры, фиксы, коммиты — без ожидания.
+The same plan and the same checkers, but the stops are moved to the beginning: all questions for all stages are asked in one batch, then the run goes to the end — implementation, checkers, fixes, commits — without waiting.
 
-Контекст между этапами не копится без всякого `/compact` (его модель вызвать и не может): код этапа пишет субагент `stage-implement`, фиксы fix-loop — он же в режиме fix, проверяют чекеры-субагенты. В главном контексте остаются STAGES.md и короткие сводки, поэтому длинный прогон идёт в одной сессии.
+The context does not pile up between stages without any `/compact` (the model cannot call it anyway): the stage code is written by the `stage-implement` subagent, the fix-loop fixes by the same one in fix mode, and the checker subagents verify. The main context keeps STAGES.md and short summaries, so a long run goes in one session.
 
-Остаётся запрещённым всегда: `git push`, создание и комментирование PR/MR, деплой, публикация. Остаётся обязательной остановка на необратимых развилках, исчерпанном fix-loop, красной сборке и конфликте источников правды. Обратимые развилки решаются сами: берётся откатываемый вариант, строка уходит в «⚠ Ожидают подтверждения».
+Always forbidden: `git push`, creating and commenting on a PR/MR, deploy, publishing. Always mandatory: a stop on irreversible forks, an exhausted fix-loop, a red build and a conflict of sources of truth. Reversible forks are decided on its own: the revertible option is taken, and a line goes into "⚠ Awaiting user confirmation".
 
-## 3. Финал задачи
+## 3. Task finale
 
-- Полный `pro-review` по всему бранчу (агент в whole-branch mode на `review_model`, база — `origin/<main_branch>`, то есть PR-таргет: если PR идут в `dev`, в конфиге `main_branch: dev`).
-- `floor-guard --base origin/<main_branch>` — планка качества по всей ветке: заглушённые чекеры, ослабленные тесты, заглушки.
-- security-review, metrics-guard (если в конфиге есть `bundle_size`), ds-parity, dead-code, i18n-sweep, deps-audit (по STAGES «Финальные проверки»).
-- **`/task-converge`** — код на HEAD против намерения задачи. Все остальные чекеры смотрят в диф и отвечают на «правильно ли сделано сделанное»; converge отвечает на «сделано ли всё обещанное и не сделано ли лишнее». Критерий, который не взял на себя ни один этап, в дифе не появляется — его отсутствие невидимо по определению. Находки → блок «Догон» в STAGES.md (append-only, ничего не переписывая) → повторный прогон до «сошлось».
-- **`/task-wrapup`** → `PR.md` — описание PR/MR из журнала задачи: что и зачем, как проверить, на что смотреть ревьюеру, слепые зоны, открытые вопросы. Только вручную, когда описание нужно: ни force, ни финальные проверки его не зовут. Пуш и создание PR — тоже вручную.
-- Легаси-выпил / чистка — отдельным финальным этапом.
+- A full `pro-review` over the whole branch (an agent in whole-branch mode on `review_model`, the base is `origin/<main_branch>`, that is, the PR target: if PRs go into `dev`, the config has `main_branch: dev`).
+- `floor-guard --base origin/<main_branch>` — the quality floor over the whole branch: silenced checkers, weakened tests, stubs.
+- security-review, metrics-guard (if the config has `bundle_size`), ds-parity, dead-code, i18n-sweep, deps-audit (per STAGES "Final checks").
+- **`/task-converge`** — the code on HEAD against the intent of the task. All other checkers look into the diff and answer "is what was done done right"; converge answers "was everything promised done, and was nothing extra done". A criterion that no stage took on does not appear in the diff — its absence is invisible by definition. Findings → a "Catch-up" block in STAGES.md (append-only, rewriting nothing) → a repeated run until it converges.
+- **`/task-wrapup`** → `PR.md` — a PR/MR description from the task journal: what and why, how to verify, what the reviewer should look at, blind spots, open questions. Manual only, when the description is needed: neither force nor the final checks call it. Pushing and creating a PR are also manual.
+- A legacy removal / cleanup is a separate final stage.
 
-## Скиллы и агенты
+## Skills and agents
 
-| Инструмент | Роль |
+| Tool | Role |
 |---|---|
-| `/pipeline-init` (skill, только вручную) | конфиг проекта |
-| `/pipeline-doctor` (skill) | диагностика окружения (MCP, соседние репо, dev-сервер, baseline) |
-| `/feature-checker` (skill) | карта существующей фичи → FEATURE-MAP.md |
-| `/stage-plan` (skill) | разбивка на этапы → STAGES.md |
-| `/stage-kickoff` (skill) | открыть этап: план + бизнес-ввод + sign-off |
-| `stage-implement` (агент) | maker: код одного этапа или раунд фиксов в чистом контексте, назад — сводка; основа `/stage-force` |
-| `figma-spec` (агент) | компактная спека из Figma (в чистом контексте) |
-| `figma-compare` (агент) | сверка кода с Figma |
-| `proto-spec` (агент) | как figma-spec, но из репо HTML-прототипов («наша Figma» в проектах без Figma) |
-| `docs-lookup` (агент) | справка по API библиотеки под версию из локфайла — типы, CHANGELOG и исходник установленного пакета, при нехватке — официальные доки этой версии; при неуверенности в API на реализации, в fix-loop и `/root-cause` |
-| `proto-compare` (агент) | как figma-compare, но против HTML-прототипа + SPEC.md |
-| `devtools-verify` (агент) | рантайм-проверка через Chrome DevTools |
-| `pro-review` (агент) | senior код-ревью в двух режимах: диф этапа (stage) или вся ветка перед PR (whole-branch) |
-| `/ds-parity` (skill) | дубли с дизайн-системой: что заменить китовым компонентом, что вынести В кит |
-| `dead-code` (агент) | что осиротело из-за этого дифа — символы, файлы, ключи локалей, ассеты |
-| `i18n-sweep` (агент) | хардкод копии, неполные локали, динамические ключи, формат без локали |
-| `deps-audit` (агент) | новые зависимости и ассеты: оправданность, эквивалент в репо, вес |
-| `/stage-check` (skill) | закрыть этап: fix-loop + журнал + коммит |
-| `/root-cause` (skill) | отладка до причины: фикс не сработал, симптом без объяснения, белая страница |
-| `task-converge` (агент + skill) | код на HEAD против намерения всей задачи: непокрытый критерий, частичная реализация, противоречие, тихо расширенный скоуп |
-| `/stage-force` (skill) | автономный прогон всей задачи: вопросы батчем на старте, дальше без остановок |
-| `/task-wrapup` (skill, только вручную) | описание PR/MR из журнала задачи → `PR.md` |
+| `/pipeline-init` (skill, manual only) | project config |
+| `/pipeline-doctor` (skill) | environment diagnostics (MCP, neighbouring repos, dev server, baseline) |
+| `/feature-checker` (skill) | a map of the existing feature → FEATURE-MAP.md |
+| `/stage-plan` (skill) | splitting into stages → STAGES.md |
+| `/stage-kickoff` (skill) | open a stage: plan + business input + sign-off |
+| `stage-implement` (agent) | maker: the code of one stage or a fix round in a clean context, a summary comes back; the basis of `/stage-force` |
+| `figma-spec` (agent) | a compact spec from Figma (in a clean context) |
+| `figma-compare` (agent) | checking code against Figma |
+| `proto-spec` (agent) | like figma-spec, but from a repository of HTML prototypes ("our Figma" in projects without Figma) |
+| `docs-lookup` (agent) | a reference on a library API for the version from the lockfile — the types, CHANGELOG and source of the installed package, and when that is not enough, the official docs of that version; used when unsure about an API during implementation, in the fix-loop and in `/root-cause` |
+| `proto-compare` (agent) | like figma-compare, but against an HTML prototype + SPEC.md |
+| `devtools-verify` (agent) | runtime check through Chrome DevTools |
+| `pro-review` (agent) | senior code review in two modes: the stage diff (stage) or the whole branch before a PR (whole-branch) |
+| `/ds-parity` (skill) | duplicates with the design system: what to replace with a kit component, what to move INTO the kit |
+| `dead-code` (agent) | what this diff orphaned — symbols, files, locale keys, assets |
+| `i18n-sweep` (agent) | hardcoded copy, incomplete locales, dynamic keys, formatting without a locale |
+| `deps-audit` (agent) | new dependencies and assets: justification, an equivalent in the repository, weight |
+| `/stage-check` (skill) | close a stage: fix-loop + journal + commit |
+| `/root-cause` (skill) | debugging to the cause: a fix did not work, a symptom with no explanation, a white page |
+| `task-converge` (agent + skill) | the code on HEAD against the intent of the whole task: an uncovered criterion, a partial implementation, a contradiction, a silently widened scope |
+| `/stage-force` (skill) | an autonomous run of the whole task: questions in a batch at the start, then no stops |
+| `/task-wrapup` (skill, manual only) | a PR/MR description from the task journal → `PR.md` |
 
-**Модели.** Оркестратор (скиллы `/stage-*`) идёт на модели вашей сессии — плагин её не задаёт; рекомендуемая — Opus (`/model`). Агенты — по полю `model:` во frontmatter, и оно выбрано замером `scripts/eval.mjs`, а не по роли:
+**Models.** The orchestrator (the `/stage-*` skills) runs on the model of your session — the plugin does not set it; the recommended one is Opus (`/model`). The agents use the `model:` field in the frontmatter, and it was chosen by a `scripts/eval.mjs` measurement, not by role:
 
-| Модель | Агенты | Почему |
+| Model | Agents | Why |
 |---|---|---|
-| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep`, `docs-lookup` | суждение и точность: ложный зелёный чекера хуже красного, а шум опровергает дорогой оркестратор |
-| `haiku` | `deps-audit` | механическая работа; на eval-кейсе не хуже Sonnet при цене в 2.5 раза ниже (замер — CHANGELOG 0.9.0) |
+| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep`, `docs-lookup` | judgment and accuracy: a false green from a checker is worse than a red one, and noise is refuted by the expensive orchestrator |
+| `haiku` | `deps-audit` | mechanical work; on the eval case not worse than Sonnet at a 2.5 times lower price (measurement — CHANGELOG 0.9.0) |
 
-Исключение — whole-branch pro-review и свежий прогон чекера в fix-loop: они идут на `review_model` из конфига (по умолчанию `opus`) параметром `model`: последняя проверка — самой сильной моделью, в force она ещё и не та, что писала код (`/stage-check`, Шаг 3.3). Для whole-branch это держит хук agent-guard: на живых прогонах 5 из 14 таких ревью ушли на sonnet, потому что параметр забывался.
+The exception is the whole-branch pro-review and the fresh checker run in the fix-loop: they go on `review_model` from the config (`opus` by default) through the `model` parameter: the last check by the strongest model, and in force also not the one that wrote the code (`/stage-check`, Step 3.3). For whole-branch the agent-guard hook enforces this: in live runs 5 of 14 such reviews went to sonnet because the parameter was forgotten.
 
-Алиас `sonnet` разворачивается по-разному в зависимости от версии Claude Code: в 2.1.193 — в Sonnet 4.6, в 2.1.276 — уже в Sonnet 5. Реальную модель показывает `modelUsage` в сводке eval-прогона. Нужна конкретная модель — ставь во frontmatter явный id (`claude-sonnet-5`). Перед сменой модели агента — `node scripts/eval.mjs --runs 3 --model <agent>=<model> <кейсы агента>`.
+The `sonnet` alias resolves differently depending on the Claude Code version: in 2.1.193 to Sonnet 4.6, in 2.1.276 already to Sonnet 5. The real model is shown by `modelUsage` in the summary of an eval run. If you need a specific model, put an explicit id into the frontmatter (`claude-sonnet-5`). Before changing an agent's model: `node scripts/eval.mjs --runs 3 --model <agent>=<model> <the agent's cases>`.
 
-**Три узких чекера вместо одного большого.** `pro-review` отвечает за корректность, безопасность и конвенции. `dead-code`, `i18n-sweep` и `deps-audit` — каждый за свой класс мусора, со своей процедурой подтверждения, и запускаются **по признаку**: что-то удалялось → dead-code; появился пользовательский текст → i18n-sweep; тронут манифест → deps-audit. Признака нет — `[skip: нет признака]`, лишний субагент не тратится.
+**Three narrow checkers instead of one big one.** `pro-review` answers for correctness, security and conventions. `dead-code`, `i18n-sweep` and `deps-audit` each answer for their own class of junk, with their own confirmation procedure, and run **by a trigger**: something was deleted → dead-code; user text appeared → i18n-sweep; the manifest was touched → deps-audit. No sign — `[skip: no trigger]`, no extra subagent is spent.
 
-**Подмена чекеров под репо.** Дизайн-источник не Figma, а файловый (репо HTML-прототипов от AI-дизайнеров): `pipeline.config.md` секцией «Checker overrides» объявляет `figma-spec → proto-spec`, `figma-compare → proto-compare` — оркестраторы kickoff/check читают конфиг и берут указанных агентов. Остальной цикл без изменений; Figma MCP такому репо не нужен.
+**Replacing checkers per repository.** The design source is not Figma but a file one (a repository of HTML prototypes from AI designers): `pipeline.config.md` declares `figma-spec → proto-spec`, `figma-compare → proto-compare` in the "Checker overrides" section — the kickoff/check orchestrators read the config and take the named agents. The rest of the loop is unchanged; such a repository does not need the Figma MCP.
 
-## Файлы (в репо — `<repo>/.claude/`)
+## Files (in the repository — `<repo>/.claude/`)
 
-- `pipeline.config.md` — профиль проекта (читают все скиллы).
-- `tasks/<ТИКЕТ>/` — `STAGES.md` (журнал: что/когда/зачем/итог), `specs/`, `checks/`, `DESIGN-QUESTIONS.md`.
-- `memory/` — проектная память (решения/грабли этого репо).
+- `pipeline.config.md` — the project profile (read by all skills).
+- `tasks/<TICKET>/` — `STAGES.md` (the journal: what/when/why/outcome), `specs/`, `checks/`, `DESIGN-QUESTIONS.md`.
+- `memory/` — project memory (decisions/pitfalls of this repository).
 
-Проектные чек-листы ревью держи в `CLAUDE.md` или в `pipeline.config.md → Conventions`, НЕ в скиллах плагина: плагин читается во всех репозиториях, чужая рубрика даёт ложные Major.
+Keep project review checklists in `CLAUDE.md` or in `pipeline.config.md → Conventions`, NOT in the plugin skills: the plugin is read in all repositories, and someone else's rubric produces false Majors.
 
-## Гигиена контекста (главный рычаг расхода)
+## Context hygiene (the main lever of spending)
 
-Полная версия с замерами — [references/context-hygiene.md](references/context-hygiene.md).
+The full version with measurements — [references/context-hygiene.md](references/context-hygiene.md).
 
-- Проверки — субагентами (тяжёлые Figma-дампы/снапшоты/дифы не оседают в главном контексте).
-- После закрытия этапа — `/clear` (вводит пользователь); chrome-devtools и Figma — субагентами, а не из главного контекста; в force этапы идут субагентами и чистить нечего.
-- `evaluate_script` (числа) вместо скриншотов для замеров; `take_snapshot` — только ради uid.
-- Text-fidelity: плейсхолдер vs динамика, точные символы (—/₸/«»/nbsp), i18n против разрезолвленной локали.
-- Большие трекеры (STAGES.md) читать точечно (offset/grep).
+- Checks go through subagents (heavy Figma dumps/snapshots/diffs do not settle in the main context).
+- After closing a stage — `/clear` (typed by the user); chrome-devtools and Figma through subagents, not from the main context; in force the stages go through subagents and there is nothing to clear.
+- `evaluate_script` (numbers) instead of screenshots for measurements; `take_snapshot` only for the uid.
+- Text fidelity: placeholder vs dynamic, exact characters (—/₸/«»/nbsp), i18n against the resolved locale.
+- Read big trackers (STAGES.md) selectively (offset/grep).
