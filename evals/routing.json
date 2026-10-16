@@ -1,5 +1,5 @@
 {
-  "$comment": "Фразы, которыми пользователь зовёт скилл, — для scripts/routing.mjs. Пишутся так, как говорят в чате, а не цитатой из description: цитата проверяет, что текст равен сам себе. expect — скилл, который обязан попасть в топ-K; not — скиллы, которые не должны оказаться первыми с весом выше noiseFloor. Упала фраза — сначала поправь description. Ручных скиллов (disable-model-invocation) здесь нет: их описание модель не видит.",
+  "$comment": "Phrases users call a skill with, for scripts/routing.mjs. Written the way people talk in chat, not as a quote of the description: a quote only checks that a text equals itself. Russian phrases stay (Russian is a full second language of the plugin); every skill also has at least one English phrase. expect is the skill that must land in the top K; not lists skills that must not come first with a weight above noiseFloor. A failed phrase means fix the description first. Manual skills (disable-model-invocation) are absent: the model does not see their description.",
   "topK": 2,
   "minRank1": 0.75,
   "maxSimilarity": 0.5,
@@ -8,55 +8,90 @@
   "cases": [
     { "prompt": "посмотри, какой код осиротел после моих изменений — неиспользуемые компоненты и ключи локалей", "expect": "dead-code" },
     { "prompt": "что стало мёртвым кодом из-за этой задачи?", "expect": "dead-code" },
+    { "prompt": "what code got orphaned by my changes? unused components and locale keys", "expect": "dead-code" },
+    { "prompt": "anything left dead because of this task?", "expect": "dead-code" },
 
     { "prompt": "я добавил новую библиотеку в package.json, проверь, оправдана ли зависимость", "expect": "deps-audit" },
     { "prompt": "аудит зависимостей и новых картинок перед PR", "expect": "deps-audit" },
+    { "prompt": "I added a new library to package.json, is the dependency justified?", "expect": "deps-audit" },
+    { "prompt": "audit the new dependencies and images before the PR", "expect": "deps-audit" },
 
     { "prompt": "страница белая, открой в браузере и посмотри консоль", "expect": "devtools-verify" },
     { "prompt": "проверь в хроме скриншоты в тёмной теме на ширине 1024", "expect": "devtools-verify" },
+    { "prompt": "the page is blank, open it in the browser and check the console", "expect": "devtools-verify" },
+    { "prompt": "take dark theme screenshots at 1024 width in chrome", "expect": "devtools-verify" },
 
     { "prompt": "какие наши компоненты можно заменить компонентами из UI-кита?", "expect": "ds-parity" },
     { "prompt": "проверь дубли с дизайн-системой перед PR", "expect": "ds-parity" },
+    { "prompt": "which of our components can be replaced with ones from the UI kit?", "expect": "ds-parity" },
+    { "prompt": "check for duplicates with the design system before the PR", "expect": "ds-parity" },
 
     { "prompt": "как сейчас работает фича избранного на всех платформах?", "expect": "feature-checker" },
     { "prompt": "что уже сделано по поиску — составь карту фичи", "expect": "feature-checker" },
+    { "prompt": "how does the favorites feature work right now on all platforms?", "expect": "feature-checker" },
+    { "prompt": "what is already built for search, map the feature", "expect": "feature-checker" },
 
     { "prompt": "сверь вёрстку с макетом в фигме, вот ссылка на ноду", "expect": "figma-compare" },
     { "prompt": "pixel perfect: отступы и цвета совпадают с Figma?", "expect": "figma-compare" },
+    { "prompt": "compare the markup with the Figma design, here is the node link", "expect": "figma-compare" },
+    { "prompt": "pixel perfect: do spacing and colors match Figma?", "expect": "figma-compare" },
 
     { "prompt": "найди хардкод текста и недостающие переводы в локалях", "expect": "i18n-sweep" },
     { "prompt": "проверь интернационализацию: даты форматируются без локали?", "expect": "i18n-sweep" },
+    { "prompt": "find hardcoded text and missing translations in the locales", "expect": "i18n-sweep" },
+    { "prompt": "check internationalization, are dates formatted without a locale?", "expect": "i18n-sweep" },
 
     { "prompt": "у меня не работает figma MCP и chrome-devtools, продиагностируй окружение", "expect": "pipeline-doctor" },
     { "prompt": "склонировал репо на новый ноут, проверь, что пайплайн заведётся", "expect": "pipeline-doctor" },
+    { "prompt": "figma MCP and chrome-devtools do not work for me, diagnose the environment", "expect": "pipeline-doctor" },
+    { "prompt": "I cloned the repo on a new laptop, will the pipeline start?", "expect": "pipeline-doctor" },
 
     { "prompt": "сделай код-ревью всей ветки как senior", "expect": "pro-review" },
     { "prompt": "отревьюй бранч на корректность, безопасность и конвенции репозитория", "expect": "pro-review" },
+    { "prompt": "do a senior code review of the whole branch", "expect": "pro-review" },
+    { "prompt": "review the branch for correctness, security and repo conventions", "expect": "pro-review" },
 
     { "prompt": "сверь реализацию с HTML-прототипом из репозитория прототипов", "expect": "proto-compare" },
     { "prompt": "совпадает ли экран с прототипом и поведением по SPEC.md?", "expect": "proto-compare" },
+    { "prompt": "compare the implementation with the HTML prototype from the prototypes repo", "expect": "proto-compare" },
+    { "prompt": "does the screen match the prototype and the SPEC.md behavior?", "expect": "proto-compare" },
 
     { "prompt": "поправил, но баг всё равно воспроизводится — найди настоящую причину", "expect": "root-cause" },
     { "prompt": "фикс не помог, симптом непонятный, давай отладим до корневой причины", "expect": "root-cause" },
     { "prompt": "фикс не помог — разберись", "expect": "root-cause" },
+    { "prompt": "I fixed it but the bug still reproduces, find the real cause", "expect": "root-cause" },
+    { "prompt": "the fix did not help, figure out why", "expect": "root-cause" },
 
     { "prompt": "этап реализован, прогони чекеры и закрой этап", "expect": "stage-check" },
     { "prompt": "проверь этап 3 и подготовь коммит", "expect": "stage-check" },
+    { "prompt": "the stage is implemented, run the checkers and close the stage", "expect": "stage-check" },
+    { "prompt": "check stage 3 and prepare the commit", "expect": "stage-check" },
 
     { "prompt": "прогони всю задачу автономно без остановок, коммить сам", "expect": "stage-force" },
     { "prompt": "запусти force-режим по всем этапам", "expect": "stage-force" },
+    { "prompt": "run the whole task autonomously without stopping, commit yourself", "expect": "stage-force" },
+    { "prompt": "start force mode across all stages", "expect": "stage-force" },
 
     { "prompt": "открываем следующий этап — покажи план и собери вопросы перед реализацией", "expect": "stage-kickoff" },
     { "prompt": "начинаем новый этап, возьми sign-off перед стартом", "expect": "stage-kickoff" },
+    { "prompt": "let us open the next stage, show the plan and collect questions before implementation", "expect": "stage-kickoff" },
+    { "prompt": "starting a new stage, get sign-off before we begin", "expect": "stage-kickoff" },
 
     { "prompt": "разбей редизайн на этапы по многоэкранной фигме", "expect": "stage-plan" },
     { "prompt": "составь план этапов с критериями приёмки для этой задачи", "expect": "stage-plan" },
+    { "prompt": "split the redesign into stages from the multi-screen Figma", "expect": "stage-plan" },
+    { "prompt": "make a stage plan with acceptance criteria for this task", "expect": "stage-plan" },
 
     { "prompt": "что из обещанного по задаче ещё не сделано?", "expect": "task-converge" },
     { "prompt": "задача правда завершена? сверь код с критериями приёмки всех этапов", "expect": "task-converge" },
+    { "prompt": "what was promised for the task that is still not done?", "expect": "task-converge" },
+    { "prompt": "is the task really complete? check the code against all stages acceptance criteria", "expect": "task-converge" },
 
     { "prompt": "ревью только текущего этапа перед закрытием", "not": ["deps-audit"] },
     { "prompt": "напиши функцию форматирования цены", "not": ["i18n-sweep", "root-cause", "pro-review"] },
-    { "prompt": "поправь опечатку в README", "not": ["stage-check", "stage-force", "pro-review"] }
+    { "prompt": "поправь опечатку в README", "not": ["stage-check", "stage-force", "pro-review"] },
+    { "prompt": "review only the current stage before closing it", "not": ["deps-audit"] },
+    { "prompt": "write a price formatting function", "not": ["i18n-sweep", "root-cause", "pro-review"] },
+    { "prompt": "fix a typo in the README", "not": ["stage-check", "stage-force", "pro-review"] }
   ]
 }

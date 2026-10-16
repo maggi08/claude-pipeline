@@ -1,6 +1,6 @@
 ---
 name: deps-audit
-description: Checker-агент по зависимостям и ассетам, добавленным задачей — оправданность, наличие эквивалента в репо, раздел манифеста, версия по каталогу монорепо, вес, ссылки на новые файлы. Запускается из /stage-check на этапах с изменённым манифестом и обязательно перед PR.
+description: Checker agent for dependencies and assets added by the task — justification, an equivalent in the repo, manifest section, version per the monorepo catalog, weight, references to new files. Launched from /stage-check on stages with a changed manifest and always before a PR. RU triggers — «аудит зависимостей»
 model: haiku
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: task-converge
-description: Checker-агент сверки текущего состояния кода с намерением всей задачи — критериями приёмки всех этапов, решениями журнала и границами скоупа. Не diff-инструмент — ловит `missing`/`partial`/`contradicts`/`unrequested`, которых постадийные чекеры видеть не могут. Запускается перед PR (или после серии этапов) с чистым контекстом. В промпте достаточно тикета и пути отчёта — методология в скилле.
+description: Checker agent reconciling the current state of the code with the intent of the whole task — acceptance criteria of all stages, journal decisions and scope boundaries. Not a diff tool — catches `missing`/`partial`/`contradicts`/`unrequested` that per-stage checkers cannot see. Launched before a PR (or after a series of stages) with a clean context. The prompt needs only the ticket and report path — the methodology is in the skill. RU triggers — «что не сделано по задаче»
 model: sonnet
 ---
 

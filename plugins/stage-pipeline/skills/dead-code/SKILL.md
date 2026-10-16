@@ -1,6 +1,6 @@
 ---
 name: dead-code
-description: Узкий проход по мёртвому коду, который образовался ИЗ-ЗА этой задачи — осиротевшие компоненты, хуки, утилиты, ассеты, ключи локалей, экспорты. Use as a checker step of /stage-check (со второго этапа) или перед PR. Не ищет баги — для этого /pro-review; не ищет дубли с китом — для этого /ds-parity.
+description: Narrow pass over dead code created BY this task — orphaned components, hooks, utilities, assets, locale keys, exports. Use as a checker step of /stage-check (from the second stage) or before a PR. Does not hunt bugs (that is /pro-review) or kit duplicates (that is /ds-parity). RU triggers — «мёртвый код», «что осиротело после моих изменений», «что стало мёртвым кодом»
 ---
 
 # Dead code — what became orphaned because of this task

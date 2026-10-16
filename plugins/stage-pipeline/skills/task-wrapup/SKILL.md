@@ -1,6 +1,6 @@
 ---
 name: task-wrapup
-description: Финал задачи — свести журнал всех этапов в готовое описание PR/MR → PR.md, собрать список проверенного и непроверенного, открытые вопросы и риски для ревьюера. Только вручную, командой /task-wrapup — пайплайн и модель сами не вызывают. Только готовит текст — не создаёт PR и не пушит.
+description: Task finale — fold the journal of all stages into a ready PR/MR description → PR.md, collect the lists of verified and unverified items, open questions and risks for the reviewer. Manual only, via /task-wrapup — the pipeline and the model never invoke it. Only prepares text — does not create a PR or push. RU triggers — «оформи описание PR»
 disable-model-invocation: true
 ---
 

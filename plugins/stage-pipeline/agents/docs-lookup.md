@@ -1,6 +1,6 @@
 ---
 name: docs-lookup
-description: Справка по API сторонней библиотеки под ту версию, что стоит в репо — по типам, исходнику, README и CHANGELOG установленного пакета (node_modules / site-packages), при нехватке — по официальной документации этой версии. Держит дампы в своём контексте, возвращает сжатый ответ с примером кода. Запускать из реализации этапа, fix-loop или /root-cause, когда нужна сигнатура, опция, поведение или миграция API — вместо ответа по памяти модели.
+description: Reference on a third-party library API for the version installed in the repo — from the types, source, README and CHANGELOG of the installed package (node_modules / site-packages), falling back to the official documentation of that version. Keeps dumps in its own context, returns a compact answer with a code example. Run from stage implementation, the fix-loop or /root-cause when a signature, option, behavior or API migration is needed — instead of answering from model memory. RU triggers — «как работает API в нашей версии»
 model: sonnet
 ---
 

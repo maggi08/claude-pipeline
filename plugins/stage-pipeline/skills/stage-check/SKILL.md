@@ -1,6 +1,6 @@
 ---
 name: stage-check
-description: Мини-оркестратор ЗАКРЫТИЯ этапа задачи — прогоняет реализованный этап через чекеры-субагенты (figma-compare, devtools-verify, pro-review), гоняет fix-loop (2 итерации + свежий прогон чекера), обновляет STAGES.md-журнал и готовит коммит этапа. Парен к stage-kickoff (открытие). Use when a stage is implemented and the user asks to check/verify/close the stage.
+description: Mini-orchestrator for CLOSING a task stage — runs the implemented stage through checker subagents (figma-compare, devtools-verify, pro-review), drives the fix-loop (2 iterations + a fresh checker run), updates the STAGES.md journal and prepares the stage commit. Paired with stage-kickoff (opening). Use when a stage is implemented and the user asks to check/verify/close the stage. RU triggers — «прогони чекеры и закрой этап», «проверь этап 3»
 ---
 
 # Stage Check — checking and closing a stage

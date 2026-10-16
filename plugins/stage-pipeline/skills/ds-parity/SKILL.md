@@ -1,6 +1,6 @@
 ---
 name: ds-parity
-description: Проход по дизайн-системе перед PR — какие локальные компоненты заменяются существующими в UI-ките и какие логически просятся В кит. Use before opening a PR (вместе с /cleanup-review и /code-review), или когда пользователь просит проверить дубли с дизайн-системой. Ловит класс правок, который иначе всплывает на ручном ревью повторными запросами.
+description: Design-system pass before a PR — which local components are replaced by existing UI-kit ones and which logically belong IN the kit. Use before opening a PR (together with /cleanup-review and /code-review), or when the user asks to check for duplicates with the design system. Catches what otherwise surfaces in manual review as repeated requests. RU triggers — «дубли с дизайн-системой», «заменить компонентами из UI-кита»
 ---
 
 # DS Parity — duplicates between the app and the design system

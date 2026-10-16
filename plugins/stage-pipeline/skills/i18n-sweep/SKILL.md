@@ -1,6 +1,6 @@
 ---
 name: i18n-sweep
-description: Узкий проход по интернационализации дифа — хардкод пользовательского текста, неполные локали, динамически склеенные ключи, форматирование дат и чисел без локали. Use as a checker step of /stage-check или перед PR в проектах с i18n. Не ищет баги — для этого /pro-review.
+description: Narrow pass over the diff for internationalization — hardcoded user-facing text, incomplete locales, dynamically assembled keys, dates and numbers formatted without a locale. Use as a checker step of /stage-check or before a PR in projects with i18n. Does not hunt bugs (that is /pro-review). RU triggers — «хардкод текста», «недостающие переводы», «интернационализация»
 ---
 
 # i18n sweep — copy and locales

@@ -1,6 +1,6 @@
 ---
 name: stage-plan
-description: Разбить большую задачу (редизайн / фича с многоэкранной Figma) на этапы и создать state-файл STAGES.md — план с критериями приёмки и статусами пайплайна. Use when a task has a multi-screen Figma file, when the user asks to split work into stages/plan a redesign. Требует готовый FEATURE-MAP.md (если нет — сначала запусти /feature-checker).
+description: Split a big task (a redesign / a feature with a multi-screen Figma) into stages and create the STAGES.md state file — a plan with acceptance criteria and pipeline statuses. Use when a task has a multi-screen Figma file, when the user asks to split work into stages/plan a redesign. Requires a ready FEATURE-MAP.md (if missing — run /feature-checker first). RU triggers — «разбей на этапы», «составь план этапов»
 ---
 
 # Stage Plan — splitting a task into stages

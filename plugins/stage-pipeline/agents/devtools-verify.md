@@ -1,6 +1,6 @@
 ---
 name: devtools-verify
-description: Checker-агент рантайм-проверки реализованного UI через Chrome DevTools MCP. Запускается из /stage-check (или вручную) с чистым контекстом — держит тяжёлые снапшоты/скриншоты/сеть в своём контексте, оркестратору возвращает компактный отчёт. В промпте достаточно передать тикет, URL этапа, ширины, критерии приёмки и путь отчёта — методология в скилле, dev-URL в pipeline.config.md.
+description: Checker agent for the runtime check of the implemented UI through Chrome DevTools MCP. Launched from /stage-check (or manually) with a clean context — keeps heavy snapshots/screenshots/network in its own context and returns a compact report to the orchestrator. The prompt needs only the ticket, stage URL, widths, acceptance criteria and report path — the methodology is in the skill, the dev URL in pipeline.config.md. RU triggers — «проверь в браузере»
 model: sonnet
 ---
 

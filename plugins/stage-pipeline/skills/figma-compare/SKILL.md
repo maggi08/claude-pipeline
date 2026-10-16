@@ -1,6 +1,6 @@
 ---
 name: figma-compare
-description: Pixel-perfect сверка реализованного кода (вёрстки) с Figma-дизайном — макетом в фигме — токены, цвета, отступы, радиусы, тени, типографика, структура layout (источники правды из pipeline.config.md). Use when the user gives a Figma link (ссылка на макет или ноду) and asks to check/compare the implementation, or as the check step of /stage-check. Статическая сверка код ↔ дизайн (без браузера).
+description: Pixel-perfect comparison of implemented code (markup) with the Figma design — tokens, colors, spacing, radii, shadows, typography, layout structure (sources of truth from pipeline.config.md). Use when the user gives a Figma link (to a frame or node) and asks to check/compare the implementation, or as the check step of /stage-check. Static code ↔ design comparison (no browser). RU triggers — «сверь с макетом в фигме», «ссылка на ноду», «pixel perfect»
 ---
 
 # Figma Compare — checking code against the design

@@ -1,6 +1,6 @@
 ---
 name: pro-review
-description: Senior-разработчик code review всей задачи (весь бранч относительно основной ветки проекта). Проверяет корректность, безопасность, производительность, читаемость и соответствие конвенциям текущего репозитория (CLAUDE.md + pipeline.config.md), затем адверсариально перепроверяет каждый finding и выдаёт отчёт, сгруппированный по severity. Use when the user asks to review a task/branch, do a code review, critique an implementation, or check code against project conventions.
+description: Senior-developer code review of the whole task (the whole branch against the project main branch). Checks correctness, security, performance, readability and conformance to the current repository conventions (CLAUDE.md + pipeline.config.md), then adversarially re-checks every finding and produces a report grouped by severity. Use when the user asks to review a task/branch, do a code review, critique an implementation, or check code against project conventions. RU triggers — «сделай код-ревью ветки», «отревьюй бранч»
 ---
 
 # pro-review — a review as a senior developer

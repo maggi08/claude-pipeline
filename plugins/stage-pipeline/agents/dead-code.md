@@ -1,6 +1,6 @@
 ---
 name: dead-code
-description: Checker-агент по мёртвому коду, образовавшемуся ИЗ-ЗА текущей задачи — осиротевшие символы, файлы, ключи локалей, ассеты, недостижимые ветки. Запускается из /stage-check (со второго этапа) или перед PR с чистым контекстом. В промпте достаточно тикета, этапа, базы сравнения и пути отчёта — методология в скилле.
+description: Checker agent for dead code created BECAUSE of the current task — orphaned symbols, files, locale keys, assets, unreachable branches. Launched from /stage-check (from the second stage) or before a PR with a clean context. The prompt needs only the ticket, stage, comparison base and report path — the methodology is in the skill. RU triggers — «мёртвый код»
 model: sonnet
 ---
 

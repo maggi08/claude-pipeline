@@ -1,6 +1,6 @@
 ---
 name: deps-audit
-description: Узкий проход по зависимостям и ассетам, добавленным задачей — оправдана ли новая библиотека, есть ли в репо эквивалент, попала ли она в рантайм-бандл, ссылаются ли на новые картинки и шрифты. Use as a checker step of /stage-check на этапах, где менялся манифест, и обязательно перед PR.
+description: Narrow pass over dependencies and assets added by the task — is the new library justified, does the repo already have an equivalent, did it land in the runtime bundle, are new images and fonts referenced. Use as a checker step of /stage-check on stages where the manifest changed, and always before a PR. RU triggers — «аудит зависимостей», «оправдана ли новая библиотека»
 ---
 
 # Deps audit — what the task dragged into the project

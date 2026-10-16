@@ -1,6 +1,6 @@
 ---
 name: stage-force
-description: Автономный прогон задачи по этапам — все вопросы задаются ОДНИМ батчем в начале, дальше реализация (субагентом stage-implement), чекеры, фиксы и коммиты идут без остановок до конца всех этапов, а главный контекст держит только сводки. Пуш и создание PR запрещены. Use when the user asks to run the task autonomously, "force"/"без остановок"/"сам коммить", or explicitly starts /stage-force. Заканчивается сводкой прогона; описание PR/MR не пишет — это ручной /task-wrapup.
+description: Autonomous run of a task through its stages — all questions are asked in ONE batch up front, then implementation (by the stage-implement subagent), checkers, fixes and commits run without stops to the end of all stages, while the main context keeps only summaries. Push and PR creation are forbidden. Use when the user asks to run the task autonomously, "force" / "without stopping" / "commit yourself", or explicitly starts /stage-force. Ends with a run summary; does not write the PR/MR description — that is the manual /task-wrapup. RU triggers — «без остановок», «сам коммить», «force-режим»
 ---
 
 # Stage Force — the whole task, no stops in the middle

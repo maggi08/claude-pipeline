@@ -1,6 +1,6 @@
 ---
 name: root-cause
-description: Отладка до корневой причины ВМЕСТО второй попытки фикса — фикс не помог, «не помогло», «всё ещё воспроизводится», «разберись, почему»; чекер нашёл дефект без очевидной причины, страница белая или симптом не воспроизводится. Use instead of a second fix attempt when a fix did not work, when a symptom has no obvious cause, or before proposing any fix to a non-trivial bug. Не ищет дефекты (их находят чекеры) — ведёт от найденного симптома к причине и доказывает, что починена именно она.
+description: Debug to the root cause INSTEAD of a second fix attempt — the fix did not work, the symptom still reproduces, "figure out why"; a checker found a defect with no obvious cause, the page is blank, or the symptom does not reproduce. Use instead of a second fix attempt when a fix did not work, when a symptom has no obvious cause, or before proposing any fix to a non-trivial bug. Does not find defects (checkers do) — leads from a found symptom to the cause and proves that exactly that cause was fixed. RU triggers — «фикс не помог», «всё ещё воспроизводится», «разберись, почему»
 ---
 
 # Root Cause — to the cause, not to the symptom disappearing

@@ -1,6 +1,6 @@
 ---
 name: i18n-sweep
-description: Checker-агент интернационализации — хардкод пользовательского текста, неполные локали, динамические ключи, форматирование без локали, ручная плюрализация. Запускается из /stage-check или перед PR с чистым контекстом. В промпте достаточно тикета, этапа, базы сравнения и пути отчёта — методология в скилле, механизм i18n в pipeline.config.md.
+description: Checker agent for internationalization — hardcoded user-facing text, incomplete locales, dynamic keys, formatting without a locale, hand-made pluralization. Launched from /stage-check or before a PR with a clean context. The prompt needs only the ticket, stage, comparison base and report path — the methodology is in the skill, the i18n mechanism in pipeline.config.md. RU triggers — «хардкод текста»
 model: sonnet
 ---
 

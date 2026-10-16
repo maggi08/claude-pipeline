@@ -1,6 +1,6 @@
 ---
 name: pro-review
-description: Checker-агент senior-код-ревью. Запускается из /stage-check (или вручную) с чистым контекстом — на дифе этапа (stage mode) или на всей ветке против PR-таргета перед PR (whole-branch mode). Проверяет корректность, конвенции репо (CLAUDE.md), дубликаты, нейминг, комментарии/самодокументируемость, паттерны — затем адверсариально перепроверяет каждый finding. В промпте достаточно тикета, режима, базы сравнения и пути отчёта — методология в скилле проекта/агенте.
+description: Checker agent for senior code review. Launched from /stage-check (or manually) with a clean context — on the stage diff (stage mode) or on the whole branch against the PR target before a PR (whole-branch mode). Checks correctness, repo conventions (CLAUDE.md), duplicates, naming, comments/self-documentation, patterns — then adversarially re-checks every finding. The prompt needs only the ticket, mode, comparison base and report path — the methodology is in the project skill/agent. RU triggers — «сделай код-ревью»
 model: sonnet
 ---
 

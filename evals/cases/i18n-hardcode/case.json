@@ -1,15 +1,15 @@
 {
   "agent": "i18n-sweep",
-  "why": "хардкод копии в кнопке и ключ, добавленный только в одну локаль",
-  "prompt": "Тикет EVAL-1, этап 1. База сравнения: незакоммиченные изменения (git diff HEAD + git status). Этап добавил пустое состояние корзины и кнопку оплаты.",
+  "why": "hardcoded copy in a button and a key added to one locale only",
+  "prompt": "Ticket EVAL-1, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status). The stage added the empty cart state and the pay button.",
   "expect": [
     {
       "pattern": "Continue to payment",
-      "why": "хардкод текста кнопки"
+      "why": "the hardcoded button text"
     },
     {
       "pattern": "cart\\.empty[\\s\\S]{0,200}ru|ru[\\s\\S]{0,200}cart\\.empty",
-      "why": "ключ cart.empty отсутствует в ru"
+      "why": "the key cart.empty is missing in ru"
     }
   ]
 }

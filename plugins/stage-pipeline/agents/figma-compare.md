@@ -1,6 +1,6 @@
 ---
 name: figma-compare
-description: Checker-агент пиксель-перфект сверки кода с Figma. Запускается из /stage-check (или вручную) с чистым контекстом. В промпте достаточно передать тикет, Figma-ноды, пути файлов и путь отчёта — методология в скилле, источники правды в pipeline.config.md.
+description: Checker agent for pixel-perfect comparison of code with Figma. Launched from /stage-check (or manually) with a clean context. The prompt needs only the ticket, Figma nodes, file paths and report path — the methodology is in the skill, sources of truth in pipeline.config.md. RU triggers — «сверь с макетом в фигме»
 model: sonnet
 ---
 

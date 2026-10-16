@@ -1,6 +1,6 @@
 ---
 name: proto-spec
-description: Извлекает компактную спеку экрана/фичи для реализации из ФАЙЛОВОГО дизайн-источника — репозитория HTML-прототипов («наша Figma» в проектах без Figma, где дизайн делают AI-дизайнеры). Поведение — из SPEC.md прототип-репо, визуал — из HTML/CSS. Держит тяжёлые дампы в своём контексте, оркестратору возвращает только сжатую спеку. Запускается ВМЕСТО figma-spec перед реализацией этапа — в репо, где pipeline.config.md секцией «Checker overrides» объявляет прототипный дизайн-источник.
+description: Extracts a compact screen/feature spec for implementation from a FILE-based design source — a repo of HTML prototypes ("our Figma" in projects without Figma, where AI designers make the design). Behavior comes from the prototype repo SPEC.md, visuals from HTML/CSS. Keeps heavy dumps in its own context, returns only a compact spec to the orchestrator. Launched INSTEAD of figma-spec before stage implementation — in repos where pipeline.config.md declares a prototype design source in the "Checker overrides" section. RU triggers — «спека экрана из прототипа»
 model: sonnet
 ---
 

@@ -1,34 +1,35 @@
-# EVAL-1: таймеры заказа и оплаты
-Ветка: feature
+# EVAL-1: order and payment timers
+Branch: feature
+Language: en
 
-## Статус: этап 2 из 2 — реализация
+## Status: stage 2 of 2 — implementation
 
-## Force-прогон 2026-09-24
-Режим: автономный до конца этапов. Пуш и PR — вручную пользователем.
-Ответы интервью: формат времени — как у таймера заказа (этап 1), mm:ss.
-Допущения: истёкший таймер показывает текст, а не 00:00 — обратимо заменой одной строки.
-Границы: src/features/orders/ не трогаем — модуль закрыт этапом 1 и ревью.
+## Force run 2026-09-24
+Mode: autonomous to the end of the stages. Push and PR are done manually by the user.
+Interview answers: time format — the same as the order timer (stage 1), mm:ss.
+Assumptions: an expired timer shows text, not 00:00 — reversible by replacing one line.
+Boundaries: src/features/orders/ is not touched — the module is closed by stage 1 and its review.
 
-## Этапы
+## Stages
 
-### Этап 1: Таймер заказа [status: done]
-Коммит: stage 1. Решения: formatTime — общий форматтер mm:ss.
+### Stage 1: Order timer [status: done]
+Commit: stage 1. Decisions: formatTime — the shared mm:ss formatter.
 
-### Этап 2: Таймер оплаты [status: in-progress]
-Что сделать: компонент `PaymentCountdown` в `src/features/checkout/` — показывает оставшееся время оплаты.
-Переиспользовать: `formatTime` (владелец — этап 1, см. «Общие элементы»).
-Критерии приёмки:
-- `AC-2.1` WHEN remaining > 0 THEN показывается время в формате mm:ss — [verify: pro-review]
-- `AC-2.2` WHEN remaining <= 0 THEN показывается `t('checkout.expired')` — [verify: pro-review]
-- `AC-2.3` WHEN ключ `checkout.expired` добавлен THEN он есть в en («Payment time is over») и ru («Время оплаты истекло») — [verify: pro-review]
-Пайплайн:
+### Stage 2: Payment timer [status: in-progress]
+What to do: a `PaymentCountdown` component in `src/features/checkout/` — shows the time left to pay.
+Reuse: `formatTime` (owner — stage 1, see "Shared elements").
+Acceptance criteria:
+- `AC-2.1` WHEN remaining > 0 THEN the time is shown in mm:ss format — [verify: pro-review]
+- `AC-2.2` WHEN remaining <= 0 THEN `t('checkout.expired')` is shown — [verify: pro-review]
+- `AC-2.3` WHEN the key `checkout.expired` is added THEN it exists in en ("Payment time is over") and ru («Время оплаты истекло») — [verify: pro-review]
+Pipeline:
 - [x] kickoff
 - [ ] implement
 
-## Общие элементы (пересечения этапов)
-| Элемент | Этапы | Владелец (строит) | Где лежит |
+## Shared elements (stage overlaps)
+| Element | Stages | Owner (builds) | Where it lives |
 |---|---|---|---|
-| форматтер mm:ss | 1, 2 | 1 | src/features/orders/formatTime.ts |
+| mm:ss formatter | 1, 2 | 1 | src/features/orders/formatTime.ts |
 
-## Журнал
-- 2026-09-24 — этап 1 закрыт.
+## Journal
+- 2026-09-24 — stage 1 closed.

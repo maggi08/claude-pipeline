@@ -1,6 +1,6 @@
 ---
 name: proto-compare
-description: Сверка реализованного кода с ФАЙЛОВЫМ дизайн-источником — HTML-прототипом из репозитория прототипов («наша Figma» в проектах без Figma) — токены, отступы, радиусы, типографика, структура, копия, плюс поведение по SPEC.md (переходы/CTA/guard'ы). Use as the design-check step of /stage-check in repos whose pipeline.config.md declares a prototype design source (Checker overrides), or when the user asks to check the implementation against a prototype. Статическая сверка код ↔ прототип (без браузера).
+description: Comparison of implemented code with a FILE-based design source — an HTML prototype from a prototype repo ("our Figma" in projects without Figma) — tokens, spacing, radii, typography, structure, copy, plus behavior per SPEC.md (transitions/CTAs/guards). Use as the design-check step of /stage-check in repos whose pipeline.config.md declares a prototype design source (Checker overrides), or when the user asks to check the implementation against a prototype. Static code ↔ prototype comparison (no browser). RU triggers — «сверь с HTML-прототипом», «совпадает ли экран с прототипом»
 ---
 
 # Proto Compare — checking code against the prototype

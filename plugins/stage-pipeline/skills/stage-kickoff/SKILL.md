@@ -1,6 +1,6 @@
 ---
 name: stage-kickoff
-description: Мини-оркестратор ОТКРЫТИЯ этапа задачи — перед реализацией показывает пользователю план этапа, сводит его с накопленными правками/TODO/вопросами, собирает бизнес/UX-ввод, фиксирует решения в STAGES.md и берёт sign-off, затем запускает спеку. Парен к stage-check (закрытие). Use when starting/opening a new stage, before implementation begins.
+description: Mini-orchestrator for OPENING a task stage — before implementation shows the user the stage plan, merges it with accumulated edits/TODOs/questions, collects business/UX input, records decisions in STAGES.md and gets sign-off, then launches the spec. Paired with stage-check (closing). Use when starting/opening a new stage, before implementation begins. RU triggers — «открываем следующий этап», «возьми sign-off»
 ---
 
 # Stage Kickoff — opening a stage

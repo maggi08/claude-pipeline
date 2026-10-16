@@ -1,15 +1,15 @@
 {
   "agent": "pro-review",
-  "why": "whole-branch ловит дубль форматтера, растянутый по двум этапам (каждый этап по отдельности чистый)",
-  "prompt": "Тикет EVAL-1. Режим: whole-branch — финальный прогон перед PR, вся ветка feature против main (remote нет, бери локальную main). Этапы задачи уже закрыты.",
+  "why": "whole-branch catches a formatter duplicate spread over two stages (each stage is clean on its own)",
+  "prompt": "Ticket EVAL-1. Mode: whole-branch — the final run before the PR, the whole feature branch against main (no remote, use the local main). The task stages are already closed.",
   "expect": [
     {
       "pattern": "toClock|formatTime",
-      "why": "названа одна из копий форматтера"
+      "why": "one of the formatter copies is named"
     },
     {
       "pattern": "дубл|duplicat|повтор|одинаков",
-      "why": "находка классифицирована как дубль"
+      "why": "the finding is classified as a duplicate"
     }
   ]
 }

@@ -1,6 +1,6 @@
 ---
 name: devtools-verify
-description: Рантайм-проверка реализованного UI через Chrome DevTools MCP — консоль (hydration/ReferenceError), скриншоты в light/dark на ширинах 1440/1280/1024, живое состояние (драфт, переходы). Use as the runtime check step of /stage-check, or when the user reports a blank/broken page. Ловит класс ошибок, невидимых статике.
+description: Runtime check of the implemented UI through Chrome DevTools MCP — console (hydration/ReferenceError), light/dark screenshots at 1440/1280/1024, live state (draft, transitions). Use as the runtime check step of /stage-check, or when the user reports a blank/broken page. Catches the class of errors static review cannot see. RU triggers — «страница белая», «посмотри консоль в браузере», «скриншоты в тёмной теме»
 ---
 
 # DevTools Verify — runtime checker

@@ -1,6 +1,6 @@
 ---
 name: stage-implement
-description: Maker-агент реализации ОДНОГО этапа (или одного раунда фиксов fix-loop) в чистом контексте. Запускается оркестратором /stage-force (для этапа и для раундов fix-loop в force), чтобы чтение кода, правки и прогоны lint/type_check не копились в главном контексте между этапами: субагент умирает вместе со своим контекстом. В промпте — тикет, номер этапа, путь спеки, режим (implement | fix) и, для fix, список подтверждённых находок.
+description: Maker agent for implementing ONE stage (or one fix-loop round) in a clean context. Launched by the /stage-force orchestrator (for a stage and for fix-loop rounds in force) so that code reading, edits and lint/type_check runs do not pile up in the main context between stages — the subagent dies with its context. The prompt carries the ticket, stage number, spec path, mode (implement | fix) and, for fix, the list of confirmed findings. RU triggers — «реализуй этап»
 model: sonnet
 ---
 

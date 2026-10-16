@@ -1,6 +1,6 @@
 ---
 name: task-converge
-description: Сверка ТЕКУЩЕГО состояния кода с намерением всей задачи — критериями приёмки всех этапов, решениями журнала и границами скоупа. Не diff-инструмент — отвечает на «что из обещанного не сделано и что сделано, но никто не просил», безотносительно того, каким дифом это въехало. Use before opening a PR, after all stages are done, or when the user asks what is left / whether the task is actually complete. Дописывает недостающее догоняющими этапами, ничего не переписывая.
+description: Reconcile the CURRENT state of the code with the intent of the whole task — acceptance criteria of all stages, journal decisions and scope boundaries. Not a diff tool — answers "what was promised and not done, and what was done that nobody asked for", regardless of which diff it arrived in. Use before opening a PR, after all stages are done, or when the user asks what is left / whether the task is actually complete. Adds what is missing as catch-up stages, rewriting nothing. RU triggers — «что ещё не сделано по задаче», «задача правда завершена?»
 ---
 
 # Task Converge — code against the intent of the task

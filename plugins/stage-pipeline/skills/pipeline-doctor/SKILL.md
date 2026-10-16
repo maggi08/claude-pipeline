@@ -1,6 +1,6 @@
 ---
 name: pipeline-doctor
-description: Проверка окружения разработчика для stage-пайплайна — MCP (figma, chrome-devtools), пути к соседним репо, dev-сервер, type-check baseline. Запускать после первого клона репо, при смене машины или когда чекеры (figma-spec/figma-compare/devtools-verify) не работают. Диагностирует, подсказывает фиксы, при нестандартной раскладке создаёт pipeline.config.local.md.
+description: Check the developer environment for the stage pipeline — MCP (figma, chrome-devtools), paths to neighbouring repos, dev server, type-check baseline. Run after the first clone of a repo, when switching machines or moving to a new laptop or new machine, or when checkers (figma-spec/figma-compare/devtools-verify) do not work. Diagnoses, suggests fixes, and creates pipeline.config.local.md for a non-standard layout. RU triggers — «не работает figma MCP», «проверь окружение», «склонировал репо на новый ноут»
 ---
 
 # Pipeline Doctor — checking the developer's environment

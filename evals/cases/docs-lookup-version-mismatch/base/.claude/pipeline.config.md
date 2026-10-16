@@ -13,7 +13,7 @@
 - unused_code: —
 - unused_deps: —
 ## Design sources of truth
-- i18n: locales/ (en, ru), t() из src/i18n.ts
+- i18n: locales/ (en, ru), t() from src/i18n.ts
 ## Code layout
 - components: src/components/
 - reuse_baseline: —

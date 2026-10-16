@@ -1,6 +1,6 @@
 ---
 name: feature-checker
-description: Построить карту существующей фичи по всем её контекстам/платформам (из pipeline.config.md) — что уже реализовано, как работает, что шарится. Use when starting a task on an existing feature, a redesign, or when the user asks "как сейчас работает X" / "что уже сделано по X". Первый шаг пайплайна перед /stage-plan.
+description: Build a map of an existing feature across all its contexts/platforms (from pipeline.config.md) — what is already implemented, how it works, what is shared. Use when starting a task on an existing feature, a redesign, or when the user asks "how does X work now" / "what is already done for X". First pipeline step before /stage-plan. RU triggers — «как сейчас работает X», «что уже сделано по X», «карта фичи»
 ---
 
 # Feature Checker — a map of the existing feature

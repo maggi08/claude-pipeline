@@ -1,6 +1,6 @@
 ---
 name: figma-spec
-description: Извлекает из Figma компактную спеку экрана/компонента для реализации (источники правды из pipeline.config.md). Держит тяжёлые дампы get_design_context в своём контексте, оркестратору возвращает только сжатую таблицу спеки. Запускать ПЕРЕД реализацией этапа вместо прямых вызовов Figma MCP из главного контекста.
+description: Extracts from Figma a compact screen/component spec for implementation (sources of truth from pipeline.config.md). Keeps the heavy get_design_context dumps in its own context, returns only a compact spec table to the orchestrator. Run BEFORE stage implementation instead of direct Figma MCP calls from the main context. RU triggers — «спека экрана из фигмы»
 model: sonnet
 ---
 

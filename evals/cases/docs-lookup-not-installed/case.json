@@ -1,27 +1,27 @@
 {
   "agent": "docs-lookup",
-  "why": "пакет не установлен (нет node_modules), сеть недоступна — короткое «не установлен — не сверено» с версией из локфайла и ни одного утверждения про API по памяти",
-  "prompt": "Библиотека: react-router-dom. Вопрос: как в этом репо правильно сделать редирект неавторизованного пользователя на /login и программную навигацию после выхода? Файл, где API используется: src/App.tsx.",
+  "why": "the package is not installed (no node_modules), the network is unavailable — a short \"not installed — not verified\" with the version from the lockfile and not a single API claim from memory",
+  "prompt": "Library: react-router-dom. Question: how do I correctly redirect an unauthenticated user to /login and navigate programmatically after sign-out in this repo? The file where the API is used: src/App.tsx.",
   "requireReport": false,
   "maxSummaryLines": 6,
   "expect": [
     {
-      "pattern": "не установлен",
-      "why": "явное «не установлен — не сверено»"
+      "pattern": "не установлен|not installed",
+      "why": "an explicit \"not installed — not verified\""
     },
     {
       "pattern": "6\\.22\\.3",
-      "why": "версия из локфайла всё равно названа"
+      "why": "the version from the lockfile is still named"
     }
   ],
   "forbidSummary": [
     {
-      "pattern": "Navigate|useNavigate|<Redirect|нет в v6|удал[её]н",
-      "why": "утверждение про API по памяти модели"
+      "pattern": "Navigate|useNavigate|<Redirect|нет в v6|удал[её]н|not in v6|removed in v6",
+      "why": "an API claim from the model memory"
     },
     {
       "pattern": "```",
-      "why": "пример кода без документации"
+      "why": "a code example without documentation"
     }
   ],
   "budgetUsd": 1

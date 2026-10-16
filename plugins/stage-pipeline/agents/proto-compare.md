@@ -1,6 +1,6 @@
 ---
 name: proto-compare
-description: Checker-агент сверки кода с ФАЙЛОВЫМ дизайн-источником — HTML-прототипом из репозитория прототипов («наша Figma» в проектах без Figma). Запускается из /stage-check (или вручную) с чистым контекстом — ВМЕСТО figma-compare в репо, где pipeline.config.md секцией «Checker overrides» объявляет прототипный дизайн-источник. В промпте достаточно передать тикет, флоу-файл(ы)/screen-id прототипа, пути файлов кода и путь отчёта — методология в ${CLAUDE_PLUGIN_ROOT}/skills/proto-compare, источники правды в pipeline.config.md.
+description: Checker agent for comparing code with a FILE-based design source — an HTML prototype from a prototype repo ("our Figma" in projects without Figma). Launched from /stage-check (or manually) with a clean context — INSTEAD of figma-compare in repos where pipeline.config.md declares a prototype design source in the "Checker overrides" section. The prompt needs only the ticket, prototype flow file(s)/screen-id, code file paths and report path — the methodology is in ${CLAUDE_PLUGIN_ROOT}/skills/proto-compare, sources of truth in pipeline.config.md. RU triggers — «сверь с прототипом»
 model: sonnet
 ---
 
