@@ -35,6 +35,8 @@ import {
   forceHeadings,
   stageHeadingOf,
 } from './markers.mjs'
+import { taskLanguage } from './hooks/pipeline-state.mjs'
+import { languageMismatch } from './report-language.mjs'
 
 const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
 const AC_ID = /AC-\d/
@@ -56,11 +58,11 @@ export function acViolation(line, reports = null) {
   if (!required.length) return null
   const outcome = line.slice(line.indexOf('✅') + 1).replace(/\[verify:[^\]]*\]/gi, '')
   const id = line.match(/AC-[\w.]+/)[0]
-  const deferred = /\[live:|решени[а-яё]* пользователя/i.test(outcome) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(outcome))
+  const deferred = /\[live:|решени[а-яё]* пользователя|user\s+decision/i.test(outcome) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(outcome))
   if (deferred) return null
   const named = required.filter((checker) => outcome.includes(checker))
   // Рантайм-критерий закрывает и живая проверка без субагента (smoke-прогон, «проверено живьём»); дизайн-критерий — только сверка чекером.
-  const live = required.includes('devtools-verify') && /\bsmoke\b|живь[её]м|вживую|в браузере/i.test(outcome)
+  const live = required.includes('devtools-verify') && /\bsmoke\b|живь[её]м|вживую|в браузере|\b(?:checked|tested|verified|confirmed|ran|run|done)\s+live\b|\blive\s+(?:check|run|smoke|test|session)\b|in\s+(?:the|a)\s+(?:live\s+)?browser/i.test(outcome)
   if (!named.length && !live) {
     const shown = outcome.replace(/\s+/g, ' ').trim().slice(0, 60)
     return {
@@ -81,8 +83,9 @@ export function acViolation(line, reports = null) {
   return null
 }
 
-const BROWSER_REASON = /браузер|chrome|\bmcp\b|devtools|токен|token|staging|стенд|\blive\b|dev-?сервер|занят|логин|login|\bauth/i
-const LEGIT_REASON = /logic-only|нет\s+(дизайн|макет|figma|прототип)|дизайн-источник|источник|без визуал|визуал не меня|макет[а-яё]*\s+нет|figma\s+нет/i
+const BROWSER_REASON = /браузер|browser|chrome|\bmcp\b|devtools|токен|token|staging|стенд|\bstand\b(?!-)|\blive\b|dev-?сервер|dev[- ]?server|занят|\bbusy\b|логин|login|sign-?in|\bauth/i
+const LEGIT_REASON =
+  /logic-only|нет\s+(дизайн|макет|figma|прототип)|дизайн-источник|источник|без визуал|визуал не меня|макет[а-яё]*\s+нет|figma\s+нет|\bno\s+(?:design|mockup|figma|prototype)|design\s+source|no\s+visual|visuals?\s+(?:are\s+)?unchanged/i
 
 // Пропуск дизайн-чекера по причине браузера: живые формы — `[skip: …]`, `(skip — …)`, `— skip (…)`, `skip: …`,
 // в том числе общий на два чекера: «proto-compare и devtools-verify — skip: MCP-Chrome занят». Через « · » skip уже чужой.
@@ -106,10 +109,13 @@ export function skipViolation(line) {
 }
 
 // ✅ с оговоркой внутри — «✅ (тёмная тема не снята)», «✅ только по cookie, вид не проверен»: критерий закрыт наполовину.
-const CAVEAT = /не\s+снят|не\s+проверен|не\s+проверял|не\s+смотрел|не\s+открывал|только\s+по\s+коду|частично|не\s+удалось\s+(?:проверить|снять|открыть|посмотреть)/i
+const CAVEAT_RU = 'не\\s+снят|не\\s+проверен|не\\s+проверял|не\\s+смотрел|не\\s+открывал|только\\s+по\\s+коду|частично|не\\s+удалось\\s+(?:проверить|снять|открыть|посмотреть)'
+const CAVEAT_EN =
+  "\\bnot\\s+(?:captured|verified)\\b|\\bnot\\s+(?:checked|opened)(?:\\s+yet\\b|\\s+(?:in|on|at|for)\\s+(?!load\\b|default\\b)\\S)|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)"
+const CAVEAT = new RegExp(`${CAVEAT_RU}|${CAVEAT_EN}`, 'i')
 // «Нет данных» вместо подстановки состояния: 46 «[live: user-side]» в одной задаче, шесть дефектов из них нашёл пользователь.
-const NO_DATA = /нет\s+(?:подходящ[а-яё]*\s+|живых\s+|тестов[а-яё]*\s+)?(?:данных|брон[а-яё]*|лид[а-яё]*|записей|объявлен[а-яё]*|заказ[а-яё]*)(?![а-яё])|нет\s+на\s+аккаунте|no\s+(?:test\s+)?data/i
-const STUBBED = /подмен|подстав|заглушк|фикстур|stub|mock|override|перехват|intercept/i
+const NO_DATA = /нет\s+(?:подходящ[а-яё]*\s+|живых\s+|тестов[а-яё]*\s+)?(?:данных|брон[а-яё]*|лид[а-яё]*|записей|объявлен[а-яё]*|заказ[а-яё]*)(?![а-яё])|нет\s+на\s+аккаунте|\bno\s+(?:suitable\s+|live\s+|test\s+)?(?:data|bookings|leads|records|listings|orders)\b(?!\s+(?:loss|lost|was\s+lost|were\s+lost|changed?)\b)|\bnot\s+on\s+the\s+account|\bno\s+such\s+data/i
+const STUBBED = /подмен|подстав|заглушк|фикстур|stub|mock|override|перехват|intercept|fixture|substitut|\bfak(?:e|ed|ing)\b|replaced\s+the\s+API\s+response/i
 
 export function caveatViolation(line) {
   if (!AC_ID.test(line) || !line.includes('✅')) return null
@@ -126,7 +132,7 @@ export function caveatViolation(line) {
 }
 
 export function noDataViolation(line) {
-  if (!AC_ID.test(line) || !/⏳|\[live:|не\s+провер/i.test(line) || !NO_DATA.test(line) || STUBBED.test(line)) return null
+  if (!AC_ID.test(line) || !/⏳|\[live:|не\s+провер|\bnot\s+(?:verified|checked)\b|\bcould\s+not\s+verify/i.test(line) || !NO_DATA.test(line) || STUBBED.test(line)) return null
   // В длинной строке журнала критериев несколько: причина относится к ближайшему перед ней.
   const reason = line.search(NO_DATA)
   const before = [...line.slice(0, reason).matchAll(/AC-[\w.]+/g)].at(-1)
@@ -141,9 +147,10 @@ export function noDataViolation(line) {
 }
 
 // «Как у X» без пути к X. «так как в …» — причина, а не ссылка; «как в ТЗ» — ссылка на сам тикет.
-const LIKE = /(?<![а-яё])(?<!так\s+)как\s+(?:у|в|на|сейчас|раньше|было|прежде)(?![а-яё])|\b(?:same\s+as|like\s+in)\b/i
+const LIKE =
+  /(?<![а-яё])(?<!так\s+)как\s+(?:у|в|на|сейчас|раньше|было|прежде)(?![а-яё])|\b(?:same\s+as|like\s+in)\b|(?<![\w-])(?<!such\s)(?<!well\s)as\s+(?:in\s+the|on\s+the|before\b|it\s+was\b|it\s+is\s+now\b|now\b|currently\b)|\blike\s+the\s+old\b/i
 const REF = /[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|less|html?|md|py|go|rb|kt|swift|java|php|rs|cs)\b|https?:\/\/|node-?id|\b\d+[:-]\d+\b|`[^`\s]*\/[^`\s]*`/i
-const DECISION = /^\s*(?:[-*]|\d+\.|\|)?\s*\**(?:D\d+\b|Решени[ея]|Решено|Решили)/i
+const DECISION = /^\s*(?:[-*]|\d+\.|\|)?\s*\**(?:D\d+\b|Решени[ея]|Решено|Решили|Decisions?\b|Decided\b|We\s+decided\b)/i
 
 /**
  * Критерий или решение ссылается на образец словами — «как у эксперта», «как сейчас в шторке», «как было» —
@@ -156,8 +163,8 @@ export function likeViolation(line) {
   const match = line.match(LIKE)
   if (!match) return null
   const after = line.slice(match.index + match[0].length)
-  if (REF.test(line) || /^\s*(?:AC-\d|этап[а-яё]*\s+\d|B\d|тз|тикет|задач[а-яё]*\s|описани|contract|spec\b|ci\b)/i.test(after)) return null
-  if (/^\s*(?:макет|дизайн|figma|фигм|прототип)/i.test(after) && /\[verify:\s*(?:figma|proto)-compare/i.test(line)) return null
+  if (REF.test(line) || /^\s*(?:in\s+)?(?:the\s+)?(?:AC-\d|этап[а-яё]*\s+\d|stage\s+\d|B\d|тз|тикет|ticket\b|задач[а-яё]*\s|task\b|описани|description\b|contract|spec\b|ci\b)/i.test(after)) return null
+  if (/^\s*(?:in\s+)?(?:the\s+)?(?:макет|дизайн|figma|фигм|прототип|design\b|mockup\b|prototype\b)/i.test(after) && /\[verify:\s*(?:figma|proto)-compare/i.test(line)) return null
   const id = line.match(/AC-[\w.]+/)?.[0]?.replace(/[.,]+$/, '') ?? line.match(/\bD\d+\b/)?.[0] ?? 'решение'
   return {
     rule: 'ac-like-ref',
@@ -256,26 +263,26 @@ export function findingCounts(text, name = '') {
 export function failedCriteria(text) {
   const ids = new Set()
   for (const line of text.split('\n')) {
-    if (!/\bFAIL\b/.test(line) || /(?:было|was|до\s+фикса)\s*:?\s*FAIL/i.test(line)) continue
+    if (!/\bFAIL\b/.test(line) || /(?:было|was(?:\s+previously)?|до\s+фикса|before\s+(?:the\s+)?fix)\s*:?\s*FAIL/i.test(line)) continue
     for (const [id] of line.matchAll(/AC-\d+[a-z]?(?:\.\d+[a-z]?)*/g)) ids.add(id)
   }
   return [...ids]
 }
 
 const PARKED =
-  /оставля|оставлен|компромисс|ожида[а-яё]*\s+подтвержд|не\s+чин|в\s+кит(?![а-яё])|findings|отдельн[а-яё]*\s+задач|позже|потом(?![а-яё])|принят[а-яё]*\s+как|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|вне\s+(?:скоуп|границ)|не\s+в\s+скоуп/i
-const PRE_EXISTING = /давн|не\s+регресс|pre-?existing|было\s+до|до\s+задачи/i
-const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![а-яё])|\bprod\b|на\s+базе/i
+  /оставля|оставлен|компромисс|ожида[а-яё]*\s+подтвержд|не\s+чин|в\s+кит(?![а-яё])|findings|отдельн[а-яё]*\s+задач|позже|потом(?![а-яё])|принят[а-яё]*\s+как|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|вне\s+(?:скоуп|границ)|не\s+в\s+скоуп|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|\bleft\s+as\b|\bkeep(?:ing)\b|\bkept\s+as\b|compromise|awaiting\s+(?:user\s+)?confirmation|\bwon['’]?t\s+fix|\bnot\s+(?:fix(?:ing|ed)|resolved)\b|\b(?:to|into)\s+the\s+kit\b|separate\s+task|\blater\b|\bafterwards\b|\bdeferred\b|\bpostponed\b|accepted\s+as\b|question\s+(?:for|to)\s+(?:the\s+)?(?:product|design|backend|reviewer|qa)\b|out\s+of\s+scope|not\s+in\s+scope|outside\s+(?:the\s+)?(?:scope|boundaries)/i
+const PRE_EXISTING = /давн|не\s+регресс|pre-?existing|было\s+до|до\s+задачи|long-?standing|not\s+a\s+regression|existed\s+before|(?:was|were)\s+(?:already\s+)?there\s+before|before\s+this\s+task|predat(?:es|ed)/i
+const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![а-яё])|\bprod\b|на\s+базе|\bproduction\b|\bon\s+(?:the\s+)?base\b/i
 
 /** Итог одной строки «Итог находок»: fixed | false | blocker | user — итог; parked | unproven | unknown — нет. */
 export function disposition(entry) {
   const proven = PRE_EXISTING.test(entry) && BASE_EVIDENCE.test(entry)
   if (PRE_EXISTING.test(entry) && !proven) return 'unproven'
   if (PARKED.test(entry) && !proven) return 'parked'
-  if (/исправлен|починен|удал[её]н|\bfixed\b|\bremoved\b/i.test(entry)) return 'fixed'
-  if (proven || /ложн|false\s+positive|не\s+подтвердил|не\s+воспроизв/i.test(entry)) return 'false'
+  if (/исправлен|починен|удал[её]н|(?<!\bnot\s)(?<!n['’]t\s)\b(?:fixed|removed|resolved|repaired)\b/i.test(entry)) return 'fixed'
+  if (proven || /ложн|не\s+подтвердил|не\s+воспроизв|(?:^\s*(?:[-*]|\d+\.)?\s*|[—–]\s*|\s-\s+)false\s*[:(]|\bfalse\s+positive\b|\bnot\s+confirmed\b|\b(?:could\s+not|couldn['’]t|cannot|unable\s+to)\s+reproduce|\bnot\s+reproduc(?:ed|ible)/i.test(entry)) return 'false'
   if (/\bB\d+\b/.test(entry)) return 'blocker'
-  if (/решени[а-яё]*\s+пользователя[^\n]*(?:«|"|\d{2}\.\d{2}|\d{4}-\d{2})/i.test(entry)) return 'user'
+  if (/(?:решени[а-яё]*\s+пользователя|user\s+decision|user\s+decided)[^\n]*(?:«|"|“|\d{2}\.\d{2}|\d{4}-\d{2})/i.test(entry)) return 'user'
   return 'unknown'
 }
 
@@ -392,8 +399,19 @@ export function runtimeViolations(text, name, taskDir = null) {
   return found
 }
 
-/** Все нарушения отчёта при его записи: голые PASS, сводка, итоги (без полноты — она нужна к коммиту), рантайм. */
-export function reportViolations(path) {
+/** Отчёт написан не на языке задачи (D9). `language` — `task.language`; `null` — задача без языка, не проверяется. */
+export function languageViolation(text, name, language) {
+  const mismatch = languageMismatch(text, language)
+  if (!mismatch) return null
+  return {
+    rule: 'report-language',
+    id: name,
+    message: `checks/${name}: отчёт написан не на языке задачи (${language === 'ru' ? 'русском' : 'английском'}): проза по-${mismatch.wrote === 'en' ? 'английски' : 'русски'}. Перепиши отчёт на языке задачи — код, пути, id и цитаты UI остаются как есть.`,
+  }
+}
+
+/** Все нарушения отчёта при его записи: язык, голые PASS, сводка, итоги (без полноты — она нужна к коммиту), рантайм. */
+export function reportViolations(path, language = null) {
   let text
   try {
     text = readFileSync(path, 'utf8')
@@ -401,7 +419,7 @@ export function reportViolations(path) {
     return []
   }
   const name = basename(path)
-  return [reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name), ...runtimeViolations(text, name, dirname(dirname(path)))].filter(Boolean)
+  return [languageViolation(text, name, language), reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name), ...runtimeViolations(text, name, dirname(dirname(path)))].filter(Boolean)
 }
 
 /** «Эталон вида» этапа, к которому относится отчёт (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), или null. */
@@ -542,21 +560,28 @@ export function loadBaseline(dataDir, taskDir) {
  * Снимок v2 — все строки журнала и момент, с которого отчёты проверяются на итог находок (`ledgerSince`).
  * Снимок v1 (0.12–0.13) хранил только строки с ✅ и skip: при первом взгляде новой версии в него
  * дописываются все текущие строки, кроме нарушений 0.12, появившихся после снимка, — те и дальше
- * напоминают о себе. Отчёты, записанные до этого момента, итога не требуют: идущая задача
+ * напоминают о себе. `reports` — имена отчётов, застигнутых при первом взгляде: язык проверяется только у отчётов вне этого множества
+ * (путь файла и время создания ненадёжны: Edit заменяет файл через rename). Отчёты, записанные до этого момента, итога не требуют: идущая задача
  * не обязана переписывать закрытые этапы.
  */
 export function baselineInfo(dataDir, taskDir) {
   const data = readBaseline(dataDir, taskDir)
-  if (data?.version === BASELINE_VERSION) return { lines: new Set(data.lines), ledgerSince: data.ledgerSince }
+  if (data?.version === BASELINE_VERSION) {
+    if (Array.isArray(data.reports)) return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(data.reports) }
+    // снимок v2 без имён отчётов: текущие отчёты — старые (ленивая миграция, остальные поля не меняются)
+    const migrated = { ...data, reports: reportNames(taskDir) }
+    writeBaseline(dataDir, taskDir, migrated)
+    return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(migrated.reports) }
+  }
   const now = Date.now()
   const current = journalCandidates(journalText(taskDir))
   const old = new Set(data?.lines ?? [])
   const lines = data
     ? [...old, ...current.filter((line) => old.has(fingerprint(line)) || !legacyViolation(line)).map(fingerprint)]
     : current.map(fingerprint)
-  const next = { taskDir, created: data?.created ?? new Date(now).toISOString(), version: BASELINE_VERSION, ledgerSince: now, lines: [...new Set(lines)] }
+  const next = { taskDir, created: data?.created ?? new Date(now).toISOString(), version: BASELINE_VERSION, ledgerSince: now, lines: [...new Set(lines)], reports: reportNames(taskDir) }
   writeBaseline(dataDir, taskDir, next)
-  return { lines: new Set(next.lines), ledgerSince: now }
+  return { lines: new Set(next.lines), ledgerSince: now, reports: new Set(next.reports) }
 }
 
 export function ensureBaseline(dataDir, taskDir) {
@@ -635,10 +660,12 @@ function main(args) {
   }
   const taskDir = resolve(target.endsWith('.md') ? join(target, '..') : target)
   const found = journalViolations(journalText(taskDir), reportNames(taskDir), taskDir)
+  const stagesPath = join(taskDir, 'STAGES.md')
+  const language = existsSync(stagesPath) ? taskLanguage(readFileSync(stagesPath, 'utf8')) : null
   const reports = reportNames(taskDir).flatMap((name) => {
     const path = join(taskDir, 'checks', name)
     // Сводка и геометрия — правила новых отчётов: в старых их нет по построению, без --ledger это шум.
-    const all = reportViolations(path).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
+    const all = reportViolations(path, language).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
     return args.includes('--ledger') && reportChecker(name)
       ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...ledgerViolations(readFileSync(path, 'utf8'), name, { complete: true })]
       : all

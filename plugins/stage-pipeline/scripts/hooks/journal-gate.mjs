@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
 import { gateCloseViolations } from '../ci-gates.mjs'
 import { CLOSED_WORD } from '../markers.mjs'
@@ -65,7 +65,9 @@ for (const task of tasks) {
     : reportNames(task.dir)
         .map((name) => join(checks, name))
         .filter((path) => Date.now() - statSync(path).mtimeMs < 60_000)
-  const reports = written.flatMap(reportViolations)
+  // Язык проверяется только у отчёта, которого не было при первом взгляде на задачу: старый отчёт не переписывают, как бы его ни правили.
+  const { reports: known } = baselineInfo(pluginDataDir(), task.dir)
+  const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language))
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir)]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   if (!closing.length) {

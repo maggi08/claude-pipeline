@@ -7,7 +7,7 @@
  * а хук, который видит чужие задачи, блокирует параллельную работу.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -915,6 +915,252 @@ check('EN gate is green on HEAD — closing passes, gates are in the summary', g
 const eRebuilt = runHook('session-start.mjs', { cwd: eApp }).text
 check('EN session-start: the state line carries the force mark and the task', /T-13/.test(eRebuilt) || eRebuilt === '', eRebuilt)
 rmSync(eRoot, { recursive: true, force: true })
+
+// ── 0.16 / EN-1 этап 2: английские фразовые эвристики и язык отчёта ───────────
+// На каждую эвристику — позитивная английская фикстура с тем же результатом, что у русского близнеца выше,
+// и негативная: легитимная английская строка без срабатывания. Русские фикстуры выше не менялись.
+const EN_CAVEATS = [
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify (dark theme not verified)', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, only from code', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify (code only)', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ partially: light only', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, could not check dark', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, did not look at the dropdowns', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify (fully verified, all checked)', false],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, not a regression', false],
+  ['- `AC-2.7` — ✅ devtools-verify (light) · ⏳ devtools-verify (dark not verified)', false],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, dark not checked yet', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, not checked at 1024', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, I did not check the dropdown', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, checked by code only', true],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, checkbox is not checked by default', false],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, drawer not opened on load', false],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, code-only change, checked via devtools-verify', false],
+  ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, nothing partially hidden', false],
+]
+for (const [line, want] of EN_CAVEATS) check(`EN caveat ${line.slice(line.indexOf('✅'), line.indexOf('✅') + 52)} → ${want}`, Boolean(jc.caveatViolation(line)) === want, JSON.stringify(jc.caveatViolation(line)))
+const EN_NO_DATA = [
+  ['- `AC-4.5` WHEN bar THEN status — [live: user-side] — no bookings with police on the account', true],
+  ['- `AC-4.5` WHEN bar THEN status — ⏳ no test data on the stand', true],
+  ['- `AC-4.5` WHEN bar THEN status — not verified: no suitable data', true],
+  ['- `AC-4.5` WHEN bar THEN status — ⏳ not on the account', true],
+  ['- `AC-4.5` — ⏳ no data, checked with a stubbed API response (fixture)', false],
+  ['- `AC-4.5` — ⏳ no bookings on the stand, replaced the API response', false],
+  ['- `AC-4.5` — ⏳ not verified: no data loss on save', false],
+  ['- `AC-4.5` — ⏳ not verified: no records changed, no orders were lost', false],
+  ['- `AC-4.5` — ✅ devtools-verify, no data loss', false],
+  ['- `AC-4.5` — ✅ devtools-verify, no data was lost', false],
+]
+for (const [line, want] of EN_NO_DATA) check(`EN no data ${line.slice(12, 70)} → ${want}`, Boolean(jc.noDataViolation(line)) === want, JSON.stringify(jc.noDataViolation(line)))
+const EN_LIKES = [
+  ['- `AC-5.3` WHEN save THEN same as the expert — [verify: devtools-verify]', 'AC-5.3'],
+  ['- `AC-5.3` WHEN save THEN as before — [verify: devtools-verify]', 'AC-5.3'],
+  ['- `AC-5.4` WHEN opened THEN as in the old page — [verify: devtools-verify]', 'AC-5.4'],
+  ['- `AC-5.5` WHEN opened THEN as it is now in the drawer — [verify: pro-review]', 'AC-5.5'],
+  ['- Decision: the active "Save" — same as now in the drawer', 'решение'],
+  ['- Decided: copy the old layout, as currently shown', 'решение'],
+  ['- D11: "Save" — same as the expert (expert-lead-card-sheet.tsx:227)', null],
+  ['- `AC-2.1` WHEN card THEN gaps like in the mockup — [verify: figma-compare]', null],
+  ['- `AC-2.1` WHEN card THEN gaps same as in the design — [verify: figma-compare]', null],
+  ['- `AC-2.2` WHEN no field THEN dash, such as in the API — [verify: pro-review]', null],
+  ['- `AC-2.2` WHEN no field THEN dash, as well as a hint — [verify: pro-review]', null],
+  ['- `AC-2.3` WHEN open THEN same as AC-2.1 — [verify: pro-review]', null],
+  ['- `AC-2.3` WHEN open THEN as in the ticket — [verify: pro-review]', null],
+  ['- `AC-2.3` WHEN open THEN as in the task description — [verify: pro-review]', null],
+  ['- `AC-2.3` WHEN open THEN same as stage 2 — [verify: pro-review]', null],
+  ['- `AC-2.3` WHEN open THEN as in the spec — [verify: pro-review]', null],
+  ['- 2026-10-01 — did it same as the expert', null],
+  ['- Decisions: kept the grid', null],
+]
+for (const [line, want] of EN_LIKES) {
+  const got = jc.likeViolation(line)
+  check(`EN "same as X" ${line.slice(2, 50)} → ${want}`, want === null ? got === null : got !== null && (want === 'решение' || got.id === want), JSON.stringify(got))
+}
+const EN_SKIPS = [
+  ['Checks: pro-review-7a.md; proto-compare and devtools-verify — skip: the MCP Chrome is busy with another session', true],
+  ['- [x] proto-compare [skip: staging does not accept the token]', true],
+  ['- [x] figma-compare [skip: no browser available]', true],
+  ['- [x] figma-compare [skip: dev server is down]', true],
+  ['- [x] figma-compare `[skip: logic-only]`', false],
+  ['- [ ] figma-compare (skip — no Figma; visual check by hand)', false],
+  ['- [x] proto-compare [skip: no design source]', false],
+  ['- [x] figma-compare [skip: no visual change, browser not needed]', false],
+  ['- [x] figma-compare [skip: visuals unchanged]', false],
+]
+for (const [line, want] of EN_SKIPS) check(`EN design checker skip ${JSON.stringify(line).slice(0, 60)} → ${want ? 'violation' : 'ok'}`, Boolean(skipViolation(line)) === want, JSON.stringify(skipViolation(line)))
+const EN_ACS = [
+  ['- `AC-5.2` WHEN screen opened THEN no errors — [verify: devtools-verify] ✅ without the checker, user decision 2026-10-02', null],
+  ['- `AC-6.1` WHEN listing hydrated THEN no requests — [verify: devtools-verify] ✅ confirmed live: 0 requests', null],
+  ['- `AC-6.2` WHEN listing hydrated THEN no requests — [verify: devtools-verify] ✅ checked in the browser: 0 requests', null],
+  ['- `AC-8.1` WHEN form empty THEN "Add" active — [verify: devtools-verify] ✅ smoke (new-lead.spec.ts:40)', null],
+  ['- `AC-4.5` WHEN field empty THEN "Save" disabled — [verify: devtools-verify] ✅ pro-review by code · ⏳ user-review', 'ac-checker'],
+  ['- `AC-4.6` WHEN saved THEN toast — [verify: devtools-verify] ✅ livelihood of the page', 'ac-checker'],
+  ['- `AC-1.2` WHEN compared with the node THEN gaps match — [verify: figma-compare] ✅ checked live', 'ac-checker'],
+  ['- `AC-4.7` WHEN list opened THEN empty state — [verify: devtools-verify] ✅ no live bookings on the account', 'ac-checker'],
+  ['- `AC-4.8` WHEN list opened THEN empty state — [verify: devtools-verify] ✅ live check: 0 requests', null],
+]
+for (const [line, want] of EN_ACS) check(`EN criterion outcome ${JSON.stringify(line.slice(line.indexOf('✅'))).slice(0, 56)} → ${want}`, (acViolation(line, REPORTS)?.rule ?? null) === want, JSON.stringify(acViolation(line, REPORTS)))
+const EN_DISPOSITIONS = [
+  ['- M-1 — fixed: use-express-form.ts:104, rechecked', 'fixed'],
+  ['- M-1 — resolved: moved to Card.vue:12', 'fixed'],
+  ['- M-1 — left padding fixed: a.ts:3', 'fixed'],
+  ['- #2 — false: 109×32 is the native svg size', 'false'],
+  ['- #2 — false positive: the node is hidden (a.ts:9)', 'false'],
+  ['- #3 — not confirmed, could not reproduce at 1440', 'false'],
+  ['- #3 — not reproduced on 3 runs', 'false'],
+  ['- #3 — pre-existing: on base 422729d0 the same (measured 1037)', 'false'],
+  ['- #3 — pre-existing, production shows the same', 'false'],
+  ['- #3 — long-standing, not a finding', 'unproven'],
+  ['- #3 — pre-existing, was there before the task', 'unproven'],
+  ['- M-1 — accepted as a compromise, see "Awaiting user confirmation"', 'parked'],
+  ['- M-1 — leaving it, minor in essence', 'parked'],
+  ['- M-1 — keeping the current behavior', 'parked'],
+  ['- M-1 — left as is', 'parked'],
+  ['- M-1 — will do later', 'parked'],
+  ['- M-1 — separate task', 'parked'],
+  ['- M-1 — out of scope', 'parked'],
+  ['- M-1 — not fixed', 'parked'],
+  ["- M-1 — won't fix", 'parked'],
+  ['- #4 — question for design', 'parked'],
+  ['- #5 — user decision 2026-10-16: keep 109', 'user'],
+  ['- #5 — user decided "keep 109"', 'user'],
+  ['- #5 — user decision', 'unknown'],
+  ['- #7 — not false, the gap is real', 'unknown'],
+  ['- M-3 — handler returns false: needs a refactor', 'unknown'],
+  ['- M-3 — handler returns false: fixed in a.ts:4', 'fixed'],
+  ['- M-4 — was not repaired', 'unknown'],
+  ['- M-4 — wasn\'t fixed yet', 'unknown'],
+  ['- M-5 — stand-alone component is untouched', 'unknown'],
+  ['- #6 — we will see', 'unknown'],
+  ['- AC-5.9 — B1', 'blocker'],
+]
+for (const [entry, want] of EN_DISPOSITIONS) check(`EN outcome "${entry.slice(2, 44)}" → ${want}`, jc.disposition(entry) === want, jc.disposition(entry))
+check(
+  'EN: "was FAIL", "before the fix: FAIL" after a fix — not a finding',
+  same(jc.failedCriteria('- `AC-2.1` - FAIL in 2 major\n- AC-3.1 — PASS (was FAIL)\n- AC-3.2 — PASS (before the fix: FAIL)\n- AC-3.3 — PASS (was previously FAIL)\n'), ['AC-2.1']),
+)
+check('EN outcome "false: <proof>" is a closed finding', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — false: 12px at a.ts:3\n- M-2 — fixed: b.ts:4\n`, 'pro-review-1.md', { complete: true }).length === 0)
+check('EN outcome "leaving it" — ledger-parked', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — leaving it, minor in essence\n`, 'pro-review-1.md')[0]?.rule === 'ledger-parked')
+check('EN outcome "pre-existing" without proof — ledger-unproven', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — pre-existing\n`, 'pro-review-1.md')[0]?.rule === 'ledger-unproven')
+check('EN outcome "user decision" without a date or quote — ledger-unknown', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — user decision\n`, 'pro-review-1.md')[0]?.rule === 'ledger-unknown')
+
+// «Could not verify»: пустой список по-английски не попадает в сводку прогона.
+const { runDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+const digestFor = (items) => {
+  const dir = mkdtempSync(join(tmpdir(), 'digest-en-'))
+  mkdirSync(join(dir, 'T-30/checks'), { recursive: true })
+  writeFileSync(join(dir, 'T-30/STAGES.md'), '# T-30: task\nLanguage: en\n\n## Status: stage 1\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n')
+  const report = join(dir, 'T-30/checks/pro-review-1.md')
+  writeFileSync(report, `# pro-review, stage 1\nFindings: critical 0 · major 0 · minor 0\n\n## Could not verify\n${items.map((item) => `- ${item}`).join('\n')}\n`)
+  const later = new Date(Date.now() + 60_000)
+  utimesSync(report, later, later)
+  const text = runDigest(join(dir, 'T-30'), mkdtempSync(join(tmpdir(), 'digest-en-data-')), null)
+  rmSync(dir, { recursive: true, force: true })
+  return text.match(/^### Не проверено \((\d+)\)/m)?.[1]
+}
+const DIGEST_EMPTY = [['none'], ['None.'], ['nothing'], ['no items'], ['all verified'], ['All checked.'], ['everything is verified'], ['нет'], ['ничего']]
+for (const items of DIGEST_EMPTY) check(`digest: «Could not verify» "${items[0]}" — nothing unverified`, digestFor(items) === '0', String(digestFor(items)))
+for (const item of ['none of the states could be opened', 'AC-3.2 — no data on the stand', 'nothing was captured for dark']) check(`digest: a real item "${item.slice(0, 36)}" is counted`, digestFor([item]) === '1', String(digestFor([item])))
+
+// Язык отчёта (D9): проза по языку задачи; код, пути, id, цитаты UI и короткие отчёты не считаются.
+const lines = (text, count) => Array.from({ length: count }, () => text).join('\n')
+const RU_PROSE = 'Проверил карточку этапа: компонент рендерится без ошибок, отступы совпадают с макетом, а пустое состояние списка показывает заглушку.'
+const EN_PROSE = 'Checked the stage card: the component renders without errors, the gaps match the mockup and the empty list state shows a placeholder.'
+const RU_REPORT = `# pro-review, этап 3\nНаходки: critical 0 · major 1 · minor 0\n\n${lines(RU_PROSE, 5)}\n`
+const EN_REPORT = `# pro-review, stage 3\nFindings: critical 0 · major 1 · minor 0\n\n${lines(EN_PROSE, 5)}\n`
+const RU_TECH =
+  '# devtools-verify, этап 3\nНаходки: critical 0 · major 0 · minor 0\n\n' +
+  lines('Проверил `src/ui/Card.vue:34` и padding в src/ui/card.css:12: карточка не вылезает за контейнер, overflow 0, hover работает, AC-3.1 PASS, M-1 minor закрыт.', 6) +
+  `\n${lines('- AC-3.2 — PASS: tsc без ошибок, jest 169/169, lint чистый, devtools-verify-2.md и stage-3-pro-review.md сверены, useFooBar вызывается один раз.', 4)}\n`
+const EN_QUOTED =
+  `# pro-review, stage 3\nFindings: critical 0 · major 0 · minor 0\n\n${lines(EN_PROSE, 4)}\n` +
+  'The button label «Сохранить», the toast "Данные успешно сохранены" and the tab `Настройки аккаунта` match the copy deck.\n' +
+  '```\nОшибка: не удалось сохранить данные пользователя. Попробуйте ещё раз позже, пожалуйста.\n```\n' +
+  `${lines('Placeholder «Введите номер телефона или адрес электронной почты» is shown on the empty field.', 3)}\n`
+const SHORT_EN = '# pro-review, stage 3\nFindings: critical 0 · major 0 · minor 0\nAll good, see the diff.\n'
+const SHORT_RU = '# pro-review, этап 3\nНаходки: critical 0 · major 0 · minor 0\nВсё в порядке.\n'
+const REPORT_LANGUAGE = [
+  ['RU task, RU report', RU_REPORT, 'ru', false],
+  ['RU task, RU report with many paths and English terms', RU_TECH, 'ru', false],
+  ['RU task, EN report', EN_REPORT, 'ru', true],
+  ['EN task, EN report', EN_REPORT, 'en', false],
+  ['EN task, EN report quoting Russian UI texts', EN_QUOTED, 'en', false],
+  ['EN task, RU report', RU_REPORT, 'en', true],
+  ['EN task, RU report with paths and English terms', RU_TECH, 'en', true],
+  ['RU task, short EN report', SHORT_EN, 'ru', false],
+  ['EN task, short RU report', SHORT_RU, 'en', false],
+  ['task without a language, EN report', EN_REPORT, null, false],
+  ['task without a language, RU report', RU_REPORT, null, false],
+]
+for (const [name, text, language, want] of REPORT_LANGUAGE) {
+  const got = jc.languageViolation(text, 'pro-review-3.md', language)
+  check(`report language: ${name} → ${want ? 'returned' : 'passes'}`, Boolean(got) === want, JSON.stringify(got))
+}
+{
+  const dir = mkdtempSync(join(tmpdir(), 'lang-report-'))
+  const path = join(dir, 'pro-review-3.md')
+  writeFileSync(path, EN_REPORT)
+  check('reportViolations: language passed — EN report in a RU task is returned', jc.reportViolations(path, 'ru').some(({ rule }) => rule === 'report-language'))
+  check('reportViolations: no language — nothing to compare', !jc.reportViolations(path).some(({ rule }) => rule === 'report-language'))
+  rmSync(dir, { recursive: true, force: true })
+}
+
+// journal-gate возвращает автору отчёт не на языке задачи тем же ходом, что остальные нарушения отчёта.
+const lgRoot = mkdtempSync(join(tmpdir(), 'lang-gate-'))
+const lgApp = join(lgRoot, 'app')
+repoAt(lgApp, 'main')
+const lgStages = (language) => `# T-31: task\n${language ? `Language: ${language}\n` : ''}Branch: \`T-31/feat/l\`\n\n## Status: stage 1\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n`
+const lgReport = join(lgApp, '.claude/tasks/T-31/checks/pro-review-1.md')
+write(lgApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-31/STAGES.md': lgStages('en') })
+git(lgApp, 'checkout', '-qb', 'T-31/feat/l')
+runHook('session-start.mjs', { cwd: lgApp })
+const lgWrite = (stagesText, report) => {
+  write(lgApp, { '.claude/tasks/T-31/STAGES.md': stagesText, '.claude/tasks/T-31/checks/pro-review-1.md': report })
+  return runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Write', tool_input: { file_path: lgReport } })
+}
+const lgRu = lgWrite(lgStages('en'), RU_REPORT)
+check('journal-gate: RU report in an EN task — returned to the author', lgRu.decision === 'block' && /pro-review-1\.md/.test(lgRu.text) && /языке задачи/.test(lgRu.text), lgRu.text)
+check('journal-gate: EN report in an EN task — passes', lgWrite(lgStages('en'), EN_REPORT).decision === 'allow')
+check('journal-gate: EN report quoting Russian UI texts in an EN task — passes', lgWrite(lgStages('en'), EN_QUOTED).decision === 'allow')
+const lgEn = lgWrite(lgStages('ru'), EN_REPORT)
+check('journal-gate: EN report in a RU task — returned to the author', lgEn.decision === 'block' && /языке задачи/.test(lgEn.text), lgEn.text)
+check('journal-gate: RU report in a RU task — passes', lgWrite(lgStages('ru'), RU_REPORT).decision === 'allow')
+check('journal-gate: task without a language line and without headings — report language is not checked', lgWrite('# T-31: task\nBranch: `T-31/feat/l`\n\n## Status: stage 1\n', RU_REPORT).decision === 'allow')
+// Язык проверяется только у отчёта, созданного после снимка задачи (имя отчёта не из снимка): старый отчёт старой задачи правят без возврата.
+git(lgApp, 'checkout', '-qb', 'T-32/feat/old')
+write(lgApp, { '.claude/tasks/T-32/STAGES.md': lgStages('ru').replace('T-31', 'T-32'), '.claude/tasks/T-32/checks/pro-review-0.md': EN_REPORT })
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+runHook('session-start.mjs', { cwd: lgApp })
+const lgOld2 = join(lgApp, '.claude/tasks/T-32/checks/pro-review-0.md')
+const lgOldRun = (report) => {
+  write(lgApp, { '.claude/tasks/T-32/checks/pro-review-0.md': report })
+  return runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Edit', tool_input: { file_path: lgOld2 } })
+}
+check('journal-gate: old EN report (created before the snapshot) in a RU task, edited — no language return', lgOldRun(EN_REPORT + '\n## Итог находок\n').decision === 'allow')
+// правка с заменой файла (новый inode): запись во временный файл и rename поверх, как делает Edit
+const lgReplace = (report) => {
+  const tmp = lgOld2 + '.tmp'
+  writeFileSync(tmp, report)
+  renameSync(tmp, lgOld2)
+  return runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Edit', tool_input: { file_path: lgOld2 } })
+}
+check('journal-gate: old EN report in a RU task, replaced via rename (new inode) — no language return', lgReplace(EN_REPORT + '\n## Итог находок\n').decision === 'allow')
+appendFileSync(lgOld2, '\n- M-2\n')
+check('journal-gate: old EN report in a RU task, appended via Bash path (fresh mtime) — no language return', runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Bash', tool_input: { command: 'cat >> report' } }).decision === 'allow')
+write(lgApp, { '.claude/tasks/T-32/checks/pro-review-1.md': EN_REPORT })
+const lgNewRun = runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Write', tool_input: { file_path: join(lgApp, '.claude/tasks/T-32/checks/pro-review-1.md') } })
+check('journal-gate: new EN report (created after the snapshot) in a RU task — returned', lgNewRun.decision === 'block' && /языке задачи/.test(lgNewRun.text), lgNewRun.text)
+// снимок v2 без имён отчётов: миграция записывает текущие отчёты как старые
+const lgSnap = join(DATA, 'journal-baseline')
+const lgSnapFile = readdirSync(lgSnap).map((n) => join(lgSnap, n)).find((f) => JSON.parse(readFileSync(f, 'utf8')).taskDir?.endsWith('T-32'))
+const lgSnapData = JSON.parse(readFileSync(lgSnapFile, 'utf8'))
+check('journal-baseline: the snapshot stores report names seen at the first look', lgSnapData.reports?.includes('pro-review-0.md') && !lgSnapData.reports.includes('pro-review-1.md'), JSON.stringify(lgSnapData.reports))
+const { reports: _dropped, ...lgNoReports } = lgSnapData
+writeFileSync(lgSnapFile, JSON.stringify(lgNoReports))
+const lgMig = jc.baselineInfo(DATA, join(lgApp, '.claude/tasks/T-32'))
+const lgMigData = JSON.parse(readFileSync(lgSnapFile, 'utf8'))
+check('journal-baseline: v2 snapshot without names — migration records current reports as old, other fields intact', lgMig.reports.has('pro-review-0.md') && lgMig.reports.has('pro-review-1.md') && same(lgMigData.reports.sort(), ['pro-review-0.md', 'pro-review-1.md']) && lgMigData.ledgerSince === lgSnapData.ledgerSince && same(lgMigData.lines, lgSnapData.lines))
+rmSync(lgRoot, { recursive: true, force: true })
 
 // ── тяжёлые проверки: охват по дифу и очередь на машину ─────────────────────
 const RUN_CHECK = join(PLUGIN, 'run-check.mjs')

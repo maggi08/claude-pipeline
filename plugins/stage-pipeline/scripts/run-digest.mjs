@@ -64,7 +64,7 @@ export function runDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const body = text.slice(start).split('\n').slice(1)
     const end = body.findIndex((line) => /^#{1,3}\s/.test(line))
     for (const line of end === -1 ? body : body.slice(0, end)) {
-      if (/^\s*(?:[-*]|\d+\.)\s+\S/.test(line) && !/^(?:нет|ничего|всё .*проверено)\.?$/i.test(bullet(line))) unverified.push(`- ${name}: ${bullet(line)}`)
+      if (/^\s*(?:[-*]|\d+\.)\s+\S/.test(line) && !/^(?:нет|ничего|всё .*проверено|none|nothing|no\s+items|(?:all|everything)\s+(?:items\s+)?(?:is\s+|are\s+)?(?:verified|checked))\.?$/i.test(bullet(line))) unverified.push(`- ${name}: ${bullet(line)}`)
     }
   }
   const journal = journalText(taskDir)
