@@ -3,52 +3,60 @@ name: deps-audit
 description: Узкий проход по зависимостям и ассетам, добавленным задачей — оправдана ли новая библиотека, есть ли в репо эквивалент, попала ли она в рантайм-бандл, ссылаются ли на новые картинки и шрифты. Use as a checker step of /stage-check на этапах, где менялся манифест, и обязательно перед PR.
 ---
 
-# Deps audit — что задача притащила в проект
+# Deps audit — what the task dragged into the project
 
-Цель узкая: каждая новая зависимость и каждый новый ассет должны быть оправданы, использованы и лежать в правильном разделе манифеста. Это дешёвый проход, который ловит дорогой класс правок — лишний вес бандла и вторую библиотеку для того, что в проекте уже есть.
+The goal is narrow: every new dependency and every new asset must be justified, used and sit in the right section of the manifest. It is a cheap pass that catches an expensive class of fixes — extra bundle weight and a second library for what the project already has.
 
-> **Project config.** Пакетный менеджер, раскладку приложений и пакетов бери из `<repo>/.claude/pipeline.config.md`.
+> **Project config.** Take the package manager and the layout of apps and packages from `<repo>/.claude/pipeline.config.md`.
 
-## Область
+## Scope
 
-Изменения манифестов и локфайла в дифе (`package.json` всех воркспейсов, локфайл) плюс новые бинарные файлы: изображения, шрифты, видео, иконки.
+Changes of manifests and the lockfile in the diff (`package.json` of all workspaces, the lockfile) plus new binary files: images, fonts, video, icons.
 
-Ничего из этого в дифе нет — верни «нечего проверять» одной строкой и не трать проход.
+None of that is in the diff — return "nothing to check" in one line and do not spend the pass.
 
-Конфиг объявляет `unused_deps` в секции «Static analysis» — прогони его первым: пункт «зависимость добавили и не импортируют» он закрывает надёжнее грепа по имени пакета. Оставь из вывода только пакеты из дифа — остальное пре-существующий долг, не наша область. Подтверждение из раздела ниже это не отменяет: непрямые подключения (плагины сборщика, конфиги линтера, `postinstall`, type-only импорты) такие тулы штатно считают неиспользуемыми.
+The config declares `unused_deps` in the "Static analysis" section — run it first: it closes the item "a dependency was added and is not imported" more reliably than a grep by package name. Keep from the output only the packages from the diff — the rest is pre-existing debt, not our scope. It does not cancel the confirmation from the section below: indirect hookups (bundler plugins, linter configs, `postinstall`, type-only imports) such tools routinely count as unused.
 
-## Что проверять
+## What to check
 
-### Новые зависимости
+### New dependencies
 
-1. **Есть ли в репо эквивалент.** Вторая библиотека дат, строк, форм или запросов рядом с существующей — это дублирование с приложенной ценой в килобайтах. Грепни импорты по всему репозиторию, прежде чем согласиться с новинкой.
-2. **Импортируется ли она вообще.** Зависимость, пережившая переписывание и оставшаяся неиспользованной, в ревью незаметна. Грепни имя пакета по коду.
-3. **Правильный раздел.** Всё, что нужно только сборке, тестам или линту, обязано лежать в dev-зависимостях. Тулинг в рантайм-разделе едет в образ и в бандл.
-4. **Версия в стиле проекта.** Если в монорепо есть каталог версий или единый пин — новая зависимость обязана идти оттуда, а не своим диапазоном. Разъехавшиеся версии одного пакета между приложениями дают две копии в рантайме.
-5. **Транзитивный вес.** Для заметной библиотеки скажи размер и есть ли tree-shakeable-вход. Не гадай — посмотри, что реально попадает в бандл.
-6. **Живость и версия.** Проверь (см. «Подтверждение»), что добавленная версия не deprecated, пакет не заменён преемником, а используемый в дифе API есть в этой версии. Новая зависимость на мажор ниже актуального — отдельная находка с вопросом «почему не свежий».
-7. **Дубли фреймворка.** Вторая копия React/Vue/i18next из-за линка на соседний репо ломает хуки и контексты способом, который выглядит как баг приложения. Проверь, если задача трогала линкованные пакеты.
+1. **Is there an equivalent in the repo.** A second library for dates, strings, forms or requests next to an existing one is duplication with the price attached in kilobytes. Grep the imports over the whole repository before you agree to the newcomer.
+2. **Is it imported at all.** A dependency that survived a rewrite and stayed unused is unnoticeable in review. Grep the package name over the code.
+3. **The right section.** Everything needed only by the build, tests or lint must lie in the dev dependencies. Tooling in the runtime section goes into the image and the bundle.
+4. **The version in the project's style.** If the monorepo has a version catalog or a single pin — the new dependency must come from there, not with its own range. Diverging versions of one package between apps give two copies at runtime.
+5. **Transitive weight.** For a notable library say the size and whether there is a tree-shakeable entry. Do not guess — look at what really gets into the bundle.
+6. **Liveness and version.** Check (see "Confirmation") that the added version is not deprecated, the package is not replaced by a successor, and the API used in the diff exists in this version. A new dependency on a major below the current one is a separate finding with the question "why not the fresh one".
+7. **Framework duplicates.** A second copy of React/Vue/i18next because of a link to a neighbouring repo breaks hooks and contexts in a way that looks like an app bug. Check if the task touched linked packages.
 
-### Новые ассеты
+### New assets
 
-- На каждый новый файл есть ссылка (включая `url(...)` в CSS, манифесты, вычисляемые пути).
-- Размер разумный для назначения; формат согласован с остальными ассетами репо.
-- Растр вместо вектора там, где рядом лежат SVG, — находка.
+- Every new file has a reference (including `url(...)` in CSS, manifests, computed paths).
+- The size is reasonable for the purpose; the format is consistent with the other assets of the repo.
+- Raster instead of vector where SVGs lie nearby — a finding.
 
-## Подтверждение
+## Confirmation
 
-- «Эквивалент уже есть» подтверждай конкретным путём и числом call-sites, а не памятью.
-- Прежде чем сказать «не импортируется» — проверь непрямые подключения: плагины сборщика, конфиги линтера, `postinstall`, типы-only импорты.
-- «Deprecated» и «заменён преемником» — по реестру: `npm view <pkg>@<версия> deprecated` (пусто — не deprecated; текст обычно называет преемника) и `npm view <pkg> time --json` (дата последнего релиза); «этого API нет в версии» — по типам установленного пакета (`node_modules/<pkg>/…d.ts`). Не по памяти модели. Реестр недоступен и пакет не установлен — пометь пункт «не проверено» и не делай из него находку.
-- Прежде чем предлагать понизить в dev — убедись, что пакет не тянется рантаймом на сервере (SSR-путь легко перепутать с билд-тайм).
+- Confirm "an equivalent already exists" with a concrete path and the number of call-sites, not from memory.
+- Before saying "not imported" — check the indirect hookups: bundler plugins, linter configs, `postinstall`, type-only imports.
+- "Deprecated" and "replaced by a successor" — by the registry: `npm view <pkg>@<version> deprecated` (empty — not deprecated; the text usually names the successor) and `npm view <pkg> time --json` (the date of the last release); "this API is not in the version" — by the types of the installed package (`node_modules/<pkg>/…d.ts`). Not from the model's memory. The registry is unavailable and the package is not installed — mark the item "not checked" and do not make a finding out of it.
+- Before suggesting to demote to dev — make sure the package is not pulled by the runtime on the server (an SSR path is easy to confuse with build time).
 
-## Отчёт
+## Report
 
-В `<task_dir>/<TICKET>/checks/deps-audit-<stage>.md` (перед PR — `deps-audit-branch.md`) и компактно в оркестратор:
+Into `<task_dir>/<TICKET>/checks/deps-audit-<stage>.md` (before the PR — `deps-audit-branch.md`) and compactly to the orchestrator. The report follows the common contract `${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`, written in the task language:
 
+```markdown
+# Deps audit: <stage or branch>
+Findings: critical N · major N · minor N
+
+| # | Package / asset | What is wrong | What to replace with / where to move | Severity |
+|---|-----------------|---------------|--------------------------------------|----------|
+
+Outcome: N dependencies added, N of them justified, bundle weight delta <measured value | not measured>.
+
+## Could not verify
+(what was not checked, e.g. the registry is unavailable; nothing left — "everything verified")
 ```
-| # | Пакет / ассет | Что не так | Чем заменить / куда перенести | Severity |
-|---|---------------|------------|-------------------------------|----------|
-```
 
-Плюс одна строка итога: сколько зависимостей добавлено, сколько из них оправдано, дельта веса бандла, если её удалось измерить. Всё чисто — так и скажи.
+All clean — say so.
