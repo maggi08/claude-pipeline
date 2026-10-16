@@ -4,6 +4,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { planArchive } from '../archive-stages.mjs'
 import { ensureBaseline } from '../journal-check.mjs'
+import { FORCE_BLOCK_PRESENT } from '../markers.mjs'
 import { AFTER_CLOSE_DAYS, closedForceDate, pluginDataDir, readHookInput, readPipelineState, registerTaskDir, STALE_DAYS, unjournaledCommits } from './pipeline-state.mjs'
 
 /**
@@ -55,7 +56,7 @@ const listed = (commits) =>
 
 // Журнал отстаёт от ветки, когда этапы кончились: в force каждый коммит этапа попадает в журнал тем же ходом.
 const outside = (task) => {
-  if (task.forceActive || !/^## Force-прогон/m.test(task.stages)) return null
+  if (task.forceActive || !FORCE_BLOCK_PRESENT.test(task.stages)) return null
   const commits = unjournaledCommits(state, task)
   if (!commits.length) return null
   const onBranch = commits.filter(({ where }) => where === 'branch')

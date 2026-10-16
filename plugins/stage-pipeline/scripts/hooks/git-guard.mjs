@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { journalText, openLedgers, reportNames } from '../journal-check.mjs'
 import { scanOverrides, summarize } from '../kit-override-scan.mjs'
+import { PARITY_TABLE } from '../markers.mjs'
 import { commitScope, gitInvocations } from './git-command.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
@@ -75,7 +76,7 @@ for (const { subcommand, dir, args } of invocations) {
   if (paths?.length === 0) continue
 
   const journal = journalText(task.dir)
-  const removed = removedComponents(state.worktree, paths).filter((name) => !/паритет/i.test(journal) || !journal.includes(name))
+  const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
   if (removed.length) {
     deny(
       `stage-pipeline: этап удаляет UI — ${removed.map((name) => `\`${name}\``).join(', ')}, а таблицы паритета с этими строками в STAGES.md нет. Коммит отклонён.\n` +

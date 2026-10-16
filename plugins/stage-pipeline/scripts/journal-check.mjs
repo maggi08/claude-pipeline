@@ -20,6 +20,21 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import {
+  BLOCKER_LIFTED,
+  BLOCKER_LINE,
+  CLOSED_WORD,
+  DEAD_CODE_REMOVE,
+  LEDGER_HEADING,
+  NO_VISUAL_REFERENCE,
+  STAGE_FILE,
+  SUMMARY_STANDARD,
+  UNVERIFIED_HEADING,
+  VISUAL_REFERENCE_FIELD,
+  WITH_BLOCKERS,
+  forceHeadings,
+  stageHeadingOf,
+} from './markers.mjs'
 
 const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
 const AC_ID = /AC-\d/
@@ -212,7 +227,7 @@ export function findingCounts(text, name = '') {
   const lines = text.split('\n')
   const patterns = {
     critical: [/🔴\s*\**\s*(?:critical)?\s*\**\s*:?\s*(\d+)/i, ...severityPatterns(security ? ['critical', 'high'] : ['critical'])],
-    major: [/🟠\s*\**\s*(?:major)?\s*\**\s*:?\s*(\d+)/i, ...severityPatterns(security ? ['major', 'medium'] : ['major']), /(\d+)\s*удалить(?![а-яё])/i],
+    major: [/🟠\s*\**\s*(?:major)?\s*\**\s*:?\s*(\d+)/i, ...severityPatterns(security ? ['major', 'medium'] : ['major']), DEAD_CODE_REMOVE],
     minor: [/🟡\s*\**\s*(?:minor)?\s*\**\s*:?\s*(\d+)/i, /(\d+)\s*\**\s*minor/i, /(?<![\w-])minor\**\s*:?\s*(\d+)/i, ...(security ? severityPatterns(['low']) : [])],
   }
   const summary = { critical: null, major: null, minor: null }
@@ -265,7 +280,7 @@ export function disposition(entry) {
 }
 
 export function ledgerEntries(text) {
-  const start = text.search(/^#{2,3}\s*Итог находок/im)
+  const start = text.search(LEDGER_HEADING)
   if (start === -1) return null
   const body = text.slice(start).split('\n').slice(1)
   const end = body.findIndex((line) => /^#{1,3}\s/.test(line))
@@ -307,7 +322,7 @@ export function ledgerViolations(text, name, { complete = false } = {}) {
   }
   if (!complete) return found
   const counts = findingCounts(text, name)
-  const fails = failedCriteria(text.slice(0, Math.max(0, text.search(/^#{2,3}\s*Итог находок/im)) || text.length))
+  const fails = failedCriteria(text.slice(0, Math.max(0, text.search(LEDGER_HEADING)) || text.length))
   const required = Math.max(counts.critical + counts.major, fails.length)
   const accepted = entries.filter((entry) => ACCEPTED.has(disposition(entry))).length
   if (accepted < required) {
@@ -327,7 +342,7 @@ export function ledgerViolations(text, name, { complete = false } = {}) {
 export function summaryViolation(text, name) {
   if (!reportChecker(name)) return null
   const counts = findingCounts(text, name)
-  const standard = /Находки:\s*critical\s*\d+\s*·\s*major\s*\d+/i.test(text)
+  const standard = SUMMARY_STANDARD.test(text)
   if (standard || counts.summary || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return null
   return {
     rule: 'report-summary',
@@ -365,9 +380,9 @@ export function runtimeViolations(text, name, taskDir = null) {
         '(skill devtools-verify, шаг «Геометрия»). Переполнение и нулевой зазор до края контейнера скриншот не показывает, пока на него не смотрят.',
     })
   }
-  const unverified = text.slice(Math.max(0, text.search(/^#{2,3}\s*Не удалось проверить/im)))
+  const unverified = text.slice(Math.max(0, text.search(UNVERIFIED_HEADING)))
   const line = unverified.split('\n').find((candidate) => NO_DATA.test(candidate) && !STUBBED.test(candidate))
-  if (/^#{2,3}\s*Не удалось проверить/im.test(text) && line) {
+  if (UNVERIFIED_HEADING.test(text) && line) {
     found.push({
       rule: 'live-no-data',
       id: name,
@@ -391,15 +406,15 @@ export function reportViolations(path) {
 
 /** «Эталон вида» этапа, к которому относится отчёт (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), или null. */
 export function stageReference(taskDir, name) {
-  const stage = name.match(/(?:stage|этап)-?(\d+[a-z]?)\b/i)?.[1] ?? name.match(/devtools-verify-(\d+[a-z]?)\b/i)?.[1]
+  const stage = name.match(STAGE_FILE)?.[1] ?? name.match(/devtools-verify-(\d+[a-z]?)\b/i)?.[1]
   if (!stage) return null
   const text = journalText(taskDir)
-  const heading = text.match(new RegExp(`^###\\s+Этап\\s+${stage}(?![\\w.])[^\\n]*$`, 'm'))
+  const heading = text.match(stageHeadingOf(stage))
   if (!heading) return null
   const rest = text.slice(heading.index + heading[0].length)
   const end = rest.search(/^#{2,3}\s/m)
-  const value = (end === -1 ? rest : rest.slice(0, end)).match(/эталон\s+вида\**\s*:\s*(.+)$/im)?.[1]?.trim()
-  return value && !/^(?:—|-|нет|n\/a|не\s+нужен)/i.test(value) ? value : null
+  const value = (end === -1 ? rest : rest.slice(0, end)).match(VISUAL_REFERENCE_FIELD)?.[1]?.trim()
+  return value && !NO_VISUAL_REFERENCE.test(value) ? value : null
 }
 
 const VALUE =
@@ -569,7 +584,7 @@ export function openLedgers(dataDir, taskDir) {
 
 /** Последний блок «Force-прогон»: заголовок и текст до следующего раздела. */
 export function lastForceBlock(stages) {
-  const heading = [...stages.matchAll(/^## Force-прогон.*$/gm)].at(-1)
+  const heading = forceHeadings(stages).at(-1)
   if (!heading) return null
   const rest = stages.slice(heading.index + heading[0].length)
   const end = rest.search(/^## /m)
@@ -580,7 +595,7 @@ export function lastForceBlock(stages) {
 export const openBlockers = (body) =>
   body
     .split('\n')
-    .filter((line) => /^\s*[-*]?\s*\**B\d+\**\s*[—–:-]/.test(line) && !/снят|реш[её]н|закрыт|отвечен|ответ\s+пользователя|решение\s+пользователя/i.test(line))
+    .filter((line) => BLOCKER_LINE.test(line) && !BLOCKER_LIFTED.test(line))
     .map((line) => line.trim())
 
 /**
@@ -591,10 +606,10 @@ export function forceCloseViolations(dataDir, taskDir) {
   const stagesPath = join(taskDir, 'STAGES.md')
   if (!existsSync(stagesPath)) return []
   const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
-  if (!block || !/заверш/i.test(block.heading)) return []
+  if (!block || !CLOSED_WORD.test(block.heading)) return []
   const { lines } = baselineInfo(dataDir, taskDir)
   if (lines.has(fingerprint(block.heading))) return []
-  if (/с\s+блокер/i.test(block.heading)) return []
+  if (WITH_BLOCKERS.test(block.heading)) return []
   const found = []
   const blockers = openBlockers(block.body)
   if (blockers.length) {

@@ -23,6 +23,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { baselineInfo, fingerprint, lastForceBlock, openBlockers } from './journal-check.mjs'
 import { pluginDataDir, readPipelineState } from './hooks/pipeline-state.mjs'
+import { CI_GATES_HEADING, CLOSED_WORD, NO_GATE_COMMAND, WITH_BLOCKERS } from './markers.mjs'
 
 const RUN_CHECK = join(dirname(fileURLToPath(import.meta.url)), 'run-check.mjs')
 
@@ -35,14 +36,14 @@ export function gateCommands(config) {
   const gates = []
   for (const [, key, raw] of config.matchAll(/^\s*-\s*\**(e2e|smoke)\**(?:\s*\([^)\n]*\))?\s*:\s*(.+)$/gim)) {
     const command = raw.match(/`([^`]+)`/)?.[1] ?? raw.split(/\s+#|\s+\/\s+|\s+\(|\s+\|/)[0]
-    if (!command || /^(?:нет|—|-|none|no)(?![а-яёa-z])/i.test(command.trim())) continue
+    if (!command || NO_GATE_COMMAND.test(command.trim())) continue
     gates.push({ name: key.toLowerCase(), command: normalize(command) })
   }
   return dedupe(gates)
 }
 
 function gateTable(config) {
-  const heading = config.match(/^(#{2,4})\s*(?:Гейты\s+CI|CI\s+gates)\b.*$/im)
+  const heading = config.match(CI_GATES_HEADING)
   if (!heading) return []
   const rest = config.slice(heading.index + heading[0].length).split('\n')
   const end = rest.findIndex((line) => new RegExp(`^#{1,${heading[1].length}}\\s`).test(line))
@@ -128,11 +129,11 @@ export function gateCloseViolations(dataDir, worktree, config, taskDir) {
   const stagesPath = join(taskDir, 'STAGES.md')
   if (!existsSync(stagesPath)) return []
   const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
-  if (!block || !/заверш/i.test(block.heading)) return []
+  if (!block || !CLOSED_WORD.test(block.heading)) return []
   if (baselineInfo(dataDir, taskDir).lines.has(fingerprint(block.heading))) return []
   const failing = gateStatus(dataDir, worktree, config).filter((gate) => gate.status !== 'green')
   if (!failing.length) return []
-  const withBlockers = /с\s+блокер/i.test(block.heading)
+  const withBlockers = WITH_BLOCKERS.test(block.heading)
   const blockers = openBlockers(block.body).join('\n').toLowerCase()
   return failing
     .filter((gate) => !withBlockers || !(blockers.includes(gate.name.toLowerCase()) || blockers.includes(gate.command.toLowerCase())))

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileS
 import { join, resolve, sep } from 'node:path'
 import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
 import { gateCloseViolations } from '../ci-gates.mjs'
+import { CLOSED_WORD } from '../markers.mjs'
 import { runDigest } from '../run-digest.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
@@ -98,7 +99,7 @@ function closedDigest(task) {
   const stagesPath = join(task.dir, 'STAGES.md')
   if (!existsSync(stagesPath)) return null
   const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
-  if (!block || !/заверш/i.test(block.heading)) return null
+  if (!block || !CLOSED_WORD.test(block.heading)) return null
   const { lines } = baselineInfo(pluginDataDir(), task.dir)
   const shown = join(pluginDataDir(), 'digest-shown.json')
   let seen = {}

@@ -11,6 +11,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
+import { STAGE_HEADING, STAGE_MENTION } from './markers.mjs'
 
 const targets = process.argv.slice(2)
 if (!targets.length || targets.includes('--help')) {
@@ -127,7 +128,7 @@ for (const dir of taskDirs) {
  */
 function stageBlocksOf(text) {
   const lines = text.split('\n')
-  const headings = lines.map((line, index) => ({ index, match: line.match(/^(#{2,3}) Этап ([\w.]+)/) })).filter(({ match }) => match)
+  const headings = lines.map((line, index) => ({ index, match: line.match(STAGE_HEADING) })).filter(({ match }) => match)
   const withStatus = headings.filter(({ index }) => /\[status:/i.test(lines[index]))
   return (withStatus.length ? withStatus : headings).map(({ index, match }) => {
     let end = index + 1
@@ -150,7 +151,7 @@ function metricsLines(text, stageBlocks) {
     let stage = line.match(/\bstage=([\w.]+)/)?.[1]
     stage ??= blocks.find(({ start, end }) => index > start && index < end)?.number
     for (let back = index; !stage && back >= Math.max(0, index - 12); back--) {
-      stage = lines[back].match(/этап[а-я]*\s+([\w.]+)/i)?.[1]
+      stage = lines[back].match(STAGE_MENTION)?.[1]
       if (back < index && /^[-*] /.test(lines[back])) break
     }
     if (stage && stageBlocks.has(stage)) byStage.set(stage, line)

@@ -30,6 +30,7 @@ import {
   openBlockers,
 } from './journal-check.mjs'
 import { describe, gateStatus } from './ci-gates.mjs'
+import { AWAITING_SECTION, UNVERIFIED_HEADING } from './markers.mjs'
 import { pluginDataDir, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
@@ -58,7 +59,7 @@ export function runDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
 
   const unverified = []
   for (const { name, text } of reports) {
-    const start = text.search(/^#{2,3}\s*Не удалось проверить/im)
+    const start = text.search(UNVERIFIED_HEADING)
     if (start === -1) continue
     const body = text.slice(start).split('\n').slice(1)
     const end = body.findIndex((line) => /^#{1,3}\s/.test(line))
@@ -85,7 +86,7 @@ export function runDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     out.push('', `### Minor без итога (${minors.reduce((sum, { left }) => sum + left, 0)})`, `- ${minors.map(({ name, left }) => `${name}: ${left}`).join(' · ')}`)
   }
 
-  const pending = section(stages, /^## ⚠?\s*Ожидают подтверждения/m).filter(fresh).filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line))
+  const pending = section(stages, AWAITING_SECTION).filter(fresh).filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line))
   out.push('', `### Принято само — проверь, дорогие откаты первыми (${pending.length})`, ...(pending.length ? pending.map((line) => `- ${bullet(line).slice(0, 220)}`) : ['- нет']))
   return out.join('\n')
 }

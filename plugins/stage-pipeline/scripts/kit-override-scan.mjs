@@ -25,6 +25,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readConfig } from './hooks/pipeline-state.mjs'
+import { KIT_OVERRIDES_OFF, LEDGER_HEADING } from './markers.mjs'
 
 const CODE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|html?|css|scss|sass|less|styl)$/
 const SKIP =
@@ -63,7 +64,7 @@ export function kitDirs(config, root) {
   return [...new Set(dirs)]
 }
 
-export const scanDisabled = (config) => /^\s*-\s*kit_overrides\s*:\s*`?(?:off|false|no|нет)\b/im.test(config)
+export const scanDisabled = (config) => KIT_OVERRIDES_OFF.test(config)
 
 /**
  * Переопределения в добавленных строках: `[{ file, hits: [{ kind, token, line }] }]`.
@@ -141,7 +142,8 @@ export function renderReport(found, { title = 'рабочее дерево пр�
   }
   lines.push('', '## Не удалось проверить', '- стили, собранные в рантайме (`cn(cond && …)`, значения из переменных), скрипт видит только литералами — вычисленный вид сверяет devtools-verify с эталонной секцией.')
   // Повторный скан после фиксов не стирает итог: строки «исправлено» относятся к прошлым находкам.
-  const ledger = previous.match(/^#{2,3}\s*Итог находок[\s\S]*$/m)?.[0]
+  const ledgerAt = previous.search(LEDGER_HEADING)
+  const ledger = ledgerAt === -1 ? null : previous.slice(ledgerAt)
   if (ledger) lines.push('', ledger.trimEnd())
   return `${lines.join('\n')}\n`
 }

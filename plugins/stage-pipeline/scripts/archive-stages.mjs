@@ -19,11 +19,16 @@
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import {
+  ARCHIVED_STUB,
+  CLOSED_STAGE,
+  JOURNAL_HEADING,
+  KEEP_LINE,
+  OLDER_ENTRIES,
+  PROTECTED_SECTION,
+  STAGE_HEADING,
+} from './markers.mjs'
 
-const KEEP = /^(\s*[-*]\s*)?(\*\*)?(Коммит|Commit|Решени|metrics:)|^\s*[-*]\s*\[x\]\s*commit:|^\s*[-*]\s*\[ \](?!.*\bskip\b)|\[live:|⏳/i
-const STAGE_HEADING = /^(#{2,3}) Этап [\w.]+/
-const CLOSED = /\[status:\s*(done|cancelled|отмен)/i
-const PROTECTED_SECTION = /^#{1,2} (Force-прогон|Журнал)/i
 const ARCHIVED = 'Полная запись: STAGES-ARCHIVE.md'
 const bytes = (text) => Buffer.byteLength(text, 'utf8')
 
@@ -50,10 +55,10 @@ export function planArchive(source, { journalKeep = 8 } = {}) {
   }
 
   for (const block of blocks.reverse()) {
-    if (!CLOSED.test(block.heading)) continue
+    if (!CLOSED_STAGE.test(block.heading)) continue
     const body = lines.slice(block.start + 1, block.end)
-    if (body.some((line) => line.startsWith(ARCHIVED))) continue
-    const kept = body.filter((line) => KEEP.test(line))
+    if (body.some((line) => ARCHIVED_STUB.test(line))) continue
+    const kept = body.filter((line) => KEEP_LINE.test(line))
     const collapsed = [block.heading, ...kept, `${ARCHIVED} — «${block.heading.replace(/^#+ /, '')}»`, '']
     if (bytes(body.join('\n').trim()) <= bytes(collapsed.slice(1).join('\n')) + 200) continue
     moved.unshift({ heading: block.heading, text: lines.slice(block.start, block.end).join('\n').trimEnd() })
@@ -62,7 +67,7 @@ export function planArchive(source, { journalKeep = 8 } = {}) {
 
   // Журнал — после этапов, чтобы индексы блоков этапов выше уже не сдвигались.
   let movedJournal = []
-  const journalStart = lines.findIndex((line) => /^## Журнал(?:\s|$)/i.test(line))
+  const journalStart = lines.findIndex((line) => JOURNAL_HEADING.test(line))
   if (journalStart !== -1) {
     let journalEnd = journalStart + 1
     while (journalEnd < lines.length && !/^#{1,2} /.test(lines[journalEnd])) journalEnd++
@@ -120,8 +125,8 @@ function freshest(entries, count) {
 }
 
 function rebuildJournal(journal, keep, movedCount) {
-  const previous = journal.preamble.map((line) => Number(line.match(/^Старые записи \((\d+)\)/)?.[1] ?? 0)).reduce((a, b) => a + b, 0)
-  const preamble = journal.preamble.filter((line) => !line.startsWith('Старые записи (')).join('\n').trim()
+  const previous = journal.preamble.map((line) => Number(line.match(OLDER_ENTRIES)?.[1] ?? 0)).reduce((a, b) => a + b, 0)
+  const preamble = journal.preamble.filter((line) => !OLDER_ENTRIES.test(line)).join('\n').trim()
   const out = [...(preamble ? ['', preamble] : []), '', `Старые записи (${previous + movedCount}): STAGES-ARCHIVE.md — «Журнал».`, '']
   for (const group of journal.groups) {
     const kept = group.entries.filter((entry) => keep.has(entry))

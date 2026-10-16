@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { CONFIRMED_LINE, MODE_WORD } from '../markers.mjs'
 import { openForceBlock, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
 
 /**
@@ -19,8 +20,7 @@ import { openForceBlock, readHookInput, readPipelineState, reviewModel } from '.
  *   не обязан переписывать свой блок, даже открытый в день релиза ещё на 0.11.
  */
 const CONFIRM_SINCE = '2026-10-03'
-const CONFIRMED = /^\s*[-*]?\s*\**Подтвержд[её]н[оа]?\**\s*:/im
-const WHOLE_BRANCH = /whole[-\s]branch\s+mode|(?:режим|mode)\s*:?\s*\**whole[-\s]branch/i
+const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*:?\\s*\\**whole[-\\s]branch`, 'i')
 
 const input = await readHookInput()
 const toolInput = input.tool_input ?? {}
@@ -45,7 +45,7 @@ if (agent === 'pro-review' && WHOLE_BRANCH.test(toolInput.prompt ?? '')) {
 if (agent === 'stage-implement') {
   const task = state.tasks.find((candidate) => candidate.current)
   const block = task && openForceBlock(task.stages)
-  if (block && block.date && block.date >= CONFIRM_SINCE && !CONFIRMED.test(block.body)) {
+  if (block && block.date && block.date >= CONFIRM_SINCE && !CONFIRMED_LINE.test(block.body)) {
     deny(
       `stage-pipeline: в блоке «${block.heading.replace(/^## /, '')}» задачи ${task.ticket} нет строки \`Подтверждено:\` (stage-force, Шаг 0). ` +
         'Интервью прошло — допиши в блок `Подтверждено: <дата> — ответы интервью` (вопросов не было — `— вопросов нет`) и повтори запуск. ' +

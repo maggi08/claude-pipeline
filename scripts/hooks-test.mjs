@@ -19,6 +19,8 @@ process.env.CLAUDE_PLUGIN_DATA = DATA
 const { commitScope, gitInvocations } = await import(join(PLUGIN, 'hooks/git-command.mjs'))
 const { taskDirFromConfig, taskBranches, isCurrentTask, forceActive, openForceBlock, reviewModel } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
 const { planArchive } = await import(join(PLUGIN, 'archive-stages.mjs'))
+const { closedForceDate, taskLanguage, readPipelineState } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+const markers = await import(join(PLUGIN, 'markers.mjs'))
 const { acViolation, skipViolation, barePasses } = await import(join(PLUGIN, 'journal-check.mjs'))
 
 let failed = 0
@@ -119,6 +121,63 @@ check('открытый Force-блок: дата из заголовка, тек
   return block?.date === '2026-10-05' && block.body.includes('Ответы интервью') && !block.body.includes('Этапы')
 })())
 check('review_model: из конфига, по умолчанию opus', reviewModel('- review_model: sonnet   # дешевле') === 'sonnet' && reviewModel('- main_branch: dev') === 'opus')
+
+// ── английские близнецы маркеров: тот же результат, что на русском ──────────────
+const EN_HEADERS = [
+  ['Branch: `T-4/feat/app` · App: `apps/expert` · Contexts: desktop', ['T-4/feat/app']],
+  ['Branch: redesign-2.0  Contexts: mobile + desktop', ['redesign-2.0']],
+  ['Branch: TBD, base — `redesign-2.0` (decision 2026-08-04)', []],
+  ['Branch: none', []],
+  ['Branch: n/a', []],
+  ['Figma: — (logic-only)  Branch: master (no PR flow, commits per stage)  Contexts: owner', ['master']],
+  ['Branches: `T-5/feat/a` cut from `dev`', ['T-5/feat/a']],
+  ['Branch: T-5/feat/b branched from dev', ['T-5/feat/b']],
+  ['Branch: T-5/feat/c rebased onto dev', ['T-5/feat/c']],
+  ['Branch: T-5/feat/d → PR into dev', ['T-5/feat/d']],
+]
+for (const [line, want] of EN_HEADERS) {
+  const got = taskBranches(`# T: task\n${line}\nUpdated: 2026-09-01\n\n## Status: stage 1\n\nBranch: \`not-a-header\`\n`)
+  check(`EN header ${JSON.stringify(line).slice(0, 60)}`, same(got, want), `got ${JSON.stringify(got)}`)
+}
+check('EN open Force run block', forceActive('## Force run 2026-09-01\nMode: …'))
+check('EN closed Force run block', !forceActive('## Force run 2026-09-01 — completed 2026-09-02\nMode: …'))
+check('EN closed with blockers', !forceActive('## Force run 2026-09-01 — completed with blockers 2026-09-02\nMode: …'))
+check('EN status closes the run', !forceActive('## Status: 5 of 5 stages done — force run completed, waiting for push\n\n## Force run 2026-09-01\n'))
+check('EN status with a date between the words', !forceActive('## Status: force run 2026-09-23 completed — three commits\n\n## Force run 2026-09-23\n'))
+check('EN "force run not completed" keeps the run open', forceActive('## Status: force run not completed, stage 7 in progress\n\n## Force run 2026-09-01\n'))
+check('EN all stages done, final checks — run is open', forceActive('## Status: all stages done, final checks\n\n## Force run 2026-09-01\n\n### Stage 1: x  [status: done]\n'))
+check('EN open Force block: date from the heading, text up to the next section', (() => {
+  const block = openForceBlock('## Force run 28.09.2026 — completed 28.09.2026\nold\n\n## Force run 2026-10-05b (second)\nInterview answers: …\n\n## Stages\n')
+  return block?.date === '2026-10-05' && block.body.includes('Interview answers') && !block.body.includes('Stages')
+})())
+const CLOSE_DATES = [
+  ['## Force-прогон 2026-10-05 — завершён 2026-10-06\n', '## Force run 2026-10-05 — completed 2026-10-06\n'],
+  ['## Статус: force-прогон 2026-10-05 завершён 06.10.2026\n\n## Force-прогон 2026-10-05\n', '## Status: force run 2026-10-05 completed 06.10.2026\n\n## Force run 2026-10-05\n'],
+  ['## Force-прогон 2026-10-05\n', '## Force run 2026-10-05\n'],
+]
+for (const [ru, en] of CLOSE_DATES) check(`closing date ${JSON.stringify(en).slice(0, 50)} — same as the Russian twin`, closedForceDate(en) === closedForceDate(ru) && (closedForceDate(ru) !== null || !/completed/.test(en)), `${closedForceDate(ru)} / ${closedForceDate(en)}`)
+check('closing date: EN heading gives the date', closedForceDate('## Force run 2026-10-05 — completed 2026-10-06\n') === '2026-10-06')
+const LANGS = [
+  ['# T: задача\nFigma: x  Ветка: `x`  Language: en  Контексты: web\n\n## Журнал\n', 'en'],
+  ['# T: task\nFigma: x  Branch: `x`  Язык: ru  Contexts: web\n\n## Journal\n', 'ru'],
+  ['# T: task\nFigma: x · Language: en\n\n## Журнал\n', 'en'],
+  ['# T: task\nBranch: `x`\n\n## Журнал\n\nThe Language: en option is documented elsewhere.\n', 'ru'],
+  ['# T: задача\nЯзык: ru\nВетка: `x`\n\n## Journal\n', 'ru'],
+  ['# T: task\nLanguage: en\nBranch: `x`\n\n## Журнал\n', 'en'],
+  ['# T: task\n- **Language:** en\n\n## Stages\n', 'en'],
+  ['# T: задача\nВетка: `x`\n\n## Статус: этап 1\n\n## Этапы\n\n### Этап 1: первый\n\n## Журнал\n', 'ru'],
+  ['# T: task\nBranch: `x`\n\n## Status: stage 1\n\n## Stages\n\n### Stage 1: first\n\n## Journal\n', 'en'],
+  ['# T: task\n\n## Force run 2026-10-05\n\n### Stage 1: first\n', 'en'],
+  ['# T: задача\n\n## Force-прогон 2026-10-05\n\n### Этап 1: первый\n', 'ru'],
+  ['# T: no headings at all\nBranch: `x`\n', null],
+  ['# T\n\n## Force run 2026-10-05\n', null],
+  ['', null],
+]
+for (const [text, want] of LANGS) check(`task language ${JSON.stringify(text).slice(0, 56)} → ${want}`, taskLanguage(text) === want, String(taskLanguage(text)))
+check('markers: Parity — prose is not a table', ['the prototype parity pass', 'see parity.mjs', 'feature parity with the kit'].every((line) => !markers.PARITY_TABLE.test(line)))
+check('markers: Parity — field, heading, table cell', ['Parity: moved', '- **Parity:** moved', '### Parity', '| Parity | x |'].every((line) => markers.PARITY_TABLE.test(line)))
+check('markers: stage mention needs a word boundary', !markers.STAGE_MENTION.test('backstage 2 of the show') && markers.STAGE_MENTION.test('Stage 2 done') && markers.STAGE_MENTION.test('этап 2'))
+check('markers: Parity table — the word, not the ds-parity skill name', markers.PARITY_TABLE.test('| Parity | was `Old` |') && markers.PARITY_TABLE.test('| Паритет | было |') && !markers.PARITY_TABLE.test('- [x] ds-parity (checks/ds-parity-1.md)'))
 
 // ── правила закрытия критериев ───────────────────────────────────────────────
 // Строки — живые формы из STAGES.md: исход перед формулировкой и после, отложенная проверка, smoke, решение пользователя.
@@ -325,6 +384,15 @@ check('stage-implement: подтверждение есть — проходит
 withForce('## Force-прогон 2026-09-24', 'Режим: автономный.')
 check('stage-implement: блок, открытый до 0.12, — не трогается', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2') === 'allow')
 check('другие агенты — молчит', agentHook('stage-pipeline:devtools-verify', 'whole-branch mode') === 'allow')
+withForce('## Force run 2026-10-05', 'Mode: autonomous.\nInterview answers: branch — from dev')
+check('EN stage-implement: new Force block without "Confirmed:" — denied', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2, implement mode') === 'deny')
+withForce('## Force run 2026-10-05', 'Mode: autonomous.\nInterview answers: branch — from dev\nConfirmed: 2026-10-05 — "yes, go"')
+check('EN stage-implement: "Confirmed:" is there — passes', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'allow')
+withForce('## Force run 2026-10-05', 'Mode: autonomous.\n- **Confirmed**: 2026-10-05 — "yes"')
+check('EN stage-implement: bold "**Confirmed**:" bullet — passes', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'allow')
+withForce('## Force run 2026-10-05 — completed 2026-10-05', 'Mode: autonomous.')
+check('EN stage-implement: closed block is not an open run — passes', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'allow')
+check('EN whole-branch pro-review: "Mode: whole-branch" without model — denied', agentHook('stage-pipeline:pro-review', 'Ticket T-7, Mode: whole-branch.') === 'deny')
 
 withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nПодтверждено: 2026-10-05 — «да»')
 write(app, { 'src/a.ts': 'export const a = 2\n', 'msg.txt': 'T-7: правка\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n' })
@@ -468,6 +536,8 @@ const COUNTS = [
   ['# devtools\n1 critical / 0 major / 0 minor. Shutter crashes on open\n', 'devtools-verify-1.md', [1, 0, 0]],
   ['# figma\nВердикт: PASS\n- кегль/вес — text-xs 12 / font-medium 500 / leading-4 16\n', 'stage-3-figma-compare.md', [0, 0, 0]],
   ['# dead\nИтог: 1 удалить / 2 под вопросом.\n', 'final-dead-code.md', [0, 1, 0]],
+  ['# dead\nVerdict: 1 to remove / 2 uncertain.\n', 'final-dead-code.md', [0, 1, 0]],
+  ['# dead\nVerdict: 1 remove / 2 uncertain.\n', 'final-dead-code.md', [0, 1, 0]],
   ['# sec\n## Итог\n| M1 | medium | ПДн в localStorage |\n| M2 | medium | стенд в проде |\n', 'final-security-review.md', [0, 2, 0]],
   ['# dead\n| 1 | `X` | a.ts:83 | high |\n', 'dead-code-final.md', [0, 0, 0]],
   ['# pro\nВердикт: Request changes (2 major).\n', 'stage-4-pro-review.md', [0, 2, 0]],
@@ -507,6 +577,44 @@ check(
 check('devtools skip — геометрии не требует', jc.runtimeViolations('# devtools-verify\nskip: MCP недоступен\n', 'devtools-verify-2.md').length === 0)
 check('отчёт чекера без сводки — report-summary', jc.summaryViolation('# i18n\nВердикт: 3 дефекта\n', 'i18n-sweep-2.md')?.rule === 'report-summary')
 check('не отчёт чекера (проба стенда) — сводка не нужна', jc.summaryViolation('# probe\n', 'stand-probe-2026-10-03.md') === null)
+const REVIEW_EN = '# pro-review, stage 1\nFindings: critical 0 · major 2 · minor 0\n\n### 🟠 M-1 a.ts:1 — duplicate\n### 🟠 M-2 b.ts:2 — race\n'
+const missingEn = jc.ledgerViolations(REVIEW_EN, 'pro-review-1.md', { complete: true })
+check('EN findings outcome: two major without lines — ledger-missing', missingEn.length === 1 && missingEn[0].rule === 'ledger-missing', JSON.stringify(missingEn))
+check('EN findings outcome: one line for two major — still incomplete', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — fixed: a.ts:3\n`, 'pro-review-1.md', { complete: true }).length === 1)
+check('EN findings outcome: both closed — clean', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — fixed: a.ts:3\n- M-2 — B1\n`, 'pro-review-1.md', { complete: true }).length === 0)
+check('EN findings outcome: heading level ### is read too', jc.ledgerViolations(`${REVIEW_EN}\n### Findings outcome\n- M-1 — fixed: a.ts:3\n- M-2 — fixed: b.ts:4\n`, 'pro-review-1.md', { complete: true }).length === 0)
+check('EN findings outcome: entries are read from the section', same(jc.ledgerEntries(`${REVIEW_EN}\n## Findings outcome\n- M-1 — fixed: a.ts:3\n- M-2 — B1\n\n## Next\n- other\n`), ['- M-1 — fixed: a.ts:3', '- M-2 — B1']))
+check('EN summary line: counts are read', same(jc.findingCounts(REVIEW_EN, 'pro-review-1.md'), { critical: 0, major: 2, minor: 0, summary: true }), JSON.stringify(jc.findingCounts(REVIEW_EN, 'pro-review-1.md')))
+check('EN checker report without a summary — report-summary', jc.summaryViolation('# i18n\nVerdict: 3 defects\n', 'i18n-sweep-2.md')?.rule === 'report-summary')
+check('EN checker report with "Findings: critical N · major N" — clean', jc.summaryViolation('# i18n\nFindings: critical 0 · major 1 · minor 0\n', 'i18n-sweep-2.md') === null)
+check('RU checker report with «Находки: critical N · major N» — clean', jc.summaryViolation('# i18n\nНаходки: critical 0 · major 1 · minor 0\n', 'i18n-sweep-2.md') === null)
+check(
+  'EN devtools: "Could not verify" with "no data" — live-no-data',
+  same(jc.runtimeViolations('# d\nFindings: critical 0 · major 0 · minor 0\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n## Could not verify\n- AC-3.2 — no data on the stand\n', 'stage-3-devtools-verify.md').map((v) => v.rule), ['live-no-data']),
+)
+check(
+  'EN devtools: "Could not verify" with a stubbed state — clean',
+  jc.runtimeViolations('# d\nFindings: critical 0 · major 0 · minor 0\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n## Could not verify\n- AC-3.2 — no data, checked with a stubbed API response\n', 'stage-3-devtools-verify.md').length === 0,
+)
+const stageRef = (stages) => {
+  const dir = mkdtempSync(join(tmpdir(), 'stageref-'))
+  writeFileSync(join(dir, 'STAGES.md'), stages)
+  const got = ['stage-3-devtools-verify.md', 'этап-3-devtools-verify.md', 'devtools-verify-3.md'].map((name) => jc.stageReference(dir, name))
+  rmSync(dir, { recursive: true, force: true })
+  return got
+}
+const REF_RU = '# T\n\n### Этап 2: x\nЭталон вида: `a.tsx`\n\n### Этап 3: карточка\nЭталон вида: `src/Other.tsx:12` — соседняя секция\nКритерии:\n'
+const REF_EN = '# T\n\n### Stage 2: x\nVisual reference: `a.tsx`\n\n### Stage 3: card\nVisual reference: `src/Other.tsx:12` — neighbouring section\nCriteria:\n'
+check('visual reference: RU stage field is found for stage-/этап-/devtools-verify- names', stageRef(REF_RU).every((v) => v?.startsWith('`src/Other.tsx:12`')), JSON.stringify(stageRef(REF_RU)))
+check('visual reference: EN stage field gives the same value', same(stageRef(REF_EN).map((v) => v?.split(' — ')[0]), stageRef(REF_RU).map((v) => v?.split(' — ')[0])), JSON.stringify(stageRef(REF_EN)))
+for (const none of ['—', 'нет', 'n/a', 'не нужен']) check(`visual reference: RU value «${none}» — none`, stageRef(`### Этап 3: x\nЭталон вида: ${none}\n`).every((v) => v === null))
+for (const none of ['—', 'none', 'n/a', 'not needed', 'None.']) check(`visual reference: EN value «${none}» — none`, stageRef(`### Stage 3: x\nVisual reference: ${none}\n`).every((v) => v === null))
+check('visual reference: stage 3 is not stage 30', stageRef('### Stage 30: x\nVisual reference: `a.tsx`\n').every((v) => v === null))
+const OPEN_BLOCKERS = (done) => `- B1 — race — need a backend answer\n- B2 — y — ${done}\nB3: z\n`
+check('blockers: RU lifted forms are closed, others open', jc.openBlockers(OPEN_BLOCKERS('снят пользователем')).length === 2 && jc.openBlockers(OPEN_BLOCKERS('решение пользователя 2026-10-04')).length === 2)
+check('blockers: EN lifted forms are closed, others open', ['lifted by the user', 'resolved by the user', 'resolved: backend confirmed', 'closed by the user', 'answered by the user', 'user answer 2026-10-04', 'user decision 2026-10-04'].every((done) => jc.openBlockers(OPEN_BLOCKERS(done)).length === 2))
+check('blockers: bare EN words do not lift', jc.openBlockers('- B1 — issue не closed\n- B2 — not resolved yet\n').length === 2)
+check('blockers: EN open blocker lines are read from the block', same(jc.openBlockers('Blockers: B1\n- B1 — a\n- **B2** — b\n').length, 2))
 
 const lRoot = mkdtempSync(join(tmpdir(), 'ledger-test-'))
 const lApp = join(lRoot, 'app')
@@ -562,6 +670,25 @@ const closed = runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_
 check('«завершён с блокерами» — сводка прогона в контексте', closed.decision === 'message' && /Блокеры — нужен твой ответ \(1\)/.test(closed.text) && /AC-1\.2/.test(closed.text), `${closed.decision}: ${closed.text.slice(0, 200)}`)
 check('сводка прогона — один раз на закрытие', runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } }).decision === 'allow')
 
+// Английские близнецы блокеров и закрытия force-блока в journal-gate.
+const forceBlockEn = (heading, blockers = '') => `${heading}\nConfirmed: 2026-10-04 — yes\nBlockers: ${blockers}\n\n`
+const lStagesEn = (force) => `# T-11: task\nBranch: \`T-11/feat/l\`\n\n## Status: stage 1\n\n${force}## Stages\n\n### Stage 1: first  [status: in-progress]\n- [ ] pro-review\n`
+const ruClosedStages = readFileSync(join(lTask, 'STAGES.md'), 'utf8')
+write(lApp, { '.claude/tasks/T-11/STAGES.md': lStagesEn(forceBlockEn('## Force run 2026-10-04 — completed 2026-10-04', '\n- B1 — race M-2 — backend answer needed — recommend a queue')) })
+const closedEarlyEn = lGate('STAGES.md')
+check('EN "completed" with an open blocker — returned', closedEarlyEn.decision === 'block' && /с блокерами/.test(closedEarlyEn.text), closedEarlyEn.text)
+write(lApp, { '.claude/tasks/T-11/STAGES.md': lStagesEn(forceBlockEn('## Force run 2026-10-04 — completed 2026-10-04', '\n- B1 — race M-2 — backend answer needed — resolved by the user')) })
+check('EN "completed" with a lifted blocker — passes', lGate('STAGES.md').decision !== 'block', lGate('STAGES.md').text)
+write(lApp, { '.claude/tasks/T-11/STAGES.md': lStagesEn(forceBlockEn('## Force run 2026-10-04b — completed with blockers 2026-10-04', '\n- B1 — race M-2 — backend answer needed — recommend a queue')) })
+const closedEn = runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } })
+check('EN "completed with blockers" — run summary is in the context', closedEn.decision === 'message' && /Блокеры — нужен твой ответ \(1\)/.test(closedEn.text), `${closedEn.decision}: ${closedEn.text.slice(0, 200)}`)
+check('EN task: pipeline state gives task.language = en', readPipelineState(lApp)?.tasks.find((t) => t.ticket === 'T-11')?.language === 'en')
+write(lApp, { '.claude/tasks/T-11/STAGES.md': ruClosedStages })
+check('RU task: pipeline state gives task.language = ru', readPipelineState(lApp)?.tasks.find((t) => t.ticket === 'T-11')?.language === 'ru')
+write(lApp, { '.claude/tasks/T-11/STAGES.md': `# T-11\nLanguage: en\nBranch: \`T-11/feat/l\`\n\n## Статус: этап 1\n\n## Этапы\n\n### Этап 1: первый  [status: in-progress]\n` })
+check('task.language: the header line wins over the headings', readPipelineState(lApp)?.tasks.find((t) => t.ticket === 'T-11')?.language === 'en')
+write(lApp, { '.claude/tasks/T-11/STAGES.md': ruClosedStages })
+
 // frames-guard: кадры агента devtools-verify, открытые Read'ом, и неоткрытые.
 const shots = join(lTask, 'checks/screens')
 mkdirSync(shots, { recursive: true })
@@ -610,6 +737,13 @@ const parsed = gates.gateCommands(GATES_TABLE)
 check('гейты: таблица «Гейты CI» — названия и команды до следующего раздела', same(parsed, [{ name: 'Юниты', command: 'pnpm test' }, { name: 'Смоук', command: 'pnpm --filter smoke exec playwright test' }]), JSON.stringify(parsed))
 check('гейты: без таблицы — e2e из Commands', same(gates.gateCommands('- test: `yarn test`\n- e2e: `yarn e2e:test` / `yarn e2e:test:stg` (Playwright)\n'), [{ name: 'e2e', command: 'yarn e2e:test' }]))
 check('гейты: «e2e: НЕТ» — не гейт', gates.gateCommands('- e2e: НЕТ # тестов нет\n- test: yarn test\n').length === 0)
+const GATES_TABLE_EN =
+  '## Commands\n- test: `pnpm test`\n\n## CI gates (must not break)\n\n| Check | Command | What it catches |\n| --- | --- | --- |\n| Units | `pnpm test` | dictionaries |\n' +
+  '| **Smoke** | `pnpm --filter smoke exec playwright test` | routes |\n\n## Architecture\n| layer | `not a gate` |\n'
+check('EN gates: "CI gates" table — names and commands up to the next section', same(gates.gateCommands(GATES_TABLE_EN), parsed.map(({ command }, i) => ({ name: ['Units', 'Smoke'][i], command }))), JSON.stringify(gates.gateCommands(GATES_TABLE_EN)))
+check('EN gates: "e2e: NONE" — not a gate', gates.gateCommands('- e2e: NONE # no tests\n- test: yarn test\n').length === 0 && gates.gateCommands('- e2e: n/a\n').length === 0)
+check('EN gates: without a table — e2e from Commands', same(gates.gateCommands('- test: `yarn test`\n- e2e: `yarn e2e:test` / `yarn e2e:test:stg` (Playwright)\n'), [{ name: 'e2e', command: 'yarn e2e:test' }]))
+check('EN gates: "kit_overrides: disabled" and RU "нет" both switch the scan off', markers.KIT_OVERRIDES_OFF.test('- kit_overrides: disabled\n') && markers.KIT_OVERRIDES_OFF.test('- kit_overrides: нет\n') && !markers.KIT_OVERRIDES_OFF.test('- kit_overrides: on\n'))
 
 const kRoot = mkdtempSync(join(tmpdir(), 'kit-test-'))
 const kApp = join(kRoot, 'app')
@@ -716,6 +850,72 @@ check('session-start на main: фикс файла задачи под чужи
 check('session-start: та же строка второй раз не повторяется', !/T-12 \(закрыта/.test(runHook('session-start.mjs', { cwd: kApp }).text))
 rmSync(kRoot, { recursive: true, force: true })
 
+// ── английский близнец force-прогона с гейтами, паритетом и эталоном вида ────
+const eRoot = mkdtempSync(join(tmpdir(), 'kit-test-en-'))
+const eApp = join(eRoot, 'app')
+repoAt(eApp, 'main')
+write(eApp, { 'src/ui/button.tsx': 'export const B = 1\n', 'src/Old.tsx': 'export const Old = () => null\n', 'src/Other.tsx': 'export const o = "font-bold"\n' })
+git(eApp, 'add', '-A')
+git(eApp, 'commit', '-qm', 'base 2')
+const eTask = join(eApp, '.claude/tasks/T-13')
+const eStages = ({ extra = '', heading = `## Force run ${today}`, blockers = '' } = {}) =>
+  `# T-13: task\nLanguage: en\nBranch: \`T-13/feat/k\`\n\n## Status: stage 1\n\n${heading}\nConfirmed: ${today} — "yes"\nBlockers: ${blockers}\n\n## Stages\n\n` +
+  `### Stage 1: card  [status: in-progress]\nVisual reference: src/Other.tsx — neighbouring section\n${extra}`
+write(eApp, {
+  '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${KIT_CONFIG}\n## CI gates\n| Check | Command |\n|---|---|\n| Smoke | ${KIT_GATE} |\n`,
+  '.claude/tasks/T-13/STAGES.md': eStages(),
+})
+git(eApp, 'checkout', '-qb', 'T-13/feat/k')
+runHook('session-start.mjs', { cwd: eApp })
+const eCommit = (command) => runHook('git-guard.mjs', { cwd: eApp, tool_input: { command } })
+write(eApp, { 'src/Card.tsx': 'export const Card = () => <h3 className="text-[13px] font-bold uppercase">x</h3>\n' })
+const noKitReportEn = eCommit('git add -A && git commit -m "T-13: card"')
+check('EN force commit: kit overrides without a report — denied', noKitReportEn.decision === 'deny' && /src\/Card\.tsx/.test(noKitReportEn.text), noKitReportEn.text)
+const eReport = join(eTask, 'checks/stage-1-kit-overrides.md')
+mkdirSync(dirname(eReport), { recursive: true })
+spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', eReport], { cwd: eApp })
+utimesSync(eReport, soon, soon)
+const noKitLedgerEn = eCommit('git add -A && git commit -m "T-13: card"')
+check('EN force commit: report without an outcome — denied', noKitLedgerEn.decision === 'deny' && /stage-1-kit-overrides\.md/.test(noKitLedgerEn.text), noKitLedgerEn.text)
+writeFileSync(eReport, `${readFileSync(eReport, 'utf8')}\n## Findings outcome\n- K-1 — false positive: reference src/Other.tsx:1 — the same font-bold\n`)
+utimesSync(eReport, soon, soon)
+check('EN force commit: outcome proven by the reference — passes', eCommit('git add -A && git commit -m "T-13: card"').decision === 'allow')
+git(eApp, 'add', '-A')
+git(eApp, 'commit', '-qm', 'T-13: card')
+const eCardSha = git(eApp, 'rev-parse', 'HEAD').trim()
+rmSync(join(eApp, 'src/Old.tsx'))
+const noParityEn = eCommit('git commit -am "T-13: remove the old section"')
+check('EN force commit: UI component removed without a Parity table — denied', noParityEn.decision === 'deny' && /`Old`/.test(noParityEn.text), noParityEn.text)
+const PARITY_EN = '| Parity | was `Old` → moved to Card (`AC-1.P1`) |\n'
+write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: PARITY_EN }) })
+check('EN force commit: Old is in the Parity table — passes', eCommit('git commit -am "T-13: remove the old section"').decision === 'allow')
+git(eApp, 'commit', '-qam', 'T-13: remove the old section')
+const eOldSha = git(eApp, 'rev-parse', 'HEAD').trim()
+const eDv = join(eTask, 'checks/stage-1-devtools-verify.md')
+const eDvText = '# devtools-verify, stage 1\nFindings: critical 0 · major 0 · minor 0\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n'
+writeFileSync(eDv, eDvText)
+check('EN devtools-verify at a stage with "Visual reference" and no style-diff — no-style-diff', jc.reportViolations(eDv).some(({ rule }) => rule === 'no-style-diff'), JSON.stringify(jc.reportViolations(eDv)))
+writeFileSync(eDv, `${eDvText}style-diff 1440: roles 4 · differ 0\n`)
+check('EN devtools-verify with a style-diff line — clean', jc.reportViolations(eDv).length === 0, JSON.stringify(jc.reportViolations(eDv)))
+const EJOURNALED = `${PARITY_EN}- [x] commit: \`${eCardSha.slice(0, 8)}\` T-13: card\n- [x] commit: \`${eOldSha.slice(0, 8)}\` T-13: remove the old section\n`
+const eGate = () => runHook('journal-gate.mjs', { cwd: eApp, tool_name: 'Edit', tool_input: { file_path: join(eTask, 'STAGES.md') } })
+write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: EJOURNALED, heading: `## Force run ${today} — completed ${today}` }) })
+const redGateEn = eGate()
+check('EN "completed" without a CI gate run — returned', redGateEn.decision === 'block' && /Смоук|Smoke/.test(redGateEn.text) && /не запускался/.test(redGateEn.text), redGateEn.text)
+const eConfig = readFileSync(join(eApp, '.claude/pipeline.config.md'), 'utf8')
+check('EN gate table "CI gates" is read', same(gates.gateCommands(eConfig).map(({ name }) => name), ['Smoke']))
+write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: EJOURNALED, heading: `## Force run ${today} — completed with blockers ${today}`, blockers: '\n- B1 — Smoke: needs staging, does not start locally' }) })
+check('EN "completed with blockers": the red gate is named by a blocker — no violation', gates.gateCloseViolations(DATA, eApp, eConfig, eTask).length === 0)
+write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: EJOURNALED, heading: `## Force run ${today} — completed with blockers ${today}`, blockers: '\n- B1 — something else entirely' }) })
+check('EN "completed with blockers": the red gate is not named — violation', gates.gateCloseViolations(DATA, eApp, eConfig, eTask).length === 1)
+spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'node -e "process.exit(0)"'], { cwd: eApp, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
+write(eApp, { '.claude/tasks/T-13/STAGES.md': eStages({ extra: EJOURNALED, heading: `## Force run ${today} — completed ${today}` }) })
+const greenGateEn = eGate()
+check('EN gate is green on HEAD — closing passes, gates are in the summary', greenGateEn.decision === 'message' && /Гейты CI на HEAD \(1 из 1/.test(greenGateEn.text), `${greenGateEn.decision}: ${greenGateEn.text.slice(0, 300)}`)
+const eRebuilt = runHook('session-start.mjs', { cwd: eApp }).text
+check('EN session-start: the state line carries the force mark and the task', /T-13/.test(eRebuilt) || eRebuilt === '', eRebuilt)
+rmSync(eRoot, { recursive: true, force: true })
+
 // ── тяжёлые проверки: охват по дифу и очередь на машину ─────────────────────
 const RUN_CHECK = join(PLUGIN, 'run-check.mjs')
 const rcRoot = mkdtempSync(join(tmpdir(), 'run-check-test-'))
@@ -799,6 +999,57 @@ const lost = source.split('\n').filter((line) => line.trim() && !plan.result.inc
 check('архивация: ни одна строка не потеряна', !lost.length, JSON.stringify(lost.slice(0, 2)))
 const second = planArchive(plan.result)
 check('архивация идемпотентна', !second.moved.length && !second.movedJournal.length)
+const entriesEn = Array.from({ length: 10 }, (_, i) => `- **2026-08-${String(22 - i).padStart(2, '0')}** — entry ${22 - i}\n  details ${22 - i}`)
+const sourceEn = [
+  '# T: task',
+  'Branch: `T/feat/x`',
+  '',
+  '## Status: stage 3',
+  '',
+  '## Force run 2026-08-20',
+  '### Stage 9: catch-up inside force  [status: done]',
+  ...Array.from({ length: 30 }, (_, i) => `catch-up detail ${i}`),
+  '',
+  '## Stages',
+  '',
+  '### Stage 1: first  [status: done]',
+  'Decisions: took the shared formatter',
+  '- [x] commit: `T: formatter`',
+  '- [ ] user-review',
+  '- `AC-1.2` ⏳ user-review',
+  ...Array.from({ length: 40 }, (_, i) => `long stage detail ${i} — ${'x'.repeat(40)}`),
+  '',
+  '### Stage 2: second  [status: in-progress]',
+  'in progress',
+  '',
+  '### Stage 4: dropped  [status: cancelled]',
+  ...Array.from({ length: 12 }, (_, i) => `dropped detail ${i} — ${'y'.repeat(40)}`),
+  '',
+  '## ⚠ Awaiting user confirmation',
+  '- default sort order',
+  '',
+  '## Journal (newest first)',
+  '',
+  ...entriesEn.slice(0, 5),
+  '### Stage 1 — progress',
+  'Group intro.',
+  ...entriesEn.slice(5),
+  '',
+].join('\n')
+const planEn = planArchive(sourceEn)
+check('EN archive: done and cancelled stages are folded, in-progress stage and force block are not', same(planEn.moved.map((m) => m.heading), ['### Stage 1: first  [status: done]', '### Stage 4: dropped  [status: cancelled]']), JSON.stringify(planEn.moved.map((m) => m.heading)))
+check('EN archive: open items and decisions stay in the folded stage', ['Decisions: took', '- [x] commit:', '- [ ] user-review', '⏳ user-review'].every((s) => planEn.result.includes(s)))
+check('EN archive: "## Journal" — 8 fresh entries stay', planEn.movedJournal.length === 2 && planEn.result.includes('entry 22') && !planEn.result.includes('entry 13'), String(planEn.movedJournal.length))
+check('EN archive: the journal subheading stays while the group has entries', planEn.result.includes('### Stage 1 — progress'))
+check('EN archive: same moved counts as the Russian twin', planEn.moved.length === plan.moved.length + 1 && planEn.movedJournal.length === plan.movedJournal.length)
+const lostEn = sourceEn.split('\n').filter((line) => line.trim() && !planEn.result.includes(line) && !planEn.moved.some((m) => m.text.includes(line)) && !planEn.movedJournal.some((e) => e.lines.includes(line)))
+check('EN archive: no line is lost', !lostEn.length, JSON.stringify(lostEn.slice(0, 2)))
+const secondEn = planArchive(planEn.result)
+check('EN archive is idempotent', !secondEn.moved.length && !secondEn.movedJournal.length, JSON.stringify(secondEn.moved.map((m) => m.heading)))
+const stubEn = planArchive('# T\n\n## Stages\n\n### Stage 1: first  [status: done]\nFull record: STAGES-ARCHIVE.md — "Stage 1: first"\n' + Array.from({ length: 30 }, (_, i) => `detail ${i}`).join('\n') + '\n')
+check('EN archive: a stage with "Full record: STAGES-ARCHIVE.md" is already folded', !stubEn.moved.length)
+const olderEn = planArchive(`# T\n\n## Journal\nOlder entries (3): STAGES-ARCHIVE.md — "Journal".\n\n${entriesEn.join('\n')}\n`)
+check('EN archive: "Older entries (N)" counter is read and replaced, not duplicated', olderEn.movedJournal.length === 2 && (olderEn.result.match(/^(?:Старые записи|Older entries) \(/gm) ?? []).length === 1 && /\(5\)/.test(olderEn.result), olderEn.result.split('\n').slice(0, 6).join('|'))
 
 // ── ретро ────────────────────────────────────────────────────────────────────
 const retroRoot = mkdtempSync(join(tmpdir(), 'retro-test-'))
