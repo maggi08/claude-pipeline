@@ -1,8 +1,8 @@
-# Вызовы, которые ждут подтверждения
+# Calls that wait for confirmation
 
-Читается из `/stage-force`, Шаг 2.
+Read from `/stage-force`, Step 2.
 
-Запрос разрешения — та же остановка, только незаметная: вызов под `ask` (`pkill`, `git push`, `reset --hard`, `git clean`, `gh`) ждёт, пока пользователь не вернётся к терминалу. Так в одном прогоне два `pkill` в субагентах простояли 22 и 37 минут. В force хук плагина `force-guard` отклоняет такие вызовы сразу и объясняет почему. Правила, чтобы до отказа не доходило:
+A permission request is the same stop, only an unnoticeable one: a call under `ask` (`pkill`, `git push`, `reset --hard`, `git clean`, `gh`) waits until the user returns to the terminal. That is how in one run two `pkill` calls in subagents stood for 22 and 37 minutes. In force the plugin's `force-guard` hook rejects such calls at once and explains why. The rules, so that calls are not rejected:
 
-- **Процесс гасит тот, кто его поднял, и по PID.** Это касается dev-сервера, заглушки API, статического сервера для `out/`. При запуске — `<команда> > <лог> 2>&1 & echo $!`, в конце — `kill <PID>`. Ни `pkill`/`killall`, ни kill по порту, который занял не ты: на нём может жить сервер пользователя.
-- **Отказ — не повод искать обход** тем же действием другой командой. Если у субагента отклонено действие из плана, например удаление файлов по критерию, оркестратор один раз выполняет его сам в главной сессии: там видно согласие пользователя: удаления названы поимённо в батче интервью (Шаг 0). Отказ и там — это блокер с командой.
+- **A process is killed by whoever started it, and by PID.** This applies to the dev server, an API stub, a static server for `out/`. On start — `<command> > <log> 2>&1 & echo $!`, at the end — `kill <PID>`. Neither `pkill`/`killall`, nor a kill by a port that you did not take: a user's server may live on it.
+- **A rejection is not a reason to look for a workaround** — the same action by another command. If a subagent's action from the plan is rejected, for example deleting files by a criterion, the orchestrator runs it once itself in the main session: the user's consent is visible there: the deletions are named one by one in the interview batch (Step 0). A rejection there too is a blocker with a command.

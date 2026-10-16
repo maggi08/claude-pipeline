@@ -39,6 +39,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Section | `## Shared elements (stage overlaps)` | `## Общие элементы (пересечения этапов)` |
 | Section | `## ⚠ Awaiting user confirmation` | `## ⚠ Ожидают подтверждения пользователя` |
 | Section | `## Not included in the plan` | `## Не включено в план` |
+| Section, catch-up block (task-converge Step 5) | `## Catch-up <date>` | `## Догон <дата>` |
 | Stage heading | `### Stage N: <name>  [status: …]` | `### Этап N: <название>  [status: …]` |
 | Stage field | `Figma nodes:` | `Figma-ноды:` |
 | Stage field | `What exists:` | `Что есть:` |

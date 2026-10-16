@@ -3,152 +3,154 @@ name: stage-force
 description: Автономный прогон задачи по этапам — все вопросы задаются ОДНИМ батчем в начале, дальше реализация (субагентом stage-implement), чекеры, фиксы и коммиты идут без остановок до конца всех этапов, а главный контекст держит только сводки. Пуш и создание PR запрещены. Use when the user asks to run the task autonomously, "force"/"без остановок"/"сам коммить", or explicitly starts /stage-force. Заканчивается сводкой прогона; описание PR/MR не пишет — это ручной /task-wrapup.
 ---
 
-# Stage Force — задача целиком, без остановок посередине
+# Stage Force — the whole task, no stops in the middle
 
-Обычный пайплайн останавливается дважды на каждом этапе: sign-off на kickoff и подтверждение коммита на check. На длинной задаче это десятки окон ожидания, и они составляют основную часть простоя.
+The regular pipeline stops twice on every stage: the sign-off at kickoff and the commit confirmation at check. On a long task that is dozens of waiting windows, and they make up most of the idle time.
 
-Force переносит все вопросы в начало: они собираются ОДИН раз, дальше прогон идёт до конца без единой остановки. Обратимое агент решает сам и выносит на проверку. То, что за пользователя решать нельзя, откладывается блокером, а всё, что от блокера не зависит, доделывается. Пользователь получает и решения, и блокеры одной сводкой в конце.
+Force moves all the questions to the start: they are collected ONCE, then the run goes to the end without a single stop. The agent decides what is reversible and puts it up for review. What cannot be decided for the user is deferred as a blocker, and everything that does not depend on the blocker is finished. The user gets both the decisions and the blockers in one summary at the end.
 
-> **Project config.** `<task_dir>`, `main_branch`, команды и dev-URL — из `<repo>/.claude/pipeline.config.md` (нет файла — `/pipeline-init`).
+> **Project config.** `<task_dir>`, `main_branch`, the commands and the dev URL come from `<repo>/.claude/pipeline.config.md` (no file — `/pipeline-init`).
 
-## Вход
+> **Task language.** The task has one language, the `Language:` line in the STAGES.md header. The Force block, the journal and the run summary are written in it; service headings and fields come from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md` (the templates below show the English forms). Pass the language ("Language: <task language>") in the prompt of `stage-implement` and of every checker subagent. The run summary is assembled by `run-digest.mjs` in the task language.
 
-- `<task_dir>/<TICKET>/STAGES.md` — обязателен. Нет — сначала `/stage-plan`, потом сюда.
-- Опционально: номер этапа, с которого продолжать (по умолчанию — первый не-`done`).
+## Input
 
-## Шаг 0. Интервью — единственная точка сбора вопросов
+- `<task_dir>/<TICKET>/STAGES.md` — required. If missing, run `/stage-plan` first, then come here.
+- Optional: the number of the stage to continue from (by default — the first one that is not `done`).
 
-Прочитай STAGES.md целиком, шапку «Ориентация» из FEATURE-MAP.md (остальные её разделы — только если этап требует), DESIGN-QUESTIONS.md и блок «⚠ Ожидают подтверждения». Пройди по ВСЕМ этапам плана и выпиши всё, что в обычном режиме спросил бы на их kickoff'ах. После ответов на батч спросить будет нельзя (Шаг 2): вопрос, который всплывёт на этапе 4, задаётся сейчас, иначе он станет блокером и этап 4 не будет сделан.
+## Step 0. Interview — the only place questions are collected
 
-Блокеры прошлого прогона (строка `Блокеры:` закрытого блока «Force-прогон») идут в батч первыми: новый прогон начинается с ответов на них.
+Read STAGES.md in full, the "Orientation" header of FEATURE-MAP.md (its other sections only if a stage requires them), DESIGN-QUESTIONS.md and the "⚠ Awaiting user confirmation" block. Go through ALL the stages of the plan and write out everything you would ask at their kickoffs in the regular mode. After the batch is answered, asking is no longer possible (Step 2): a question that would surface on stage 4 is asked now, otherwise it becomes a blocker and stage 4 will not be done.
 
-**Сначала таксономия, потом вопросы.** Батч — единственная точка сбора на весь прогон, и пропущенная категория стоит не одного этапа, а всего прогона: до конца задачи спросить будет негде. Поэтому не полагайся на то, что нужное само придёт в голову — пройди фиксированный список и каждой категории поставь статус **Ясно / Частично / Не покрыто**:
+Blockers of the previous run (the `Blockers:` line of a closed "Force run" block) go into the batch first: a new run starts with the answers to them.
 
-| Категория | Что смотреть |
+**Taxonomy first, questions second.** The batch is the only collection point for the whole run, and a missed category costs not one stage but the whole run: there will be nowhere to ask before the end of the task. So do not rely on the needed thing coming to mind by itself — go through the fixed list and give every category a status: **Clear / Partially / Not covered**:
+
+| Category | What to look at |
 |---|---|
-| Экраны и стейты | все ли из «Покрытия дизайн-источника» имеют этап; empty / loading / error / offline |
-| Копия и i18n | текст из источника или плейсхолдер; нужны ли все локали в этой задаче |
-| Права и гейтинг | кто что видит, что за логином, дефолты для новых пользователей |
-| Брейкпоинты | ширины из конфига; что при промежуточных |
-| Моушн | есть ли переходы в источнике, чем заменяем при отсутствии спеки |
-| A11y | фокус, клавиатура, контраст — в скоупе задачи или нет |
-| Данные | форма, лимиты, пагинация, что при пустом и при аномально большом |
-| Паритет платформ | desktop / adaptive / webview — где обязано совпасть с существующим |
-| Вид | эталон — кит и соседняя секция; вид «как в прототипе» — только решением |
-| Терминология | как называется сущность в UI, нет ли двух названий одного |
-| Границы | что явно НЕ делаем в этой задаче |
-| Окружение и доступы | что прогону понадобится снаружи: нужный файл открыт в Figma desktop, залогиненный профиль браузера, запись на тестовый стенд, контракт бэкенда, секреты, свободные порты и чужие dev-серверы. Проверь сейчас, а не на этапе: чего нет — в батч или фолбэком в допущения (чекер skip с причиной, критерий `[live: user-side]`) |
+| Screens and states | whether everything from "Design source coverage" has a stage; empty / loading / error / offline |
+| Copy and i18n | text from the source or a placeholder; whether all locales are needed in this task |
+| Permissions and gating | who sees what, what is behind the login, defaults for new users |
+| Breakpoints | widths from the config; what happens at intermediate ones |
+| Motion | whether the source has transitions, what replaces them when there is no spec |
+| A11y | focus, keyboard, contrast — in the scope of the task or not |
+| Data | shape, limits, pagination, what happens when empty and when abnormally large |
+| Platform parity | desktop / adaptive / webview — where it must match the existing one |
+| Look | the reference is the kit and the neighboring section; a look "as in the prototype" — only by a decision |
+| Terminology | what the entity is called in the UI, whether one thing has two names |
+| Boundaries | what we explicitly do NOT do in this task |
+| Environment and access | what the run will need from outside: the needed file open in Figma desktop, a logged-in browser profile, a record on the test stand, the backend contract, secrets, free ports and other people's dev servers. Check now, not at the stage: what is missing goes into the batch or falls back to assumptions (a checker skip with a reason, a `[live: user-side]` criterion) |
 
-Ранжируй по «влияние × неопределённость» и в батч бери верхние. `Ясно` — не спрашивай; `Частично`/`Не покрыто` при низком влиянии — в допущения, а не в вопрос.
+Rank by "impact × uncertainty" and take the top ones into the batch. `Clear` — do not ask; `Partially`/`Not covered` with low impact — into assumptions, not into a question.
 
-Затем задай отобранное **одним батчем** (`AskUserQuestion` — до 4 вопросов за вызов; не хватило одного вызова, сделай второй сразу за ним, но не растягивай сбор на весь прогон). В батч идут только вопросы, ответ на которые меняет реализацию:
+Then ask the selected ones **in one batch** (`AskUserQuestion` — up to 4 questions per call; if one call is not enough, make a second right after it, but do not stretch the collection over the whole run). Only questions whose answer changes the implementation go into the batch:
 
-- продуктовые развилки и дефолты, видимые пользователю;
-- приоритеты и границы скоупа («делаем ли X в этой задаче»);
-- краевые случаи, о которых план молчит;
-- вещи, которые нельзя вывести из дизайн-источника и кода.
+- product forks and defaults visible to the user;
+- priorities and scope boundaries ("do we do X in this task");
+- edge cases the plan is silent about;
+- things that cannot be derived from the design source and the code.
 
-**Каждый вопрос с выбором несёт твою рекомендацию** — первым вариантом и с причиной в одну строку («предлагаю A, потому что так уже сделано в adaptive»). Пользователь в force-режиме отвечает один раз на всю задачу: вопрос без рекомендации перекладывает на него работу, которую ты можешь сделать чтением кода и источника.
+**Every question with a choice carries your recommendation** — as the first option and with a one-line reason ("I suggest A, because it is already done in adaptive"). In force mode the user answers once for the whole task: a question without a recommendation shifts onto them work you can do by reading the code and the source.
 
-**Таблицы «состояние × действие» из плана — в интервью целиком** (stage-plan, Шаг 3): строку, где действие ничего не сохраняет или теряет данные, пользователь видит до старта.
+**The "state × action" tables of the plan go into the interview whole** (stage-plan, Step 3): a row where the action saves nothing or loses data is seen by the user before the start.
 
-**Не спрашивай то, что решается чтением.** Скиновые и структурные развилки закрываются фактом из источника (`figma-spec`/`proto-spec`, шаг 0), а не голосованием — сначала прочитай, спрашивай только если источник действительно даёт два живых варианта.
+**Do not ask what is resolved by reading.** Skin and structural forks are closed by a fact from the source (`figma-spec`/`proto-spec`, step 0), not by a vote — read first, ask only if the source really gives two live options.
 
-**Зависимые вопросы в один батч не идут.** Перед отправкой отсортируй отобранное по зависимостям: у вопроса, разумные варианты которого определяются ответом на соседний вопрос того же батча, ответ вернётся несовместимым с этим соседом — а переспросить в force негде, точка сбора одна. Такой вопрос либо сворачивается в родительский условием («если A — то B1 или B2?»), либо уходит **условным допущением** («принимаю B=X при A=Y, B=Z при A=W») в блок Force-прогона. В батче остаются только вопросы, на которые можно ответить независимо друг от друга.
+**Dependent questions do not go in one batch.** Before sending, sort the selected ones by dependencies: for a question whose reasonable options are determined by the answer to a neighboring question of the same batch, the answer will come back incompatible with that neighbor — and there is nowhere to ask again in force, the collection point is single. Such a question is either folded into the parent with a condition ("if A — then B1 or B2?"), or goes as a **conditional assumption** ("I accept B=X when A=Y, B=Z when A=W") into the Force run block. Only questions that can be answered independently of each other stay in the batch.
 
-Всё, что осталось без ответа или не попало в батч, оформи явными **допущениями**: строкой в STAGES.md с формулировкой «принято X, потому что Y; обратимо через Z». Допущение без пути отката — не допущение, а вопрос: он идёт в батч.
+Everything left unanswered or not included in the batch is written as explicit **assumptions**: a line in STAGES.md worded "accepted X, because Y; reversible via Z". An assumption without a way back is not an assumption but a question: it goes into the batch.
 
-Зафиксируй в STAGES.md блок:
+Record the block in STAGES.md:
 
 ```markdown
-## Force-прогон <дата>
-Режим: автономный до конца этапов. Пуш и PR — вручную пользователем.
-Ответы интервью: <решение — куда влияет>
-Допущения: <что принято — почему — как откатить>
-Незакрытое: <категории таксономии со статусом Частично/Не покрыто, не попавшие в батч — и куда ушли: допущение / DESIGN-QUESTIONS.md / «Ожидают подтверждения»>
-Границы: <что явно НЕ делаем в этой задаче>
-Подтверждено: <дата> — ответы интервью
-Блокеры: <пусто, пока нет; формат — Шаг 2>
+## Force run <date>
+Mode: autonomous until the end of the stages. Push and PR — manually by the user.
+Interview answers: <decision — what it affects>
+Assumptions: <what is accepted — why — how to roll back>
+Unresolved: <taxonomy categories with status Partially/Not covered that did not make it into the batch — and where they went: assumption / DESIGN-QUESTIONS.md / "Awaiting user confirmation">
+Boundaries: <what we explicitly do NOT do in this task>
+Confirmed: <date> — interview answers
+Blockers: <empty while there are none; format — Step 2>
 ```
 
-**Ответы на батч — и есть старт.** Отдельного «подтверди, запускаю» после интервью нет: пользователь ответил и ушёл. Что раньше шло в подтверждение, идёт в батч. Файлы, которые план удаляет (`git rm` по критериям), — поимённо в тексте вопроса о границах: согласие должно быть видно в сессии до удаления (Шаг 2, «Вызовы, которые ждут подтверждения»). Свободный ответ, который читается двумя способами с разной реализацией или сужает скоуп против тикета, — сразу уточняющий вопрос с этими прочтениями как вариантами (сужение — с цитатой тикета): «вернуть кнопку в webview» стал «master не трогать», «текущая ветка» — веткой от release вместо dev. Однозначный — эхом в сообщении о старте («понял „текущая ветка“ как „ветка от `dev`“»), без вопроса. Затем допиши в блок `Подтверждено: <дата> — ответы интервью` (вопросов не было — `— вопросов нет`); без этой строки хук не запустит `stage-implement`. Блок «Force-прогон» — ещё и сигнал для хука плагина: с ним `git add`/`git commit` идут без вопроса, без него на ветке задачи отклоняются, как в обычном режиме. Поэтому блок пишется ДО первого коммита. Хук смотрит только на задачу текущей ветки (строка `Ветка:` в шапке STAGES.md или тикет в имени ветки) и только на незакрытый блок — без «завершён» в заголовке (закрытие — «Выход»).
+**The answers to the batch are the start.** There is no separate "confirm, I am starting" after the interview: the user answered and left. What used to go into a confirmation goes into the batch. Files the plan deletes (`git rm` by the criteria) are named one by one in the text of the question about boundaries: the consent must be visible in the session before the deletion (Step 2, "Calls that wait for confirmation"). A free-form answer that reads two ways with different implementations or narrows the scope against the ticket gets a clarifying question right away, with these readings as options (a narrowing — with a quote from the ticket): "bring the button back in the webview" turned out to mean "do not touch master", "the current branch" — a branch off release instead of dev. An unambiguous one — an echo in the start message ("I understood "the current branch" as "a branch off `dev`""), without a question. Then add to the block `Confirmed: <date> — interview answers` (no questions were asked — `— no questions`); without this line the hook will not launch `stage-implement`. The "Force run" block is also a signal for the plugin hook: with it `git add`/`git commit` go without a question, without it they are rejected on the task branch, as in the regular mode. So the block is written BEFORE the first commit. The hook looks only at the task of the current branch (the `Branch:` line in the STAGES.md header or the ticket in the branch name) and only at an open block — without "completed" in the heading (closing — "Output").
 
-## Шаг 1. Цикл этапа — без остановок
+## Step 1. Stage loop — no stops
 
-**Главный контекст — только оркестратор.** `/compact` модель вызвать не может (это команда пользователя, ни тулом, ни хуком её не запустить), поэтому контекст между этапами держится не сжатием, а тем, что тяжёлое в него не попадает: чтение кода и правки делает субагент `stage-implement`, проверки — чекеры-субагенты, спеку — `figma-spec`/`proto-spec`. Каждый умирает вместе со своим контекстом и возвращает сводку. Оркестратор сам код этапа не читает и не правит.
+**The main context is the orchestrator only.** The model cannot call `/compact` (it is a user command, it cannot be started by a tool or a hook), so the context between stages is kept not by compaction but by keeping the heavy things out of it: the `stage-implement` subagent reads the code and makes the edits, checker subagents run the checks, `figma-spec`/`proto-spec` produce the spec. Each dies with its own context and returns a summary. The orchestrator does not read or edit the stage code itself.
 
-Для каждого этапа по порядку:
+For each stage in order:
 
-1. **Kickoff без sign-off.** Прочитай этап точечно, сведи с накопленным, запиши решения этапа строкой `Решения:` в его блок. Всё, что обычно спрашивается, уже в блоке Force-прогона.
-2. **Спека** — субагентом `figma-spec`/`proto-spec` (для `logic-only` — skip), в `specs/<stage>.md`.
-3. **Implement — субагентом `stage-implement`**, режим implement: тикет, номер этапа, путь спеки. Назад — сводка (изменённые файлы, решения, продуктово-видимое, lint/type_check/floor-guard, блокеры). Блокер или развилка вне блока Force-прогона → Шаг 2: реши сам или отложи блокером, этап доводится до конца в любом случае.
-4. **Чекеры — субагентами, параллельно** (`/stage-check`, Шаг 1). Скипы по logic-only работают как обычно. `lint`/`type_check`/`floor-guard` сам не перезапускай, если в сводке `stage-implement` есть числа против baseline; «зелёно» без чисел — прогони `type_check` сам (хук на коммите страхует только floor-guard). Находки проверь по отчётам и точечно по `file:line` (Шаг 2 `/stage-check`), не перечитывая этап целиком.
-5. **Fix-loop — 2 итерации + свежий прогон** (`/stage-check`, Шаг 3). Каждая итерация починки — новый `stage-implement` в режиме fix со списком подтверждённых находок (`AC-*`, `file:line`, что должно быть). Перепроверка починенного — точечно по `file:line` тобой; новый субагент чекера — только для визуальных/рантайм-находок и для свежего прогона третьей попытки (`/stage-check`, Шаг 3.2–3.3).
-6. **Коммит — сам**, после «## Итог находок» в каждом отчёте этапа с critical/major/FAIL (`${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`); без итога коммит отклонит хук. Формат и запреты — `/stage-check`, Шаг 4.4. `git add` путей из сводки implement + `git commit` — не `-A` и не `.`: так в коммит уедет всё неотслеживаемое рядом с кодом. **Не `git push`.** Коммит проходит через `floor-guard` (хук) — по тому, что войдёт в коммит: отклонён — нарушения уходят находками в новый раунд `stage-implement` fix, а не в подавление или `floor-ok` без причины.
-7. **Журнал** в STAGES.md: 3–6 строк + строка `metrics:` (формат — `/stage-check`, Шаг 4.1; `floor=` — число нарушений из сводки `stage-implement`, его первый прогон); решения из сводок implement — в строку `Решения:` этапа, продуктово-видимое — в «⚠ Ожидают подтверждения». Затем `archive-stages.mjs --apply` (`/stage-check`, Шаг 4.2).
-8. **Следующий этап** — в том же контексте: в нём остались только сводки, а не код.
+1. **Kickoff without sign-off.** Read the stage selectively, reconcile it with what has piled up, write the stage decisions as a `Decisions:` line into its block. Everything that is usually asked is already in the Force run block.
+2. **Spec** — by the `figma-spec`/`proto-spec` subagent (for `logic-only` — skip), into `specs/<stage>.md`.
+3. **Implement — by the `stage-implement` subagent**, implement mode: the ticket, the stage number, the spec path, the task language. Back comes a summary (changed files, decisions, product-visible, lint/type_check/floor-guard, blockers). A blocker or a fork outside the Force run block → Step 2: decide yourself or defer as a blocker, the stage is brought to the end in any case.
+4. **Checkers — subagents, in parallel** (`/stage-check`, Step 1; the task language is in each prompt). Skips for logic-only work as usual. Do not rerun `lint`/`type_check`/`floor-guard` yourself if the `stage-implement` summary has numbers against the baseline; "green" without numbers — run `type_check` yourself (the commit hook only checks floor-guard). Verify the findings by the reports and selectively by `file:line` (`/stage-check` Step 2), without rereading the whole stage.
+5. **Fix loop — 2 iterations + a fresh run** (`/stage-check`, Step 3). Each fix iteration is a new `stage-implement` in fix mode with a list of confirmed findings (`AC-*`, `file:line`, what it should be). The recheck of the fixed is selective by `file:line`, by you; a new checker subagent — only for visual/runtime findings and for the fresh run of the third attempt (`/stage-check`, Step 3.2–3.3).
+6. **Commit — yourself**, after the "## Findings outcome" in every report of the stage with critical/major/FAIL (`${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`); without the outcome the hook will reject the commit. Format and prohibitions — `/stage-check`, Step 4.4. `git add` of the paths from the implement summary + `git commit` — not `-A` and not `.`: otherwise everything untracked next to the code would go into the commit. **No `git push`.** The commit passes through `floor-guard` (a hook) — over what will enter the commit: if rejected, the violations go as findings into a new `stage-implement` fix round, not into suppression or a `floor-ok` without a reason.
+7. **Journal** in STAGES.md: 3–6 lines + a `metrics:` line (format — `/stage-check`, Step 4.1; `floor=` — the number of violations from the `stage-implement` summary, its first run); decisions from the implement summaries — into the stage's `Decisions:` line, product-visible — into "⚠ Awaiting user confirmation". Then `archive-stages.mjs --apply` (`/stage-check`, Step 4.2).
+8. **The next stage** — in the same context: only summaries remain in it, not code.
 
-Между этапами держи в контексте только STAGES.md (текущий этап) и сводки субагентов. Контекст всё же растёт (длинная задача, много эскалаций) — при переполнении Claude Code сожмёт его сам, а память задачи лежит в STAGES.md: после сжатия продолжение идёт с его чтения.
+Between stages keep in the context only STAGES.md (the current stage) and the subagent summaries. The context still grows (a long task, many escalations) — on overflow Claude Code will compact it itself, and the task memory lies in STAGES.md: after compaction the continuation starts with reading it.
 
-## Шаг 2. Посреди прогона — ни одного вопроса
+## Step 2. Mid-run — no questions
 
-После строки `Подтверждено:` пользователь у экрана не сидит. Вопрос посреди прогона останавливает его целиком, вместе со всем, что от ответа не зависит, и стоит столько, сколько пользователь не смотрит в терминал. Поэтому дальше нет ни `AskUserQuestion`, ни хода, который кончается вопросом и ждёт ответа. Это правило сильнее «стоп, эскалация» из `/stage-check`, Шаг 3: в force эскалация — блокер. У каждой развилки два исхода.
+After the `Confirmed:` line the user is not at the screen. A question in the middle of the run stops all of it, together with everything that does not depend on the answer, and costs as long as the user is not looking at the terminal. So from here on there is no `AskUserQuestion`, and no turn that ends with a question and waits for an answer. This rule is stronger than the "stop, escalation" of `/stage-check`, Step 3: in force an escalation is a blocker. Every fork has two outcomes.
 
-**Находка чекера — не развилка.** Её исправляют в fix-loop; не исправилась — блокер. В «Ожидают подтверждения» и «оставляю» находки не уходят: Request changes «принят как компромисс» — и пользователь чинил дубль заявки на следующий день. Итог каждой находки — в отчёте (`references/checker-report.md`).
+**A checker finding is not a fork.** It is fixed in the fix loop; if not fixed — a blocker. Findings do not go into "Awaiting user confirmation" or "leaving as is": Request changes "accepted as a compromise" — and the user fixed a duplicate of the request the next day. The outcome of every finding is in the report (`references/checker-report.md`).
 
-**Решаемо и обратимо — решай сам.** Это продуктовые решения без дефекта: дефолт, текст, порядок. Бери обратимый вариант и записывай строкой в «⚠ Ожидают подтверждения пользователя»: что изменено, где это видно и **чего будет стоить откат, если решение неверное** («переписать шаблон письма» против «пересобрать три экрана»). Потом продолжай. Это дешевле остановки и не теряется: блок читается на каждом kickoff и в финальных проверках. Цена нужна не для отчётности, а для порядка разбора: к концу автономного прогона таких строк набирается десяток, пользователь читает их разом и должен видеть, какие проверять первыми, не открывая каждую.
+**Decidable and reversible — decide yourself.** These are product decisions without a defect: a default, a text, an order. Take the reversible option and write it as a line into "⚠ Awaiting user confirmation": what was changed, where it is visible and **what the rollback will cost if the decision is wrong** ("rewrite the email template" against "rebuild three screens"). Then continue. This is cheaper than a stop and is not lost: the block is read at every kickoff and in the final checks. The cost is needed not for reporting but for the order of review: by the end of an autonomous run there are a dozen such lines, the user reads them at once and must see which to check first without opening each.
 
-**Нельзя решить за пользователя — блокер.** Это:
+**Cannot be decided for the user — a blocker.** These are:
 
-- развилка, где оба варианта необратимы: миграция данных, смена контракта API, удаление пользовательского контента, смена дефолта, который уже виден в проде;
-- конфликт источников правды: дизайн против существующего поведения, требование против реализации соседней платформы. Автономно он не решается никогда;
-- нужны секреты, доступы или внешние системы, которых не дало интервью: логин, токен, чужой сервис;
-- задача просит выйти за границы, записанные в блоке Force-прогона;
-- fix-loop исчерпан (2 итерации + свежий прогон чекера), а critical остался; `type_check` или сборка красные и не сходятся за две попытки и `/root-cause`;
-- обнаружился отсутствующий этап — без него задача не закрывается;
-- действие отклонено разрешениями: хуком, классификатором auto mode, ask-правилом (ниже).
+- a fork where both options are irreversible: a data migration, an API contract change, deleting user content, changing a default that is already visible in production;
+- a conflict of sources of truth: the design against the existing behavior, a requirement against the implementation of the neighboring platform. It is never resolved autonomously;
+- secrets, access or external systems are needed that the interview did not provide: a login, a token, someone else's service;
+- the task asks to go beyond the boundaries recorded in the Force run block;
+- the fix loop is exhausted (2 iterations + a fresh checker run) and a critical remains; `type_check` or the build are red and do not converge in two attempts and `/root-cause`;
+- a missing stage was discovered — the task does not close without it;
+- an action was rejected by permissions: a hook, the auto mode classifier, an ask rule (below).
 
-Блокер не останавливает прогон, а вырезает из него ровно то, что от блокера зависит:
+A blocker does not stop the run but cuts out of it exactly what depends on the blocker:
 
-1. Допиши строку в `Блокеры:` блока Force-прогона в формате `B<n> — что заблокировано (AC, этап) — почему — что нужно от пользователя — твоя рекомендация — что ещё от него зависит`. У отклонённого действия добавь точную команду, которую выполнит пользователь.
-2. Заблокированные критерии помечаются в STAGES.md `[blocked: B<n>]` и не реализуются. Необратимое «пока так» не делается.
-3. Остальное этапа доводится до конца: чекеры, fix-loop, коммит, журнал (блокеры входят в `escalations=` строки `metrics:`). Этап с открытым critical коммитится как есть: ветка локальная, а следующему этапу нужен чистый диф. Что именно сломано, говорит строка блокера. Красный `type_check` или сборка ломают проверки всех следующих этапов, поэтому дальше идут только этапы, чьи проверки он не задевает (другой пакет монорепо), и `stage-implement` получает новый baseline с номером блокера. Этап, в котором незаблокированного не осталось, получает `[status: todo — blocked: B<n>]` и остаётся без кода.
-4. Переходи к следующему этапу, который от блокера не зависит. Зависящие этапы получают тот же `todo — blocked: B<n>` и не реализуются. Отсутствующий этап дописывается в STAGES.md с этим статусом и рекомендацией: без пользователя скоуп не растёт.
-5. Раньше времени прогон кончается только тогда, когда не осталось ничего, что от блокеров не зависит. Это финал (Шаг 4 и «Выход»), а не пауза.
+1. Add a line to `Blockers:` of the Force run block in the format `B<n> — what is blocked (AC, stage) — why — what is needed from the user — your recommendation — what else depends on it`. For a rejected action add the exact command the user will run.
+2. The blocked criteria are marked `[blocked: B<n>]` in STAGES.md and are not implemented. An irreversible "for now like this" is not done.
+3. The rest of the stage is brought to the end: checkers, fix loop, commit, journal (blockers go into `escalations=` of the `metrics:` line). A stage with an open critical is committed as is: the branch is local, and the next stage needs a clean diff. What exactly is broken is told by the blocker line. A red `type_check` or build breaks the checks of all the following stages, so only the stages whose checks it does not affect go on (another monorepo package), and `stage-implement` gets a new baseline with the blocker number. A stage in which nothing unblocked is left gets `[status: todo — blocked: B<n>]` and stays without code.
+4. Move on to the next stage that does not depend on the blocker. Dependent stages get the same `todo — blocked: B<n>` and are not implemented. A missing stage is appended to STAGES.md with this status and a recommendation: without the user the scope does not grow.
+5. The run ends early only when nothing is left that does not depend on the blockers. That is the final (Step 4 and "Output"), not a pause.
 
-### Вызовы, которые ждут подтверждения
+### Calls that wait for confirmation
 
-Запрос разрешения — та же остановка: вызов под `ask` (`pkill`, `git push`, `gh`) ждёт, пока пользователь вернётся. В force хук `force-guard` отклоняет такие вызовы сразу. Процесс гасит тот, кто его поднял, по PID; отказ — не повод искать обход. Подробно — `${CLAUDE_PLUGIN_ROOT}/skills/stage-force/references/permissions.md`.
+A permission request is the same stop: a call under `ask` (`pkill`, `git push`, `gh`) waits until the user returns. In force the `force-guard` hook rejects such calls at once. A process is killed by whoever started it, by PID; a rejection is not a reason to look for a workaround. Details — `${CLAUDE_PLUGIN_ROOT}/skills/stage-force/references/permissions.md`.
 
-## Шаг 3. Никогда — без отдельной явной команды
+## Step 3. Never — without a separate explicit command
 
-- `git push`, `git push --force`, создание и комментирование PR/MR (`gh pr create`, `gh pr comment`).
-- Любой деплой, публикация пакета, изменение CI-секретов.
-- `git reset --hard`, `git clean`, ребейз чужих веток, переписывание уже запушенной истории.
-- Правки вне репозитория задачи и вне согласованных границ.
+- `git push`, `git push --force`, creating and commenting on a PR/MR (`gh pr create`, `gh pr comment`).
+- Any deploy, package publication, change of CI secrets.
+- `git reset --hard`, `git clean`, rebasing other people's branches, rewriting already pushed history.
+- Edits outside the task repository and outside the agreed boundaries.
 
-Ветка и индекс принадлежат пользователю: force даёт право коммитить в свою ветку, а не публиковать.
+The branch and the index belong to the user: force gives the right to commit into one's own branch, not to publish.
 
-## Шаг 4. Финал
+## Step 4. Final
 
-Все этапы `done` или `todo — blocked` → финальные проверки из STAGES.md (pro-review whole-branch — агент `pro-review` в whole-branch mode против `origin/<main_branch>` на `review_model` (`/stage-check`, Шаг 3.3), он же ловит дубли между этапами; `floor-guard --base origin/<main_branch>` — планка по всей ветке, `ci-gates.mjs --run` — гейты CI из конфига на HEAD после последнего фикса («завершён» с незелёным гейтом хук не примет), security-review, metrics-guard, ds-parity, dead-code, i18n-sweep, deps-audit, coverage, task-converge, test-plan, блок подтверждений) → сводка прогона.
+All stages `done` or `todo — blocked` → the final checks from STAGES.md (pro-review whole-branch — the `pro-review` agent in whole-branch mode against `origin/<main_branch>` on `review_model` (`/stage-check`, Step 3.3), it also catches duplicates between stages; `floor-guard --base origin/<main_branch>` — the quality floor over the whole branch, `ci-gates.mjs --run` — the CI gates from the config on HEAD after the last fix (the hook will not accept "completed" with a non-green gate), security-review, metrics-guard, ds-parity, dead-code, i18n-sweep, deps-audit, coverage, task-converge, test-plan, the confirmations block) → the run summary.
 
-Описание PR/MR force не пишет: `/task-wrapup` запускает только пользователь, когда ему нужно описание. Строку `wrapup` в «Финальных проверках» старых STAGES.md пропусти — не отмечай и не выполняй по пути к скиллу.
+Force does not write the PR/MR description: `/task-wrapup` is started only by the user, when they need a description. Skip the `wrapup` line in the "Final checks" of old STAGES.md — do not mark it or run it by the path to the skill.
 
-`task-converge` в force-прогоне обязателен и запускается **до** сводки: автономный прогон — ровно тот режим, где непокрытый критерий или тихо расширенный скоуп никто не поймает по ходу. Его находки — догоняющие этапы, и они проходят тот же цикл; догон в force идёт автоматически, как обычный этап, а `unrequested` уходит строкой в «⚠ Ожидают подтверждения». Критерии `[blocked: B<n>]` он увидит как `missing`: догона по ним не заводи, они уже в блокерах.
+`task-converge` is mandatory in a force run and is started **before** the summary: an autonomous run is exactly the mode where an uncovered criterion or a silently widened scope will be caught by no one along the way. Its findings are catch-up stages, and they go through the same loop; the catch-up in force goes automatically, as a regular stage, and `unrequested` goes as a line into "⚠ Awaiting user confirmation". It will see the `[blocked: B<n>]` criteria as `missing`: do not start a catch-up for them, they are already in the blockers.
 
-## Выход — сводка после прогона
+## Output — the run summary
 
-После финала (включая догон) переименуй заголовок блока в `## Force-прогон <дата> — завершён <дата>`, а при открытых блокерах — в `— завершён с блокерами <дата>`. Незакрытый блок хук читает как разрешение, и следующий догон или новый этап на этой ветке в обычном режиме пошёл бы с автокоммитом.
+After the final (including the catch-up) rename the block heading to `## Force run <date> — completed <date>`, and with open blockers — to `— completed with blockers <date>`. An open block is read by the hook as a permission, and the next catch-up or a new stage on this branch in the regular mode would go with an autocommit.
 
 ```
-<TICKET> — force-прогон завершён: этапов N из M, коммитов K
-Этапы: 1 ✅ 2 ✅ 3 ⛔ B1 …   | Чекеры: <сводка вердиктов>
-<вывод run-digest.mjs целиком: блокеры, находки без итога, не проверено, minor, принято само>
-Не сделано: <что вынесено за границы>
-Дальше: ответы на блокеры → /stage-force продолжит с заблокированного. Описание — /task-wrapup, если нужно. Пуш за тобой.
+<TICKET> — force run completed: stages N of M, commits K
+Stages: 1 ✅ 2 ✅ 3 ⛔ B1 …   | Checkers: <summary of verdicts>
+<the output of run-digest.mjs in full: blockers, findings without an outcome, not verified, minor, accepted on its own>
+Not done: <what was put outside the boundaries>
+Next: answers to the blockers → /stage-force will continue from the blocked one. The description — /task-wrapup, if needed. The push is yours.
 ```
 
-Середину сводки собирает `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-digest.mjs <task_dir>/<TICKET>` из журнала и отчётов. При закрытии блока её же кладёт в контекст хук. Вставляй её целиком, не пересказывая и не выбирая. Прецедент: сводка свела всё к «текстам kk/en и мелким отступлениям», а под этим лежали два дефекта, которые пользователь нашёл сам. Блокеры идут первыми: только они требуют ответа. «Готово к PR» пишется, только если нет блокеров, critical-находок и `Request changes` от pro-review.
+The middle of the summary is assembled by `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-digest.mjs <task_dir>/<TICKET>` from the journal and the reports. When the block is closed, the hook puts the same into the context. Paste it in full, without retelling or selecting. A precedent: a summary reduced everything to "kk/en texts and minor deviations", and under it lay two defects the user found themselves. Blockers go first: only they need an answer. "Ready for PR" is written only if there are no blockers, no critical findings and no `Request changes` from pro-review.
 
-**После «завершён» правка кода — это этап, а не «быстро поправлю».** Замечания пользователя после прогона, ручная проверка, правки по ревью — догоняющим этапом (`/stage-kickoff` → `/stage-check`) со строкой в журнале. Иначе они уходят в PR без единого чекера: так в одной задаче семь коммитов после прогона смержили через четыре минуты. Коммиты ветки, которых журнал не знает, следующая сессия увидит в строке статуса от хука.
+**After "completed", a code edit is a stage, not "a quick fix".** The user's remarks after the run, a manual check, edits from a review — a catch-up stage (`/stage-kickoff` → `/stage-check`) with a journal line. Otherwise they go into the PR without a single checker: that is how seven commits after the run were merged in four minutes in one task. The branch commits the journal does not know, the next session will see in the status line from the hook.
