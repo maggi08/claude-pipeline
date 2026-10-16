@@ -17,15 +17,27 @@ const STOP = new Set(['critical', 'major', 'minor', 'high', 'medium', 'low', 'se
 
 /** The report text without what is not prose. */
 export function stripNonProse(text) {
-  return text
-    .replace(/<!--[\s\S]*?-->/g, ' ')
+  // An unclosed "<!--" is not a comment: without "-->" in the text the pattern is not run (a lazy scan from each "<!--" is quadratic).
+  const source = text.includes('-->') ? text.replace(/<!--[\s\S]*?-->/g, ' ') : text
+  return source
     .replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:^[ \t]*\1[^\n]*$|(?![\s\S]))/gm, ' ')
     .replace(/`[^`\n]*`/g, ' ')
-    .replace(/«[^»\n]*»/g, ' ')
+    .replace(/«[^«»\n]*»/g, ' ')
     .replace(/"[^"\n]*"/g, ' ')
-    .replace(/“[^”\n]*”/g, ' ')
-    .replace(/\]\([^)\n]*\)/g, ' ')
+    .replace(/“[^“”\n]*”/g, ' ')
+    .replace(/\]\([^()\n]*\)/g, ' ')
     .replace(/https?:\/\/\S+/g, ' ')
+}
+
+/** The token without leading and trailing non-letters and non-digits (a scan from both ends: a `[^…]+$` regexp is quadratic on "a!!!…!a"). */
+function trimNonWord(raw) {
+  const chars = Array.from(raw)
+  const word = (char) => /[\p{L}\d]/u.test(char)
+  let start = 0
+  let end = chars.length
+  while (start < end && !word(chars[start])) start++
+  while (end > start && !word(chars[end - 1])) end--
+  return chars.slice(start, end).join('')
 }
 
 /** Prose words: `{ ru, en }`. */
@@ -33,7 +45,7 @@ export function proseWords(text) {
   let ru = 0
   let en = 0
   for (const raw of stripNonProse(text).split(/\s+/)) {
-    const token = raw.replace(/^[^\p{L}\d]+|[^\p{L}\d]+$/gu, '')
+    const token = trimNonWord(raw)
     if (!token || /[/\\@_\d]/.test(token)) continue
     const cyrillic = token.match(/[а-яёА-ЯЁ]/g)?.length ?? 0
     if (cyrillic) {

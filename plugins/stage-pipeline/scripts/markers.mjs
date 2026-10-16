@@ -44,12 +44,12 @@ export const VISUAL_REFERENCE_FIELD = /(?:эталон\s+вида|visual\s+refer
 /** A field value that means "no visual reference". */
 export const NO_VISUAL_REFERENCE = /^(?:—|-|нет|n\/a|не\s+нужен|none(?![\wа-яё])|not\s+needed)/i
 /** The "Parity" table in the journal (in `ds-parity` and the like the word is a skill name, not a table). */
-export const PARITY_TABLE = /паритет|^[ \t>*-]*\**parity\**[ \t]*:|^#{1,6}[ \t]+parity(?![\w-])|\|[ \t]*parity(?![\w-])/im
+export const PARITY_TABLE = /паритет|^[ \t>*-]*parity\**[ \t]*:|^#{1,6}[ \t]+parity(?![\w-])|\|[ \t]*parity(?![\w-])/im
 
 // --- Header: language and branch ---
 
 /** `Language: en` (or `ru`) in the header — group 1 is the value. */
-export const LANGUAGE_LINE = /(?:^[ \t>*-]*|\s{2,}|[·|]\s*)\**(?:Язык|Language)\**[ \t]*:\**[ \t]*`?(ru|en)\b/im
+export const LANGUAGE_LINE = /(?:^[ \t>*-]*|(?<![ \t])[ \t]{2,}\**|[·|][ \t]*\**)(?:Язык|Language)\**[ \t]*:\**[ \t]*`?(ru|en)\b/im
 /** Headings by which the task language is determined when there is no language line. */
 export const RU_HEADINGS = /^(?:##\s+Журнал|###?\s+Этап\s+[\w.]+)/m
 export const EN_HEADINGS = /^(?:##\s+Journal|###?\s+Stage\s+[\w.]+)/m
@@ -67,28 +67,42 @@ export const NO_BRANCH = /^(TBD|нет|none|n\/a|—)$/i
 /** `## Force run …` headings (or the Russian form). Each call is a fresh regexp (the g flag). */
 export const forceHeadings = (text) => [...text.matchAll(/^## (?:Force-прогон|Force run).*$/gm)]
 export const FORCE_BLOCK_PRESENT = /^## (?:Force-прогон|Force run)/m
-/** "completed" (or the Russian form) — the run is closed. */
-export const CLOSED_WORD = /заверш|completed/i
+/** "completed" or "complete" (or the Russian form) — the run is closed. "complete" is accepted on purpose: a heading that closes the run in
+ * neither form would leave it both open (forceActive) and not checked on close (forceCloseViolations).
+ * It closes only before a date, "with blockers" or at the end of the heading after a dash ("— complete"; "stage 3 complete" is progress): "— complete the migration" is an ordinary title word. */
+export const CLOSED_WORD = /заверш|\bcomplete(?:d)?\b(?=\s*(?:with\s+blockers\b|\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}))|(?<=[—–:-]\s*)\bcomplete(?:d)?\s*$/im
 /** "completed with blockers" (or the Russian form). */
 export const WITH_BLOCKERS = /с\s+блокер|with\s+blockers/i
 /** In a status line: "force run … completed" (or the Russian form), without "not". */
 const FORCE_CLOSED_RU = 'force-прогон[^.;\\n]{0,40}?завершён'
-const FORCE_CLOSED_EN = 'force run[^.;\\n]{0,40}?completed'
+// English: only "force run" + an optional date + "completed" — "force run 2026-10-17, stage 3 completed" is progress, not a close.
+const FORCE_CLOSED_EN = 'force run(?:[ \\t]+(?:is|was))?(?:[ \\t]+(?:\\d{4}-\\d{2}-\\d{2}\\w?|\\d{1,2}\\.\\d{1,2}(?:\\.\\d{2,4})?))?[ \\t]*[—–:,-]?[ \\t]*completed'
 export const STATUS_FORCE_CLOSED = re(`${FORCE_CLOSED_RU}|${FORCE_CLOSED_EN}`, 'i')
 /** The same plus a tail that cuts the date (up to 20 characters). */
 export const STATUS_FORCE_CLOSED_WITH_DATE = re(`${FORCE_CLOSED_RU}[^.;\\n]{0,20}|${FORCE_CLOSED_EN}[^.;\\n]{0,20}`, 'i')
 export const NOT_CLOSED = /не\s+завершён|not\s+completed/i
 
 /** The `Confirmed:` line (or the Russian form) in the Force block. */
-export const CONFIRMED_LINE = /^\s*[-*]?\s*\**(?:Подтвержд[её]н[оа]?|Confirmed)\**\s*:/im
+export const CONFIRMED_LINE = /^[ \t]*(?:[-*][ \t]*)?\**(?:Подтвержд[её]н[оа]?|Confirmed)\**\s*:/im
 /** The word "mode" in a subagent prompt: `Mode: whole-branch` (or the Russian form). */
 export const MODE_WORD = 'режим|mode'
 
 /** A blocker `B<n> — …`. */
-export const BLOCKER_LINE = /^\s*[-*]?\s*\**B\d+\**\s*[—–:-]/
+export const BLOCKER_LINE = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**\s*[—–:-]/
 /** A blocker is lifted: `lifted by`, `resolved by`, `user decision` … and their Russian forms. */
-export const BLOCKER_LIFTED =
-  /снят|реш[её]н|закрыт|отвечен|ответ\s+пользователя|решение\s+пользователя|lifted\s+by|resolved\s+by|resolved:|closed\s+by|answered\s+by|user\s+answer|user\s+decision/i
+export const BLOCKER_LIFTED = new RegExp(
+  [
+    'снят|закрыт|отвечен',
+    // The Russian "resolved" (masculine, neuter, feminine) as a word of its own, without a negation before it: the noun "decision" and "not resolved" do not lift.
+    '(?<![а-яё])(?<!не\\s)реш[её]н[оа]?(?![а-яё])',
+    // "Needs the user's decision/answer: …" is a request, not a lift: a date or a quote is needed.
+    '(?:ответ|решение)\\s+пользователя[^\\n]{0,120}?(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})',
+    '\\b(?:lifted|closed|answered)\\s+by|\\bresolved\\s+by|(?<![\\w-])resolved:',
+    // "waiting for a user answer", "needs a user decision: v1 or v2" are requests; a date or a quote makes it a lift.
+    '\\buser\\s+(?:answer|decision)\\b[^\\n]{0,120}?(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})',
+  ].join('|'),
+  'i',
+)
 
 // --- checks/ reports ---
 

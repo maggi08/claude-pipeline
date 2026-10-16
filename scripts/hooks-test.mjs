@@ -396,6 +396,10 @@ withForce('## Force run 2026-10-05', 'Mode: autonomous.\nInterview answers: bran
 check('EN stage-implement: "Confirmed:" is there — passes', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'allow')
 withForce('## Force run 2026-10-05', 'Mode: autonomous.\n- **Confirmed**: 2026-10-05 — "yes"')
 check('EN stage-implement: bold "**Confirmed**:" bullet — passes', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'allow')
+    withForce('## Force run Oct 17, 2026', 'Mode: autonomous.\nInterview answers: branch — from dev')
+    check('stage-implement: an unreadable date in the Force heading without "Confirmed:" — denied', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'deny')
+    withForce('## Force run 10/17/2026', 'Mode: autonomous.\nConfirmed: 2026-10-17 — "yes"')
+    check('stage-implement: an unreadable date with "Confirmed:" — passes', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'allow')
 withForce('## Force run 2026-10-05 — completed 2026-10-05', 'Mode: autonomous.')
 check('EN stage-implement: closed block is not an open run — passes', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2') === 'allow')
 check('EN whole-branch pro-review: "Mode: whole-branch" without model — denied', agentHook('stage-pipeline:pro-review', 'Ticket T-7, Mode: whole-branch.') === 'deny')
@@ -1069,7 +1073,7 @@ const EN_DISPOSITIONS = [
   ['- M-3 — handler returns false: needs a refactor', 'unknown'],
   ['- M-3 — handler returns false: fixed in a.ts:4', 'fixed'],
   ['- M-4 — was not repaired', 'unknown'],
-  ['- M-4 — wasn\'t fixed yet', 'unknown'],
+  ['- M-4 — wasn\'t fixed yet', 'parked'],
   ['- M-5 — stand-alone component is untouched', 'unknown'],
   ['- #6 — we will see', 'unknown'],
   ['- AC-5.9 — B1', 'blocker'],
@@ -1099,9 +1103,9 @@ const digestFor = (items) => {
   rmSync(dir, { recursive: true, force: true })
   return text.match(/^### Not verified \((\d+)\)/m)?.[1]
 }
-const DIGEST_EMPTY = [['none'], ['None.'], ['nothing'], ['no items'], ['all verified'], ['All checked.'], ['everything is verified'], ['нет'], ['ничего']]
+const DIGEST_EMPTY = [['none'], ['None.'], ['nothing'], ['no items'], ['all verified'], ['All checked.'], ['everything is verified'], ['нет'], ['ничего'], ['everything verified (of what was passed in)'], ['Everything that was passed in is verified.'], ['Nothing left — everything verified.'], ['nothing left']]
 for (const items of DIGEST_EMPTY) check(`digest: «Could not verify» "${items[0]}" — nothing unverified`, digestFor(items) === '0', String(digestFor(items)))
-for (const item of ['none of the states could be opened', 'AC-3.2 — no data on the stand', 'nothing was captured for dark']) check(`digest: a real item "${item.slice(0, 36)}" is counted`, digestFor([item]) === '1', String(digestFor([item])))
+for (const item of ['none of the states could be opened', 'AC-3.2 — no data on the stand', 'nothing was captured for dark', 'everything verified except the dark theme', 'all verified, but 1024 is not checked']) check(`digest: a real item "${item.slice(0, 36)}" is counted`, digestFor([item]) === '1', String(digestFor([item])))
 
 // Report language (D9): prose in the task language; code, paths, ids, UI quotes and short reports do not count.
 const lines = (text, count) => Array.from({ length: count }, () => text).join('\n')
@@ -1505,5 +1509,127 @@ check('retro: findings are summed across all stages', /findings in total: 14/.te
 check('retro: size by added lines', /\| ≤300 \| 1 \|/.test(retro.stdout) && /\| 301–1000 \| 1 \|/.test(retro.stdout))
 check('retro: the old report name deps-2.md is counted', /\| deps-audit \| 0 \| 0 \| 1 \|/.test(retro.stdout))
 rmSync(retroRoot, { recursive: true, force: true })
+
+// ── 0.16 catch-up: English gate forms close only what they should (final reviews of the branch) ──
+{
+  const status = (line) => `## Status: ${line}\n\n## Force run 2026-10-17\n`
+  // 1. Closing a force run in the status line: "force run" + an optional date + "completed", not any "completed" nearby.
+  for (const line of ['stage 4 of 6 — force run 2026-10-17, stage 3 completed', 'force run 2026-10-17 running, stages 1–3 completed', 'force run in progress; stage 2 completed'])
+    check(`EN status "${line.slice(0, 48)}" — the run stays open`, forceActive(status(line)), line)
+  for (const line of ['force run completed, waiting for push', 'force run 2026-10-17 completed — three commits', 'force run 17.10.2026: completed', 'force run is completed'])
+    check(`EN status "${line.slice(0, 48)}" — the run is closed`, !forceActive(status(line)), line)
+  check('RU status: the closing form still closes, the plural progress phrase does not', !forceActive('## Статус: force-прогон 2026-10-17 завершён\n\n## Force-прогон 2026-10-17\n') && forceActive('## Статус: force-прогон 2026-10-17 идёт, этапы 1–3 завершены\n\n## Force-прогон 2026-10-17\n'))
+  // The heading "— complete <date>": accepted as a close (both forceActive and the close checks read the same word), so a run is never open and closed at once.
+  check('EN heading "— complete <date>" closes the run', !forceActive('## Force run 2026-10-17 — complete 2026-10-17\n') && markers.CLOSED_WORD.test('## Force run 2026-10-17 — complete 2026-10-17'))
+  for (const heading of ['## Force run — complete the migration', '## Force run 2026-10-17 — for the complete redesign', '## Force run 2026-10-17 — stage 3 complete'])
+    check(`EN heading "${heading.slice(3)}" — an ordinary word, the run stays open`, forceActive(`${heading}\n`) && !markers.CLOSED_WORD.test(heading))
+  for (const heading of ['## Force run 2026-10-17 — completed 2026-10-17', '## Force run 2026-10-17 — complete 2026-10-17', '## Force run 2026-10-17 — completed with blockers 2026-10-17', '## Force run 2026-10-17 — completed'])
+    check(`EN heading "${heading.slice(3)}" — closes the run`, !forceActive(`${heading}\n`) && markers.CLOSED_WORD.test(heading))
+  check('EN heading "incomplete" does not close the run', forceActive('## Force run 2026-10-17 — incomplete\n') && !markers.CLOSED_WORD.test('## Force run — incomplete'))
+
+  // 2. Lifting a blocker: a request to the user is not a lift.
+  const blockerOpen = (line) => jc.openBlockers(`- B0 — x — lifted by the user\n${line}\n`).length === 1
+  for (const line of ['- B1 — waiting for a user answer', '- B1 — needs a user decision: v1 or v2', '- B1 — unresolved: the API contract', '- B1 — needs a user answer with the token'])
+    check(`EN blocker "${line.slice(0, 44)}" stays open`, blockerOpen(line))
+  for (const line of ['- B1 — user decision 2026-10-17: v2', '- B1 — user answer "token is set"', '- B1 — resolved: backend confirmed', '- B1 — closed by the user'])
+    check(`EN blocker "${line.slice(0, 44)}" is lifted`, !blockerOpen(line))
+  for (const line of ['- B1 — нужно решение: v1 или v2', '- B1 — не решён', '- B1 — нужно решение пользователя: v1 или v2', '- B1 — ждёт ответа пользователя'])
+    check(`RU blocker "${line.slice(0, 44)}" stays open`, blockerOpen(line))
+  for (const line of ['- B1 — решён: v2', '- B1 — решено пользователем', '- B1 — решена', '- B1 — решение пользователя 2026-10-17: v2', '- B1 — ответ пользователя «токен есть»', '- B1 — закрыт', '- B1 — снят'])
+    check(`RU blocker "${line.slice(0, 44)}" is lifted`, !blockerOpen(line))
+
+  // 3. ✅ with a caveat: a bare "not checked / tested" is a caveat, the state of the interface is not.
+  const AC = '- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify'
+  for (const tail of ['(dark theme not checked)', ', 1024 — not checked', ', 1024 not tested', ', not checked live', ', dark theme unverified', ', untested at 1024', ', 1024 not opened', ', dark theme not tested'])
+    check(`EN caveat "${tail}" is caught`, Boolean(jc.caveatViolation(`${AC}${tail.startsWith(',') || tail.startsWith('(') ? ' ' : ''}${tail}`)))
+  for (const tail of [', checkbox is not checked by default', ', drawer not opened on load', ', the toggle is not checked initially', ', modal remains not opened on load', ', menu not checked by default'])
+    check(`EN UI state "${tail}" is not a caveat`, jc.caveatViolation(`${AC}${tail}`) === null)
+  for (const tail of [', radio button is not checked', ', row is not checked after click', ', the "untested" import is removed', ', `untested` flag renamed', ', item not checked by default'])
+    check(`EN UI state / quoted "${tail}" is not a caveat`, jc.caveatViolation(`${AC}${tail}`) === null)
+  check('EN caveat outside the quotes is still caught', Boolean(jc.caveatViolation(`${AC}, "ok" dark theme untested`)))
+  check('EN "not checked live" is not a live check', Boolean(jc.acViolation('- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ pro-review by code, not checked live')))
+
+  // 4. Outcome of a finding: a promise is not a fix.
+  for (const entry of ['will be fixed in a follow-up PR', 'to be fixed in a follow-up once the backend lands', 'not yet fixed', "hasn't been fixed", "isn't fixed", 'has not been fixed yet', 'ещё не исправлено', 'не исправлено', 'исправим позже', 'будет исправлено отдельным PR'])
+    check(`outcome "${entry.slice(0, 40)}" is not fixed`, !['fixed', 'false', 'blocker', 'user'].includes(jc.disposition(`- M-1 — ${entry}`)), jc.disposition(`- M-1 — ${entry}`))
+  for (const entry of ['fixed: a.ts:10', 'исправлено: a.ts:10'])
+    check(`outcome "${entry}" is fixed`, jc.disposition(`- M-1 — ${entry}`) === 'fixed')
+
+  // 6. PARKED: code in backticks and the bare word "findings" are not an outcome.
+  for (const entry of ['fixed: a.ts:10, the other findings of the round are minor', 'fixed: the `deferred` import is now eager (a.ts:3)', 'исправлено: `deferred` промис резолвится в finally (a.ts:12)', 'fixed: moved the helper, see b.ts:5'])
+    check(`outcome "${entry.slice(0, 44)}" is fixed`, jc.disposition(`- M-2 — ${entry}`) === 'fixed', jc.disposition(`- M-2 — ${entry}`))
+  for (const entry of ['to findings', 'в findings', 'moved to FINDINGS.md', 'deferred'])
+    check(`outcome "${entry}" stays parked`, jc.disposition(`- M-2 — ${entry}`) === 'parked', jc.disposition(`- M-2 — ${entry}`))
+
+  // 7. The run summary of a ru task: the "findings without outcome" lines are Russian (the lines of the base 3ea2473).
+  {
+    const dir = mkdtempSync(join(tmpdir(), 'digest-ledger-'))
+    const digestIn = (header, name, report) => {
+      mkdirSync(join(dir, 'T-32/checks'), { recursive: true })
+      writeFileSync(join(dir, 'T-32/STAGES.md'), header)
+      writeFileSync(join(dir, 'T-32/checks', name), report)
+      const later = new Date(Date.now() + 60_000)
+      utimesSync(join(dir, 'T-32/checks', name), later, later)
+      return runDigest(join(dir, 'T-32'), mkdtempSync(join(tmpdir(), 'digest-ledger-data-')), null)
+    }
+    const REPORT = 'Findings: critical 0 · major 2 · minor 0\n\n## Findings outcome\n- M-1 — leaving it as is\n- M-2 — unclear\n'
+    const ruDigest = digestIn('# T-32: задача\nЯзык: ru\n\n## Статус: этап 1\n', 'pro-review-1.md', REPORT)
+    check('digest: a ru task — the "without outcome" lines are Russian, as on the base', /это решение не исправлять, его принимает пользователь/.test(ruDigest) && /не распознан/.test(ruDigest) && !/Findings outcome|this is a decision not to fix|is not recognised/.test(ruDigest), ruDigest)
+    const enDigest = digestIn('# T-32: task\nLanguage: en\n\n## Status: stage 1\n', 'pro-review-1.md', REPORT)
+    check('digest: an en task — the same lines in English', /this is a decision not to fix/.test(enDigest) && /is not recognised/.test(enDigest) && !/[а-яё]/i.test(enDigest), enDigest)
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  // 8-10, 9: dates of the Force run heading, "like X", "no matching data", "skipped:".
+  {
+    const unread = (heading) => openForceBlock(`${heading}\nMode: autonomous.\n\n`)?.unreadDate
+    for (const heading of ['## Force run Oct 17, 2026', '## Force run 10/17/2026', '## Force run 17 October 2026'])
+      check(`Force heading "${heading.slice(10)}" — a date the parser did not read: fail closed`, unread(heading) === true)
+    for (const heading of ['## Force run 2026-10-17', '## Force-прогон 17.10.2026', '## Force run'])
+      check(`Force heading "${heading.slice(3)}" — a date read or none: no fail-closed flag`, unread(heading) === false)
+    const like = (line) => Boolean(jc.likeViolation(line))
+    for (const line of ['- D3 — saving like the expert', '- `AC-3.1` WHEN save THEN as on prod — [verify: pro-review]', '- `AC-3.1` WHEN open THEN like the rest of the page — [verify: pro-review]'])
+      check(`EN "like X" without a path: ${line.slice(2, 44)} — caught`, like(line))
+    for (const line of ['- `AC-3.1` WHEN open THEN like the rest of the page (page.tsx:12) — [verify: pro-review]', '- `AC-3.1` WHEN the user taps like THEN a heart — [verify: pro-review]', '- 2026-10-17 — did it like the expert'])
+      check(`EN "like X" with a path or in plain prose: ${line.slice(2, 44)} — not caught`, !like(line))
+    for (const line of ['- `AC-3.1` WHEN open THEN looks like the existing card — [verify: pro-review]', '- D3 — feels like the current thing, no change', '- `AC-3.1` WHEN open THEN sounds like the old one — [verify: pro-review]'])
+      check(`EN "looks like the X" is a description, not a reference: ${line.slice(2, 44)}`, !like(line))
+    check('EN "like the existing" without a verb is still caught', like('- D3 — saving like the existing form'))
+    check('EN "no matching data" is "no data"', Boolean(jc.noDataViolation('- `AC-4.5` — ⏳ not verified: no matching data on the stand')))
+    check('EN "skipped: MCP busy" is a browser reason', jc.skipViolation('proto-compare and devtools-verify — skipped: MCP Chrome is busy')?.rule === 'design-skip' && jc.skipViolation('figma-compare skipped: logic-only change') === null)
+    check('a metrics line "skipped=devtools-verify,…" is not a skip of a design checker', jc.skipViolation('  metrics: checkers=figma-compare,pro-review skipped=devtools-verify,dead-code findings=7') === null)
+  }
+
+  // 5. Linear time (AC-16.2): 50 000 characters of pathological input — every pattern under 100 ms.
+  {
+    const { languageMismatch } = await import(join(PLUGIN, 'report-language.mjs'))
+    const N = 50_000
+    const rep = (unit) => unit.repeat(Math.ceil(N / unit.length)).slice(0, N)
+    const INPUTS = {
+      spaces: ' '.repeat(N), tabs: '\t'.repeat(N), newlines: '\n'.repeat(N), 'blank lines': rep('\n  '), stars: '*'.repeat(N), 'guillemets': '«'.repeat(N), 'curly quotes': '“'.repeat(N),
+      'link opens': rep(']('), 'bang run': `a${'!'.repeat(N)}a`, 'html opens': rep('<!--'), 'ac ids': rep('AC-1.1 '), 'ids': rep('1.1 '), 'user decision': rep('user decision '),
+      'figma-compare': rep('figma-compare '), dots: rep('· '), 'Confirmed': rep('- Confirmed '),
+    }
+    const SUBJECTS = {
+      CONFIRMED_LINE: (t) => markers.CONFIRMED_LINE.test(t), LANGUAGE_LINE: (t) => markers.LANGUAGE_LINE.test(t), PARITY_TABLE: (t) => markers.PARITY_TABLE.test(t),
+      BLOCKER_LINE: (t) => markers.BLOCKER_LINE.test(t), BLOCKER_LIFTED: (t) => markers.BLOCKER_LIFTED.test(t), STATUS_FORCE_CLOSED: (t) => markers.STATUS_FORCE_CLOSED_WITH_DATE.test(t),
+      'report language': (t) => languageMismatch(t, 'ru'), acViolation: (t) => jc.acViolation(`- \`AC-1.1\` ${t} ✅ ${t}`), skipViolation: (t) => jc.skipViolation(`figma-compare ${t} skip: ${t}`),
+      caveatViolation: (t) => jc.caveatViolation(`- \`AC-1.1\` ✅ ${t}`), noDataViolation: (t) => jc.noDataViolation(`- \`AC-1.1\` ⏳ ${t}`), likeViolation: (t) => jc.likeViolation(`- \`AC-1.1\` WHEN ${t}`),
+      disposition: (t) => jc.disposition(`- M-1 — ${t}`), barePasses: (t) => jc.barePasses(t), failedCriteria: (t) => jc.failedCriteria(t), findingCounts: (t) => jc.findingCounts(t, 'pro-review-1.md'),
+      openBlockers: (t) => jc.openBlockers(t), 'runtime report': (t) => jc.runtimeViolations(`# devtools-verify\n${t}`, 'devtools-verify-1.md'),
+    }
+    for (const [name, run] of Object.entries(SUBJECTS)) {
+      let worst = { ms: 0, input: '' }
+      for (const [input, text] of Object.entries(INPUTS)) {
+        const start = performance.now()
+        run(text)
+        const ms = performance.now() - start
+        if (ms > worst.ms) worst = { ms, input }
+      }
+      check(`50 000 characters of pathological input: ${name} < 100 ms`, worst.ms < 100, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
+    }
+  }
+
+}
 
 process.exit(failed ? 1 : 0)

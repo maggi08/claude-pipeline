@@ -28,6 +28,7 @@ import {
   journalText,
   lastForceBlock,
   ledgerEntries,
+  LEDGER_DOC,
   ledgerViolations,
   newReports,
   openBlockers,
@@ -48,6 +49,16 @@ const TEXT = {
     notVerified: (n) => `### Не проверено (${n})`,
     minor: (n) => `### Minor без итога (${n})`,
     accepted: (n) => `### Принято само — проверь, дорогие откаты первыми (${n})`,
+    // The lines of the "Findings without outcome" section, from the violation's data (journal-check, ledgerViolations); as before the English hook messages.
+    ledger: ({ rule, name, shown, what, accepted }) =>
+      ({
+        'ledger-parked': `checks/${name}: «${shown}» — это решение не исправлять, его принимает пользователь. Итог — исправлено, ложная (с доказательством) или блокер B<n> (${LEDGER_DOC}).`,
+        'ledger-unproven': `checks/${name}: «${shown}» — «давнее» без доказательства на базе. Проверь на sha базы или на проде и впиши замер, иначе это находка задачи.`,
+        'ledger-unknown': `checks/${name}: итог «${shown}» не распознан — допустимы «исправлено: …», «ложная: …», «B<n>», «решение пользователя <дата>» (${LEDGER_DOC}).`,
+        'ledger-missing':
+          `checks/${name}: ${what}, а итогов в «## Итог находок» — ${accepted}. Каждая находка закрывается строкой: исправлено / ложная / B<n> ` +
+          `(${LEDGER_DOC}). Находку, которую fix-loop не исправил, не откладывают — это блокер.`,
+      })[rule],
   },
   en: {
     blockers: (n) => `### Blockers — your answer needed (${n})`,
@@ -57,6 +68,7 @@ const TEXT = {
     notVerified: (n) => `### Not verified (${n})`,
     minor: (n) => `### Minor without outcome (${n})`,
     accepted: (n) => `### Accepted on my own — check, expensive rollbacks first (${n})`,
+    ledger: ({ message }) => message,
   },
 }
 const bullet = (line) => line.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').trim()
@@ -81,7 +93,7 @@ export function runDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     out.push('', text.gates(gates.length - red.length, gates.length), ...gates.map((gate) => `- ${gate.status === 'green' ? '✅' : '✗'} ${describe(gate, language)}`))
   }
 
-  const open = reports.flatMap(({ name, text }) => ledgerViolations(text, name, { complete: true }).map((violation) => `- ${violation.message}`))
+  const open = reports.flatMap(({ name, text }) => ledgerViolations(text, name, { complete: true }).map((violation) => `- ${TEXT[language].ledger(violation)}`))
   if (open.length) out.push('', text.noOutcome(open.length), ...open)
 
   const unverified = []
@@ -91,7 +103,7 @@ export function runDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const body = text.slice(start).split('\n').slice(1)
     const end = body.findIndex((line) => /^#{1,3}\s/.test(line))
     for (const line of end === -1 ? body : body.slice(0, end)) {
-      if (/^\s*(?:[-*]|\d+\.)\s+\S/.test(line) && !/^(?:нет|ничего|всё .*проверено|none|nothing|no\s+items|(?:all|everything)\s+(?:items\s+)?(?:is\s+|are\s+)?(?:verified|checked))\.?$/i.test(bullet(line))) unverified.push(`- ${name}: ${bullet(line)}`)
+      if (/^\s*(?:[-*]|\d+\.)\s+\S/.test(line) && !/^(?:нет|ничего|всё .*проверено|none|nothing(?:\s+left(?!.*\b(?:not|except|but)\b).*)?|no\s+items|(?:all|everything)\b(?!.*\b(?:not|except|but|unverified)\b|.*n['’]t\b).*\b(?:verified|checked)\b(?:\s*\([^)]*\))?)\.?$/i.test(bullet(line))) unverified.push(`- ${name}: ${bullet(line)}`)
     }
   }
   const journal = journalText(taskDir)

@@ -57,7 +57,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Archived stage stub | `Full record: STAGES-ARCHIVE.md — …` | `Полная запись: STAGES-ARCHIVE.md — …` |
 | Journal preamble | `Older entries (N): STAGES-ARCHIVE.md — "Journal".` | `Старые записи (N): STAGES-ARCHIVE.md — «Журнал».` |
 | Force block heading | `## Force run <date>` | `## Force-прогон <дата>` |
-| Force heading, closed | `## Force run <date> — completed` | `## Force-прогон <дата> — завершён` |
+| Force heading, closed (`completed`, also `complete`, only before a date or `with blockers`, or at the end of the heading after a dash: "— complete the migration" is a title, not a close) | `## Force run <date> — completed` | `## Force-прогон <дата> — завершён` |
 | Force heading, closed with open blockers | `… — completed with blockers` | `… — завершён с блокерами` |
 | Force block field | `Mode:` | `Режим:` |
 | Force block field | `Interview answers:` | `Ответы интервью:` |
@@ -66,7 +66,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Force block field | `Boundaries:` | `Границы:` |
 | Force block field (the line the hooks require) | `Confirmed: <date> — <what>` | `Подтверждено: <дата> — <что>` |
 | Force block field | `Blockers:` | `Блокеры:` |
-| Blocker line `B<n> — …` closed by the words | `lifted by`, `resolved by`, `closed by`, `answered by`, `user answer`, `user decision` | `снят`, `решён`, `закрыт`, `отвечен`, `ответ пользователя`, `решение пользователя` |
+| Blocker line `B<n> — …` closed by the words | `lifted by`, `resolved by`, `closed by`, `answered by`, `user answer`, `user decision` (the last two lift a blocker only with a date or a quotation: "user decision 2026-10-17: v2", `user answer "token is set"`; a bare request does not) | `снят`, `решён`, `закрыт`, `отвечен`, `ответ пользователя`, `решение пользователя` |
 | Report, line 2 | `Findings: critical N · major N · minor N` | `Находки: critical N · major N · minor N` |
 | Report section | `## Findings outcome` | `## Итог находок` |
 | Verdict line, criterion not reached | `not checked` | `не проверено` |

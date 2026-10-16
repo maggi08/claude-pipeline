@@ -57,12 +57,14 @@ export function acViolation(line, reports = null) {
   const required = requiredCheckers(line)
   if (!required.length) return null
   const outcome = line.slice(line.indexOf('✅') + 1).replace(/\[verify:[^\]]*\]/gi, '')
+  // Code in backticks and quoted text are identifiers or copy, not the wording of the outcome ("the untested import is removed").
+  const prose = outcome.replace(/`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^»\n]{0,200}»|“[^”\n]{0,200}”/g, ' ')
   const id = line.match(/AC-[\w.]+/)[0]
   const deferred = /\[live:|решени[а-яё]* пользователя|user\s+decision/i.test(outcome) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(outcome))
   if (deferred) return null
   const named = required.filter((checker) => outcome.includes(checker))
   // A runtime criterion is also closed by a live check without a subagent (a smoke run, "checked live"); a design criterion only by a checker comparison.
-  const live = required.includes('devtools-verify') && /\bsmoke\b|живь[её]м|вживую|в браузере|\b(?:checked|tested|verified|confirmed|ran|run|done)\s+live\b|\blive\s+(?:check|run|smoke|test|session)\b|in\s+(?:the|a)\s+(?:live\s+)?browser/i.test(outcome)
+  const live = required.includes('devtools-verify') && /\bsmoke\b|живь[её]м|вживую|в браузере|(?<!\bnot\s)(?<!n['’]t\s)\b(?:checked|tested|verified|confirmed|ran|run|done)\s+live\b|\blive\s+(?:check|run|smoke|test|session)\b|in\s+(?:the|a)\s+(?:live\s+)?browser/i.test(outcome)
   if (!named.length && !live) {
     const shown = outcome.replace(/\s+/g, ' ').trim().slice(0, 60)
     return {
@@ -92,7 +94,7 @@ const LEGIT_REASON =
 export function skipViolation(line) {
   for (const match of line.matchAll(/(figma-compare|proto-compare)/g)) {
     const near = line.slice(match.index + match[0].length, match.index + match[0].length + 200)
-    const skip = near.match(/^((?:(?!\s·\s)[^.;(\n]){0,50}?)[[(]?\s*skip\b\s*[:—–-]?\s*\(?\s*([^\])·;\n]*)/i)
+    const skip = near.match(/^((?:(?!\s·\s)[^.;(\n]){0,50}?)[[(]?\s*skip(?:ped)?\b(?!=)\s*[:—–-]?\s*\(?\s*([^\])·;\n]*)/i)
     if (!skip) continue
     const reason = skip[2].trim()
     if (BROWSER_REASON.test(reason) && !LEGIT_REASON.test(reason)) {
@@ -110,23 +112,28 @@ export function skipViolation(line) {
 
 // ✅ with a caveat inside — "✅ (dark theme not captured)", "✅ only by cookie, look not checked": the criterion is half-closed.
 const CAVEAT_RU = 'не\\s+снят|не\\s+проверен|не\\s+проверял|не\\s+смотрел|не\\s+открывал|только\\s+по\\s+коду|частично|не\\s+удалось\\s+(?:проверить|снять|открыть|посмотреть)'
+// "checkbox is not checked by default", "drawer not opened on load" describe the interface, not what was verified: a control word before "not checked/opened" is not a caveat.
+const UI_STATE =
+  "(?<!\\b(?:checkbox|box|toggle|radio|radio\\s+button|switch|option|row|item|drawer|modal|menu|dropdown|accordion|popover|sidebar)\\s+(?:(?:is|are|was|stays|remains)\\s+)?)"
 const CAVEAT_EN =
-  "\\bnot\\s+(?:captured|verified)\\b|\\bnot\\s+(?:checked|opened)(?:\\s+yet\\b|\\s+(?:in|on|at|for)\\s+(?!load\\b|default\\b)\\S)|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)"
+  `\\bnot\\s+(?:captured|verified|tested)\\b|\\b(?:untested|unverified)\\b|${UI_STATE}\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first)\\b)|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)`
 const CAVEAT = new RegExp(`${CAVEAT_RU}|${CAVEAT_EN}`, 'i')
 // "No data" instead of putting a state in place: 46 "[live: user-side]" in one task, the user found six defects among them.
-const NO_DATA = /нет\s+(?:подходящ[а-яё]*\s+|живых\s+|тестов[а-яё]*\s+)?(?:данных|брон[а-яё]*|лид[а-яё]*|записей|объявлен[а-яё]*|заказ[а-яё]*)(?![а-яё])|нет\s+на\s+аккаунте|\bno\s+(?:suitable\s+|live\s+|test\s+)?(?:data|bookings|leads|records|listings|orders)\b(?!\s+(?:loss|lost|was\s+lost|were\s+lost|changed?)\b)|\bnot\s+on\s+the\s+account|\bno\s+such\s+data/i
+const NO_DATA = /нет\s+(?:подходящ[а-яё]*\s+|живых\s+|тестов[а-яё]*\s+)?(?:данных|брон[а-яё]*|лид[а-яё]*|записей|объявлен[а-яё]*|заказ[а-яё]*)(?![а-яё])|нет\s+на\s+аккаунте|\bno\s+(?:suitable\s+|matching\s+|live\s+|test\s+)?(?:data|bookings|leads|records|listings|orders)\b(?!\s+(?:loss|lost|was\s+lost|were\s+lost|changed?)\b)|\bnot\s+on\s+the\s+account|\bno\s+such\s+data/i
 const STUBBED = /подмен|подстав|заглушк|фикстур|stub|mock|override|перехват|intercept|fixture|substitut|\bfak(?:e|ed|ing)\b|replaced\s+the\s+API\s+response/i
 
 export function caveatViolation(line) {
   if (!AC_ID.test(line) || !line.includes('✅')) return null
   const outcome = line.slice(line.indexOf('✅') + 1).replace(/\[verify:[^\]]*\]/gi, '')
-  if (/⏳|\[live:|\[blocked/i.test(outcome) || !CAVEAT.test(outcome)) return null
+  // Code in backticks and quoted text are identifiers or copy, not the wording of the outcome ("the untested import is removed").
+  const prose = outcome.replace(/`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^»\n]{0,200}»|“[^”\n]{0,200}”/g, ' ')
+  if (/⏳|\[live:|\[blocked/i.test(outcome) || !CAVEAT.test(prose)) return null
   const id = line.match(/AC-[\w.]+/)[0]
   return {
     rule: 'ac-caveat',
     id,
     message:
-      `${id}: ✅ with a caveat "${outcome.match(CAVEAT)[0]}" — the criterion is half-closed. The unverified part is a ⏳ naming who will check it, ` +
+      `${id}: ✅ with a caveat "${prose.match(CAVEAT)[0]}" — the criterion is half-closed. The unverified part is a ⏳ naming who will check it, ` +
       'or split the criterion in two (references/checker-report.md).',
   }
 }
@@ -148,7 +155,7 @@ export function noDataViolation(line) {
 
 // "Like X" without a path to X. "because in …" is a reason, not a reference; "as in the ticket" refers to the ticket itself.
 const LIKE =
-  /(?<![а-яё])(?<!так\s+)как\s+(?:у|в|на|сейчас|раньше|было|прежде)(?![а-яё])|\b(?:same\s+as|like\s+in)\b|(?<![\w-])(?<!such\s)(?<!well\s)as\s+(?:in\s+the|on\s+the|before\b|it\s+was\b|it\s+is\s+now\b|now\b|currently\b)|\blike\s+the\s+old\b/i
+  /(?<![а-яё])(?<!так\s+)как\s+(?:у|в|на|сейчас|раньше|было|прежде)(?![а-яё])|\b(?:same\s+as|like\s+in)\b|(?<![\w-])(?<!such\s)(?<!well\s)as\s+(?:in\s+the|on\s+the|before\b|it\s+was\b|it\s+is\s+now\b|now\b|currently\b)|(?<!\b(?:looks?|feels?|seems?|sounds?)\s)\blike\s+the\s+(?:old|expert|existing|current|original|previous|rest\s+of)\b|\b(?:as|like)\s+on\s+(?:prod|production|staging|dev)\b/i
 const REF = /[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|less|html?|md|py|go|rb|kt|swift|java|php|rs|cs)\b|https?:\/\/|node-?id|\b\d+[:-]\d+\b|`[^`\s]*\/[^`\s]*`/i
 const DECISION = /^\s*(?:[-*]|\d+\.|\|)?\s*\**(?:D\d+\b|Решени[ея]|Решено|Решили|Decisions?\b|Decided\b|We\s+decided\b)/i
 
@@ -220,7 +227,7 @@ export const reportChecker = (name) => CHECKERS.find((checker) => name.includes(
 
 // The summary in live reports: "Findings: critical 0 · major 2 · minor 1", "0 critical / 2 major", "🔴0 · 🟠2",
 // "🔴 Critical: 1", "- Major: 0", "critical 0, major 0", "Request changes (2 major)", for dead-code — "1 remove".
-const SUMMARY_LINE = /вердикт|итог|сводка|находк|findings|verdict|severity|🔴|🟠|^\s*[-*]?\s*\**(?:critical|major)\**\s*:\s*\d|(?:critical|major|minor)[^\n]*(?:critical|major|minor)/i
+const SUMMARY_LINE = /вердикт|итог|сводка|находк|findings|verdict|severity|🔴|🟠|^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:critical|major)\**\s*:\s*\d|(?:critical|major|minor)[^\n]*(?:critical|major|minor)/i
 const severityWord = (words) => words.map((word) => `(?<![\\w-])${word}(?![\\w-])`).join('|')
 const severityPatterns = (words) => [new RegExp(`(\\d+)\\s*\\**\\s*(?:${severityWord(words)})`, 'i'), new RegExp(`(?:${severityWord(words)})\\**\\s*:?\\s*(\\d+)`, 'i')]
 
@@ -269,8 +276,13 @@ export function failedCriteria(text) {
   return [...ids]
 }
 
+// A finding closed by a promise, not by a fix: "will be fixed in a follow-up", "not yet fixed", "hasn't been fixed", and their Russian forms.
+const NOT_FIXED_YET =
+  /(?:\bnot|n['’]t)\s+(?:(?:yet|fully|been|completely|properly)\s+)*(?:fix(?:ing|ed)|resolved)\b|\b(?:will|to)\s+be\s+(?:fixed|resolved|addressed)\b|(?<![а-яё])не\s+(?:(?:ещ[её]|полностью)\s+)*(?:исправлен|починен)|(?:исправим|починим|поправим)(?![а-яё])|будет\s+(?:исправлен|починен)/i
+// "FINDINGS" (the file name) is case-sensitive: the plain word "findings" is the plugin's own vocabulary, and "to findings" — a forbidden outcome.
+const PARKED_FILE = /\bFINDINGS(?:\.md)?\b/
 const PARKED =
-  /оставля|оставлен|компромисс|ожида[а-яё]*\s+подтвержд|не\s+чин|в\s+кит(?![а-яё])|findings|отдельн[а-яё]*\s+задач|позже|потом(?![а-яё])|принят[а-яё]*\s+как|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|вне\s+(?:скоуп|границ)|не\s+в\s+скоуп|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|\bleft\s+as\b|\bkeep(?:ing)\b|\bkept\s+as\b|compromise|awaiting\s+(?:user\s+)?confirmation|\bwon['’]?t\s+fix|\bnot\s+(?:fix(?:ing|ed)|resolved)\b|\b(?:to|into)\s+the\s+kit\b|separate\s+task|\blater\b|\bafterwards\b|\bdeferred\b|\bpostponed\b|accepted\s+as\b|question\s+(?:for|to)\s+(?:the\s+)?(?:product|design|backend|reviewer|qa)\b|out\s+of\s+scope|not\s+in\s+scope|outside\s+(?:the\s+)?(?:scope|boundaries)/i
+  /оставля|оставлен|компромисс|ожида[а-яё]*\s+подтвержд|не\s+чин|в\s+кит(?![а-яё])|(?:в|to|into)\s+findings\b|отдельн[а-яё]*\s+задач|позже|потом(?![а-яё])|принят[а-яё]*\s+как|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|вне\s+(?:скоуп|границ)|не\s+в\s+скоуп|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|\bleft\s+as\b|\bkeep(?:ing)\b|\bkept\s+as\b|compromise|awaiting\s+(?:user\s+)?confirmation|\bwon['’]?t\s+fix|\b(?:to|into)\s+the\s+kit\b|separate\s+task|\blater\b|\bafterwards\b|\bdeferred\b|\bpostponed\b|accepted\s+as\b|question\s+(?:for|to)\s+(?:the\s+)?(?:product|design|backend|reviewer|qa)\b|out\s+of\s+scope|not\s+in\s+scope|outside\s+(?:the\s+)?(?:scope|boundaries)/i
 const PRE_EXISTING = /давн|не\s+регресс|pre-?existing|было\s+до|до\s+задачи|long-?standing|not\s+a\s+regression|existed\s+before|(?:was|were)\s+(?:already\s+)?there\s+before|before\s+this\s+task|predat(?:es|ed)/i
 const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![а-яё])|\bprod\b|на\s+базе|\bproduction\b|\bon\s+(?:the\s+)?base\b/i
 
@@ -278,11 +290,13 @@ const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![
 export function disposition(entry) {
   const proven = PRE_EXISTING.test(entry) && BASE_EVIDENCE.test(entry)
   if (PRE_EXISTING.test(entry) && !proven) return 'unproven'
-  if (PARKED.test(entry) && !proven) return 'parked'
+  // Code in backticks is an identifier, not the wording of an outcome ("`deferred` promise resolves in finally").
+  const prose = entry.replace(/`[^`\n]*`/g, ' ')
+  if ((PARKED.test(prose) || PARKED_FILE.test(prose) || NOT_FIXED_YET.test(prose)) && !proven) return 'parked'
   if (/исправлен|починен|удал[её]н|(?<!\bnot\s)(?<!n['’]t\s)\b(?:fixed|removed|resolved|repaired)\b/i.test(entry)) return 'fixed'
   if (proven || /ложн|не\s+подтвердил|не\s+воспроизв|(?:^\s*(?:[-*]|\d+\.)?\s*|[—–]\s*|\s-\s+)false\s*[:(]|\bfalse\s+positive\b|\bnot\s+confirmed\b|\b(?:could\s+not|couldn['’]t|cannot|unable\s+to)\s+reproduce|\bnot\s+reproduc(?:ed|ible)/i.test(entry)) return 'false'
   if (/\bB\d+\b/.test(entry)) return 'blocker'
-  if (/(?:решени[а-яё]*\s+пользователя|user\s+decision|user\s+decided)[^\n]*(?:«|"|“|\d{2}\.\d{2}|\d{4}-\d{2})/i.test(entry)) return 'user'
+  if (/(?:решени[а-яё]*\s+пользователя|user\s+decision|user\s+decided)[^\n]{0,200}?(?:«|"|“|\d{2}\.\d{2}|\d{4}-\d{2})/i.test(entry)) return 'user'
   return 'unknown'
 }
 
@@ -295,7 +309,7 @@ export function ledgerEntries(text) {
 }
 
 const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
-const LEDGER_DOC = 'references/checker-report.md'
+export const LEDGER_DOC = 'references/checker-report.md'
 
 /**
  * Violations of the findings outcome in a report: a forbidden outcome ("leaving it", "to Awaiting"), a "pre-existing" claim without proof
@@ -311,18 +325,21 @@ export function ledgerViolations(text, name, { complete = false } = {}) {
       found.push({
         rule: 'ledger-parked',
         id: name,
+        shown: shown(entry),
         message: `checks/${name}: "${shown(entry)}" — this is a decision not to fix, and the user makes it. The outcome is fixed, false (with proof) or blocker B<n> (${LEDGER_DOC}).`,
       })
     } else if (kind === 'unproven') {
       found.push({
         rule: 'ledger-unproven',
         id: name,
+        shown: shown(entry),
         message: `checks/${name}: "${shown(entry)}" — "pre-existing" without proof on the base. Check on the base sha or on prod and write down the measurement, otherwise it is a finding of the task.`,
       })
     } else if (kind === 'unknown') {
       found.push({
         rule: 'ledger-unknown',
         id: name,
+        shown: shown(entry),
         message: `checks/${name}: the outcome "${shown(entry)}" is not recognised — allowed are "fixed: …", "false: …", "B<n>", "user decision <date>" (${LEDGER_DOC}).`,
       })
     }
@@ -337,6 +354,8 @@ export function ledgerViolations(text, name, { complete = false } = {}) {
     found.push({
       rule: 'ledger-missing',
       id: name,
+      what,
+      accepted,
       message:
         `checks/${name}: ${what}, and "## Findings outcome" has ${accepted}. Each finding is closed by a line: fixed / false / B<n> ` +
         `(${LEDGER_DOC}). A finding that the fix-loop did not fix is not put off — it is a blocker.`,
@@ -369,7 +388,7 @@ export function runtimeViolations(text, name, taskDir = null) {
   // A stage with a "Visual reference" — a typography comparison with a neighbouring section: the prototype matched the code, and "too bold" and "different buttons"
   // the user saw next to the rest of the dashboard.
   const reference = taskDir && stageReference(taskDir, name)
-  if (reference && !/^\s*[-*]?\s*`?style-diff\b/im.test(text)) {
+  if (reference && !/^[ \t]*(?:[-*][ \t]*)?`?style-diff\b/im.test(text)) {
     found.push({
       rule: 'no-style-diff',
       id: name,
@@ -378,7 +397,7 @@ export function runtimeViolations(text, name, taskDir = null) {
         'of the new section with the reference one (skill devtools-verify, step "Visual reference"). A difference without a user decision is a major finding.',
     })
   }
-  if (!/^\s*[-*]?\s*`?geometry\b/im.test(text)) {
+  if (!/^[ \t]*(?:[-*][ \t]*)?`?geometry\b/im.test(text)) {
     found.push({
       rule: 'no-geometry',
       id: name,
@@ -437,7 +456,10 @@ export function stageReference(taskDir, name) {
 
 const VALUE =
   /`[^`]+`|[\w-]+\.[a-z]{1,5}:\d+|\d+(?:[.,]\d+)?\s*(?:px|ms|s\b|%|kb|mb|rem|em|°)|#[0-9a-f]{3,8}\b|«[^»]{2,}»|"[^"]{2,}"|\d+\s*[x×]\s*\d+|\w\s*=\s*\S|→/i
-const PASS_RUN = /((?:`?(?:AC-)?\d+[a-z]?(?:\.\d+[a-z]?)+`?\s*(?:,|и|and|\/)?\s*)+)(?:[—–:|-]\s*)?\**PASS\b\**/g
+// The evidence for a criterion is looked for in the next 300 characters of its segment: a tail to the end of a long line is a quadratic scan.
+const TAIL_MAX = 300
+// At most 80 ids in a list: an unbounded run makes the scan from every id quadratic on a long line of ids without PASS.
+const PASS_RUN = /((?:`?(?:AC-)?\d+[a-z]?(?:\.\d+[a-z]?)+`?\s*(?:(?:,|и|and|\/)\s*)?){1,80})(?:[—–:|-]\s*)?\**PASS\b\**/g
 
 /**
  * Criteria that have only bare PASS in a checker report: no mention of the criterion carries
@@ -456,11 +478,12 @@ export function barePasses(text) {
     const below = lines.slice(index + 1, index + 7)
     const stop = below.findIndex((next) => !next.trim() || /^#|AC-\d/.test(next))
     const details = (stop === -1 ? below : below.slice(0, stop)).join(' ')
-    const segments = line.split(/\s+·\s+|,\s+(?=`?(?:AC-)?\d+[a-z]?\.\d)/)
+    const segments = line.split(/(?<!\s)\s+·\s+|,\s+(?=`?(?:AC-)?\d+[a-z]?\.\d)/)
     for (const [position, segment] of segments.entries()) {
-      const runs = [...segment.matchAll(PASS_RUN)].filter((match) => compact || /AC-/.test(match[1]))
+      // A segment without PASS has no run: skip the scan of a long line of ids.
+      const runs = !segment.includes('PASS') ? [] : [...segment.matchAll(PASS_RUN)].filter((match) => compact || /AC-/.test(match[1]))
       for (const [order, match] of runs.entries()) {
-        const tail = segment.slice(match.index + match[0].length).replace(/^[\s.*|:—–-]+/, '')
+        const tail = segment.slice(match.index + match[0].length, match.index + match[0].length + TAIL_MAX).replace(/^[\s.*|:—–-]+/, '')
         const last = position === segments.length - 1 && order === runs.length - 1
         const hasValue = VALUE.test(tail) || tail.replace(/[|*\s]+/g, ' ').trim().length >= 25 || (last && VALUE.test(details))
         for (const [id] of match[1].matchAll(/\d+[a-z]?(?:\.\d+[a-z]?)+/g)) {
@@ -471,7 +494,7 @@ export function barePasses(text) {
       // A detail without the word PASS ("`AC-3.3` — columns 150/200 …") is also a measurement for the criterion.
       if (runs.length) continue
       for (const match of segment.matchAll(/AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)/g)) {
-        const tail = segment.slice(match.index + match[0].length).replace(/^[`\s.*|:—–-]+/, '')
+        const tail = segment.slice(match.index + match[0].length, match.index + match[0].length + TAIL_MAX).replace(/^[`\s.*|:—–-]+/, '')
         if (VALUE.test(tail) || tail.trim().length >= 25) evidence.add(match[1])
       }
     }

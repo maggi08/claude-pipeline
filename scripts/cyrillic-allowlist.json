@@ -51,6 +51,11 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
+      "line": "^\\s*(?:'ledger-(?:parked|unproven|unknown)': |`checks/\\$\\{name\\}: \\$\\{what\\}, а итогов|`\\(\\$\\{LEDGER_DOC\\}\\)\\. Находку)",
+      "reason": "the lines of the \"findings without outcome\" section of a ru task's run digest, byte for byte as the base hook messages (D1)"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
       "line": "^\\s*if \\(/\\^\\\\s\\*\\(\\?:\\[-\\*\\]\\|\\\\d\\+\\\\\\.\\)\\\\s\\+\\\\S/\\.test\\(line\\) && !/\\^\\(\\?:нет",
       "reason": "RU forms of \"nothing unverified\" next to the EN ones"
     },

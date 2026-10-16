@@ -47,7 +47,7 @@ if (agent === 'pro-review' && WHOLE_BRANCH.test(toolInput.prompt ?? '')) {
 if (agent === 'stage-implement') {
   const task = state.tasks.find((candidate) => candidate.current)
   const block = task && openForceBlock(task.stages)
-  if (block && block.date && block.date >= CONFIRM_SINCE && !CONFIRMED_LINE.test(block.body)) {
+  if (block && (block.date ? block.date >= CONFIRM_SINCE : block.unreadDate) && !CONFIRMED_LINE.test(block.body)) {
     deny(
       `stage-pipeline: block "${block.heading.replace(/^## /, '')}" of task ${task.ticket} has no \`Confirmed:\` line (stage-force, Step 0). ` +
         'The interview is done — add `Confirmed: <date> — interview answers` to the block (if there were no questions, `— no questions`) and launch again. ' +

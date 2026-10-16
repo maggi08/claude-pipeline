@@ -133,7 +133,7 @@ export function reviewModel(config) {
 
 /**
  * An open "Force run" block (the last one without "completed" in the heading): the heading, the date from it
- * (`2026-09-30`, `2026-09-30b`, `28.09.2026`) and the text up to the next `## ` section.
+ * (`2026-09-30`, `2026-09-30b`, `28.09.2026`; `unreadDate` — the heading has a date in another form) and the text up to the next `## ` section.
  */
 export function openForceBlock(stages) {
   if (!forceActive(stages)) return null
@@ -142,7 +142,10 @@ export function openForceBlock(stages) {
   if (!last) return null
   const rest = stages.slice(last.index + last[0].length)
   const end = rest.search(/^## /m)
-  return { heading: last[0], date: headingDate(last[0]), body: end === -1 ? rest : rest.slice(0, end) }
+  const date = headingDate(last[0])
+  // A date the parser did not understand ("Oct 17, 2026", "10/17/2026") is a new block, not an old one: fail closed, `Confirmed:` is required.
+  const unreadDate = date === null && /\d{4}|\d{1,2}[/.-]\d{1,2}|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i.test(last[0])
+  return { heading: last[0], date, unreadDate, body: end === -1 ? rest : rest.slice(0, end) }
 }
 
 function headingDate(heading) {
