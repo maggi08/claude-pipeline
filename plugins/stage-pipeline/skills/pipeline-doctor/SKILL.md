@@ -12,8 +12,10 @@ description: Проверка окружения разработчика для
 ## Чек-лист (по порядку)
 
 1. **MCP-серверы.** Канонические имена задаёт `.mcp.json` плагина: `figma`
-   и `chrome-devtools`. Проверь через ToolSearch доступность
-   `mcp__figma__get_metadata` и `mcp__chrome-devtools__list_pages`.
+   и `chrome-devtools`; Claude Code добавляет к тулам плагинных серверов
+   префикс `plugin_stage-pipeline_`. Проверь через ToolSearch доступность
+   `mcp__figma__get_metadata` и `mcp__plugin_stage-pipeline_chrome-devtools__list_pages`
+   (или `mcp__chrome-devtools__list_pages`, если у разработчика свой сервер).
    - Figma-тулов нет → (а) project-серверы не одобрены — подсказать `/mcp` →
      approve; (б) Figma desktop не запущена или выключен MCP-сервер
      (Figma → Preferences → **Enable Dev Mode MCP Server**). Проверка порта:

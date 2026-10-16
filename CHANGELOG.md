@@ -5,6 +5,17 @@
 
 Обновление: `claude plugin update stage-pipeline` + перезапуск Claude Code.
 
+## 0.15.2 — 2026-10-16
+
+### devtools-verify находит chrome-devtools плагина
+
+Claude Code отдаёт тулы серверов из `.mcp.json` плагина с префиксом: `mcp__plugin_stage-pipeline_chrome-devtools__*`. devtools-verify и pipeline-doctor искали `mcp__chrome-devtools__*`, поэтому сервер плагина для них не находился, и проверка уходила в skip «MCP не подключён».
+
+- **devtools-verify** (скилл и агент) грузит тулы по имени с префиксом плагина. У разработчика со своим сервером `chrome-devtools` остаются прежние `mcp__chrome-devtools__*`. Переподключение — `/mcp reconnect plugin:stage-pipeline:chrome-devtools`.
+- **`/pipeline-doctor`** проверяет `mcp__plugin_stage-pipeline_chrome-devtools__list_pages` (или `mcp__chrome-devtools__list_pages` для своего сервера).
+
+Руками на апгрейде — ничего.
+
 ## 0.15.1 — 2026-10-05
 
 ### Force стартует сразу после ответов на интервью
