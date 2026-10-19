@@ -39,7 +39,13 @@ Blockers of the previous run (the `Blockers:` line of a closed "Force run" block
 | Look | the reference is the kit and the neighboring section; a look "as in the prototype" — only by a decision |
 | Terminology | what the entity is called in the UI, whether one thing has two names |
 | Boundaries | what we explicitly do NOT do in this task |
-| Environment and access | what the run will need from outside: the needed file open in Figma desktop, a logged-in browser profile, a record on the test stand, the backend contract, secrets, free ports and other people's dev servers. Check now, not at the stage: what is missing goes into the batch or falls back to assumptions (a checker skip with a reason, a `[live: user-side]` criterion) |
+| Environment and access | what the run will need from outside: the needed file open in Figma desktop, a logged-in browser profile, a record on the test stand, the backend contract, secrets, free ports and other people's dev servers. Check now, not at the stage: what is missing goes into the batch or falls back to assumptions (a checker skip with a reason; a login that stays missing becomes an honest `[live: user-side — <prerequisite>; <route> → <observed>]` at check time, never a pre-tag). The login is checked by the auth probe below |
+
+**Auth probe (once, only if some `AC-*` of the plan is behind a login).** Checker subagents drive the orchestrator's MCP browser (proven at VT-1 kickoff), so one probe here answers for the whole run:
+1. Pick the auth-gated route from the criteria (the first route that needs a session) and the dev URL from the config; run `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-doctor.mjs` first — a `doctor: wrong app` / `down` goes into the batch (or the assumptions) before anything else.
+2. Open the route in the plugin's `chrome-devtools` browser (`new_page` → `list_pages` URL): a redirect to the login page means "not logged in". MCP unavailable — skip the probe with the reason in the assumptions; devtools-verify then probes by itself.
+3. Not logged in → the opening batch carries one item with the route named: "log in in the managed Chrome window at `<route>`, then answer". Recommendation first: "I suggest logging in now, otherwise the criteria `AC-…` go to you as `[live: user-side — …]`". Logged in → no question, one line in the assumptions ("auth probe: `<route>` opened without a redirect"). An answer "not now" is an assumption: those criteria are deferred in the honest form at check time.
+4. After `Confirmed:` nothing about the login is asked again: a session that expires mid-run is a deferral in the honest form, not a pause. (A persistent login across restarts is the opt-in of `/pipeline-doctor`.)
 
 Rank by "impact × uncertainty" and take the top ones into the batch. `Clear` — do not ask; `Partially`/`Not covered` with low impact — into assumptions, not into a question.
 

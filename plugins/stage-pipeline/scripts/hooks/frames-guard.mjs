@@ -14,6 +14,11 @@ import { readHookInput, readPipelineState } from './pipeline-state.mjs'
  * transcript and images in `checks/` of the current branch's task written while it worked (fallback
  * puppeteer/playwright scripts write them themselves). Viewed means opened with Read. Unviewed frames are
  * a reason to continue. Claude Code itself breaks the Stop-hook loop (no more than 8 continuations in a row).
+ *
+ * Stage 4 of VT-1 — the same agent must not drive a page before it knows which app answers: no `verify-doctor.mjs` call before the first
+ * `new_page` / `navigate_page` (or a navigation after a `doctor: wrong app` / `doctor: down` result) is a reason to continue. core, new-cor and
+ * mycar-webview all serve on :3000, and a server of another worktree answers 200 too. A run with no navigation (a static target through the playwright fallback,
+ * a skip) is not judged; a `doctor: no dev url` result clears the navigation before it and after it (a static target has no dev URL to drive blind); "navigate, doctor, navigate again" passes — that is the redo the message asks for.
  */
 const IMAGE = /\.(png|jpe?g|webp)$/i
 const input = await readHookInput()
@@ -26,6 +31,13 @@ let started = Infinity
 let ended = -Infinity
 const viewed = new Set()
 const shot = new Set()
+const NAVIGATE = /(?:^|__)(?:new_page|navigate_page)$/
+const doctorCalls = new Set()
+const RUNS_DOCTOR = /(?:^|[\s;&|(])node\s+(?:--\S+\s+)*\S*verify-doctor\.mjs\b/
+let doctored = false
+let refused = false
+let staticTarget = false // the doctor said `no dev url`: the navigations around it are of a static file
+let navigation = null // null — fine; 'blind' — navigated before any verify-doctor call; 'refused' — navigated after wrong app / down
 for (const line of readFileSync(transcript, 'utf8').split('\n')) {
   if (!line.trim()) continue
   let record
@@ -42,8 +54,18 @@ for (const line of readFileSync(transcript, 'utf8').split('\n')) {
   const content = record.message?.content
   if (!Array.isArray(content)) continue
   for (const block of content) {
+    if (block.type === 'tool_result' && doctorCalls.has(block.tool_use_id)) {
+      const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? block.content.map((part) => part?.text ?? '').join('\n') : ''
+      refused = /doctor:\s*(?:wrong app|down)\b/i.test(text)
+      staticTarget = /doctor:\s*no dev url\b/i.test(text)
+      continue
+    }
     if (block.type !== 'tool_use') continue
     const name = String(block.name ?? '')
+    if (name === 'Bash' && RUNS_DOCTOR.test(String(block.input?.command ?? ''))) {
+      doctored = true
+      if (block.id) doctorCalls.add(block.id)
+    } else if (NAVIGATE.test(name)) navigation = !doctored ? 'blind' : refused ? 'refused' : null
     const file = block.input?.file_path ?? block.input?.filePath
     if (!file) continue
     const path = real(isAbsolute(file) ? file : resolve(cwd, file))
@@ -58,7 +80,24 @@ const task = readPipelineState(cwd)?.tasks.find((candidate) => candidate.current
 const during = (path) => statSync(path).mtimeMs >= started && statSync(path).mtimeMs <= ended + 60_000
 if (task && Number.isFinite(started)) for (const path of images(join(task.dir, 'checks'))) if (during(path)) frames.add(real(path))
 
+// "no dev url" (a static file, a non-web target): the doctor has nothing to probe, the navigation before it (to the file) is not a blind drive of a dev URL
+if (staticTarget && navigation === 'blind') navigation = null
 const missed = [...frames].filter((path) => !viewed.has(path)).sort()
+if (navigation) {
+  process.stdout.write(
+    JSON.stringify({
+      decision: 'block',
+      reason:
+        navigation === 'blind'
+          ? 'stage-pipeline: you opened a page before running verify-doctor. Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-doctor.mjs` now, put its `doctor:` line into the report, and open the pages again after it: ' +
+            'the frames you took may be of another worktree\'s server on the same port (core, new-cor and mycar-webview all serve on :3000). ' +
+            'If the doctor answers `no dev url` (a static file, a non-web target), the navigation was fine — name the reason in the report and go on.'
+          : 'stage-pipeline: verify-doctor said `wrong app` / `down` and you opened a page afterwards. Do not drive that instance: drop its frames, report the `doctor:` line as the single finding ' +
+            '(the orchestrator starts this worktree\'s server on a free port), and finish. If the situation changed, run verify-doctor again and navigate only after an `ok`.',
+    }),
+  )
+  process.exit(0)
+}
 if (!missed.length) process.exit(0)
 
 const shown = missed.slice(0, 15).map((path) => `- ${path}`)

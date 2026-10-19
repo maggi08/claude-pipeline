@@ -21,10 +21,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
+  AUTH_LINE,
   BLOCKER_LIFTED,
   BLOCKER_LINE,
   CLOSED_WORD,
   DEAD_CODE_REMOVE,
+  DOCTOR_LINE,
   LEDGER_HEADING,
   NO_VISUAL_REFERENCE,
   STAGE_FILE,
@@ -220,12 +222,41 @@ export function checkerLineViolation(line, taskDir) {
   return violation ?? null
 }
 
+/**
+ * `[live: user-side]` without a reason. The plan used to pre-tag criteria this way, and the tag closed them: 46 such tags in one task, six defects among them
+ * found by the user. A line that defers a criterion to the user must say what blocked the check and what the checker saw.
+ * Honest form: `[live: user-side — <prerequisite>; <route> → <observed>]`, each of the three parts with content (`n/a`, `-`, `tbd`, `?` are not content).
+ * EVERY line is read, with or without an `AC-*` id (a "Could not verify" line is `- /orders redirect — [live: user-side]`); a mention inside backticks is a quote, not a closure.
+ */
+const LIVE_PARTS = /^\[live:\s*user-side\s*[—–-]\s*([^;\]\n]*);([^→\]\n]*)→([^\]\n]*)\]/i
+const EMPTY_PART = /^(?:n\/?a|tbd|todo|none|nil|unknown|-+|—+|–+|\?+)$/i
+const hasContent = (part) => (/[\p{L}\p{N}]/u.test(part) || /^\s*\//.test(part)) && !EMPTY_PART.test(part.trim().replace(/[.\s]+$/, ''))
+export function liveViolation(line) {
+  const open = line.replace(/`[^`\n]*`/g, (quote) => ' '.repeat(quote.length))
+  if (!LIVE_TAG.test(open)) return null
+  const bare = [...open.matchAll(new RegExp(LIVE_TAG.source, 'gi'))].some((match) => {
+    const parts = open.slice(match.index).match(LIVE_PARTS)
+    return !parts || !parts.slice(1).every(hasContent)
+  })
+  if (!bare) return null
+  const id = line.match(/AC-[\w.]+/)?.[0]
+  return {
+    rule: 'live-bare',
+    id: id ?? 'live',
+    message:
+      `${id ? `${id}: ` : ''}\`[live: user-side]\` without a reason (or with an empty part) defers the criterion and says nothing about what stopped the check. ` +
+      'Write what was missing and what the checker saw: `[live: user-side — <prerequisite>; <route> → <observed>]`, for example ' +
+      '`[live: user-side — the profile is not logged in; /orders → redirected to /login]`. Without evidence the criterion stays ⏳ devtools-verify.',
+  }
+}
+const LIVE_TAG = /\[live:\s*user-side\b/i
+
 export function journalViolations(text, reports = null, taskDir = null) {
   return text
     .split('\n')
     .map((line) => {
       const violation =
-        acViolation(line, reports) ?? skipViolation(line) ?? caveatViolation(line) ?? noDataViolation(line) ?? likeViolation(line) ?? checkerLineViolation(line, taskDir)
+        liveViolation(line) ?? acViolation(line, reports) ?? skipViolation(line) ?? caveatViolation(line) ?? noDataViolation(line) ?? likeViolation(line) ?? checkerLineViolation(line, taskDir)
       return violation && { ...violation, line: line.trim() }
     })
     .filter(Boolean)
@@ -422,7 +453,7 @@ export function summaryViolation(text, name) {
  * Precedents: a badge collapsed at the bottom of the menu (`m-4` in a container without padding) while the checker measured width and nesting;
  * a country name in three lines stuck out of the card on the checker's own screenshots.
  */
-export function runtimeViolations(text, name, taskDir = null) {
+export function runtimeViolations(text, name, taskDir = null, fresh = false) {
   if (reportChecker(name) !== 'devtools-verify' || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
   const found = []
   // A stage with a "Visual reference" — a typography comparison with a neighbouring section: the prototype matched the code, and "too bold" and "different buttons"
@@ -445,6 +476,20 @@ export function runtimeViolations(text, name, taskDir = null) {
         `checks/${name}: no \`geometry <width>: overflow N · zero-gap N · clipped N\` lines — a geometry measurement of new nodes at each width ` +
         '(skill devtools-verify, step "Geometry"). Overflow and zero gap to the container edge are not shown by a screenshot until someone looks at them.',
     })
+  }
+  // New reports (not in the snapshot) carry the environment line and the login line: which app answered and whether the browser was logged in.
+  if (fresh) {
+    for (const [pattern, line, what] of [
+      [DOCTOR_LINE, 'doctor: <the line verify-doctor printed>', 'which app answered on the dev URL (`node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-doctor.mjs`)'],
+      [AUTH_LINE, 'auth: ok | not logged in — <route> → <observed> | not needed', 'whether the managed browser was logged in'],
+    ]) {
+      if (!pattern.test(text))
+        found.push({
+          rule: 'no-doctor',
+          id: name,
+          message: `checks/${name}: no \`${line.split(':')[0]}:\` line — ${what}. A runtime check that does not say which app it looked at can be green about another worktree's server (skill devtools-verify, "Preconditions" and "Auth gate"). The task language form is in references/language.md.`,
+        })
+    }
   }
   const unverified = text.slice(Math.max(0, text.search(UNVERIFIED_HEADING)))
   const line = unverified.split('\n').find((candidate) => NO_DATA.test(candidate) && !STUBBED.test(candidate))
@@ -470,7 +515,7 @@ export function languageViolation(text, name, language) {
 }
 
 /** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
-export function reportViolations(path, language = null) {
+export function reportViolations(path, language = null, { fresh = false } = {}) {
   let text
   try {
     text = readFileSync(path, 'utf8')
@@ -478,7 +523,9 @@ export function reportViolations(path, language = null) {
     return []
   }
   const name = basename(path)
-  return [languageViolation(text, name, language), reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name), ...runtimeViolations(text, name, dirname(dirname(path)))].filter(Boolean)
+  // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
+  const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
+  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name), ...runtimeViolations(text, name, dirname(dirname(path)), fresh)].filter(Boolean)
 }
 
 /** The "Visual reference" of the stage a report belongs to (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), or null. */
@@ -642,13 +689,15 @@ const closedForceFingerprints = (taskDir) =>
 export function baselineInfo(dataDir, taskDir) {
   const data = readBaseline(dataDir, taskDir)
   if (data?.version === BASELINE_VERSION) {
-    if (Array.isArray(data.reports) && data.closedSeen) return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(data.reports) }
+    if (Array.isArray(data.reports) && data.closedSeen && data.liveSeen) return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(data.reports) }
     // snapshot v2 without report names or without the closed Force headings: what is there now is old (a lazy migration, the other fields do not change)
     const migrated = {
       ...data,
       reports: Array.isArray(data.reports) ? data.reports : reportNames(taskDir),
       closedSeen: true,
-      lines: [...new Set([...data.lines, ...closedForceFingerprints(taskDir)])],
+      liveSeen: true,
+      // bare `[live: user-side]` lines written under 0.16 before the live-bare rule are old (D7): only those, so any other line that is new still goes through all the rules
+      lines: [...new Set([...data.lines, ...closedForceFingerprints(taskDir), ...journalCandidates(journalText(taskDir)).filter((line) => liveViolation(line)).map(fingerprint)])],
     }
     writeBaseline(dataDir, taskDir, migrated)
     return { lines: new Set(migrated.lines), ledgerSince: data.ledgerSince, reports: new Set(migrated.reports) }
@@ -667,6 +716,7 @@ export function baselineInfo(dataDir, taskDir) {
     lines: [...new Set([...lines, ...closedForceFingerprints(taskDir)])],
     reports: reportNames(taskDir),
     closedSeen: true,
+    liveSeen: true,
   }
   writeBaseline(dataDir, taskDir, next)
   return { lines: new Set(next.lines), ledgerSince: now, reports: new Set(next.reports) }

@@ -109,7 +109,7 @@ for (const dir of taskDirs) {
 
   acOutcomes.done += (text.match(/AC-\d+\.\d+ ✅/g) ?? []).length
   acOutcomes.userReview += (text.match(/AC-\d+\.\d+ ⏳/g) ?? []).length
-  acOutcomes.live += (text.match(/AC-\d+\.\d+ \[live: user-side\]/g) ?? []).length
+  acOutcomes.live += (text.match(/AC-\d+\.\d+ \[live: user-side\b/g) ?? []).length
 
   // Report names in live tasks diverged (pro-review-2.md, stage2-pro-review.md, stage-2/pro-review.md),
   // so the checker is searched for anywhere in the file name, not by an exact pattern.

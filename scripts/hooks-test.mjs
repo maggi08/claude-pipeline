@@ -9,7 +9,7 @@
  * Russian inputs (STAGES.md text, reports, commit messages) are kept on purpose: they are the fixtures of the second
  * supported task language (Russian). The English twins next to them must give the same results.
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -2560,6 +2560,186 @@ rmSync(retroRoot, { recursive: true, force: true })
   lt.report('pro-review-1.md', 'pro-review', 2)
   check('receipts r3 m-2: a title that mentions "logic-only" does not waive the design report (.html commit denied)', lt.commit({ 'docs/deck.html': '<p>x</p>\n' }, 3).decision === 'deny')
   check('receipts r3 m-2: the tag after the status bracket is read as logic-only; the same word in the title is not', rc.openStages(`### Stage 1: a  [status: in-progress]  logic-only\n`)[0].logicOnly === true && rc.openStages(`### Stage 1: logic-only a  [status: in-progress]\n`)[0].logicOnly === false)
+}
+
+// ── Stage 4 of VT-1: honest live form, verify-doctor, frames-guard before the first navigation ──────────────
+{
+  // AC-4.1: a bare `[live: user-side]` on a new line fails, the honest form passes, an older line raises nothing.
+  const BARE = '- `AC-4.5` ⏳ — [verify: devtools-verify] [live: user-side]'
+  const HONEST = '- `AC-4.5` ⏳ — [verify: devtools-verify] [live: user-side — the profile is not logged in; /orders → redirected to /login]'
+  const HONEST_RU = '- `AC-4.5` ⏳ — [verify: devtools-verify] [live: user-side — профиль без входа; /orders → редирект на /login]'
+  check('live form: a bare tag on a criterion line is rejected and the message shows the honest form', /live: user-side — <prerequisite>; <route> → <observed>/.test(jc.liveViolation(BARE)?.message ?? ''), JSON.stringify(jc.liveViolation(BARE)))
+  check('live form: the honest form passes', jc.liveViolation(HONEST) === null, JSON.stringify(jc.liveViolation(HONEST)))
+  check('live form RU: the honest form with Russian prose passes', jc.liveViolation(HONEST_RU) === null)
+  check('live form: a reason without the route and the observation is still bare', jc.liveViolation('- `AC-4.5` ⏳ [live: user-side — no login]') !== null)
+  check('live form: a quoted (backticked) mention is not a closure, with or without a criterion id', jc.liveViolation('The tag [live: user-side] is rejected when bare') !== null && jc.liveViolation('The tag `[live: user-side]` is rejected when bare') === null && jc.liveViolation('- `AC-4.1` ✅ — closing line quotes `[live: user-side]` as the bare tag') === null)
+  check('live form: a line without an AC id ("Could not verify" shape) with a bare tag is rejected', jc.liveViolation('- /orders redirect — [live: user-side]') !== null)
+  check('live form: content-free honest forms are bare', ['[live: user-side — n/a; n/a → n/a]', '[live: user-side — -; / → x]', '[live: user-side — no login; → x]', '[live: user-side — tbd; /a → ?]', '[live: user-side — no login; /a → —]', '[live: user-side — ?; /a → x]'].every((tag) => jc.liveViolation(`- \`AC-4.5\` ${tag}`) !== null))
+  check('live form: the journal chain returns it (bare) and not the honest one', jc.journalViolations(BARE).some(({ rule }) => rule === 'live-bare') && !jc.journalViolations(HONEST).some(({ rule }) => rule === 'live-bare'))
+  const liveData = mkdtempSync(join(tmpdir(), 'live-form-data-'))
+  const liveTask = mkdtempSync(join(tmpdir(), 'live-form-task-'))
+  writeFileSync(join(liveTask, 'STAGES.md'), `# T-50\nLanguage: en\n\n## Journal\n- 2026-10-01 old\n${BARE.replace('4.5', '1.1')}\n`)
+  jc.baselineInfo(liveData, liveTask)
+  check('live form: an older bare line (in the snapshot) raises nothing', jc.newJournalViolations(liveData, liveTask).length === 0, JSON.stringify(jc.newJournalViolations(liveData, liveTask)))
+  appendFileSync(join(liveTask, 'STAGES.md'), `${BARE}\n`)
+  check('live form: a new bare line after the snapshot is returned', jc.newJournalViolations(liveData, liveTask).some(({ rule }) => rule === 'live-bare'))
+  writeFileSync(join(liveTask, 'STAGES.md'), `# T-50\nLanguage: en\n\n## Journal\n- 2026-10-01 old\n${BARE.replace('4.5', '1.1')}\n${HONEST}\n`)
+  check('live form: a new honest line after the snapshot passes', jc.newJournalViolations(liveData, liveTask).length === 0, JSON.stringify(jc.newJournalViolations(liveData, liveTask)))
+  // review round 2 (M-1): a v2 snapshot taken under 0.16 before the live-bare rule has no `liveSeen`: bare tags already in the journal are old, a new bare line still fails
+  {
+    const migData = mkdtempSync(join(tmpdir(), 'live-mig-data-'))
+    const migTask = mkdtempSync(join(tmpdir(), 'live-mig-task-'))
+    const migStages = join(migTask, 'STAGES.md')
+    writeFileSync(migStages, `# T-51\nLanguage: en\n\n## Journal\n- 2026-10-01 old\n`)
+    jc.baselineInfo(migData, migTask)
+    const migDir = join(migData, 'journal-baseline')
+    const migFile = join(migDir, readdirSync(migDir)[0])
+    const migSnap = JSON.parse(readFileSync(migFile, 'utf8'))
+    delete migSnap.liveSeen
+    writeFileSync(migFile, JSON.stringify(migSnap))
+    writeFileSync(migStages, `# T-51\nLanguage: en\n\n## Journal\n- 2026-10-01 old\n${BARE.replace('4.5', '1.1')}\n${HONEST}\n`)
+    check('live form: a v2 snapshot without liveSeen, an old bare line + a new honest one — 0 violations', jc.newJournalViolations(migData, migTask).length === 0, JSON.stringify(jc.newJournalViolations(migData, migTask)))
+    check('live form: the migration marks the snapshot', JSON.parse(readFileSync(migFile, 'utf8')).liveSeen === true)
+    appendFileSync(migStages, `${BARE}\n`)
+    check('live form: after the migration a NEW bare line is rejected', jc.newJournalViolations(migData, migTask).some(({ rule }) => rule === 'live-bare'))
+  }
+  check('live form: a root route `/` is content', jc.liveViolation('- `AC-9.8` [live: user-side — profile not logged in; / → redirected to /login]') === null && jc.liveViolation('- `AC-9.8` [live: user-side — profile not logged in; ? → redirected]') !== null)
+  // reports: the rule is for reports written after the snapshot (`fresh`), old ones are not read for it.
+  const liveReport = join(liveTask, 'checks', 'devtools-verify-4.md')
+  mkdirSync(join(liveTask, 'checks'), { recursive: true })
+  const reportBody = (verdict) => `# devtools-verify\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not logged in — /orders → redirected to /login\n\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n\n## Could not verify\n${verdict}\n`
+  writeFileSync(liveReport, reportBody('- `AC-4.5` — [live: user-side]'))
+  check('live form: a fresh report with a bare tag is rejected', jc.reportViolations(liveReport, null, { fresh: true }).some(({ rule }) => rule === 'live-bare'))
+  check('live form: the same report is old (not fresh) — nothing', !jc.reportViolations(liveReport).some(({ rule }) => rule === 'live-bare'))
+  writeFileSync(liveReport, reportBody('- /orders redirect — [live: user-side]'))
+  check('live form: a fresh report line without an AC id and a bare tag is rejected', jc.reportViolations(liveReport, null, { fresh: true }).some(({ rule }) => rule === 'live-bare'))
+  writeFileSync(liveReport, reportBody('- `AC-4.5` — [live: user-side — the profile is not logged in; /orders → redirected to /login]'))
+  check('live form: a fresh report with the honest form passes', !jc.reportViolations(liveReport, null, { fresh: true }).some(({ rule }) => rule === 'live-bare'))
+  // the new report lines: doctor and auth (EN and RU keys), only for fresh reports
+  const noLines = `# devtools-verify\nFindings: critical 0 · major 0 · minor 0\n\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n\n## Could not verify\n- nothing\n`
+  writeFileSync(liveReport, noLines)
+  check('doctor line: a fresh devtools-verify report without doctor: and auth: is returned twice', jc.reportViolations(liveReport, null, { fresh: true }).filter(({ rule }) => rule === 'no-doctor').length === 2)
+  check('doctor line: the same report that is old is left alone', !jc.reportViolations(liveReport).some(({ rule }) => rule === 'no-doctor'))
+  writeFileSync(liveReport, noLines.replace('\ngeometry', '\nокружение: ok — http://localhost:3000 answers\nвход: ок — /orders открылся без редиректа\n\ngeometry'))
+  check('doctor line RU: the Russian keys count', !jc.reportViolations(liveReport, null, { fresh: true }).some(({ rule }) => rule === 'no-doctor'), JSON.stringify(jc.reportViolations(liveReport, null, { fresh: true })))
+  rmSync(liveTask, { recursive: true, force: true })
+  rmSync(liveData, { recursive: true, force: true })
+
+  // AC-4.3: verify-doctor against a throwaway listener of our own on a free port, killed by its PID.
+  const doctorScript = join(PLUGIN, 'verify-doctor.mjs')
+  const mine = mkdtempSync(join(tmpdir(), 'doctor-wt-'))
+  const other = mkdtempSync(join(tmpdir(), 'doctor-other-'))
+  mkdirSync(join(mine, 'apps/web'), { recursive: true })
+  const listen = (dir, body = '<html>app-marker-xyz</html>') =>
+    new Promise((done) => {
+      const child = spawn(process.execPath, ['-e', `const s=require('http').createServer((q,r)=>r.end(${JSON.stringify(body)})).listen(0,'127.0.0.1',()=>console.log(s.address().port))`], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] })
+      child.stdout.once('data', (data) => done({ child, port: Number(String(data)) }))
+    })
+  const doctor = (port, ...extra) => spawnSync(process.execPath, [doctorScript, '--cwd', mine, '--url', `http://127.0.0.1:${port}`, ...extra], { encoding: 'utf8' })
+  const lsofHere = !spawnSync('lsof', ['-v'], { encoding: 'utf8' }).error
+  const foreign = await listen(other)
+  const own = await listen(join(mine, 'apps/web'))
+  try {
+    const wrong = doctor(foreign.port, '--marker', 'app-marker-xyz')
+    check('verify-doctor: a listener whose cwd is another directory — "doctor: wrong app", exit 1', !lsofHere || (/^doctor: wrong app — /.test(wrong.stdout) && wrong.status === 1), wrong.stdout)
+    const right = doctor(own.port, '--marker', 'app-marker-xyz')
+    check('verify-doctor: a listener inside the worktree with the marker — "doctor: ok", exit 0, one line', /^doctor: ok — /.test(right.stdout) && right.status === 0 && right.stdout.trim().split('\n').length === 1, right.stdout)
+    const noMarker = doctor(own.port, '--marker', 'nothing-like-this')
+    check('verify-doctor: the app marker missing on the route — "doctor: wrong app"', /^doctor: wrong app — marker/.test(noMarker.stdout) && noMarker.status === 1, noMarker.stdout)
+  } finally {
+    foreign.child.kill()
+    own.child.kill()
+  }
+  const down = doctor(foreign.port)
+  check('verify-doctor: nothing listens — "doctor: down", exit 1', /^doctor: down — /.test(down.stdout) && down.status === 1, down.stdout)
+  const bare = spawnSync(process.execPath, [doctorScript, '--cwd', mine], { encoding: 'utf8' })
+  check('verify-doctor: no dev url (a static target) — a "doctor:" line with the reason, exit 0', /^doctor: no dev url — /.test(bare.stdout) && bare.status === 0, bare.stdout)
+  // review round 1: femo's «Dev server» line `- routes: <path to a file> — prose` is not a probe route; a url with a remark parses
+  mkdirSync(join(mine, '.claude'), { recursive: true })
+  const cfg = (lines) => writeFileSync(join(mine, '.claude', 'pipeline.config.md'), `# C\n\n## Dev server\n${lines}\n\n## Other\n`)
+  const own2 = await listen(join(mine, 'apps/web'))
+  try {
+    cfg(`- url: http://127.0.0.1:${own2.port} (https via mkcert)\n- routes: src/shared/config/routes.ts — карта роутов по ролям (\`/admin/*\`)\n- marker: x`)
+    const femo = spawnSync(process.execPath, [doctorScript, '--cwd', mine], { encoding: 'utf8' })
+    check('verify-doctor: femo-style `routes:` prose and a url with a remark — no false down, no raw stack', /^doctor: ok — /.test(femo.stdout) && femo.status === 0 && !femo.stderr, femo.stdout + femo.stderr)
+    cfg(`- url: http://127.0.0.1:${own2.port}\n- verify_routes: src/x.ts — prose, /\n- app_marker: app-marker-xyz`)
+    const keyed = spawnSync(process.execPath, [doctorScript, '--cwd', mine], { encoding: 'utf8' })
+    check('verify-doctor: verify_routes keeps the /paths, notes the prose; app_marker is read', /^doctor: ok — .*marker found.*ignored in the config/.test(keyed.stdout), keyed.stdout)
+    const unparse = spawnSync(process.execPath, [doctorScript, '--cwd', mine, '--url', 'http://'], { encoding: 'utf8' })
+    check('verify-doctor: an unparseable url — "doctor: no dev url — url not parseable", exit 0', /^doctor: no dev url — url not parseable/.test(unparse.stdout) && unparse.status === 0 && !unparse.stderr, unparse.stdout + unparse.stderr)
+    // basePath app: 404 on `/`, 200 on the base route → not a wrong app
+    const based = await new Promise((done) => {
+      const child = spawn(process.execPath, ['-e', `const s=require('http').createServer((q,r)=>{if(q.url==='/app'){r.end('app-marker-xyz')}else{r.statusCode=404;r.end('nf')}}).listen(0,'127.0.0.1',()=>console.log(s.address().port))`], { cwd: join(mine, 'apps/web'), stdio: ['ignore', 'pipe', 'ignore'] })
+      child.stdout.once('data', (data) => done({ child, port: Number(String(data)) }))
+    })
+    try {
+      const withBase = doctor(based.port, '--route', '/', '--route', '/app', '--marker', 'app-marker-xyz')
+      check('verify-doctor: basePath app (404 on /, 200 on /app) — ok', /^doctor: ok — /.test(withBase.stdout), withBase.stdout)
+      const only404 = doctor(based.port, '--route', '/')
+      check('verify-doctor: only 404 answers — wrong app', /^doctor: wrong app — /.test(only404.stdout) && only404.status === 1, only404.stdout)
+    } finally {
+      based.child.kill()
+    }
+  } finally {
+    own2.child.kill()
+  }
+  // review round 2 (m-2): a cross-host redirect has an empty body — the marker is checked on 2xx only
+  {
+    const redirecting = await new Promise((done) => {
+      const child = spawn(process.execPath, ['-e', `const s=require('http').createServer((q,r)=>{r.statusCode=302;r.setHeader('location','http://other.invalid/login');r.end()}).listen(0,'127.0.0.1',()=>console.log(s.address().port))`], { cwd: join(mine, 'apps/web'), stdio: ['ignore', 'pipe', 'ignore'] })
+      child.stdout.once('data', (data) => done({ child, port: Number(String(data)) }))
+    })
+    try {
+      const redirected = doctor(redirecting.port, '--marker', 'app-marker-xyz')
+      check('verify-doctor: a cross-host redirect with an app marker — not "wrong app"', /^doctor: ok — /.test(redirected.stdout) && redirected.status === 0, redirected.stdout)
+    } finally {
+      redirecting.child.kill()
+    }
+  }
+  // a front proxy runs with cwd `/` (a Docker / nginx front)
+  if (lsofHere) {
+    cfg('- url: —')
+    const proxy = await new Promise((done) => {
+      const child = spawn(process.execPath, ['-e', `process.chdir('/');const s=require('http').createServer((q,r)=>r.end('x')).listen(0,'127.0.0.1',()=>console.log(s.address().port))`], { cwd: other, stdio: ['ignore', 'pipe', 'ignore'] })
+      child.stdout.once('data', (data) => done({ child, port: Number(String(data)) }))
+    })
+    try {
+      const viaProxy = doctor(proxy.port)
+      check('verify-doctor: a listener with cwd "/" — ok, front proxy, cwd not checked', /^doctor: ok — .*front proxy, cwd not checked/.test(viaProxy.stdout) && viaProxy.status === 0, viaProxy.stdout)
+    } finally {
+      proxy.child.kill()
+    }
+  }
+  rmSync(mine, { recursive: true, force: true })
+  rmSync(other, { recursive: true, force: true })
+
+  // AC-4.4: frames-guard — the transcript without / with a verify-doctor call before the first navigation.
+  const gRoot = mkdtempSync(join(tmpdir(), 'doctor-guard-'))
+  const gRecord = (time, content, role = 'assistant') => JSON.stringify({ timestamp: new Date(time).toISOString(), message: { role, content } })
+  const call = (name, input, id) => ({ type: 'tool_use', id, name, input })
+  const answer = (id, text) => ({ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text }] })
+  const guard = (events, name) => {
+    const path = join(gRoot, `${name}.jsonl`)
+    const now = Date.now() - 100_000
+    writeFileSync(path, events.map((content, i) => gRecord(now + i * 1000, content, content[0].type === 'tool_result' ? 'user' : 'assistant')).join('\n'))
+    return runHook('frames-guard.mjs', { cwd: gRoot, agent_type: 'stage-pipeline:devtools-verify', agent_transcript_path: path })
+  }
+  const NAV = call('mcp__plugin_stage-pipeline_chrome-devtools__new_page', { url: 'http://localhost:3000/' }, 'n1')
+  const DOC = call('Bash', { command: 'node /p/scripts/verify-doctor.mjs' }, 'd1')
+  const blind = guard([[NAV]], 'blind')
+  check('frames-guard: a navigation with no verify-doctor call before it — blocked, the message names verify-doctor', blind.decision === 'block' && /verify-doctor/.test(blind.text), blind.text)
+  check('frames-guard: verify-doctor first, then the navigation — passes', guard([[DOC], [answer('d1', 'doctor: ok — http://localhost:3000 answers on / 200')], [NAV]], 'ok').decision === 'allow')
+  check('frames-guard: navigation, then verify-doctor, no second navigation — still blocked', guard([[NAV], [DOC]], 'late').decision === 'block')
+  check('frames-guard: navigation, verify-doctor, navigation again (the redo) — passes', guard([[NAV], [DOC], [answer('d1', 'doctor: ok — x')], [{ ...NAV, id: 'n2' }]], 'redo').decision === 'allow')
+  const CAT = call('Bash', { command: 'cat /p/scripts/verify-doctor.mjs' }, 'c1')
+  check('frames-guard: `cat verify-doctor.mjs` is not a doctor call — the navigation is still blind', guard([[CAT], [answer('c1', 'const x')], [NAV]], 'cat').decision === 'block')
+  check('frames-guard: navigation (static file), then "doctor: no dev url" — passes', guard([[NAV], [DOC], [answer('d1', 'doctor: no dev url — static target')]], 'static-late').decision === 'allow')
+  check('frames-guard: navigation, then "doctor: ok" with no second navigation — still blocked', guard([[NAV], [DOC], [answer('d1', 'doctor: ok — x')]], 'ok-late').decision === 'block')
+  const refused = guard([[DOC], [answer('d1', 'doctor: wrong app — http://localhost:3000 is held by pid 1 with cwd /other')], [NAV]], 'refused')
+  check('frames-guard: a navigation after "doctor: wrong app" — blocked', refused.decision === 'block' && /wrong app/.test(refused.text), refused.text)
+  check('frames-guard: "doctor: no dev url" then a navigation to the static file — passes', guard([[DOC], [answer('d1', 'doctor: no dev url — static target')], [NAV]], 'static').decision === 'allow')
+  check('frames-guard: no navigation at all (a skip, the playwright fallback) is not judged', guard([[call('Bash', { command: 'ls' }, 'x1')]], 'none').decision === 'allow')
+  rmSync(gRoot, { recursive: true, force: true })
 }
 
 process.exit(failed ? 1 : 0)

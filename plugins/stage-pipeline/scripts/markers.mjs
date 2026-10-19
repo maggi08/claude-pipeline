@@ -204,6 +204,10 @@ export const DEAD_CODE_REMOVE = /(\d+)\s*(?:удалить(?![а-яё])|(?:to\s+
 
 /** The "Findings outcome" heading (`##` or `###`). */
 export const LEDGER_HEADING = /^#{2,3}\s*(?:Итог находок|Findings outcome)/im
+/** The environment line of a devtools-verify report: `doctor: <verdict>` (or its Russian form). */
+export const DOCTOR_LINE = /^[ \t]*(?:[-*][ \t]*)?`?(?:doctor|окружение)\s*:/im
+/** The login line of a devtools-verify report: `auth: ok | not logged in — …` (or its Russian form). */
+export const AUTH_LINE = /^[ \t]*(?:[-*][ \t]*)?`?(?:auth|вход)\s*:/im
 /** The "Could not verify" heading. */
 export const UNVERIFIED_HEADING = /^#{2,3}\s*(?:Не удалось проверить|Could not verify)/im
 /** The summary line, second line of a report: `Findings: critical N · major N` (or the Russian form). */

@@ -124,7 +124,7 @@ for (const task of tasks) {
     : [...changed].filter((path) => inside(checks, path))
   // The language is checked only for a report that did not exist when the task was first seen: an old report is not rewritten, however it is edited.
   const { reports: known } = baselineInfo(pluginDataDir(), task.dir)
-  const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language))
+  const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: !known.has(basename(path)) }))
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   if (!closing.length) {

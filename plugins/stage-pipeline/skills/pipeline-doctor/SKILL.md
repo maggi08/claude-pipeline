@@ -42,6 +42,31 @@ machine, and suggest a fix for what does not. The pipeline itself comes with the
 
 4. **Dev server.** `Dev server → url` from the config (+ the local override). If the
    developer has a different port/protocol — also in `pipeline.config.local.md`.
+   Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-doctor.mjs` (read-only) and show its
+   `doctor:` line: `wrong app` = another repo's or worktree's server holds the port (core, new-cor
+   and mycar-webview all use `:3000`) — name the process, do not kill it; `down` = start the server
+   from `commands.dev`; `no dev url` = a static target, nothing to do. Optional keys of the config's
+   "Dev server" section that make the check exact: `- verify_routes: /, /login` (baseline routes, `/path` values only) and
+   `- app_marker: <text that only this app's HTML contains>` (one line).
+
+4a. **Browser login (opt-in, asks first).** The plugin's `chrome-devtools` server runs with `--isolated`:
+   the profile is thrown away with the server, so a login does not survive a restart of Claude Code
+   (within one session checkers share the orchestrator's browser, and `/stage-force` asks for the login
+   up front). A developer who works on login-gated screens and does not want to log in every session
+   can opt in to a persistent profile **for this repo only**. Offer it, do not do it silently — the
+   command edits `~/.claude.json`, which belongs to the user. After an explicit "yes", show the exact command for them to run
+   (or run it with their approval):
+
+   ```bash
+   claude mcp add --scope local chrome-devtools -- npx -y chrome-devtools-mcp@1.6.0 --userDataDir ~/.cache/stage-pipeline/chrome/<slug>
+   ```
+
+   `<slug>` is `slug` from the config. `--scope local` keeps it private to this repo on this machine: never
+   committed, teammates unaffected. Then the user logs in once in the managed window; the login survives
+   restarts. Two caveats to say out loud: (a) the project-local server and the plugin's one have the same
+   name — after adding it, the duplicate-name check in item 1 must not flag it, the local one is intended;
+   (b) the profile directory is held by one Chrome at a time, so a second concurrent session in the same repo
+   finds it busy and devtools-verify falls back to its playwright path instead of waiting. Undo: `claude mcp remove chrome-devtools -s local`.
 
 5. **Baseline (optional, ~a minute).** `type_check` from the config → compare the
    error count with the baseline. It has drifted — suggest updating the baseline in the
