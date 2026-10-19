@@ -60,7 +60,7 @@ const TEXT = {
     // The short view and the file. The category names are the same words as in the headings above.
     labels: { noOutcome: 'находок без итога', notVerified: 'непроверенного', minor: 'minor', accepted: 'принятого само' },
     noneOf: (names) => `Нет: ${names.join(', ')}.`,
-    notReady: (names) => `Не готово к PR — Request changes или critical в отчётах: ${names.join(', ')}.`,
+    notReady: (names) => `Не готово к PR — critical/major или FAIL без итога в отчётах: ${names.join(', ')}.`,
     verifiedJournal: (n, byStage) => `- критерии журнала (${n}): ${byStage}`,
     verifiedReports: (n) => `- чекеры не смогли проверить (${n})`,
     stage: (n) => `этап ${n}`,
@@ -70,7 +70,7 @@ const TEXT = {
     sameDay: (n, date) => `В охват попал и ранний прогон того же дня (${date}): ещё блоков — ${n}. Отчёты и строки журнала с даты прогона относятся к обоим.`,
     checkers: (n) => `### Чекеры — вердикты по отчётам (${n})`,
     file: (path) => `Полный дайджест: ${path} — «подробнее» раскрою оттуда нужный раздел.`,
-    notWritten: (reason) => `Полный дайджест не записан: ${{ dirLink: 'каталог задачи — симлинк', fileLink: 'RUN-DIGEST.md — симлинк', notDir: 'путь задачи не каталог', missing: 'каталога задачи нет', outside: 'каталог задачи вне репозитория из конфига', readonly: 'в каталог задачи нельзя писать' }[reason]}.`,
+    notWritten: (reason) => `Полный дайджест не записан: ${{ dirLink: 'каталог задачи — симлинк', fileLink: 'RUN-DIGEST.md — симлинк', notDir: 'путь задачи не каталог', missing: 'каталога задачи нет', outside: 'каталог задачи вне каталога задач из конфига', readonly: 'в каталог задачи нельзя писать' }[reason]}.`,
     // The lines of the "Findings without outcome" section, from the violation's data (journal-check, ledgerViolations); as before the English hook messages.
     ledger: ({ rule, id: name, shown, what, accepted }) =>
       ({
@@ -92,7 +92,7 @@ const TEXT = {
     accepted: (n) => `### Accepted on my own — check, expensive rollbacks first (${n})`,
     labels: { noOutcome: 'findings without an outcome', notVerified: 'unverified items', minor: 'minor', accepted: 'items accepted on my own' },
     noneOf: (names) => `None: ${names.join(', ')}.`,
-    notReady: (names) => `Not ready for PR — Request changes or critical in: ${names.join(', ')}.`,
+    notReady: (names) => `Not ready for PR — critical/major or FAIL without an outcome in: ${names.join(', ')}.`,
     verifiedJournal: (n, byStage) => `- journal criteria (${n}): ${byStage}`,
     verifiedReports: (n) => `- checkers could not verify (${n})`,
     stage: (n) => `stage ${n}`,
@@ -102,7 +102,7 @@ const TEXT = {
     sameDay: (n, date) => `An earlier run of the same day (${date}) is inside the scope: ${n} more block(s). Reports and journal lines from the run date belong to both.`,
     checkers: (n) => `### Checkers — verdicts by report (${n})`,
     file: (path) => `Full digest: ${path} — ask "more" and I will open the section you need from it.`,
-    notWritten: (reason) => `Full digest not written: ${{ dirLink: 'the task directory is a symlink', fileLink: 'RUN-DIGEST.md is a symlink', notDir: 'the task path is not a directory', missing: 'the task directory does not exist', outside: 'the task directory is outside the repo of the config', readonly: 'the task directory is not writable' }[reason]}.`,
+    notWritten: (reason) => `Full digest not written: ${{ dirLink: 'the task directory is a symlink', fileLink: 'RUN-DIGEST.md is a symlink', notDir: 'the task path is not a directory', missing: 'the task directory does not exist', outside: 'the task directory is outside the task directory of the config', readonly: 'the task directory is not writable' }[reason]}.`,
     ledger: ({ message }) => message,
   },
 }
@@ -223,7 +223,7 @@ function renderFull(d) {
 
 /**
  * The short view for the chat. What goes in is decided here by fixed rules: blockers, red gates and findings without an outcome — line by line;
- * one line with the names of the reports that carry `Request changes` or a critical finding (none — no line); the unverified — a number by stage plus the number of the checkers' "could not verify"; minor — a number; accepted on my own — a number and the first three.
+ * one line with the names of the reports with a critical/major finding or a FAIL without an outcome (none — no line); the unverified — a number by stage plus the number of the checkers' "could not verify"; minor — a number; accepted on my own — a number and the first three.
  * A category with nothing in it is folded into one "None: …" line, a category with something in it is never dropped.
  */
 function renderShort(d, path, unwritten = null) {
@@ -324,7 +324,7 @@ export function publishDigest(taskDir, dataDir = pluginDataDir(), repo = null, {
   return { short: renderShort(digest, path, unwritten), full, path }
 }
 
-/** Why `RUN-DIGEST.md` must not be written (null — it may): the task directory or the file is a symlink, or the task directory is outside the repo of the config. */
+/** Why `RUN-DIGEST.md` must not be written (null — it may): the task directory or the file is a symlink, or the task directory is outside the task directory of the config. */
 function unsafeDigestTarget(taskDir, realDir, repo) {
   const isLink = (path) => {
     try {
@@ -340,10 +340,11 @@ function unsafeDigestTarget(taskDir, realDir, repo) {
   } catch {
     return 'missing'
   }
-  if (repo?.worktree) {
+  // The task directory of the config (`task_path`, `pipeline.config.local.md` over the shared one): it may lie outside the repo, or be reached through a symlink.
+  if (repo?.taskDir) {
     let root
     try {
-      root = realpathSync(repo.worktree)
+      root = realpathSync(repo.taskDir)
     } catch {
       return null
     }

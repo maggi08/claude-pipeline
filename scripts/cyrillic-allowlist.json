@@ -16,7 +16,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/journal-check.mjs",
-      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
+      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN|CLOSING_TAIL_WORD|CLOSING_TAIL_TOKEN|FIELD_CLOSING_MARK)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
       "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones); messages are not covered"
     },
     {

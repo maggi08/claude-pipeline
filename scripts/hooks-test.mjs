@@ -1148,6 +1148,26 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
   for (const line of ['Blockers: B1 — staging is down; not all closed yet', 'Блокеры: B1 — PR-ы ещё не все закрыты', 'Блокеры: B2 — тикеты закрыты не все, e2e красный', 'Blockers: B1 — CI red, all closed issues reopened', 'Blockers: not all lifted. B1 — a', 'Блокеры: не все сняты. B1 — a'])
     check(`openBlockers: "${line.slice(0, 50)}" keeps the blocker open`, jc.openBlockers(line).length === 1, line)
   check('openBlockers: the closing phrase "both lifted <date>" and the head mark still lift (ru, en)', jc.openBlockers('Блокеры: B1 — a; B2 — b — оба сняты 2026-10-14.').length === 0 && jc.openBlockers('Blockers: B1 — a; B2 — b. Both lifted by the user 2026-10-14.').length === 0)
+  // The closing mark takes the tail of the user-answer markers: a date in both formats, "by the user", "in chat", "user decision <date>", a quote.
+  for (const line of [
+    'Блокеры: B1 — контракт; B2 — гонка — оба сняты 14.10.2026.',
+    'Блокеры: B1 — контракт; B2 — гонка — оба сняты пользователем 14.10.2026.',
+    'Blockers: B1 — contract; B2 — race — both lifted by the user in chat.',
+    'Blockers: B1 — contract; B2 — race — both lifted, user decision 2026-10-17.',
+    'Блокеры: B1 — контракт; B2 — гонка — оба сняты ответом пользователя «делать v2».',
+    'Блокеры: B1 — контракт; B2 — гонка — все сняты в чате 2026-10-14.',
+    'Блокеры: B1 — контракт; B2 — гонка. Оба сняты, решение пользователя 17.10.2026.',
+  ]) check(`openBlockers: closing mark with a date/answer tail lifts the field: ${line.slice(-40)}`, jc.openBlockers(line).length === 0, JSON.stringify(jc.openBlockers(line)))
+  check('openBlockers: a closing mark without the quantifier or with a foreign tail lifts nothing', jc.openBlockers('Блокеры: B1 — a; B2 — b — сняты 14.10.2026.').some((b) => b.startsWith('B1')) && jc.openBlockers('Blockers: B1 — a; B2 — b — both lifted next week maybe.').length === 2)
+  // A mark in the head followed by item numbers lifts only those items, not the whole field.
+  for (const [line, open] of [
+    ['Блокеры: сняты B1 и B3 (ответ пользователя 2026-10-14). B2 — нужен токен staging.', 'B2'],
+    ['Blockers: lifted B1, B3; B2 — no staging access', 'B2'],
+    ['Блокеры: сняты частично. B1 — a; B2 — b', 'B1'],
+    ['Blockers: partially lifted. B1 — a; B2 — b', 'B1'],
+    ['Blockers: lifted: B1, B3. B2 — no staging access', 'B2'],
+  ]) check(`openBlockers: a head mark with listed numbers keeps the rest open: ${line.slice(0, 45)}`, jc.openBlockers(line).some((b) => b.startsWith(open)), JSON.stringify(jc.openBlockers(line)))
+  check('openBlockers: a head mark as a finished phrase still lifts the field (ru, en)', jc.openBlockers('Блокеры: все сняты 14.10.2026. B1 — a; B2 — b').length === 0 && jc.openBlockers('Blockers: all lifted by the user. B1 — a; B2 — b').length === 0)
   {
     const pathological = ['B1 — x; not all closed ', 'B1 — ', 'Blockers: lifted ', '; '].map((unit) => `Blockers: ${unit}${' '.repeat(50_000)};${'—'.repeat(50_000)}${'. '.repeat(25_000)}`)
     const t0 = performance.now()
@@ -1231,8 +1251,22 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
       symlinkSync(task, taskLink)
       const viaLink = publishDigest(taskLink, data, null)
       check(`digest ${language}: a task directory symlink is refused`, viaLink.path === null && !existsSync(published.path))
-      const elsewhere = publishDigest(task, data, { worktree: mkdtempSync(join(tmpdir(), 'digest-repo-')), config: '' })
-      check(`digest ${language}: a task directory outside the config's repo is refused`, elsewhere.path === null && !existsSync(published.path))
+      // The rule compares the task directory with the `task_path` directory of the config, not with the repo root.
+      const repoOf = (taskDir) => ({ worktree: mkdtempSync(join(tmpdir(), 'digest-repo-')), config: '', taskDir })
+      const elsewhere = publishDigest(task, data, repoOf(mkdtempSync(join(tmpdir(), 'digest-other-tasks-'))))
+      check(`digest ${language}: a task directory outside the task_path of the config is refused`, elsewhere.path === null && elsewhere.short.includes(language === 'ru' ? 'вне каталога задач из конфига' : 'outside the task directory of the config') && !existsSync(published.path))
+      const outsideRepo = publishDigest(task, data, repoOf(dirname(task)))
+      check(`digest ${language}: task_path outside the repo (the task lies in it) -> the file is written`, outsideRepo.path === published.path && existsSync(published.path), outsideRepo.short.slice(-120))
+      rmSync(published.path, { force: true })
+      const tasksLink = join(mkdtempSync(join(tmpdir(), 'digest-tasks-link-')), 'tasks')
+      symlinkSync(dirname(task), tasksLink)
+      const viaTasksLink = publishDigest(join(tasksLink, 'T-40'), data, repoOf(tasksLink))
+      check(`digest ${language}: .claude/tasks is a symlink to a directory outside the repo -> the file is written`, viaTasksLink.path === published.path && existsSync(published.path), viaTasksLink.short.slice(-120))
+      rmSync(published.path, { force: true })
+      symlinkSync(outside, published.path)
+      const fileLinkInRepo = publishDigest(join(tasksLink, 'T-40'), data, repoOf(tasksLink))
+      check(`digest ${language}: RUN-DIGEST.md is a symlink (task_path outside the repo) -> not written`, fileLinkInRepo.path === null && readFileSync(outside, 'utf8') === 'user file')
+      rmSync(published.path, { force: true })
     }
     rmSync(task, { recursive: true, force: true })
   }
@@ -1300,13 +1334,13 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
     const view = runDigest(task, data, null, 'short')
     const t = collectDigest(task, data, null).text
     check(`digest ${language}: an awaiting item dated before the run is counted`, view.includes(t.accepted(6)), view)
-    check(`digest ${language}: no "not ready" line without Request changes or critical`, !view.includes(t.notReady(['x']).slice(0, 12)), view)
+    check(`digest ${language}: no "not ready" line without a critical/major finding or a FAIL without an outcome`, !view.includes(t.notReady(['x']).slice(0, 12)), view)
     writeFileSync(join(task, 'checks', 'pro-review-3.md'), '# pro-review\nFindings: critical 0 · major 1 · minor 0 · Вердикт: Request changes\n')
     utimesSync(join(task, 'checks', 'pro-review-3.md'), new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
     writeFileSync(join(task, 'checks', 'i18n-sweep-1.md'), '# i18n-sweep\nFindings: critical 1 · major 0 · minor 0\n')
     utimesSync(join(task, 'checks', 'i18n-sweep-1.md'), new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
     const after = runDigest(task, data, null, 'short')
-    check(`digest ${language}: one line names the reports with Request changes or critical`, after.includes(t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])) && after.split('\n').filter((line) => line === t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])).length === 1, after)
+    check(`digest ${language}: one line names the reports with a critical/major finding or a FAIL without an outcome`, after.includes(t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])) && after.split('\n').filter((line) => line === t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])).length === 1, after)
     check(`digest ${language}: the full view does not carry the line (the verdicts are in the checkers' section of the file)`, !runDigest(task, data, null).includes(t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])))
     // M-3: the verdict in the head is the first round's; a major closed by an outcome line makes the report ready.
     writeFileSync(join(task, 'checks', 'pro-review-4.md'), `# pro-review\nFindings: critical 0 · major 1 · minor 0 · ${language === 'ru' ? 'Вердикт' : 'Verdict'}: Request changes\n\n## ${language === 'ru' ? 'Итог находок' : 'Findings outcome'}\n- M-1 — ${language === 'ru' ? 'исправлено' : 'fixed'}: src/a.ts:1\n`)

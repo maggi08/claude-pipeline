@@ -706,22 +706,28 @@ const BLOCKERS_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Блокеры|Blockers)
 const FIELD_LIFTED =
   /(?<![а-яё])(?:(?:оба|обе|все)\s+)?(?:сняты|закрыты|решены)(?![а-яё])|\b(?:both|all)(?:\s+of\s+them)?\s+(?:are\s+|were\s+)?(?:lifted|closed|resolved|answered)\b|^(?:all\s+)?(?:lifted|closed|resolved)\b/i
 const FIELD_NEGATED =
-  /(?<![а-яё])(?:не|ни)(?![а-яё])|\b(?:not|none|no|never|neither)\b/i
+  /(?<![а-яё])(?:не|ни|частичн[а-яё]*)(?![а-яё])|\b(?:not|none|no|never|neither|partly|partially|in\s+part)\b/i
 const FIELD_ITEM = /(?<![\w*])\**B\d+/
-const FIELD_CLOSING =
-  /^(?:(?:оба|обе|все|both|all)(?:\s+of\s+them)?\s+(?:are\s+|were\s+)?(?:сняты|закрыты|решены|lifted|closed|resolved|answered))(?:\s+(?:by|on|in|the|user|users|answers?|interview|пользователем|пользователя|ответом|ответами|интервью|в|по|\d{4}-\d{2}-\d{2}))*$/i
+// The tail after the closing mark: the same words and answers as the user-answer markers of `markers.mjs` ("by the user", "in chat", "user decision <date>", a date
+// in both formats, a quote), each token behind its own separator, so it stays linear on long runs of spaces.
+const CLOSING_TAIL_WORD = '(?:by|on|in|the|user|users|answers?|decision|interview|chat|пользователем|пользователя|пользователю|ответом|ответами|решением|решение|интервью|в|по|от|чате)'
+const CLOSING_TAIL_TOKEN = `(?:${CLOSING_TAIL_WORD}(?![\\wа-яё])|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4}|«[^»\\n]{0,80}»|"[^"\\n]{0,80}"|“[^”\\n]{0,80}”)`
+const FIELD_CLOSING_MARK = '(?:оба|обе|все|both|all)(?:\\s+of\\s+them)?\\s+(?:are\\s+|were\\s+)?(?:сняты|закрыты|решены|lifted|closed|resolved|answered)(?![\\wа-яё])'
+const FIELD_CLOSING = new RegExp(`^${FIELD_CLOSING_MARK}(?:,?\\s+${CLOSING_TAIL_TOKEN})*$`, 'i')
 // "Not all closed", "closed not all": a lift word under a negation of the whole group lifts nothing, in the field head and in an item alike.
 const GROUP_NEGATION =
   /(?:(?<![а-яё])не\s+(?:все|оба|обе)|(?:сняты|закрыты|решены)\s+не\s+все|(?<![а-яё])ни\s+один[а-яё]*|\bnot\s+(?:all|both)\b)(?![а-яё])(?:\s+(?:сняты|закрыты|решены|lifted|closed|resolved|answered)(?![а-яё\w]))?/gi
 const fieldLifted = (field) => {
   const item = field.search(FIELD_ITEM)
   const head = item < 0 ? field : field.slice(0, item)
-  if (FIELD_LIFTED.test(head) && !FIELD_NEGATED.test(head)) return true
+  // A mark in the head is one for the whole field only as a finished phrase ("lifted on 2026-10-14. B1 — …"): "lifted B1, B3; B2 — …" lists the lifted ones, it is not a mark for B2.
+  if (FIELD_LIFTED.test(head) && !FIELD_NEGATED.test(head) && (item < 0 || /[.;]$/.test(head.trimEnd()))) return true
   if (item < 0) return false
   // A loop, not `/[\s.;]+$/`: that one is quadratic on a long run of spaces in the middle of the line.
   let end = field.length
   while (end > 0 && /[\s.;]/.test(field[end - 1])) end--
-  const last = field.slice(0, end).split(/[.;—–]/).pop().trim()
+  // The last piece: after a dash or after a sentence end ("; ", ". "), not after the dots of a date ("14.10.2026").
+  const last = field.slice(0, end).split(/[.;](?=\s)|[—–]/).pop().trim()
   return FIELD_CLOSING.test(last)
 }
 export const openBlockers = (body) =>
