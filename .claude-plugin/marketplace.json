@@ -14,6 +14,18 @@
         "name": "Magzhan Mussaiyn"
       },
       "source": "./plugins/stage-pipeline"
+    },
+    {
+      "name": "human-text",
+      "description": "Rules for writing work text people actually read (status updates, PR descriptions, handoffs) and a closed-question check of a draft in a clean context",
+      "category": "writing",
+      "author": {
+        "name": "Magzhan Mussaiyn"
+      },
+      "source": {
+        "source": "github",
+        "repo": "maggi08/human-text"
+      }
     }
   ]
 }

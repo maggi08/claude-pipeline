@@ -1,0 +1,24 @@
+{
+  "agent": "human-text-check",
+  "why": "a clean draft written from the same card: zero violations, no invented findings, the closing line says so",
+  "prompt": "Reader and goal: a product manager reads this status update in a team chat thread and has to decide by October 22 whether release 5.3 ships on October 25. Language of the text: Russian. Check the draft against the questions and return the result.\n\n<draft>\nНужно ваше решение до 22 октября: выпускать релиз 5.3 25 октября с известной ошибкой фильтра по региону или сдвинуть на 28 октября.\n\nЧто сломано: с 14 октября фильтр по региону возвращает пустой результат для 3% запросов (SEARCH-212), исправление запланировано на 21 октября. Не сделано: переиндексация архивного индекса, 2,1 млн документов, она перенесена на 28 октября.\n\nЧто сделано: с 14 октября поиск работает на OpenSearch 2.11 вместо Elasticsearch 7.17, потому что поддержка 7.17 заканчивается 1 ноября. Задержка поиска у 95% запросов упала с 420 до 180 мс. Цена переезда: «сохранённые поиски» сдвинулись на две недели.\n</draft>\n\n<card>\nЦель: решение менеджера по релизу 5.3.\n- Поиск перенесён с Elasticsearch 7.17 на OpenSearch 2.11, 14 октября.\n- Причина переезда: поддержка Elasticsearch 7.17 заканчивается 1 ноября.\n- Задержка поиска у 95% запросов: 420 мс до переезда, 180 мс после.\n- Сломано: фильтр по региону возвращает пустой результат для 3% запросов с 14 октября; задача SEARCH-212, исправление запланировано на 21 октября.\n- Не сделано: переиндексация архивного индекса (2,1 млн документов) перенесена на 28 октября.\n- Цена: фича «сохранённые поиски» сдвинулась на две недели.\n- Нужно от читателя: до 22 октября решить, выпускать ли релиз 5.3 25 октября с известной ошибкой фильтра или сдвинуть на 28 октября.\n</card>",
+  "requireReport": false,
+  "expect": [
+    {
+      "pattern": "Questions 1-14 checked: 0 violations",
+      "why": "the closing line with zero violations"
+    }
+  ],
+  "forbidSummary": [
+    {
+      "pattern": "(?:^|\\n)\\W*(?:D?\\d{1,2})\\s*[.):—:-]",
+      "why": "a violation line with a question number"
+    },
+    {
+      "pattern": "checked[^:\\n]*:\\s*(?!0 violations)\\d+",
+      "why": "a non-zero violation count"
+    }
+  ],
+  "maxSummaryLines": 6,
+  "budgetUsd": 1
+}

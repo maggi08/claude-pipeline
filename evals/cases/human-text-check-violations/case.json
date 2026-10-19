@@ -1,0 +1,40 @@
+{
+  "agent": "human-text-check",
+  "why": "a Russian status update with planted violations of questions 1, 2, 6, 10 and 11: the check names each number with a quote from the draft, goes through the whole list and ends with the count line",
+  "prompt": "Reader and goal: a product manager reads this status update in a team chat thread and has to decide by October 22 whether release 5.3 ships on October 25. Language of the text: Russian. Check the draft against the questions and return the result.\n\n<draft>\nВажно отметить, что поиск теперь работает на OpenSearch 2.11. Задержка запросов заметно снизилась, и пользователи это оценят. Это показывает, что переезд был правильным шагом для надёжности системы.\n\nЕсть некоторые нюансы с фильтром по региону, мы над ними работаем.\n\nИтого: поиск переехал на OpenSearch, задержка снизилась, с фильтром по региону остаются нюансы, архив переиндексируем позже.\n</draft>\n\n<card>\nЦель: решение менеджера по релизу 5.3.\n- Поиск перенесён с Elasticsearch 7.17 на OpenSearch 2.11, 14 октября.\n- Причина переезда: поддержка Elasticsearch 7.17 заканчивается 1 ноября.\n- Задержка поиска у 95% запросов: 420 мс до переезда, 180 мс после.\n- Сломано: фильтр по региону возвращает пустой результат для 3% запросов с 14 октября; задача SEARCH-212, исправление запланировано на 21 октября.\n- Не сделано: переиндексация архивного индекса (2,1 млн документов) перенесена на 28 октября.\n- Цена: фича «сохранённые поиски» сдвинулась на две недели.\n- Нужно от читателя: до 22 октября решить, выпускать ли релиз 5.3 25 октября с известной ошибкой фильтра или сдвинуть на 28 октября.\n</card>",
+  "requireReport": false,
+  "expect": [
+    {
+      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?1\\b[^\\n]*правильным шагом",
+      "why": "question 1 named with the planted quote"
+    },
+    {
+      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?2\\b[^\\n]*заметно снизилась",
+      "why": "question 2 named with the planted quote"
+    },
+    {
+      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?6\\b[^\\n]*некоторые нюансы",
+      "why": "question 6 named with the planted quote"
+    },
+    {
+      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?10\\b[^\\n]*Итого",
+      "why": "question 10 named with the planted quote"
+    },
+    {
+      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?11\\b[^\\n]*Важно отметить",
+      "why": "question 11 named with the planted quote"
+    },
+    {
+      "pattern": "Questions 1-14 checked: [1-9]\\d* violations",
+      "why": "the closing line with a non-zero count"
+    }
+  ],
+  "forbidSummary": [
+    {
+      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?\\d{1,2}\\s*[.):—-]\\s*(?:Нарушений нет|no violations?|no\\b)",
+      "why": "questions answered no are not listed"
+    }
+  ],
+  "maxSummaryLines": 20,
+  "budgetUsd": 1
+}

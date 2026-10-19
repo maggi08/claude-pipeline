@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
-import { join, dirname, basename } from 'node:path'
+import { join, dirname, basename, relative } from 'node:path'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
@@ -37,6 +38,12 @@ const marketplace = readJson('.claude-plugin/marketplace.json')
 
 for (const entry of marketplace?.plugins ?? []) {
   const source = entry.source
+  // An entry that lives in its own repo (human-text) has no tree here to validate; only its shape is checked.
+  if (source && typeof source === 'object') {
+    if (source.source !== 'github' || !/^[\w.-]+\/[\w.-]+$/.test(source.repo ?? '')) fail('marketplace.json', `plugin "${entry.name}": expected source { "source": "github", "repo": "owner/name" }`)
+    if (!entry.description) fail('marketplace.json', `plugin "${entry.name}": no description`)
+    continue
+  }
   if (typeof source !== 'string' || !source.startsWith('./')) {
     fail('marketplace.json', `plugin "${entry.name}": expected a relative source like ./plugins/<name>`)
     continue
@@ -107,6 +114,7 @@ function validatePluginTree(pluginDir) {
   validateStageChecklist(pluginDir)
   validateSizeBudget(pluginDir)
   validateXrefs(pluginDir)
+  validateVendoredHumanText(pluginDir)
 }
 
 function validateMcp(pluginDir) {
@@ -218,6 +226,40 @@ function validateDeclaredCounts(pluginDir) {
       }
     })
   }
+}
+
+/**
+ * The human-text skill and agent are a vendored copy (scripts/sync-human-text.mjs): every file must match the sha256
+ * in human-text.lock.json, nothing may be added to or missing from the vendored paths, and the lock paths stay inside the plugin.
+ */
+function validateVendoredHumanText(pluginDir) {
+  if (pluginDir !== 'plugins/stage-pipeline') return
+  const lockRel = `${pluginDir}/human-text.lock.json`
+  const hint = 'edit in the human-text repo, then run scripts/sync-human-text.mjs'
+  const vendored = []
+  const skillDir = join(ROOT, pluginDir, 'skills/human-text')
+  const walkFiles = (dir) => readdirSync(dir).flatMap((name) => (statSync(join(dir, name)).isDirectory() ? walkFiles(join(dir, name)) : [join(dir, name)]))
+  if (existsSync(skillDir)) vendored.push(...walkFiles(skillDir).map((abs) => relative(join(ROOT, pluginDir), abs).split('\\').join('/')))
+  if (existsSync(join(ROOT, pluginDir, 'agents/human-text-check.md'))) vendored.push('agents/human-text-check.md')
+  if (!existsSync(join(ROOT, lockRel))) {
+    if (vendored.length) fail(lockRel, `no lock for the vendored human-text files — run scripts/sync-human-text.mjs`)
+    return
+  }
+  const lock = readJson(lockRel)
+  if (!lock) return
+  if (!lock.ref || !lock.source) fail(lockRel, 'no source or ref')
+  const locked = Object.entries(lock.files ?? {})
+  for (const [rel, hash] of locked) {
+    if (rel.split('/').includes('..') || rel.startsWith('/') || !/^(skills\/human-text\/|agents\/human-text-check\.md$)/.test(rel)) {
+      fail(lockRel, `path «${rel}» is outside the vendored human-text paths`)
+      continue
+    }
+    const abs = join(ROOT, pluginDir, rel)
+    if (!existsSync(abs)) fail(`${pluginDir}/${rel}`, `listed in the lock but missing — ${hint}`)
+    else if (createHash('sha256').update(readFileSync(abs)).digest('hex') !== hash) fail(`${pluginDir}/${rel}`, `differs from human-text.lock.json — ${hint}`)
+  }
+  const lockedPaths = new Set(locked.map(([rel]) => rel))
+  for (const rel of vendored) if (!lockedPaths.has(rel)) fail(`${pluginDir}/${rel}`, `not in human-text.lock.json — ${hint}`)
 }
 
 /**

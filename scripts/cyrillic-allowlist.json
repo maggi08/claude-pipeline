@@ -1,6 +1,15 @@
 {
   "rules": [
     {
+      "glob": "plugins/stage-pipeline/skills/human-text/references/rules.md",
+      "line": "^- [«а-я]",
+      "reason": "vendored copy of the human-text repo: the RU marker list of rule 11, the words the check looks for in Russian text; edit in the human-text repo"
+    },
+    {
+      "glob": "evals/cases/human-text-check-*/case.json",
+      "reason": "Russian draft of a status update in the prompt: the check agent is run on a Russian text on purpose"
+    },
+    {
       "glob": "evals/cases/**/locales/ru.json",
       "reason": "Russian locale of the fixture app: i18n evals check the ru locale on purpose"
     },
