@@ -1,10 +1,10 @@
 {
   "source": "maggi08/human-text",
-  "ref": "721978ab5a929520bc9439ae363d151d7a139006",
+  "ref": "471180e9e8d7cf367124b6b8a5f268112cafa453",
   "version": "0.1.0",
   "files": {
-    "agents/human-text-check.md": "6a64e68823281a254605babd07d630d08b01714fde07061acf003dffefcec0f4",
-    "skills/human-text/SKILL.md": "8f0cad3cc88bf7fb2b6379a3305b710cbb58e7f23e738d98e6cfeb181c6daecc",
+    "agents/human-text-check.md": "def65f68d223a097d588adc573200d419215e976eaba92693ff52338e347d9e2",
+    "skills/human-text/SKILL.md": "77762489a434ecaab38ee4a3c4201165cd7648e2afa25cdb663bacb5aad205da",
     "skills/human-text/references/rules.md": "3444d6e263d20767c19a62edd696099cf2d5b38165a5a57ac5b23a83e62acd4e"
   }
 }

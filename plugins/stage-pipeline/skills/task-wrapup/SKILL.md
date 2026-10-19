@@ -91,7 +91,7 @@ Before the text is checked and handed out, run and show each one in a single lin
 
 ## Step 4. Check the draft in a clean context
 
-Check the text after the pre-flight insertions of step 3: the agent must see the final draft. Run the agent `stage-pipeline:human-text-check` (step 4 of `${CLAUDE_PLUGIN_ROOT}/skills/human-text/SKILL.md`; findings are handled as there). The input follows `${CLAUDE_PLUGIN_ROOT}/agents/human-text-check.md`: the draft inside `<draft>...</draft>`, the card of step 1 (with the items that step 3 moved into the text) inside `<card>...</card>`, and outside the tags the reader and the goal ("a reviewer who has not seen the task; a PR/MR; they review the change"), the language of the text.
+Check the text after the pre-flight insertions of step 3: the agent must see the final draft. Run the agent `stage-pipeline:human-text-check` (step 4 of `${CLAUDE_PLUGIN_ROOT}/skills/human-text/SKILL.md`; findings are handled as there, and `</draft>` / `</card>` inside the data are escaped as there). The input follows `${CLAUDE_PLUGIN_ROOT}/agents/human-text-check.md`: the draft inside `<draft>...</draft>`, the card of step 1 (with the items that step 3 moved into the text) inside `<card>...</card>`, and outside the tags the reader and the goal ("a reviewer who has not seen the task; a PR/MR; they review the change"), the language of the text.
 
 Beyond human-text step 4: a finding may also be rejected if it contradicts the repository's PR template (for example, a required section with nothing to put in it); a rejected one goes into the output with the reason.
 

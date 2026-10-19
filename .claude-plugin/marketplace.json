@@ -24,7 +24,8 @@
       },
       "source": {
         "source": "github",
-        "repo": "maggi08/human-text"
+        "repo": "maggi08/human-text",
+        "ref": "v0.1.0"
       }
     }
   ]

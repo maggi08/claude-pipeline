@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
-import { join, dirname, basename, relative } from 'node:path'
+import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync } from 'node:fs'
+import { join, dirname, basename, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -232,14 +232,24 @@ function validateDeclaredCounts(pluginDir) {
  * The human-text skill and agent are a vendored copy (scripts/sync-human-text.mjs): every file must match the sha256
  * in human-text.lock.json, nothing may be added to or missing from the vendored paths, and the lock paths stay inside the plugin.
  */
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
 function validateVendoredHumanText(pluginDir) {
   if (pluginDir !== 'plugins/stage-pipeline') return
   const lockRel = `${pluginDir}/human-text.lock.json`
   const hint = 'edit in the human-text repo, then run scripts/sync-human-text.mjs'
   const vendored = []
   const skillDir = join(ROOT, pluginDir, 'skills/human-text')
-  const walkFiles = (dir) => readdirSync(dir).flatMap((name) => (statSync(join(dir, name)).isDirectory() ? walkFiles(join(dir, name)) : [join(dir, name)]))
-  if (existsSync(skillDir)) vendored.push(...walkFiles(skillDir).map((abs) => relative(join(ROOT, pluginDir), abs).split('\\').join('/')))
+  // lstat, not stat: a link must not be followed out of the plugin (nor hashed as if it were the vendored file).
+  const walkFiles = (dir) => readdirSync(dir).flatMap((name) => (lstatSync(join(dir, name)).isDirectory() ? walkFiles(join(dir, name)) : [join(dir, name)]))
+  if (isLink(skillDir)) fail(`${pluginDir}/skills/human-text`, `is a link — ${hint}`)
+  else if (existsSync(skillDir)) vendored.push(...walkFiles(skillDir).map((abs) => relative(join(ROOT, pluginDir), abs).split('\\').join('/')))
   if (existsSync(join(ROOT, pluginDir, 'agents/human-text-check.md'))) vendored.push('agents/human-text-check.md')
   if (!existsSync(join(ROOT, lockRel))) {
     if (vendored.length) fail(lockRel, `no lock for the vendored human-text files — run scripts/sync-human-text.mjs`)
@@ -255,10 +265,16 @@ function validateVendoredHumanText(pluginDir) {
       continue
     }
     const abs = join(ROOT, pluginDir, rel)
-    if (!existsSync(abs)) fail(`${pluginDir}/${rel}`, `listed in the lock but missing — ${hint}`)
+    if (!existsSync(abs) && !isLink(abs)) fail(`${pluginDir}/${rel}`, `listed in the lock but missing — ${hint}`)
+    else if (!lstatSync(abs).isFile()) fail(`${pluginDir}/${rel}`, `is not a regular file (a link or a special file) — ${hint}`)
     else if (createHash('sha256').update(readFileSync(abs)).digest('hex') !== hash) fail(`${pluginDir}/${rel}`, `differs from human-text.lock.json — ${hint}`)
   }
   const lockedPaths = new Set(locked.map(([rel]) => rel))
+  for (const rel of vendored) {
+    const abs = join(ROOT, pluginDir, rel)
+    if (!lstatSync(abs).isFile()) fail(`${pluginDir}/${rel}`, `is not a regular file (a link or a special file) — ${hint}`)
+    else if (!realpathSync(abs).startsWith(`${realpathSync(join(ROOT, pluginDir))}${sep}`)) fail(`${pluginDir}/${rel}`, 'resolves outside the plugin')
+  }
   for (const rel of vendored) if (!lockedPaths.has(rel)) fail(`${pluginDir}/${rel}`, `not in human-text.lock.json — ${hint}`)
 }
 
@@ -270,7 +286,9 @@ function validateNoHomePaths(pluginDir) {
   const walk = (dir) => {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name)
-      if (statSync(path).isDirectory()) walk(path)
+      const kind = lstatSync(path)
+      if (kind.isSymbolicLink()) continue // a link is never followed; the vendored-files check reports it
+      if (kind.isDirectory()) walk(path)
       else if (name.endsWith('.md')) {
         const lines = readFileSync(path, 'utf8').split('\n')
         lines.forEach((line, i) => {
@@ -413,7 +431,9 @@ function countPattern(ru, en) {
 function walkMarkdown(dir) {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name)
-    if (statSync(path).isDirectory()) return walkMarkdown(path)
+    const kind = lstatSync(path)
+    if (kind.isSymbolicLink()) return [] // never followed; the vendored-files check reports links
+    if (kind.isDirectory()) return walkMarkdown(path)
     return name.endsWith('.md') ? [path] : []
   })
 }
@@ -464,7 +484,9 @@ function validateXrefs(pluginDir) {
     readdirSync(dir).flatMap((name) => {
       if (name === 'node_modules' || name === '.git') return []
       const path = join(dir, name)
-      if (statSync(path).isDirectory()) return walkFiles(path)
+      const kind = lstatSync(path)
+      if (kind.isSymbolicLink()) return []
+      if (kind.isDirectory()) return walkFiles(path)
       return /\.(md|mjs|json)$/.test(name) ? [path] : []
     })
   const sources = [...walkFiles(join(ROOT, pluginDir)), ...['README.md', 'ROLLOUT.md'].map((name) => join(ROOT, name)).filter((path) => existsSync(path))]

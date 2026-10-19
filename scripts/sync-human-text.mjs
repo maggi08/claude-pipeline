@@ -15,7 +15,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,18 +28,35 @@ const SKILL_DIR = 'skills/human-text'
 const AGENT_FILE = 'agents/human-text-check.md'
 const SOURCE_NAME = 'maggi08/human-text'
 
+// fail() throws: the cleanup in finally runs, and the top-level handler prints the message and exits 1.
+class SyncError extends Error {}
 const fail = (message) => {
-  console.error(`✘ ${message}`)
-  process.exit(1)
+  throw new SyncError(message)
 }
+process.on('uncaughtException', (error) => {
+  if (!(error instanceof SyncError)) throw error
+  console.error(`✘ ${error.message}`)
+  process.exit(1)
+})
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 
-function walk(dir) {
-  return readdirSync(dir).flatMap((name) => {
-    const path = join(dir, name)
-    return statSync(path).isDirectory() ? walk(path) : [path]
-  })
+/** The vendored files, relative to the source root. Only tracked files travel; a link or any non-regular file is refused. */
+function listSourceFiles(root, names) {
+  const files = names.filter((rel) => existsSync(join(root, rel)) || isLink(join(root, rel)))
+  for (const rel of files) {
+    const kind = lstatSync(join(root, rel))
+    if (kind.isSymbolicLink()) fail(`${rel} is a symbolic link — a link in the source could pull in files from outside it; replace it with a regular file`)
+    if (!kind.isFile()) fail(`${rel} is not a regular file`)
+  }
+  return files
+}
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink()
+  } catch {
+    return false
+  }
 }
 
 function parseArgs(argv) {
@@ -73,9 +90,21 @@ try {
     } catch {
       fail(`ref «${ref}» not found in ${repo}`)
     }
+    // A tree entry with mode 120000 is a symlink (git archive would write it as one): refuse before extracting.
+    const links = git(repo, 'ls-tree', '-r', sha, '--', SKILL_DIR, AGENT_FILE).split('\n').filter((line) => line.startsWith('120000 '))
+    if (links.length) fail(`symbolic links in ${ref} (${sha.slice(0, 7)}): ${links.map((line) => line.split('\t')[1]).join(', ')}`)
     temp = mkdtempSync(join(tmpdir(), 'human-text-sync-'))
-    execFileSync('sh', ['-c', 'git archive "$1" | tar -x -C "$2"', 'sh', sha, temp], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] })
-    sourceRoot = temp
+    // Two separate steps, so that the exit code of git archive is not lost behind a pipe.
+    const tarball = join(temp, 'source.tar')
+    const extracted = join(temp, 'tree')
+    mkdirSync(extracted)
+    try {
+      execFileSync('git', ['archive', '-o', tarball, sha, '--', SKILL_DIR, AGENT_FILE, '.claude-plugin/plugin.json'], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] })
+      execFileSync('tar', ['-xf', tarball, '-C', extracted], { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) {
+      fail(`could not export ${ref} (${sha.slice(0, 7)}): ${String(error.stderr ?? error.message).trim()}`)
+    }
+    sourceRoot = extracted
   } else {
     sha = git(repo, 'rev-parse', 'HEAD')
     // The lock names a commit, so the files must be that commit's files: a dirty tree would make the lock lie.
@@ -83,10 +112,13 @@ try {
     if (dirty && !args.allowDirty) fail(`uncommitted changes in ${repo}:\n${dirty}\nCommit them in the human-text repo first (or pass --allow-dirty for a trial run — the lock would then not match the commit).`)
   }
 
-  const sourceFiles = [
-    ...(existsSync(join(sourceRoot, SKILL_DIR)) ? walk(join(sourceRoot, SKILL_DIR)) : []),
-    ...(existsSync(join(sourceRoot, AGENT_FILE)) ? [join(sourceRoot, AGENT_FILE)] : []),
-  ].map((abs) => relative(sourceRoot, abs).split('\\').join('/'))
+  // Working-tree mode: the tracked files of the source (git ls-files), never a walk of the disk — ignored files
+  // (.DS_Store, logs) are not in the commit the lock names. With --allow-dirty, untracked non-ignored files join them.
+  // Ref mode: the exported tree holds tracked files only.
+  const listed = ref
+    ? git(repo, 'ls-tree', '-r', '--name-only', '-z', sha, '--', SKILL_DIR, AGENT_FILE)
+    : git(repo, 'ls-files', '-z', ...(args.allowDirty ? ['--cached', '--others', '--exclude-standard'] : []), '--', SKILL_DIR, AGENT_FILE)
+  const sourceFiles = listSourceFiles(sourceRoot, listed.split('\0').filter(Boolean).sort())
   if (!sourceFiles.includes(`${SKILL_DIR}/SKILL.md`)) fail(`${SKILL_DIR}/SKILL.md not found in the source`)
   if (!sourceFiles.includes(AGENT_FILE)) fail(`${AGENT_FILE} not found in the source`)
 

@@ -57,6 +57,8 @@ First determine the documents folder, from here on `<docs_path>`:
 2. otherwise the place where feature docs already lie in the repository (`docs/` with its own structure, `documentation/`, `wiki/`) — say that you put it there;
 3. otherwise `docs/features/` — a default, not a dogma.
 
+The folder must resolve inside the repository root (after expanding `~`, `..` and symlinks). A `docs_path` that points outside it is not used: take the default `docs/features/` and say so in the report.
+
 Find the existing document before creating a new one:
 
 - read `<docs_path>` — names and headings;
@@ -102,7 +104,7 @@ The result of the step is the **fact card**. It is internal: do not show it to t
 - **Terms** — every internal word that will get into the text: products, screens, abbreviations, team jargon. An explanation in one phrase and where it is taken from. A commonly used word (annuity, deductible) may be explained in your own words; facts about the feature itself — only from the sources.
 - **Gaps** — what was not confirmed or not found.
 
-Every fact has a source: the code, a task artifact, the user's words. If a gap breaks the document (nothing to fill "Why" with, nothing to explain a term with), ask the user. All questions in one list, together with the questions from "Input".
+A gap is handled as in step 2 of `${CLAUDE_PLUGIN_ROOT}/skills/human-text/SKILL.md`; the source of a fact is the code, a task artifact or the user's words. A gap breaks the document when there is nothing to fill "Why" with or nothing to explain a term with: ask the user, all questions in one list together with the questions from "Input".
 
 ## Step 4. Write the document
 
@@ -153,7 +155,6 @@ Current as of: <YYYY-MM-DD> · <short-sha>
 - **Write for someone who has not seen the feature** (the "Who reads" section). No stage numbers, no checker names, no "as agreed in the fourth round" — that is the internal mechanics of the task.
 - **Briefly: a guideline of 60–150 lines.** The size is most often inflated by retelling the code, mechanics in "What it does" and long "Role" cells: leave the path by which the code will be read. A feature across several screens may come out longer if the extra lines are behavior rules and warnings. The completeness of "What it does" and "Watch out" matters more than the limit. More than 200 lines is a sign the feature should be split into two documents.
 - **A requirement is a rule, not an event.** "The down payment is at least 10% of the price" is a rule, it lives in the document. "We merged five calculators into one" is an event of the task, it lives in the git history. Words that make sense only relative to the task — "now", "new kind", "former", "no longer", "redrawn to the new design", "after the refactoring" — in six months nobody knows relative to what. Write it as it is. "Legacy" on its own also says nothing — name what exactly: markup outside the kit, an unreachable branch, a field of the old contract. A temporary state outside the feature (the endpoint is not on prod, a flag is not on everywhere) is written with a date: "As of 2026-10-06 prod answers 404".
-- **Invent nothing.** Every fact is from the code or from the task artifacts. Nothing to confirm it with — do not write it.
 - **References are `file:line`**, paths relative to the repository root.
 - **The document language is the repository language** (existing docs and comments show which). File, symbol and command names — as in the code.
 
@@ -191,7 +192,7 @@ A flag, an endpoint or a field that has to be mentioned in the top sections gets
 
 ## Step 5. Check the text in a clean context
 
-You see your own draft as good: you know the code and remember what you meant. The check is done by the agent `stage-pipeline:human-text-check` — handled as in step 4 of `${CLAUDE_PLUGIN_ROOT}/skills/human-text/SKILL.md` (the findings are handled there too). The input follows `${CLAUDE_PLUGIN_ROOT}/agents/human-text-check.md`:
+The check is done by the agent `stage-pipeline:human-text-check`, as in step 4 of `${CLAUDE_PLUGIN_ROOT}/skills/human-text/SKILL.md` (including escaping `</draft>` and `</card>` inside the data). The input follows `${CLAUDE_PLUGIN_ROOT}/agents/human-text-check.md`:
 
 - the draft inside `<draft>...</draft>`, the fact card (Step 3) inside `<card>...</card>`;
 - outside the tags: the reader and the goal (the "Who reads" section: a developer reads all of it, a product manager, QA, an analyst and a newcomer read the top; they will use the document to understand or change the feature), the language of the text;
@@ -202,7 +203,7 @@ The extra questions:
 
 - **D1.** Is there a sentence in the top sections that loses its meaning if everything in backticks is skipped?
 - **D2.** Is there a word in the top sections — jargon, an abbreviation, a product or screen name — that a newcomer will not understand and that is not explained at its first mention or in "Terms"? List all such words.
-- **D3.** Is one thing named with different words, or does one word mean different things?
+- **D3.** Is one thing named with different words? (One word for two things is question 14 of the agent.)
 - **D4.** Is the first sentence not "what this is and for whom"? Does "Why" tell a story ("was → became", "now") instead of a problem?
 - **D5.** Are there task-event words: "now", "new", "former", "no longer", "after the refactoring", "redrawn"?
 - **D6.** Does a "What it does" item describe mechanics (cache, `watch`, counter, order of requests) instead of what the user sees, or is it longer than three lines?
@@ -210,7 +211,7 @@ The extra questions:
 - **D8.** Does some section retell code that is easier to open by the link? Is the document longer than 150 lines because of retelling code or repetition, rather than because of rules and warnings?
 - **D9.** Is there a "Watch out" item that does not say what will break and what to do?
 
-Fix only what was found, do not touch the rest: rewriting "everything" brings back the default habits. The exception is a violation of the same kind that you noticed yourself while fixing — fix it too. A finding may be rejected if it contradicts another rule (completeness against size) or the facts; a rejected one goes into the report with the reason. If the agent is unavailable — read `${CLAUDE_PLUGIN_ROOT}/agents/human-text-check.md` and go through the same list yourself, plus D1–D9, answering every question explicitly, and say in the report that the check was done by hand.
+Findings are handled as in human-text step 4, plus: a violation of the same kind that you noticed yourself while fixing is fixed too; "completeness against size" is a valid ground to reject a finding, with the reason in the report. If the agent is unavailable, the manual pass adds D1–D9 to the list, and the report says what was checked by hand.
 
 ## Step 6. Update an existing document
 
