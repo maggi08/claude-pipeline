@@ -39,6 +39,7 @@
       "why": "a recap of clean questions in any form (not flagged, are clean, not a violation) is not returned; only violation lines and the closing line"
     }
   ],
-  "maxSummaryLines": 20,
+  "maxSummaryLines": 30,
+  "maxSummaryLinesWhy": "the draft holds 19-21 violations, one line each, plus a closing line; \"no violation\" lines are banned separately by forbidSummary, so the length is honest. 20 was set when the output was padded with \"N. no violation\" lines",
   "budgetUsd": 1
 }
