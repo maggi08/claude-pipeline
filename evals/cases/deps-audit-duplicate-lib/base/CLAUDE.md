@@ -1,2 +1,2 @@
 # eval-fixture
-Конвенции: TypeScript, функциональные компоненты, пользовательский текст только через `t()` из `src/i18n.ts`, локали en и ru обязаны совпадать по ключам.
+Conventions: TypeScript, function components, user-facing text only through `t()` from `src/i18n.ts`, the en and ru locales must have the same keys.

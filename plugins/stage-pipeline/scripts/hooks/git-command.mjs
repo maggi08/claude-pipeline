@@ -1,10 +1,10 @@
 import { resolve } from 'node:path'
 
 /**
- * Вызовы `git add`/`git commit` в строке Bash-команды — в позиции команды, с глобальными опциями
- * (`-C`, `-c k=v`, `--no-pager`, …) и с учётом `cd <dir> &&` перед ними: хук проверяет тот репо,
- * в который команда реально коммитит. Слова внутри кавычек и тела heredoc — не команды:
- * `grep "git add"` или сообщение коммита со словами «git commit» хук не трогают.
+ * `git add`/`git commit` calls in a Bash command line — in command position, with global options
+ * (`-C`, `-c k=v`, `--no-pager`, …) and taking a preceding `cd <dir> &&` into account: the hook checks the
+ * repo the command actually commits to. Words inside quotes and heredoc bodies are not commands:
+ * `grep "git add"` or a commit message with the words "git commit" does not trigger the hook.
  */
 export function gitInvocations(line, cwd) {
   const found = []
@@ -31,17 +31,17 @@ export function gitInvocations(line, cwd) {
   return found
 }
 
-// Опции со значением отдельным словом: `-m "текст"` — не путь коммита.
+// Options whose value is a separate word: `-m "text"` is not a commit path.
 const COMMIT_VALUE_SHORT = new Set(['m', 'F', 'c', 'C', 't'])
 const COMMIT_VALUE_LONG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--author', '--date', '--cleanup', '--template', '--trailer', '--pathspec-from-file'])
 const ADD_VALUE_LONG = new Set(['--chmod', '--pathspec-from-file'])
 
 /**
- * Что войдёт в коммит по аргументам `git add`/`git commit` одной команды — без запуска git:
- * `all` — всё дерево вместе с неотслеживаемыми (`git add -A` без путей, пути из файла), `tracked` —
- * все изменения отслеживаемых (`git add -u`, `git commit -a`), `specs` — пути в том виде, в каком
- * их понимает git, с каталогом вызова. Уже собранный индекс сюда не входит — его добавляет хук.
- * Сомнение решается в сторону большего охвата: лишний файл в проверке безопаснее пропущенного.
+ * What goes into the commit, from the arguments of one `git add`/`git commit` command — without running git:
+ * `all` — the whole tree including untracked files (`git add -A` without paths, paths from a file), `tracked` —
+ * all changes to tracked files (`git add -u`, `git commit -a`), `specs` — paths as git understands them,
+ * with the call directory. An already built index is not included here — the hook adds it.
+ * Doubt is resolved toward wider coverage: an extra file in the check is safer than a missed one.
  */
 export function commitScope(invocations) {
   const scope = { all: false, tracked: false, specs: [] }
@@ -57,7 +57,7 @@ export function commitScope(invocations) {
         specs.push(...args.slice(i + 1))
         break
       }
-      // Перенаправления: `> out.txt` и `2>/dev/null` — не пути.
+      // Redirections: `> out.txt` and `2>/dev/null` are not paths.
       if (/^\d*[<>]{1,2}$/.test(arg)) {
         i++
         continue
@@ -75,7 +75,7 @@ export function commitScope(invocations) {
         for (let k = 1; k < arg.length; k++) {
           const flag = arg[k]
           if (subcommand === 'add' && flag === 'A') all = true
-          // `-p`/`-i` без путей — интерактивный выбор среди отслеживаемых.
+          // `-p`/`-i` without paths — interactive choice among tracked files.
           if (subcommand === 'add' && 'upi'.includes(flag)) tracked = true
           if (subcommand === 'commit' && flag === 'a') tracked = true
           if (valueShort.has(flag)) {
@@ -87,7 +87,7 @@ export function commitScope(invocations) {
       }
       specs.push(arg)
     }
-    // У `git add` пути сужают и `-A`, и `-u`; у `git commit` `-a` и пути — объединение (git сам их не смешивает).
+    // In `git add`, paths narrow both `-A` and `-u`; in `git commit`, `-a` and paths are a union (git does not mix them itself).
     if (subcommand === 'add' && specs.length) {
       all = false
       tracked = false
@@ -99,7 +99,7 @@ export function commitScope(invocations) {
   return scope
 }
 
-// Простой шелл-лексер: кавычки, экранирование, операторы `&& || ; | & ( )`, перевод строки, heredoc.
+// A simple shell lexer: quotes, escaping, the operators `&& || ; | & ( )`, newline, heredoc.
 export function commandSegments(line) {
   const segments = [[]]
   let word = null
@@ -115,7 +115,7 @@ export function commandSegments(line) {
   for (let i = 0; i < line.length; i++) {
     const c = line[i]
     if (c === '\n' && heredoc) {
-      // Тело heredoc — до строки с одним ограничителем; в команды оно не попадает.
+      // The heredoc body runs up to a line with only the delimiter; it does not become commands.
       let start = i + 1
       i = line.length
       while (start <= line.length) {

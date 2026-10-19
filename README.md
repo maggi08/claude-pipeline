@@ -1,23 +1,23 @@
 # claude-pipeline
 
-Личный маркетплейс Claude Code: плагины, которые я подключаю к своим проектам.
+A personal Claude Code marketplace: plugins I connect to my own projects.
 
-## Плагины
+## Plugins
 
-| Плагин | Что делает |
+| Plugin | What it does |
 |---|---|
-| [`stage-pipeline`](plugins/stage-pipeline/README.md) | Поэтапный maker/checker-workflow для крупных UI-задач: разбивка на этапы, спека из дизайна, проверки субагентами (Figma/прототип, рантайм, код-ревью), журнал состояния в файлах |
+| [`stage-pipeline`](plugins/stage-pipeline/README.md) | A staged maker/checker workflow for large UI tasks: splitting into stages, a spec from the design, checks by subagents (Figma/prototype, runtime, code review), a state journal kept in files |
 
-## Установка
+## Installation
 
-Репозиторий публичный, поэтому ставится на любой машине без доступов и без клонирования:
+The repository is public, so it installs on any machine without access rights and without cloning:
 
 ```bash
 claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 ```
 
-То же самое настройками, если раскладывать не руками:
+The same through settings, if you do not want to install by hand:
 
 ```json
 {
@@ -28,19 +28,19 @@ claude plugin install stage-pipeline@magzhan
 }
 ```
 
-Это `~/.claude/settings.json` — плагин включён во всех репозиториях. Нужен только в одном — те же команды с `--scope project`, попадут в `<repo>/.claude/settings.json`; тогда убедись, что `.gitignore` не глотает `.claude/` целиком: `.claude/*` + `!.claude/settings.json`.
+This is `~/.claude/settings.json` — the plugin is enabled in all repositories. If you need it in one repository only, use the same commands with `--scope project`; they end up in `<repo>/.claude/settings.json`. In that case make sure `.gitignore` does not swallow the whole `.claude/`: use `.claude/*` + `!.claude/settings.json`.
 
-Обновление: `claude plugin update stage-pipeline` (подтянет свежий `main`). После установки и обновления — перезапуск Claude Code. Что изменилось между версиями и что нужно сделать руками на апгрейде — в [CHANGELOG.md](CHANGELOG.md).
+Update: `claude plugin update stage-pipeline` (pulls the fresh `main`). After an install or an update, restart Claude Code. What changed between versions and what to do by hand on an upgrade is in [CHANGELOG.md](CHANGELOG.md).
 
-**Ветки.** `main` — прод: с неё ставится и обновляется плагин у всех, поэтому в неё попадает только проверенное с поднятой версией. Эксперименты живут локально (маркетплейс из папки — ниже) или в отдельной `dev`-ветке; отдельной «стабильной» ветки нет и не нужно.
+**Branches.** `main` is production: everyone installs and updates the plugin from it, so only checked changes with a raised version go into it. Experiments live locally (a marketplace from a folder — below) or in a separate `dev` branch; there is no separate "stable" branch and none is needed.
 
-Раскатка на команду — каталог в GitLab, который ссылается на этот репозиторий: [ROLLOUT.md](ROLLOUT.md).
+Rollout to a team is a catalog in GitLab that points to this repository: [ROLLOUT.md](ROLLOUT.md).
 
-Проверка, что доехало: `claude plugin details stage-pipeline` — должен показать 18 скиллов, 12 агентов, 2 MCP-сервера. Дальше `/pipeline-doctor` в целевом репо проверит окружение (MCP, dev-сервер, baseline).
+Check that it arrived: `claude plugin details stage-pipeline` — it must show 18 skills, 12 agents, 2 MCP servers. Then `/pipeline-doctor` in the target repository checks the environment (MCP, dev server, baseline).
 
-### Режим разработки — маркетплейс из локального клона
+### Development mode — a marketplace from a local clone
 
-На машине, где плагин правится, удобнее читать маркетплейс прямо из папки: правишь скилл → `claude plugin update stage-pipeline` → изменение доехало, пушить необязательно.
+On the machine where the plugin is edited, it is easier to read the marketplace straight from the folder: edit a skill → `claude plugin update stage-pipeline` → the change has arrived, pushing is not required.
 
 ```bash
 git clone https://github.com/maggi08/claude-pipeline.git
@@ -49,48 +49,48 @@ claude plugin marketplace add "$PWD"
 claude plugin install stage-pipeline@magzhan
 ```
 
-В `settings.json` запишется `source: directory` с абсолютным путём — то есть привязка к этой машине. Это нормально для машины разработки и не годится для остальных: там ставь из GitHub. Переключить уже установленный маркетплейс с одного источника на другой: `claude plugin marketplace remove magzhan`, затем `add` с нужным источником.
+`settings.json` gets `source: directory` with an absolute path — that is, a binding to this machine. It is fine for the development machine and not for the others: install from GitHub there. To switch an installed marketplace from one source to another: `claude plugin marketplace remove magzhan`, then `add` with the source you need.
 
-## Разработка
+## Development
 
 ```
-.claude-plugin/marketplace.json   каталог: какие плагины отдаёт этот репо
+.claude-plugin/marketplace.json   catalog: which plugins this repository serves
 plugins/<name>/
-  .claude-plugin/plugin.json      манифест плагина (name, version, description)
-  skills/<name>/SKILL.md          скиллы (вызываются как /<name>)
-  skills/<name>/references/       прецеденты правил — для того, кто правило меняет, не для исполнения
-  agents/<name>.md                субагенты-чекеры
-  hooks/hooks.json                хуки плагина (git-guard, session-start)
-  scripts/                        permissions / archive-stages / retro и скрипты хуков
-  .mcp.json                       MCP-серверы, которые приезжают с плагином
-  README.md                       документация плагина
-evals/cases/<name>/               фикстуры с заложенными дефектами для scripts/eval.mjs
+  .claude-plugin/plugin.json      plugin manifest (name, version, description)
+  skills/<name>/SKILL.md          skills (called as /<name>)
+  skills/<name>/references/       rule precedents — for whoever changes a rule, not for execution
+  agents/<name>.md                checker subagents
+  hooks/hooks.json                plugin hooks (six: session-start, git-guard, force-guard, agent-guard, journal-gate, frames-guard)
+  scripts/                        permissions / archive-stages / retro and the hook scripts
+  .mcp.json                       MCP servers that come with the plugin
+  README.md                       plugin documentation
+evals/cases/<name>/               fixtures with planted defects for scripts/eval.mjs
 ```
 
-Правила:
+Rules:
 
-- **Никакой проектной специфики в скиллах.** Плагин включён во всех репозиториях; правила конкретного проекта живут в его `CLAUDE.md` или `.claude/pipeline.config.md → Conventions`. Проверено на практике: рубрика одного проекта в глобальном скилле давала ложные Major в другом.
-- **Пути внутри плагина — через `${CLAUDE_PLUGIN_ROOT}`**, не через `~/.claude/`. Иначе кросс-ссылки скилл→агент ведут в пустоту, как только плагин переезжает.
-- **Никаких секретов в `.mcp.json`** — только локальные/публичные эндпоинты; внешний эндпоинт обязан быть описан в ROLLOUT.md (это проверяет валидатор).
-- **Прецедент — в `references/precedents.md`, правило — одной строкой в `SKILL.md`.** Бюджет — 30 KB на скилл; валидатор его держит.
-- **Имена продуктов** из своих проектов перечисли в локальном `.product-denylist` (в `.gitignore`) — валидатор не пустит их в скиллы. Айди тикетов ловятся и без него.
+- **No project specifics in skills.** The plugin is enabled in all repositories; the rules of a given project live in its `CLAUDE.md` or `.claude/pipeline.config.md → Conventions`. Verified in practice: one project's rubric in a global skill produced false Majors in another.
+- **Paths inside the plugin go through `${CLAUDE_PLUGIN_ROOT}`**, not through `~/.claude/`. Otherwise the skill→agent cross-references lead nowhere as soon as the plugin moves.
+- **No secrets in `.mcp.json`** — only local or public endpoints; an external endpoint must be described in ROLLOUT.md (the validator checks this).
+- **A precedent goes into `references/precedents.md`, the rule goes into `SKILL.md` as one line.** The budget is 30 KB per skill; the validator enforces it.
+- **Product names** from your own projects: list them in a local `.product-denylist` (in `.gitignore`) — the validator keeps them out of the skills. Ticket ids are caught without it.
 
-Порядок работы: ветка `dev` (или фича-ветка) → PR в `main`. `main` — прод, прямые пуши в него обходят проверку релиза.
+Workflow: a `dev` branch (or a feature branch) → a PR into `main`. `main` is production; direct pushes into it bypass the release check.
 
-Перед PR:
+Before a PR:
 
 ```bash
-node scripts/validate.mjs                         # структура, ссылки, бюджеты, CHANGELOG
-node scripts/release-check.mjs origin/main        # плагин изменён → версия поднята и есть раздел CHANGELOG
+node scripts/validate.mjs                         # structure, links, budgets, CHANGELOG
+node scripts/release-check.mjs origin/main        # plugin changed → version raised and a CHANGELOG section exists
 claude plugin validate . --strict
 claude plugin validate ./plugins/stage-pipeline --strict
-node scripts/eval.mjs                             # если менялись агенты: реальные прогоны, $0.1–0.3 за кейс
+node scripts/eval.mjs                             # if agents changed: real runs, $0.1–0.3 per case
 ```
 
-Сравнение моделей на тех же кейсах — `node scripts/eval.mjs --runs 3 --model i18n-sweep=haiku i18n-hardcode`: копия плагина с переписанным `model:` у агента, в сводке — доля прохождений, реальная модель из `modelUsage` и стоимость прогона.
+Comparing models on the same cases: `node scripts/eval.mjs --runs 3 --model i18n-sweep=haiku i18n-hardcode` — a copy of the plugin with the agent's `model:` rewritten; the summary shows the pass rate, the real model from `modelUsage` and the cost of the run.
 
-GitHub Actions гоняет `validate.mjs` на push и PR, `release-check.mjs` — на PR в `main`, а на push в `main` ставит тег `stage-pipeline--v<version>`, если его нет (`.github/workflows/validate.yml`). `claude plugin validate` и `eval.mjs` в CI не идут: первому нужен CLI, второму — вызовы модели.
+GitHub Actions runs `validate.mjs` on push and PR, `release-check.mjs` on a PR into `main`, and on a push to `main` it creates the tag `stage-pipeline--v<version>` if it does not exist (`.github/workflows/validate.yml`). `claude plugin validate` and `eval.mjs` do not run in CI: the first needs the CLI, the second needs model calls.
 
-Релиз версии: поднять `version` в `plugin.json` + раздел в `CHANGELOG.md` → PR в `main` → тег поставит CI. Сообщения коммитов — `feat:` / `fix:` / `docs:` со строчной буквы, по сути изменения.
+Releasing a version: raise `version` in `plugin.json` + add a section to `CHANGELOG.md` → a PR into `main` → CI creates the tag. Commit messages: `feat:` / `fix:` / `docs:` in lowercase, describing the substance of the change.
 
-Ретро по реальным задачам: `node plugins/stage-pipeline/scripts/retro.mjs ~/programming/<repo>` — доля ложных находок, раунды fix-loop, skip по чекерам, раздутые STAGES.md.
+Retro over real tasks: `node plugins/stage-pipeline/scripts/retro.mjs ~/programming/<repo>` — the share of false findings, fix-loop rounds, skips per checker, bloated STAGES.md files.

@@ -1,30 +1,31 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
 import { gateCloseViolations } from '../ci-gates.mjs'
+import { CLOSED_WORD } from '../markers.mjs'
 import { runDigest } from '../run-digest.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
- * /stage-check требует, чтобы исход критерия называл того, кто его проверил, PASS чекера нёс замер,
- * а дизайн-чекер пропускался только на logic-only. На живых прогонах это держалось через раз:
- * «✅ pro-review по коду» у критериев devtools-verify, «4.5 PASS» без значения, proto-compare
- * «skip: MCP-Chrome занят». Хук смотрит на правку журнала или отчёта чекера сразу после неё
- * и возвращает нарушения агенту — тем же ходом, пока этап ещё открыт.
+ * /stage-check requires that a criterion's result names who checked it, a checker's PASS carries a measurement,
+ * and a design checker is skipped only on logic-only. On live runs this held only every other time:
+ * "✅ pro-review by code" on devtools-verify criteria, "4.5 PASS" with no value, proto-compare
+ * "skip: MCP-Chrome busy". The hook looks at an edit of the journal or of a checker report right after it
+ * and returns the violations to the agent — in the same turn, while the stage is still open.
  *
- * 0.14 — итог находок (references/checker-report.md). Находка чекера закрывается исправлением,
- * доказанной ложностью или блокером, а не строкой «оставляю» или «в Ожидают подтверждения»: в трёх
- * разобранных задачах так ушла большая часть того, что пользователь потом чинил сам. Отчёт проверяется
- * при записи (сводка, запрещённые итоги, геометрия у devtools-verify), журнал — при отметке чекера
- * и закрытии force-прогона. При закрытии прогона в контекст кладётся сводка непроверенного — она идёт
- * в итоговое сообщение целиком, а не на выбор оркестратора.
+ * 0.14 — findings outcome (references/checker-report.md). A checker finding is closed by a fix,
+ * a proven false finding or a blocker, not by a line "leaving it" or "to Awaiting user confirmation": in three
+ * reviewed tasks most of what the user later fixed by hand went away this way. A report is checked
+ * when written (summary, forbidden outcomes, geometry for devtools-verify), the journal — when a checker is marked
+ * and when a force run is closed. When a run closes, a summary of what was not verified goes into the context — it goes
+ * into the final message as a whole, not at the orchestrator's choice.
  *
- * 0.15 — гейты CI проекта (смоук, e2e из конфига): «завершён» — только когда каждый зелёный на текущем HEAD,
- * «завершён с блокерами» — каждый незелёный назван блокером. В одной задаче смоук упал уже на PR.
+ * 0.15 — the project's CI gates (smoke, e2e from the config): "completed" only when each one is green on the current HEAD,
+ * "completed with blockers" — each non-green one is named as a blocker. In one task smoke failed only at the PR.
  *
- * Только новое: строки журнала, которых не было в снимке, и отчёты, записанные после него
- * (снимок — в каталоге данных плагина, его делает session-start). Старые этапы и закрытые задачи
- * никто не обязан переписывать. Новое нарушение напоминает о себе, пока его не исправят.
+ * Only what is new: journal lines that were not in the snapshot, and reports written after it
+ * (the snapshot is in the plugin data directory, session-start makes it). Old stages and closed tasks
+ * do not have to be rewritten. A new violation reminds about itself until it is fixed.
  */
 const input = await readHookInput()
 const tool = input.tool_name ?? ''
@@ -36,7 +37,7 @@ const cwd = input.cwd ?? process.cwd()
 const state = readPipelineState(cwd)
 if (!state) process.exit(0)
 
-// Каталог задач бывает за симлинком (`.claude/tasks` → `~/.claude/team-tasks`): сравниваются реальные пути.
+// The task directory can sit behind a symlink (`.claude/tasks` → `~/.claude/team-tasks`): real paths are compared.
 const real = (path) => {
   try {
     return realpathSync(path)
@@ -55,7 +56,7 @@ const messages = []
 const context = []
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
-  // Отчёт — тот, что записан этой правкой: Write/Edit — его путь, Bash — отчёты, изменённые только что.
+  // The report is the one written by this edit: for Write/Edit its path, for Bash the reports changed just now.
   const checks = join(task.dir, 'checks')
   const written = filePath
     ? inside(checks, filePath) && filePath.endsWith('.md')
@@ -64,7 +65,9 @@ for (const task of tasks) {
     : reportNames(task.dir)
         .map((name) => join(checks, name))
         .filter((path) => Date.now() - statSync(path).mtimeMs < 60_000)
-  const reports = written.flatMap(reportViolations)
+  // The language is checked only for a report that did not exist when the task was first seen: an old report is not rewritten, however it is edited.
+  const { reports: known } = baselineInfo(pluginDataDir(), task.dir)
+  const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language))
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir)]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   if (!closing.length) {
@@ -78,8 +81,8 @@ if (messages.length) {
     JSON.stringify({
       decision: 'block',
       reason:
-        `stage-pipeline: правка журнала задачи нарушает правила закрытия критериев и находок:\n${[...new Set(messages)].join('\n')}\n` +
-        'Исправь журнал или отчёт, прогони чекер или допиши «## Итог находок» (references/checker-report.md), прежде чем идти дальше. Сама правка уже записана, хук её не отменял.',
+        `stage-pipeline: the edit of the task journal breaks the rules for closing criteria and findings:\n${[...new Set(messages)].join('\n')}\n` +
+        'Fix the journal or the report, run the checker or add "## Findings outcome" (references/checker-report.md) before going on. The edit itself is already written, the hook did not undo it.',
     }),
   )
   process.exit(0)
@@ -90,35 +93,35 @@ if (context.length) {
 process.exit(0)
 
 /**
- * Сводка непроверенного — один раз на каждое закрытие блока «Force-прогон», записанное после снимка.
- * В итоговое сообщение она идёт целиком: в одной задаче сводка выбрала «тексты kk/en, заголовок вкладки»,
- * а под этим ярлыком лежали два дефекта, которые пользователь нашёл в работе с продуктом.
+ * A summary of what was not verified — once for each closing of a "Force run" block written after the snapshot.
+ * It goes into the final message as a whole: in one task the summary picked "kk/en texts, tab title",
+ * and under that label lay two defects that the user found while using the product.
  */
 function closedDigest(task) {
   const stagesPath = join(task.dir, 'STAGES.md')
   if (!existsSync(stagesPath)) return null
   const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
-  if (!block || !/заверш/i.test(block.heading)) return null
+  if (!block || !CLOSED_WORD.test(block.heading)) return null
   const { lines } = baselineInfo(pluginDataDir(), task.dir)
   const shown = join(pluginDataDir(), 'digest-shown.json')
   let seen = {}
   try {
     seen = JSON.parse(readFileSync(shown, 'utf8'))
   } catch {
-    // первый показ
+    // first showing
   }
   const key = `${real(task.dir)}::${block.heading}`
-  // Блок, закрытый до снимка, — старый прогон: его сводку уже видели.
+  // A block closed before the snapshot is an old run: its summary was already seen.
   if (seen[key] || lines.has(fingerprint(block.heading))) return null
   const digest = runDigest(task.dir, pluginDataDir(), state)
   try {
     mkdirSync(pluginDataDir(), { recursive: true })
     writeFileSync(shown, JSON.stringify({ ...seen, [key]: new Date().toISOString() }))
   } catch {
-    // не записался — сводка придёт ещё раз, это безопасно
+    // not written — the summary will come once more, which is safe
   }
   return (
-    `stage-pipeline: force-прогон ${task.ticket} закрыт. Ниже — сводка из журнала и отчётов. Вставь её в итоговое сообщение целиком, ` +
-    `не пересказывая и не выбирая: что проверять первым, решает пользователь.\n\n${digest}`
+    `stage-pipeline: force run ${task.ticket} is closed. Below is the summary from the journal and reports. Put it into the final message as a whole, ` +
+    `without retelling or picking: what to check first is the user's decision.\n\n${digest}`
   )
 }

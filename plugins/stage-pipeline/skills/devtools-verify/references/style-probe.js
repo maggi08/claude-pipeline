@@ -1,15 +1,15 @@
-// Сверка вида новой секции с эталонной — передаётся в evaluate_script целиком, корни секций — в NEW и REF.
-// Эталон — соседняя секция того же приложения (строка «Эталон вида» этапа в STAGES.md). Эталон на другой
-// странице: сначала прогон там с NEW = null и REF = <его корень>, поле `roles` из ответа — в REFERENCE здесь.
-// По ролям (заголовок, кнопка, шапка таблицы, ячейка, подпись, текст) — самый частый вариант в секции:
-// шрифт, кегль, вес, межстрочный, регистр, трекинг, у кнопок и шапок таблиц — высота и радиус.
-// Расхождение — не вердикт, но каждое идёт строкой в отчёт: без решения пользователя «вид как в прототипе» это находка.
-// Откуда: вид взяли из прототипа (uppercase 11px extrabold, кнопки 36px bold, таблица своего вида) — прототип
-// совпадал с кодом, а «жирно» и «разные кнопки» пользователь увидел рядом с остальным дашбордом.
+// Comparing the look of a new section with the reference one — passed to evaluate_script whole, the section roots go in NEW and REF.
+// The reference is a neighbouring section of the same app (the "Visual reference" line of the stage in STAGES.md). A reference on another
+// page: first run there with NEW = null and REF = <its root>, and put the `roles` field of the answer into REFERENCE here.
+// By roles (heading, button, table header, cell, caption, text) — the most frequent variant in the section:
+// font, size, weight, line height, case, tracking, and for buttons and table headers — height and radius.
+// A difference is not a verdict, but each one goes into the report as a line: without a user decision "the look as in the prototype" it is a finding.
+// Origin: the look was taken from a prototype (uppercase 11px extrabold, 36px bold buttons, a table with its own look) — the prototype
+// matched the code, and "too bold" and "different buttons" the user saw next to the rest of the dashboard.
 () => {
-  const NEW = 'main section:last-of-type' // ← корень новой или изменённой секции этапа
-  const REF = 'main section:first-of-type' // ← корень эталонной секции на этой странице
-  const REFERENCE = null // ← поле `roles` прогона на странице эталона, если эталон там
+  const NEW = 'main section:last-of-type' // ← the root of the stage's new or changed section
+  const REF = 'main section:first-of-type' // ← the root of the reference section on this page
+  const REFERENCE = null // ← the `roles` field of the run on the reference page, if the reference is there
   const ROLES = {
     heading: 'h1, h2, h3, h4, h5, h6, [role="heading"]',
     button: 'button, [role="button"], a[class*="button" i], a[class*="btn" i]',
@@ -30,7 +30,7 @@
     if (SIZED.has(role)) Object.assign(value, { height: `${Math.round(el.getBoundingClientRect().height)}px`, radius: s.borderTopLeftRadius })
     return value
   }
-  // Самый частый вариант роли: одна выделенная кнопка не подменяет обычные, а число вариантов видно в `variants`.
+  // The most frequent variant of a role: one highlighted button does not replace ordinary ones, and the number of variants is visible in `variants`.
   const roles = (selector) => {
     const root = selector && document.querySelector(selector)
     if (!root) return null

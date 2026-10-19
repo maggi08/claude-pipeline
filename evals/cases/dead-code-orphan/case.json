@@ -1,21 +1,21 @@
 {
   "agent": "dead-code",
-  "why": "замена компонента оставила сироту-компонент и сироту-ключ локали",
-  "prompt": "Тикет EVAL-1, этап 1. База сравнения: незакоммиченные изменения (git diff HEAD + git status). Этап заменил баннер на главной.",
+  "why": "replacing a component left an orphaned component and an orphaned locale key",
+  "prompt": "Ticket EVAL-1, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status). The stage replaced the banner on the home page.",
   "expect": [
     {
       "pattern": "OldBanner",
-      "why": "осиротевший компонент OldBanner.tsx"
+      "why": "the orphaned component OldBanner.tsx"
     },
     {
       "pattern": "banner\\.old",
-      "why": "осиротевший ключ локали banner.old"
+      "why": "the orphaned locale key banner.old"
     }
   ],
   "forbid": [
     {
-      "pattern": "PromoBanner[^\\n]{0,40}(осиротел|orphan|мёртв)",
-      "why": "используемый PromoBanner назван мёртвым"
+      "pattern": "PromoBanner[^\\n]{0,40}(осиротел|orphan|мёртв|dead)",
+      "why": "the used PromoBanner is called dead"
     }
   ]
 }

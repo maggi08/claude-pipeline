@@ -1,166 +1,169 @@
 ---
 name: stage-plan
-description: Разбить большую задачу (редизайн / фича с многоэкранной Figma) на этапы и создать state-файл STAGES.md — план с критериями приёмки и статусами пайплайна. Use when a task has a multi-screen Figma file, when the user asks to split work into stages/plan a redesign. Требует готовый FEATURE-MAP.md (если нет — сначала запусти /feature-checker).
+description: Split a big task (a redesign / a feature with a multi-screen Figma) into stages and create the STAGES.md state file — a plan with acceptance criteria and pipeline statuses. Use when a task has a multi-screen Figma file, when the user asks to split work into stages/plan a redesign. Requires a ready FEATURE-MAP.md (if missing — run /feature-checker first). RU triggers — «разбей на этапы», «составь план этапов»
 ---
 
-# Stage Plan — разбивка задачи на этапы
+# Stage Plan — splitting a task into stages
 
-Цель: превратить многоэкранную Figma + карту фичи в поэтапный план, где каждый этап проходит один цикл: **/stage-kickoff (открытие: план + бизнес-ввод + sign-off) → implement → чекеры-субагенты (figma-compare ∥ pro-review, + devtools-verify) → user-review → /stage-check (закрытие: fix-loop + журнал + коммит) → `/clear` пользователем** (в `/stage-force` этапы идут субагентами и контекст не копится). STAGES.md — это память задачи между сессиями: любая новая сессия начинает с его чтения.
+Goal: turn a multi-screen Figma file plus a feature map into a staged plan in which every stage goes through one cycle: **/stage-kickoff (opening: plan + business input + sign-off) → implement → checker subagents (figma-compare ∥ pro-review, + devtools-verify) → user-review → /stage-check (closing: fix-loop + journal + commit) → `/clear` by the user** (in `/stage-force` stages run as subagents and context does not pile up). STAGES.md is the task's memory between sessions: every new session starts by reading it.
 
-План готов — дальше два способа его пройти: обычный (остановка на каждом этапе) и `/stage-force` (все вопросы одним батчем на старте, дальше прогон до конца без остановок, коммиты автоматические, пуш и PR — нет). Выбор режима не меняет сам план: force читает тот же STAGES.md и те же критерии приёмки.
+Once the plan is ready there are two ways through it: the usual one (a stop at every stage) and `/stage-force` (all questions in one batch at the start, then a run to the end without stops, automatic commits, no push and no PR). The choice of mode does not change the plan itself: force reads the same STAGES.md and the same acceptance criteria.
 
-> **Project config.** `<task_dir>`, раскладку кода и платформы бери из `<repo>/.claude/pipeline.config.md` (нет файла — `/pipeline-init`). `<task_dir>` = поле `task_path` (по умолчанию `<repo>/.claude/tasks/ (в репо)`).
+> **Project config.** Take `<task_dir>`, the code layout and the platforms from `<repo>/.claude/pipeline.config.md` (no file — `/pipeline-init`). `<task_dir>` = the `task_path` field (default `<repo>/.claude/tasks/ (in the repo)`).
 
-## Вход
+## Input
 
-- Figma URL файла/страницы задачи.
-- Тикет и описание.
-- `<task_dir>/<TICKET>/FEATURE-MAP.md` — если нет, сначала выполни /feature-checker.
+Decide the task language first (Step 4, `${CLAUDE_PLUGIN_ROOT}/references/language.md`): it governs Steps 1–3 and the prompts of subagents too.
 
-## Шаг 1. Инвентаризация Figma
+- Figma URL of the task's file/page.
+- Ticket and description.
+- `<task_dir>/<TICKET>/FEATURE-MAP.md` — if missing, run /feature-checker first.
 
-`mcp__figma__get_metadata` на файл/страницу (загрузить через ToolSearch) → список всех фреймов: имя, node-id, размер. При неоднозначности — `get_screenshot` ключевых фреймов, чтобы понять содержание.
+## Step 1. Figma inventory
 
-Классифицируй каждый фрейм:
-- **Экран** — самостоятельная страница/вью.
-- **Стейт** — вариация экрана (empty / loading / error / filled / hover, открытая модалка).
-- **Служебный** — спеки, редлайны, компоненты, старые версии → в план не входят, но отметь их отдельным списком «не включено», чтобы ничего не потерять молча.
+`mcp__figma__get_metadata` on the file/page (load it via ToolSearch) → a list of all frames: name, node-id, size. If unclear, `get_screenshot` of the key frames to understand the content.
 
-Этот список — вход для таблицы «Покрытие дизайн-источника» (Шаг 4): каждый неслужебный фрейм обязан получить этап, иначе экран теряется тихо, между «вроде обсуждали» и «в плане не нашёл».
+Classify every frame:
+- **Screen** — a standalone page/view.
+- **State** — a variation of a screen (empty / loading / error / filled / hover, an open modal).
+- **Service** — specs, redlines, components, old versions → not part of the plan, but list them separately as "not included" so nothing is lost silently.
 
-## Шаг 2. Группировка в этапы
+This list is the input for the "Design source coverage" table (Step 4): every non-service frame must get a stage, otherwise a screen is lost silently, somewhere between "I think we discussed it" and "could not find it in the plan".
 
-Правила:
-- Экран + все его стейты = всегда один этап (пользовательское правило).
-- **Что считать экраном, а что стейтом, решает реестр дизайн-источника, не удобство реализации.** Отдельный фрейм Figma или отдельный screen-id в реестре SPEC = отдельный экран. Слить два таких в один компонент с вариантами (оверлей, `variant`-проп, ветка внутри существующего экрана) можно только явным решением пользователя, записанным в этап. Иначе развилка «это один экран или два» всплывает на user-review и стоит полной архитектурной переделки уже реализованного этапа — вместе с чекерами, тестами и их фикс-лупами.
-- Связанные шаги одного флоу (напр. step 1–2 визарда с общим компонентом) — один этап, если делить дороже, чем делать вместе.
-- Этап должен быть коммитабельным: после него `type_check` сходится с baseline, lint и тесты по дифу зелёные, ничего не сломано, даже если фича не завершена. `build` на этапе — только если этап трогал манифест или конфиг сборки; целиком всё — в финальных проверках (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`).
-- Порядок: сначала фундамент (общие компоненты, layout, токены), потом экраны от главного к второстепенным.
-- Ориентир размера: этап = 0.5–2 дня работы и ~300 строк дифа; план, где этап заведомо больше ~1000 строк (без автогенерации и удалений), — дели: такой диф чекеры не прочитывают за один проход, а находки на нём растут быстрее, чем чинятся (`retro.mjs` показывает это по полю `diff=`).
-- **Рефакторинг существующего кода — отдельным этапом** (обычно фундаментом), а не попутно с новым поведением: смешанный диф ревьюится как одно и не откатывается по частям.
-- **Метрики — только если в конфиге есть команда `bundle_size`.** Есть — в пайплайн этапа 1 добавь пункт `[ ] metrics-baseline` (прогон команды ДО первых изменений, вывод → `checks/metrics-baseline.txt`), а в финальные проверки — `[ ] metrics-guard` (тот же прогон на HEAD, сравнение с baseline). Без baseline финальное сравнение потребует отдельной сборки main-ветки в worktree — дороже. Команды нет — оба пункта не добавляй вовсе: пункт, который нечем выполнить, висит незакрываемым чекбоксом.
-- Этап без визуальных изменений помечай `logic-only` прямо в заголовке — дизайн-чекеры (figma-spec/figma-compare) для него skip по определению.
-- Для этапа-«фундамента» явно согласуй с пользователем размещение слоёв по «Code layout» конфига и конвенциям `CLAUDE.md`: где глобальная обвязка (шапки/лейауты), где переиспользуемое между страницами, где одностраничное. Нет этого в конфиге — спроси и допиши в Conventions, а не выбирай раскладку сам.
+## Step 2. Grouping into stages
 
-Сверь каждый этап с FEATURE-MAP: что переиспользуется как есть, что модифицируется, что пишется с нуля. Для редизайна отдельно пометь места, которые должны **совпасть с уже сделанным adaptive/webview** — там источник правды не только Figma, но и существующая реализация.
+Rules:
+- A screen + all its states = always one stage (the user's rule).
+- **What counts as a screen and what as a state is decided by the design source's registry, not by implementation convenience.** A separate Figma frame or a separate screen-id in the SPEC registry = a separate screen. Merging two of them into one component with variants (an overlay, a `variant` prop, a branch inside an existing screen) is allowed only by an explicit user decision recorded in the stage. Otherwise the fork "is this one screen or two" surfaces at user-review and costs a full architectural rework of an already implemented stage — together with the checkers, tests and their fix-loops.
+- Related steps of one flow (e.g. steps 1–2 of a wizard with a shared component) — one stage, if splitting costs more than doing them together.
+- A stage must be committable: after it `type_check` converges with the baseline, lint and tests on the diff are green, nothing is broken, even if the feature is not finished. `build` at a stage — only if the stage touched the manifest or the build config; everything in full — in the final checks (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`).
+- Order: foundation first (shared components, layout, tokens), then screens from the main one to the secondary ones.
+- Size guide: a stage = 0.5–2 days of work and ~300 lines of diff; a plan where a stage is clearly bigger than ~1000 lines (without autogeneration and deletions) — split it: checkers do not read such a diff in one pass, and findings on it grow faster than they get fixed (`retro.mjs` shows this in the `diff=` field).
+- **Refactoring of existing code — a separate stage** (usually the foundation), not alongside new behavior: a mixed diff is reviewed as one piece and cannot be rolled back in parts.
+- **Metrics — only if the config has a `bundle_size` command.** If it does, add a `[ ] metrics-baseline` item to the pipeline of stage 1 (run the command BEFORE the first changes, output → `checks/metrics-baseline.txt`), and a `[ ] metrics-guard` item to the final checks (the same run on HEAD, compared with the baseline). Without a baseline the final comparison needs a separate build of the main branch in a worktree — more expensive. If there is no command, do not add either item at all: an item with nothing to run it hangs as a checkbox that can never be closed.
+- Mark a stage without visual changes `logic-only` right in its heading — design checkers (figma-spec/figma-compare) are skipped for it by definition.
+- For a "foundation" stage, agree with the user explicitly on the placement of layers per the config's "Code layout" and the `CLAUDE.md` conventions: where the global scaffolding (headers/layouts) goes, where what is reusable across pages goes, where the single-page code goes. If the config does not say, ask and add it to Conventions; do not pick the layout yourself.
 
-## Шаг 2.1. Скан пересечений этапов
+Check every stage against FEATURE-MAP: what is reused as is, what is modified, what is written from scratch. For a redesign, mark separately the places that must **match the already built adaptive/webview** — there the source of truth is not only Figma but also the existing implementation.
 
-Этапы разложены — теперь посмотри на них ВМЕСТЕ. Постадийные чекеры этого сделать не смогут по построению: `pro-review --stage` видит диф одного этапа, и третья копия блока внутри своего этапа выглядит чисто. Пересечение видно только в плане и только сейчас.
+## Step 2.1. Stage overlap scan
 
-Пройди по всем парам этапов и выпиши КАЖДЫЙ элемент, который встречается больше чем в одном: обёртка или лейаут шага, повторяющийся блок (легальные ссылки, дисклеймер, пустое состояние), форматтер (дата, время, деньги), справочные данные (списки опций, причин, статусов), провайдер или стор, порядок шагов флоу. Источник — дизайн-источник и колонки «Что сделать» / «Переиспользовать» самих этапов; о путях файлов на этом шаге не гадай, их ещё нет.
+The stages are laid out — now look at them TOGETHER. Per-stage checkers cannot do this by construction: `pro-review --stage` sees the diff of one stage, and a third copy of a block inside its own stage looks clean. An overlap is visible only in the plan and only now.
 
-По каждому пересечению прими решение и запиши строкой в таблицу «Общие элементы» (Шаг 4): кто **строит** (самый ранний этап из пары) и кто **потребляет**. Этап-потребитель получает в «Переиспользовать» ссылку на владельца, а не задание «сделать так же» — иначе он честно сделает так же, второй раз.
+Go through all pairs of stages and write down EVERY element that occurs in more than one: a step wrapper or layout, a repeated block (legal links, disclaimer, empty state), a formatter (date, time, money), reference data (lists of options, reasons, statuses), a provider or store, the order of the flow's steps. The sources are the design source and the "What to do" / "Reuse" columns of the stages themselves; do not guess file paths at this step, they do not exist yet.
 
-**Вывод скана — таблица, а не вердикт.** «Пересечений нет» без перечисления пар, которые ты сверил, — это не выполненный скан, а его пропуск. Пересечений действительно нет только у плана, где каждый этап трогает свой экран и ни один общий элемент не повторяется; на редизайне многоэкранного флоу так не бывает.
+For every overlap make a decision and write it as a row in the "Shared elements" table (Step 4): who **builds** (the earliest stage of the pair) and who **consumes**. The consuming stage gets a link to the owner in "Reuse", not a task "do the same" — otherwise it will honestly do the same, a second time.
 
-## Шаг 3. Критерии приёмки: ID и верификатор
+**The output of the scan is a table, not a verdict.** "No overlaps" without listing the pairs you checked is not a completed scan but a skipped one. Overlaps are really absent only in a plan where every stage touches its own screen and no shared element repeats; on a redesign of a multi-screen flow that does not happen.
 
-Критерий без ID нельзя ни собрать в TEST-PLAN, ни сослаться на него из отчёта чекера, ни ответить «что из плана осталось непокрытым» иначе как перечитыванием всех этапов. Поэтому:
+## Step 3. Acceptance criteria: ID and verifier
 
-- **ID стабильный**: `AC-<номер этапа>.<номер критерия>`. Правка плана только добавляет номера; отменённый критерий помечается `[отменён: причина]`, но не удаляется и не переиспользует свой номер — на него уже могли сослаться отчёты в `checks/`.
-- **У каждого критерия — тег верификатора**: кто именно способен его проверить. `[verify: figma-compare]` (или `proto-compare`) — визуал и токены; `[verify: devtools-verify]` — рантайм, живое состояние, консоль; `[verify: pro-review]` — контракт кода и конвенции; `[verify: user-review]` — продуктовое суждение, которое чекер не выносит; `[live: user-side]` (без `verify:`, тег уже принят в /stage-check и devtools-verify) — доступно только под логином пользователя.
-- **Критерий без верификатора — дефект плана, а не «проверим потом».** Если ни один чекер критерий не закрывает и это не `user-review`, значит он сформулирован так, что проверить его нечем — переформулируй до измеримого (токен, число, имя стейта) или снеси в `DESIGN-QUESTIONS.md` как вопрос.
-- Критерии, достижимые только под логином, помечай `[live: user-side]` уже здесь, если известно, что авторизованного Chrome-профиля нет — не оставляй чекеру шанс вернуть FAIL про дизайн, которого он не видел.
+A criterion without an ID cannot be collected into TEST-PLAN, cannot be referenced from a checker report, and "what of the plan is still uncovered" can only be answered by rereading all the stages. So:
 
-Чекер честно проверяет то, что написано в критерии, поэтому ошибка, заложенная в план, проходит все проверки. Ниже — то, что пользователь в трёх разобранных задачах вернул после «готово».
+- **The ID is stable**: `AC-<stage number>.<criterion number>`. Editing the plan only adds numbers; a cancelled criterion is marked `[cancelled: reason]` but is not deleted and does not reuse its number — reports in `checks/` may already refer to it.
+- **Every criterion has a verifier tag**: who exactly is able to check it. `[verify: figma-compare]` (or `proto-compare`) — visuals and tokens; `[verify: devtools-verify]` — runtime, live state, console; `[verify: pro-review]` — code contract and conventions; `[verify: user-review]` — a product judgment a checker does not make; `[live: user-side]` (without `verify:`, the tag is already accepted in /stage-check and devtools-verify) — available only under the user's login.
+- **A criterion without a verifier is a defect of the plan, not "we'll check later".** If no checker covers the criterion and it is not `user-review`, it is worded in a way that cannot be checked — reword it to something measurable (a token, a number, a state name) or move it to `DESIGN-QUESTIONS.md` as a question.
+- Mark criteria reachable only under a login `[live: user-side]` already here, if it is known that there is no authorized Chrome profile — do not leave a checker the chance to return a FAIL about a design it has not seen.
 
-**Ссылка на образец — путь, а не слова.** Критерий или решение «как у X», «как сейчас», «как было» несёт `путь:строка` образца или node-id макета. Решение «как у эксперта» (у эксперта «Сохранить» активна и без смены статуса) на открытии этапа стало «как сейчас в шторке», и анкету нельзя было сохранить, не меняя статус. Новую строку без пути вернёт хук journal-gate.
+A checker honestly checks what the criterion says, so a mistake built into the plan passes all the checks. Below is what the user returned after "done" in three reviewed tasks.
 
-**Действие с условиями — таблицей «состояние × действие».** Сохранение, отправка, смена статуса, у которых результат зависит от состояния формы: строки — состояния (пусто, частично, полно, ошибка сервера), столбцы — действия, в ячейке — что уходит на сервер и что видит пользователь. Ячейки становятся критериями, таблица целиком идёт пользователю на согласование (в force — в интервью). Критерий «при неполной анкете сохранение остановлено» прошёл все чекеры, потому что сам закрепил дефект: строка таблицы «Перезвонить + неполная анкета → не сохранились ни статус, ни анкета» показала бы это до старта.
+**A reference to an example is a path, not words.** A criterion or decision "like X", "as now", "as before" carries the `path:line` of the example or the node-id of the mockup. The decision "like the expert" (for the expert "Save" is active even without a status change) became "as now in the drawer" at stage opening, and the questionnaire could not be saved without changing the status. A new line without a path is returned by the journal-gate hook.
 
-**Удаляемый или заменяемый UI — таблица паритета.** Этап, который удаляет секцию, экран или компонент, получает таблицу из FEATURE-MAP: каждая функция старого UI → где она теперь (`путь`, этап) или «удалено — решение пользователя <дата>». Строки — критерии `AC-N.P1…`. Удалённая секция унесла шесть функций (перевод кодов, ручная отправка, лот, причина ошибки), их вернул ревьюер паритета: pro-review видит диф, task-converge — критерии, а тихо пропавшее не видит никто. Force-коммит, удаляющий компонент, имени которого нет в таблице паритета, хук отклонит.
+**An action with conditions — a "state × action" table.** Saving, sending, a status change whose result depends on the form state: rows are states (empty, partial, full, server error), columns are actions, a cell holds what goes to the server and what the user sees. The cells become criteria, the whole table goes to the user for agreement (in force — into the interview). The criterion "with an incomplete questionnaire saving is stopped" passed all checkers because it itself locked in the defect: the table row "Call back + incomplete questionnaire → neither the status nor the questionnaire saved" would have shown it before the start.
 
-**Вид — из кита и соседних секций.** UI-этап получает строку «Эталон вида»: соседняя секция того же приложения (путь и URL), с которой devtools-verify сверяет шрифты, кнопки и таблицы. Источник — прототип: из него структура, тексты и поведение, а типографика, размеры кнопок, таблицы и отступы — из кита и эталона; вид «как в прототипе» — только решением пользователя с датой. Источник — Figma дизайнера: правда в макете, но переопределение кита всё равно находка, закрываемая узлом макета. Критерии требовали «uppercase 11px extrabold» и «кнопки 12/700» из прототипа — прототип совпадал с кодом, а «жирно», «разные кнопки», «другая таблица» пользователь вернул тремя волнами правок.
+**Removed or replaced UI — a parity table.** A stage that removes a section, screen or component gets a table from FEATURE-MAP: every function of the old UI → where it is now (`path`, stage) or "removed — user decision <date>". The rows are criteria `AC-N.P1…`. A removed section took away six functions (code translation, manual sending, lot, error reason), and the parity reviewer returned them: pro-review sees the diff, task-converge sees the criteria, and what silently disappeared nobody sees. A force commit that removes a component whose name is not in the parity table is rejected by the hook.
 
-**Статусы — один словарь.** Этап, который показывает статусы, получает матрицу «место на экране → поле API → текст»: одно состояние подписано одинаково везде, где видно. На одном экране оказалось три словаря («Expired», «Current status · New», «Not sent») — каждый кусок принёс свой источник.
+**Look — from the kit and neighboring sections.** A UI stage gets a "Visual reference" line: a neighboring section of the same app (path and URL), against which devtools-verify checks fonts, buttons and tables. If the source is a prototype: structure, texts and behavior come from it, while typography, button sizes, tables and spacing come from the kit and the reference; a look "as in the prototype" — only by a user decision with a date. If the source is the designer's Figma: the truth is in the mockup, but a kit override is still a finding, closed by a mockup node. Criteria demanded "uppercase 11px extrabold" and "buttons 12/700" from the prototype — the prototype matched the code, and "too bold", "different buttons", "a different table" the user returned in three waves of edits.
 
-## Шаг 4. Выход: STAGES.md
+**Statuses — one vocabulary.** A stage that shows statuses gets a matrix "place on the screen → API field → text": one state is labeled the same everywhere it is visible. One screen ended up with three vocabularies ("Expired", "Current status · New", "Not sent") — each piece brought its own source.
 
-Сохрани в `<task_dir>/<TICKET>/STAGES.md`:
+## Step 4. Output: STAGES.md
+
+Save to `<task_dir>/<TICKET>/STAGES.md`. The language of the task is chosen by the priority "explicit user request > `language:` in `pipeline.config.md` > the language of the message that started the task" and written to the `Language:` line; in a `ru` task the service headings and fields below are taken from the Russian column of the marker table in `${CLAUDE_PLUGIN_ROOT}/references/language.md`, not translated on the fly.
 
 ```markdown
-# <TICKET>: <название задачи>
-Figma: <url>  Ветка: `<branch>`  Контексты: desktop | adaptive | webview
-Обновлено: <дата>
+# <TICKET>: <task name>
+Figma: <url>  Branch: `<branch>`  Contexts: desktop | adaptive | webview
+Language: <en | ru>
+Updated: <date>
 
-## Статус: этап N из M — <короткая фраза, что происходит>
+## Status: stage N of M — <short phrase on what is happening>
 
-## Этапы
+## Stages
 
-### Этап 1: <название>  [status: todo | in-progress | done]
-Figma-ноды: <имя — node-id — url> (экран + стейты)
-Что есть (из FEATURE-MAP): ...
-Что сделать: ...
-Переиспользовать: <конкретные компоненты/composables>
-Матчить с adaptive/webview: <места, где реализация должна совпасть>
-Решения: <ключевые решения этапа — одной строкой каждое; «как у X» — с `путь:строка` X>
-Эталон вида: <соседняя секция — путь · URL> (UI-этап; logic-only — «—»)
-Состояние × действие: <таблица — если у этапа есть сохранение или отправка с условиями>
-Паритет: <таблица «было → где теперь / удалено по решению», строки `AC-N.P*` — если этап удаляет или заменяет UI>
-Критерии приёмки (формат WHEN/THEN, по образцу OpenSpec — проверяемые сценарии поведения):
-- `AC-N.1` WHEN <действие/условие> THEN <наблюдаемый результат> — [verify: figma-compare]
-- `AC-N.2` WHEN <действие/условие> THEN <наблюдаемый результат> — [verify: devtools-verify]
-Пайплайн:
-- [ ] kickoff (план этапа + бизнес-ввод + sign-off — /stage-kickoff)
+### Stage 1: <name>  [status: todo | in-progress | done]
+Figma nodes: <name — node-id — url> (screen + states)
+What exists (from FEATURE-MAP): ...
+What to do: ...
+Reuse: <specific components/composables>
+Match with adaptive/webview: <places where the implementation must match>
+Decisions: <the stage's key decisions — one line each; "like X" — with the `path:line` of X>
+Visual reference: <neighboring section — path · URL> (UI stage; logic-only — "—")
+State × action: <table — if the stage has saving or sending with conditions>
+Parity: <table "was → where now / removed by decision", rows `AC-N.P*` — if the stage removes or replaces UI>
+Acceptance criteria (WHEN/THEN format, after OpenSpec — verifiable behavior scenarios):
+- `AC-N.1` WHEN <action/condition> THEN <observable result> — [verify: figma-compare]
+- `AC-N.2` WHEN <action/condition> THEN <observable result> — [verify: devtools-verify]
+Pipeline:
+- [ ] kickoff (stage plan + business input + sign-off — /stage-kickoff)
 - [ ] implement
 - [ ] figma-compare
-- [ ] devtools-verify   (skip — MCP не подключён)
-- [ ] pro-review        (код-ревью дифа этапа)
-- [ ] kit-overrides     (скан переопределений кита — UI-этап; logic-only — skip)
-- [ ] dead-code         (skip: нет признака — ничего не удалялось и не заменялось)
-- [ ] i18n-sweep        (skip: нет признака — нового пользовательского текста нет)
-- [ ] deps-audit        (skip: нет признака — манифест не тронут)
-- [ ] user-review (обязателен: показать пользователю, ждать одобрения)
-- [ ] commit: `<TICKET>: <по сути изменения, не «этап N»>`
+- [ ] devtools-verify   (skip — MCP not connected)
+- [ ] pro-review        (code review of the stage diff)
+- [ ] kit-overrides     (scan for kit overrides — UI stage; logic-only — skip)
+- [ ] dead-code         (skip: no trigger — nothing was removed or replaced)
+- [ ] i18n-sweep        (skip: no trigger — no new user-facing text)
+- [ ] deps-audit        (skip: no trigger — manifest untouched)
+- [ ] user-review (required: show to the user, wait for approval)
+- [ ] commit: `<TICKET>: <what the change does, not "stage N">`
 
-### Этап 2: ...
+### Stage 2: ...
 
-## Финальные проверки (после всех этапов)
-- [ ] full-checks: `lint`, `type_check` (против baseline), `test`, `build` из конфига — целиком, один раз, на HEAD, через `run-check.mjs` (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`); на этапах они шли по дифу
-- [ ] ci-gates: гейты CI из конфига (таблица «Гейты CI» или `e2e`/`smoke` в Commands) — `node ${CLAUDE_PLUGIN_ROOT}/scripts/ci-gates.mjs --run` на HEAD после последнего фикса; красный — находка fix-loop, локально не запускается — блокер. Гейтов в конфиге нет — пункт не добавляй
-- [ ] floor-guard: `node ${CLAUDE_PLUGIN_ROOT}/scripts/floor-guard.mjs --base origin/<main_branch>` — ни одного заглушённого чекера, ослабленного теста или заглушки по всей ветке; исключения `floor-ok` — в «Ожидают подтверждения»
-- [ ] pro-review whole-branch (агент `pro-review` в whole-branch mode на `review_model`, по умолчанию `opus`, параметром `model` — правило выбора в `/stage-check`, Шаг 3.3; вся ветка от merge-base с `origin/<main_branch>` — PR-таргетом, напр. `dev`; свежим взглядом ловит то, что постадийный `--stage` видеть не может — дубли между этапами, радиус общих модулей, сломанный committed HEAD)
+## Final checks (after all stages)
+- [ ] full-checks: `lint`, `type_check` (against baseline), `test`, `build` from the config — in full, once, on HEAD, via `run-check.mjs` (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`); at the stages they ran on the diff
+- [ ] ci-gates: the CI gates from the config ("CI gates" table or `e2e`/`smoke` in Commands) — `node ${CLAUDE_PLUGIN_ROOT}/scripts/ci-gates.mjs --run` on HEAD after the last fix; red is a fix-loop finding, cannot run locally — a blocker. If the config has no gates, do not add the item
+- [ ] floor-guard: `node ${CLAUDE_PLUGIN_ROOT}/scripts/floor-guard.mjs --base origin/<main_branch>` — not a single muted checker, weakened test or stub across the whole branch; `floor-ok` exceptions go to "Awaiting user confirmation"
+- [ ] pro-review whole-branch (the `pro-review` agent in whole-branch mode on `review_model`, `opus` by default, via the `model` parameter — the selection rule is in `/stage-check`, Step 3.3; the whole branch from the merge-base with `origin/<main_branch>` — the PR target, e.g. `dev`; with a fresh eye it catches what the per-stage `--stage` cannot see — duplicates between stages, the blast radius of shared modules, a broken committed HEAD)
 - [ ] security-review
-- [ ] metrics-guard (только если есть `bundle_size` в конфиге: прогон на HEAD vs `checks/metrics-baseline.txt`)
-- [ ] ds-parity: дубли с дизайн-системой — что заменяется компонентом из кита, что просится В кит (`${CLAUDE_PLUGIN_ROOT}/skills/ds-parity`; на редизайне это главный источник повторных правок на ручном ревью)
-- [ ] dead-code: что осиротело за всю задачу (`${CLAUDE_PLUGIN_ROOT}/skills/dead-code`)
-- [ ] i18n-sweep: копия и полнота локалей по всей ветке (`${CLAUDE_PLUGIN_ROOT}/skills/i18n-sweep`)
-- [ ] deps-audit: что задача притащила в манифест и ассеты (`${CLAUDE_PLUGIN_ROOT}/skills/deps-audit`)
-- [ ] coverage: в таблице «Покрытие дизайн-источника» нет строк без этапа; каждый `AC-*` закрыт своим верификатором или явно помечен `[live: user-side]`
-- [ ] task-converge: код на HEAD против намерения всей задачи — `missing`/`partial`/`contradicts`/`unrequested` (`${CLAUDE_PLUGIN_ROOT}/skills/task-converge`); единственный проход, который видит непокрытый критерий и тихо расширенный скоуп, потому что не смотрит в диф. Есть находки → блок «Догон» и повторный прогон до «сошлось»
-- [ ] test-plan: TEST-PLAN.md — сборка по `AC-*` всех этапов (ID → сценарий → как проверить) + рецепты симуляции состояний (throttle/block/offline/краш) по всем платформам
-- [ ] confirmations: блок «Ожидают подтверждения» пуст
+- [ ] metrics-guard (only if the config has `bundle_size`: a run on HEAD vs `checks/metrics-baseline.txt`)
+- [ ] ds-parity: duplicates with the design system — what is replaced by a kit component, what asks to go INTO the kit (`${CLAUDE_PLUGIN_ROOT}/skills/ds-parity`; on a redesign this is the main source of repeated edits at manual review)
+- [ ] dead-code: what was orphaned across the whole task (`${CLAUDE_PLUGIN_ROOT}/skills/dead-code`)
+- [ ] i18n-sweep: copy and locale completeness across the whole branch (`${CLAUDE_PLUGIN_ROOT}/skills/i18n-sweep`)
+- [ ] deps-audit: what the task dragged into the manifest and assets (`${CLAUDE_PLUGIN_ROOT}/skills/deps-audit`)
+- [ ] coverage: the "Design source coverage" table has no rows without a stage; every `AC-*` is closed by its verifier or explicitly marked `[live: user-side]`
+- [ ] task-converge: the code on HEAD against the intent of the whole task — `missing`/`partial`/`contradicts`/`unrequested` (`${CLAUDE_PLUGIN_ROOT}/skills/task-converge`); the only pass that sees an uncovered criterion and a silently widened scope, because it does not look at the diff. If there are findings → a "Catch-up" block and a rerun until it converges
+- [ ] test-plan: TEST-PLAN.md — assembled from the `AC-*` of all stages (ID → scenario → how to check) + recipes for simulating states (throttle/block/offline/crash) on all platforms
+- [ ] confirmations: the "Awaiting user confirmation" block is empty
 
-## Покрытие дизайн-источника
-| Экран / screen-id источника | Стейты | Этап |
+## Design source coverage
+| Source screen / screen-id | States | Stage |
 |---|---|---|
-| <имя — node-id / screen-id> | empty, error | 2 |
-<строка на КАЖДЫЙ неслужебный фрейм/screen-id из реестра. Пустая клетка «Этап» = дыра в плане,
-а не «сделаем по ходу». Парная таблица к «Не включено в план»: там служебное, здесь рабочее.>
+| <name — node-id / screen-id> | empty, error | 2 |
+<a row for EVERY non-service frame/screen-id from the registry. An empty "Stage" cell = a hole in the plan,
+not "we'll do it along the way". A paired table to "Not included in the plan": there are the service items, here the working ones.>
 
-## Общие элементы (пересечения этапов)
-| Элемент | Этапы | Владелец (строит) | Где лежит |
+## Shared elements (stage overlaps)
+| Element | Stages | Owner (builds) | Where it lives |
 |---|---|---|---|
-| <обёртка шага визарда> | 2, 3, 4, 5 | 2 | <путь по Code layout конфига> |
-<строка на КАЖДОЕ пересечение из скана Шага 2.1. Пустой «Владелец» = дубль, который приедет
-повторными правками на ручное ревью PR. Этап-потребитель ссылается на владельца в «Переиспользовать».
-Таблицу читают /stage-kickoff (перед реализацией этапа) и /stage-check (инвентарь в промпт pro-review).>
+| <wizard step wrapper> | 2, 3, 4, 5 | 2 | <path per the config's Code layout> |
+<a row for EVERY overlap from the Step 2.1 scan. An empty "Owner" = a duplicate that will arrive
+as repeated edits at the manual PR review. A consuming stage refers to the owner in "Reuse".
+The table is read by /stage-kickoff (before implementing a stage) and /stage-check (the inventory in the pro-review prompt).>
 
-## ⚠ Ожидают подтверждения пользователя
-<продуктово-видимые изменения, принятые в ходе имплементации, но ещё не подтверждённые пользователем НА ДАННЫХ, ГДЕ ОНИ ВИДНЫ. Формат: дата — что изменено против старого поведения — где увидеть (ссылка/стейт/тип клиента). Пункт снимается только явным подтверждением; блок читается на каждом kickoff и в финальных проверках>
+## ⚠ Awaiting user confirmation
+<product-visible changes accepted during implementation but not yet confirmed by the user ON DATA WHERE THEY ARE VISIBLE. Format: date — what changed against the old behavior — where to see it (link/state/client type). An item is lifted only by an explicit confirmation; the block is read at every kickoff and in the final checks>
 
-## Не включено в план
-<служебные фреймы и почему>
+## Not included in the plan
+<service frames and why>
 
-## Журнал
-<дата — что произошло: этап закрыт, находка, решение пользователя>
+## Journal
+<date — what happened: stage closed, finding, user decision>
 ```
 
-`Ветка:` — точное имя ветки в бэктиках: по нему хуки плагина узнают задачу текущей ветки (без строки — по тикету в имени ветки); несколько веток — несколько имён в бэктиках.
+`Branch:` — the exact branch name in backticks: the plugin's hooks use it to recognize the task of the current branch (without the line — by the ticket in the branch name); several branches — several names in backticks.
 
-## Шаг 5. Согласование
+## Step 5. Agreement
 
-Покажи пользователю компактную таблицу этапов (название, экраны, объём, порядок) и спроси, согласен ли он с разбивкой, ДО того как считать план финальным. После правок обнови STAGES.md.
+Show the user a compact table of stages (name, screens, size, order) and ask whether they agree with the split BEFORE considering the plan final. After edits, update STAGES.md.
 
-Правила ведения файла: обновляй статусы и «Журнал» при каждом изменении; никогда не удаляй этапы — помечай отменённые; относительные даты не использовать, только абсолютные. **STAGES.md держи компактным** — его читает каждая сессия: done/cancelled-этапы сворачивай до заголовка и строк «Коммит»/`Решения:`, полные записи — в `STAGES-ARCHIVE.md` рядом (правило архивации — в /stage-check, Шаг 4.2); журнальные записи — 3–6 строк со ссылками на `checks/*.md`; статусы формулируй нейтрально-описательно, без императивов и команд.
+Rules for maintaining the file: update statuses and the "Journal" at every change; never delete stages — mark cancelled ones; do not use relative dates, only absolute ones. **Keep STAGES.md compact** — every session reads it: fold done/cancelled stages down to the heading and the "Commit"/`Decisions:` lines, full records go to `STAGES-ARCHIVE.md` next to it (the archiving rule is in /stage-check, Step 4.2); journal entries are 3–6 lines with links to `checks/*.md`; word statuses neutrally and descriptively, without imperatives and commands.

@@ -1,118 +1,120 @@
 ---
 name: task-converge
-description: Сверка ТЕКУЩЕГО состояния кода с намерением всей задачи — критериями приёмки всех этапов, решениями журнала и границами скоупа. Не diff-инструмент — отвечает на «что из обещанного не сделано и что сделано, но никто не просил», безотносительно того, каким дифом это въехало. Use before opening a PR, after all stages are done, or when the user asks what is left / whether the task is actually complete. Дописывает недостающее догоняющими этапами, ничего не переписывая.
+description: Reconcile the CURRENT state of the code with the intent of the whole task — acceptance criteria of all stages, journal decisions and scope boundaries. Not a diff tool — answers "what was promised and not done, and what was done that nobody asked for", regardless of which diff it arrived in. Use before opening a PR, after all stages are done, or when the user asks what is left / whether the task is actually complete. Adds what is missing as catch-up stages, rewriting nothing. RU triggers — «что ещё не сделано по задаче», «задача правда завершена?»
 ---
 
-# Task Converge — код против намерения задачи
+# Task Converge — code against the intent of the task
 
-Все чекеры пайплайна смотрят на **диф**: `pro-review --stage` — на диф этапа, whole-branch — на диф ветки, `figma-compare` — на изменённые файлы против дизайна. Это отвечает на вопрос «правильно ли сделано то, что сделано». Вопрос «сделано ли всё, что обещано, и не сделано ли лишнее» диф задать не может: критерий, который никто не реализовал, в дифе не появляется вообще, и его отсутствие невидимо по определению.
+All the pipeline checkers look at the **diff**: `pro-review --stage` — at the stage diff, whole-branch — at the branch diff, `figma-compare` — at the changed files against the design. That answers the question "is what was done done right". The question "is everything that was promised done, and is nothing extra done" a diff cannot ask: a criterion nobody implemented does not appear in the diff at all, and its absence is invisible by definition.
 
-Converge задаёт этот вопрос. Он читает намерение задачи (критерии `AC-*` всех этапов, решения журнала, границы) и сверяет с **текущим состоянием кода на HEAD** — без `git diff`, без истории, без базы сравнения. Каким этапом критерий закрыт и был ли он закрыт вообще — для converge неважно: важно, выполняется ли он в коде сейчас.
+Converge asks this question. It reads the intent of the task (the `AC-*` criteria of all stages, the journal decisions, the boundaries) and compares it with the **current state of the code on HEAD** — without `git diff`, without history, without a comparison base. By which stage a criterion was closed and whether it was closed at all does not matter to converge: what matters is whether it holds in the code now.
 
-> **Project config.** `main_branch`, `<task_dir>`, раскладку кода, платформы и команды бери из `<repo>/.claude/pipeline.config.md` (нет файла — `/pipeline-init`).
+> **Project config.** Take `main_branch`, `<task_dir>`, the code layout, the platforms and the commands from `<repo>/.claude/pipeline.config.md` (no file — `/pipeline-init`).
 
-## Чем он не является
+> **Task language.** The task has one language, the `Language:` line in the STAGES.md header. The report, the catch-up block and the summary are written in it; service headings and fields (`Findings:`, "Could not verify", the catch-up heading) come from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md`. The samples below are the English forms.
 
-- **Не ищет баги** — это `/pro-review`.
-- **Не ищет сирот** — это `dead-code` (осиротевшее из-за дифа). Converge ловит другое: живой, используемый код, которого не просил ни один критерий.
-- **Не ищет дубли с китом** — это `/ds-parity`.
-- **Не сверяет с дизайном** — это `figma-compare` / `proto-compare`. Converge верит критериям, а не источнику: если критерий сформулирован неверно, это дефект плана, а не находка converge.
-- **Не чинит.** Пишет отчёт и дописывает догоняющие этапы; реализацию делает обычный цикл `/stage-kickoff → implement → /stage-check`.
+## What it is not
 
-## Вход
+- **It does not look for bugs** — that is `/pro-review`.
+- **It does not look for orphans** — that is `dead-code` (what is orphaned because of the diff). Converge catches something else: live, used code that no criterion asked for.
+- **It does not look for duplicates with the kit** — that is `/ds-parity`.
+- **It does not compare with the design** — that is `figma-compare` / `proto-compare`. Converge trusts the criteria, not the source: if a criterion is worded wrongly, that is a defect of the plan, not a converge finding.
+- **It does not fix.** It writes a report and appends catch-up stages; the implementation is done by the regular cycle `/stage-kickoff → implement → /stage-check`.
 
-- `<task_dir>/<TICKET>/STAGES.md` — обязателен. Нет — предложи `/stage-plan` и остановись.
-- `STAGES-ARCHIVE.md` — полные записи закрытых этапов (критерии там же, если этап свёрнут).
-- `checks/*.md` — вердикты чекеров: чем закрывался каждый `AC-*` и что осталось `⏳`.
-- Блоки «⚠ Ожидают подтверждения», «Не включено в план», «Покрытие дизайн-источника», «Границы» (при force-прогоне).
+## Input
 
-## Шаг 1. Инвентарь намерения
+- `<task_dir>/<TICKET>/STAGES.md` — required. If missing — suggest `/stage-plan` and stop.
+- `STAGES-ARCHIVE.md` — the full records of closed stages (the criteria are there too if the stage is folded).
+- `checks/*.md` — the checker verdicts: what closed each `AC-*` and what remained `⏳`.
+- The blocks "⚠ Awaiting user confirmation", "Not included in the plan", "Design source coverage", "Boundaries" (in a force run).
 
-Собери во внутреннюю модель — в отчёт сырьё не вываливай:
+## Step 1. Intent inventory
 
-- **Критерии** — все `AC-*` всех этапов, включая свёрнутые и архивные, с их тегами верификаторов и зафиксированными исходами.
-- **Решения** — строки журнала, зафиксировавшие продуктовый или архитектурный выбор («переиспользуем X», «тема из класса на `<html>`», «модалка через общий хук»): это тоже намерение, и код обязан ему соответствовать.
-- **Таблицы плана** — строки «Паритет» (функция удалённого UI → где она теперь) и ячейки «состояние × действие» — пункты инвентаря наравне с критериями. Функция старого UI, которой нет нигде в коде, — `missing`, даже если строку забыли сделать критерием: тихо пропавшее при удалении секции не видит ни pro-review, ни постадийные чекеры.
-- **Решение «как у X» с путём** — сверяй логику с образцом X (условия активности, что уходит на сервер), а не только наличие похожего элемента.
-- **Границы** — что задача явно НЕ делает. Нужны для классификации `unrequested`: код за границей — находка, даже если он хороший.
-- **Область кода.** Пути из этапов, `specs/`, отчётов чекеров плюс поиск по концепциям критериев. **Дальше области не ходи** — converge не аудит репозитория; всё, что не следует из артефактов задачи, вне его.
+Collect into an internal model — do not dump the raw material into the report:
 
-Отменённые критерии (`[отменён: …]`) в инвентарь не идут, но и в `unrequested` их реализация не попадает: пометь строкой «реализовано по отменённому критерию» и оставь решение пользователю.
+- **Criteria** — all `AC-*` of all stages, including folded and archived ones, with their verifier tags and recorded results.
+- **Decisions** — journal lines that fixed a product or architectural choice ("we reuse X", "the theme from a class on `<html>`", "the modal through the shared hook"): this is intent too, and the code must match it.
+- **Plan tables** — the "Parity" rows (a function of the removed UI → where it is now) and the "state × action" cells are inventory items on a par with the criteria. A function of the old UI that is nowhere in the code is `missing`, even if the row was forgotten to be made a criterion: what quietly disappeared when a section was removed is seen neither by pro-review nor by the per-stage checkers.
+- **A decision "like X" with a path** — compare the logic with the example X (the conditions of activity, what goes to the server), not only the presence of a similar element.
+- **Boundaries** — what the task explicitly does NOT do. They are needed to classify `unrequested`: code outside the boundary is a finding, even if it is good.
+- **Code scope.** The paths from the stages, `specs/`, the checker reports plus a search by the concepts of the criteria. **Do not go beyond the scope** — converge is not an audit of the repository; whatever does not follow from the task artifacts is outside it.
 
-## Шаг 2. Классификация зазоров
+Cancelled criteria (`[cancelled: …]`) do not go into the inventory, but their implementation does not fall into `unrequested` either: mark it with the line "implemented by a cancelled criterion" and leave the decision to the user.
 
-По каждому пункту инвентаря посмотри код и заведи находку **только там, где есть расхождение**. Тип обязателен:
+## Step 2. Classification of gaps
 
-| Тип | Что значит | Типичный источник |
+For each inventory item look at the code and raise a finding **only where there is a divergence**. The type is mandatory:
+
+| Type | What it means | Typical source |
 |---|---|---|
-| `missing` | требуемого в коде нет вообще | критерий, который не взял на себя ни один этап; стейт, забытый при переносе |
-| `partial` | есть, но критерий выполняется не целиком | сделан happy path, нет error/offline; сделано на одной платформе из трёх |
-| `contradicts` | код делает то, что противоречит критерию или решению журнала | более позднее решение затёрло раннее; правка этапа 5 сломала критерий этапа 2 |
-| `unrequested` | код живой и используется, но требования на него нет | остаток эксперимента, тихо расширенный скоуп, дозакрытая «по пути» соседняя фича |
+| `missing` | the required thing is not in the code at all | a criterion no stage took on; a state forgotten in a transfer |
+| `partial` | it exists, but the criterion is not met in full | the happy path is done, no error/offline; done on one platform of three |
+| `contradicts` | the code does something that contradicts a criterion or a journal decision | a later decision overwrote an earlier one; an edit of stage 5 broke a criterion of stage 2 |
+| `unrequested` | the code is live and used, but there is no requirement for it | a leftover of an experiment, a silently widened scope, a neighboring feature closed "on the way" |
 
-**Словарь статусов.** Одно состояние, подписанное на одном экране разными словами («Expired» в баре, «Not sent» в панели), — `contradicts` между элементами экрана, даже если каждая подпись отдельно соответствует своему критерию: каждый кусок принёс свой источник, а пользователь видит экран целиком.
+**Status vocabulary.** One state labeled with different words on one screen ("Expired" in the bar, "Not sent" in the panel) is `contradicts` between the elements of the screen, even if each label separately matches its own criterion: each piece brought its own source, and the user sees the whole screen.
 
-`unrequested` — единственный тип, который не ловит никто другой в пайплайне, и единственный, по которому converge **ничего не предлагает удалять**: он выносит на решение пользователя («это нужно и стоит дописать критерий» либо «это лишнее и уходит»). Тихо расширенный скоуп дороже всего именно на ревью PR, где его первым видит человек.
+`unrequested` is the only type no one else in the pipeline catches, and the only one for which converge **proposes nothing to delete**: it puts it to the user's decision ("this is needed and a criterion is worth adding" or "this is extra and goes away"). A silently widened scope is the most expensive exactly at the PR review, where a human sees it first.
 
-**Мало кода или пусто** (converge запущен рано) — это не ошибка: весь заявленный скоуп идёт как `missing`, отчёт остаётся валидным.
+**Little code or none** (converge was started early) — this is not an error: the whole declared scope goes as `missing`, the report stays valid.
 
-**Расхождение из-за дрейфа источника.** Если критерий не сходится потому, что изменился дизайн-источник, а не код — это `contradicts` с пометкой «дрейф источника: критерий описывает состояние источника на дату X». Сам не переписывай ни критерий, ни код: конфликт источников правды решает пользователь (правило из `/stage-check`, Шаг 2).
+**A divergence because of source drift.** If a criterion does not match because the design source changed, not the code — it is `contradicts` with the mark "source drift: the criterion describes the state of the source on the date X". Do not rewrite either the criterion or the code yourself: the conflict of sources of truth is resolved by the user (the rule from `/stage-check`, Step 2).
 
-## Шаг 3. Подтверждение
+## Step 3. Confirmation
 
-Как и у остальных чекеров, подтверждение — главная часть работы: «не реализовано» на реализованном коде обнуляет доверие к отчёту.
+As with the other checkers, confirmation is the main part of the work: "not implemented" on implemented code zeroes the trust in the report.
 
-- Прежде чем писать `missing`, найди концепцию критерия **несколькими способами**: по имени сущности, по строке копии из UI, по имени токена/класса, по роуту. В монорепозитории — по всем приложениям и пакетам, а не только в основном.
-- `partial` подтверждай указанием, какая именно часть критерия не выполняется — «нет ветки offline», а не «сделано частично».
-- `contradicts` требует двух ссылок: где в коде и какой пункт намерения нарушен (`AC-2.3` / строка журнала от даты).
-- `unrequested` подтверждай тем, что символ **используется** (иначе это `dead-code`, чужая область) и что ни один `AC-*` его не требует.
-- Критерии с исходом `⏳ user-review` или `[live: user-side]` converge **не закрывает** — они идут отдельным списком «проверяет человек», не в находки.
+- Before writing `missing`, look for the concept of the criterion **in several ways**: by the entity name, by a copy string from the UI, by a token/class name, by a route. In a monorepo — across all applications and packages, not only the main one.
+- Confirm `partial` by pointing out which exact part of the criterion is not met — "no offline branch", not "partly done".
+- `contradicts` requires two references: where in the code and which item of the intent is violated (`AC-2.3` / a journal line from a date).
+- Confirm `unrequested` by the fact that the symbol is **used** (otherwise it is `dead-code`, someone else's area) and that no `AC-*` requires it.
+- Criteria with the result `⏳ user-review` or `[live: user-side]` are **not closed** by converge — they go in a separate list "a human checks", not into findings.
 
-Каждая находка несёт колонку «как проверено». Не подтвердилось — в «под вопросом», а не в находки.
+Each finding carries a "how checked" column. If not confirmed — into "in question", not into findings.
 
-## Шаг 4. Отчёт
+## Step 4. Report
 
-Сохрани в `<task_dir>/<TICKET>/checks/task-converge-branch.md` (повторный прогон после догона — `task-converge-branch-2.md`, `-3`):
+Save to `<task_dir>/<TICKET>/checks/task-converge-branch.md` (a repeated run after a catch-up — `task-converge-branch-2.md`, `-3`):
 
 ```
-| # | Тип | Severity | Намерение | Что в коде | Как проверено |
+| # | Type | Severity | Intent | What is in the code | How checked |
 |---|-----|----------|-----------|------------|---------------|
-| C1 | missing | critical | AC-3.2 | ветки offline нет ни в одном из трёх контекстов | grep по концепции + роутам, 0 совпадений |
+| C1 | missing | critical | AC-3.2 | no offline branch in any of the three contexts | grep by the concept + routes, 0 matches |
 ```
 
-Severity — в лексике пайплайна: `critical` — критерий P1-экрана не выполняется или нарушено решение из `MUST`-конвенций; `major` — `missing`/`partial` по основному критерию; `minor` — мелкий `partial`, полировка, низкорисковый `unrequested`.
+Severity — in the vocabulary of the pipeline: `critical` — a criterion of a P1 screen is not met or a decision from the `MUST` conventions is violated; `major` — `missing`/`partial` on a main criterion; `minor` — a small `partial`, polish, a low-risk `unrequested`.
 
-Метрики строкой: критериев проверено / решений проверено / находок по типам / «проверяет человек».
+Metrics as a line: criteria checked / decisions checked / findings by type / "a human checks".
 
-Отдельными строками — **под вопросом** и **проверяет человек** (`⏳`, `[live: user-side]`).
+As separate lines — **in question** and **a human checks** (`⏳`, `[live: user-side]`).
 
-## Шаг 5. Догон — append-only
+## Step 5. Catch-up — append-only
 
-Находки есть → допиши в **конец** STAGES.md блок догоняющей работы. Правила жёсткие, потому что STAGES.md — память задачи между сессиями:
+If there are findings — append to the **end** of STAGES.md a block of catch-up work. The rules are strict, because STAGES.md is the memory of the task between sessions:
 
-- Заголовок `## Догон <дата>` и под ним этапы обычного формата (критерии, пайплайн, коммит) — то есть догон проходит тот же цикл `kickoff → implement → чекеры`, а не «быстрые правки».
-- **Ничего существующего не трогай**: не переписывай, не перенумеровывай и не удаляй ни этапы, ни критерии, ни журнал. Новые критерии получают следующие свободные номера своего этапа; ID никогда не переиспользуются.
-- Порядок внутри догона: `critical` и `contradicts` первыми.
-- Каждая строка ссылается на своё намерение: `AC-3.2` / «решение от 12.08» / «граница задачи».
-- `unrequested` в догон **не превращается в задачу на удаление** — идёт строкой в «⚠ Ожидают подтверждения пользователя» с вопросом «нужно ли это в задаче».
-- Уже был предыдущий догон — добавляй новый блок ниже, старый не трогай.
+- The heading `## Catch-up <date>` and under it stages of the regular format (criteria, pipeline, commit) — that is, the catch-up goes through the same cycle `kickoff → implement → checkers`, not "quick edits".
+- **Do not touch anything existing**: do not rewrite, renumber or delete either stages, or criteria, or the journal. New criteria get the next free numbers of their stage; IDs are never reused.
+- The order inside the catch-up: `critical` and `contradicts` first.
+- Each line refers to its intent: `AC-3.2` / "the decision of 2026-08-12" / "task boundary".
+- `unrequested` is **not turned into a task to delete** in the catch-up — it goes as a line into "⚠ Awaiting user confirmation" with the question "is this needed in the task".
+- If there was already a previous catch-up — add a new block below, do not touch the old one.
 
-Находок нет → **не меняй STAGES.md вообще**, даже пустым заголовком. Скажи «сошлось» и приложи метрики того, что проверено.
+No findings → **do not change STAGES.md at all**, not even with an empty heading. Say "converged" and attach the metrics of what was checked.
 
-## Когда гонять
+## When to run
 
-- **Обязательно** — в «Финальных проверках» перед PR: converge закрывает вопрос «задача действительно закончена», на который постадийные чекеры ответить не могут.
-- Полезно — после большой серии этапов на длинной задаче, не дожидаясь финала: чем раньше найден `missing`, тем дешевле догон.
-- После догона — повторный прогон. Цикл `догон → converge` идёт до «сошлось», как fix-loop, но лимита в 2 итерации у него нет: он не чинит вслепую, а сверяет с намерением.
+- **Mandatory** — in the "Final checks" before the PR: converge closes the question "is the task really finished", which the per-stage checkers cannot answer.
+- Useful — after a big series of stages on a long task, without waiting for the final: the earlier a `missing` is found, the cheaper the catch-up.
+- After a catch-up — a repeated run. The cycle `catch-up → converge` goes until "converged", like a fix-loop, but it has no limit of 2 iterations: it does not fix blindly, it compares with the intent.
 
-## Выход — резюме
+## Output — summary
 
 ```
-<TICKET> — converge: <сошлось | догон N этапов>
-Проверено: критериев M, решений K, платформ P
-Находки: missing X / partial Y / contradicts Z / unrequested W  (critical A, major B, minor C)
-Проверяет человек: AC-*, …
-Дописано в STAGES.md: ## Догон <дата> — этапы …   | На подтверждение: …
+<TICKET> — converge: <converged | catch-up of N stages>
+Checked: criteria M, decisions K, platforms P
+Findings: missing X / partial Y / contradicts Z / unrequested W  (critical A, major B, minor C)
+A human checks: AC-*, …
+Appended to STAGES.md: ## Catch-up <date> — stages …   | For confirmation: …
 ```
 
-Никогда не докладывай «сошлось», если остались находки `critical`/`major` или неподтверждённые пункты: «сошлось» — это пропуск в PR, и цена ошибки здесь равна цене ручного ревью.
+Never report "converged" if `critical`/`major` findings or unconfirmed items remain: "converged" is a pass into the PR, and the price of a mistake here equals the price of a manual review.

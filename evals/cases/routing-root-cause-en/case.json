@@ -1,0 +1,7 @@
+{
+  "kind": "routing",
+  "why": "the English twin: \"the fix did not help\" calls root-cause, not one more blind edit",
+  "base": "../pro-review-clean-ac/base",
+  "prompt": "I already fixed ProfileName, but the name still does not show for some users. The fix did not help — figure out why.",
+  "expectSkill": "root-cause"
+}

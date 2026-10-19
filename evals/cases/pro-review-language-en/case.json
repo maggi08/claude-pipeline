@@ -1,0 +1,25 @@
+{
+  "agent": "pro-review",
+  "why": "task language en (the \"Language: en\" line in the STAGES.md header and in the prompt): the report is English — the summary line is \"Findings:\", not \"Находки:\"",
+  "prompt": "Ticket EVAL-1, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN name is empty, null or whitespace THEN `t('profile.anonymous')` is shown instead of the name (locale selection is out of scope — we do not touch `src/i18n.ts`) — [verify: pro-review]",
+  "expect": [
+    {
+      "pattern": "AC-1\\.1[^\\n]*PASS[^\\n]*ProfileName\\.tsx:\\d+",
+      "why": "PASS on AC-1.1 with a file:line reference"
+    },
+    {
+      "pattern": "(^|\\n)\\W*Findings:",
+      "why": "the English summary line \"Findings:\" on its own line"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Request changes\\*{0,2}\\s*$",
+      "why": "a false Request changes on a clean diff"
+    },
+    {
+      "pattern": "Находки:",
+      "why": "the Russian marker in an English task report"
+    }
+  ]
+}

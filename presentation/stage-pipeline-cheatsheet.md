@@ -1,163 +1,163 @@
-# Stage Pipeline · шпаргалка
+# Stage Pipeline · cheatsheet
 
-Поэтапный maker/checker-воркфлоу для Claude Code. Плагин `stage-pipeline@magzhan`, v0.15.2 — 18 скиллов, 12 агентов.
+A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.16.0 — 18 skills, 12 agents.
 
 ---
 
-## Установка (один раз на машину)
+## Installation (once per machine)
 
 ```bash
 claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
-# перезапустить Claude Code
-claude plugin details stage-pipeline   # проверка: 18 скиллов, 12 агентов, 2 MCP
+# restart Claude Code
+claude plugin details stage-pipeline   # check: 18 skills, 12 agents, 2 MCP
 ```
 
-Репозиторий публичный — доступы и клонирование не нужны.
+The repository is public — no access rights and no cloning needed.
 
-Обновление: `claude plugin update stage-pipeline` + перезапуск.
+Update: `claude plugin update stage-pipeline` + restart.
 
-**Разрешения** — иначе каждый чекер на каждом этапе спрашивает подтверждение. `/pipeline-init` предложит
-разложить профиль сам; вручную: `node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs` (отчёт) →
-`--apply` (запись в `~/.claude/settings.json`, с бэкапом). `/pipeline-doctor` проверяет через `--check`.
-Не нужен широкий Bash-аллоулист — `--minimal` разрешит только скиллы и MCP.
+**Permissions** — otherwise every checker at every stage asks for confirmation. `/pipeline-init` offers to
+lay the profile itself; by hand: `node ${CLAUDE_PLUGIN_ROOT}/scripts/permissions.mjs` (report) →
+`--apply` (write to `~/.claude/settings.json`, with a backup). `/pipeline-doctor` checks it through `--check`.
+If you do not need a broad Bash allowlist, `--minimal` allows only skills and MCP.
 
-## Один раз на репозиторий
-
-```
-/pipeline-doctor    проверка окружения: MCP, соседние репо, dev-сервер, type-check baseline
-/pipeline-init      генерит .claude/pipeline.config.md — профиль проекта для всех скиллов
-```
-
----
-
-## Цикл работы
-
-**На задачу**
+## Once per repository
 
 ```
-/feature-checker <тикет>   → FEATURE-MAP.md   как фича устроена сейчас, что переиспользовать
-/stage-plan                → STAGES.md        разбивка на этапы + критерии приёмки WHEN/THEN
-```
-
-**На каждый этап**
-
-```
-/stage-kickoff     план этапа, накопленные вопросы, бизнес-ввод, sign-off → спека экрана
-   … реализация …
-/stage-check       чекеры → fix-loop ≤2 → журнал в STAGES.md → текст коммита
-/clear             состояние уже в файлах
-```
-
-**Автономно**
-
-```
-/stage-force       все вопросы одним батчем на старте, дальше без остановок
-                   всегда запрещено: git push, создание PR, деплой
-                   посередине не спрашивает: обратимое решает сам, необратимую
-                   развилку, исчерпанный fix-loop, конфликт источников откладывает
-                   блокером и доделывает остальное — всё в сводке в конце
-```
-
-**Хуки** смотрят только на задачу текущей ветки: в обычном режиме `git add`/`commit` агента отклоняются — коммитишь ты по его тексту; автокоммит — только в `/stage-force`, через `floor-guard`. Ревью всей ветки — только на `review_model`, maker в force — только после строки `Подтверждено:`, критерий в журнале закрывает тот чекер, что в его теге.
-
-**Перед MR**
-
-```
-/pro-review        весь бранч относительно main
-/ds-parity         дубли с дизайн-системой: что заменить китом, что вынести В кит
-/dead-code         что осиротело из-за задачи
-/task-converge     код на HEAD против намерения задачи: что из обещанного не сделано
-                   и что сделано, но не просили. Находки → блок «Догон» в STAGES.md,
-                   прогонять до «сошлось»
-/task-wrapup       → PR.md: что и зачем, как проверить, слепые зоны, открытые вопросы
-                   (только вручную — сам не запускается, даже в force)
+/pipeline-doctor    environment check: MCP, neighbouring repos, dev server, type-check baseline
+/pipeline-init      generates .claude/pipeline.config.md — the project profile for all skills
 ```
 
 ---
 
-## Скиллы
+## Work loop
 
-| Команда | Что делает |
+**Per task**
+
+```
+/feature-checker <ticket>   → FEATURE-MAP.md   how the feature works now, what to reuse
+/stage-plan                → STAGES.md        split into stages + WHEN/THEN acceptance criteria
+```
+
+**Per stage**
+
+```
+/stage-kickoff     stage plan, accumulated questions, business input, sign-off → screen spec
+   … implementation …
+/stage-check       checkers → fix-loop ≤2 → journal in STAGES.md → commit text
+/clear             the state is already in files
+```
+
+**Autonomous**
+
+```
+/stage-force       all questions in one batch at the start, then no stops
+                   always forbidden: git push, creating a PR, deploy
+                   asks nothing mid-run: decides the reversible itself, parks an
+                   irreversible fork, an exhausted fix-loop and a conflict of sources
+                   as a blocker and finishes the rest — all in the summary at the end
+```
+
+**Hooks** look only at the task of the current branch: in normal mode the agent's `git add`/`commit` are rejected — you commit from its text; an auto-commit happens only in `/stage-force`, through `floor-guard`. A whole-branch review runs only on `review_model`, the maker in force starts only after the line `Confirmed:`, and a criterion in the journal is closed by the checker named in its tag.
+
+**Before an MR**
+
+```
+/pro-review        the whole branch against main
+/ds-parity         duplicates with the design system: what to replace with the kit, what to move INTO the kit
+/dead-code         what the task orphaned
+/task-converge     the code on HEAD against the intent of the task: what was promised
+                   and not done, and what was done but not asked for. Findings → a "Catch-up"
+                   block in STAGES.md, run until it converges
+/task-wrapup       → PR.md: what and why, how to verify, blind spots, open questions
+                   (manual only — never starts on its own, even in force)
+```
+
+---
+
+## Skills
+
+| Command | What it does |
 |---|---|
-| `/pipeline-init` | изучает репо → `pipeline.config.md`, из которого читают все остальные; только вручную |
-| `/pipeline-doctor` | диагностика окружения: MCP, соседние репо, dev-сервер, baseline |
-| `/feature-checker` | карта существующей фичи по всем платформам → `FEATURE-MAP.md` |
-| `/stage-plan` | режет задачу на этапы (экран + стейты = этап) → `STAGES.md` |
-| `/stage-kickoff` | открывает этап: план + решения + sign-off до кода |
-| `/stage-check` | закрывает этап: чекеры, fix-loop, журнал, коммит |
-| `/stage-force` | автономный прогон всей задачи |
-| `/pro-review` | senior-ревью, по умолчанию весь бранч |
-| `/figma-compare`, `/proto-compare` | сверка кода с макетом или HTML-прототипом |
-| `/devtools-verify` | рантайм-проверка в браузере |
-| `/root-cause` | отладка до причины: фикс не сработал, симптом без объяснения |
-| `/dead-code`, `/i18n-sweep`, `/deps-audit` | узкие проходы: мусор от задачи, i18n, зависимости |
-| `/ds-parity` | паритет с дизайн-системой перед PR |
-| `/task-converge` | код на HEAD против намерения всей задачи: непокрытый критерий, тихо расширенный скоуп |
-| `/task-wrapup` | описание MR из журнала задачи → `PR.md`; только вручную |
+| `/pipeline-init` | studies the repo → `pipeline.config.md`, which all the others read; manual only |
+| `/pipeline-doctor` | environment diagnostics: MCP, neighbouring repos, dev server, baseline |
+| `/feature-checker` | a map of the existing feature across all platforms → `FEATURE-MAP.md` |
+| `/stage-plan` | cuts the task into stages (screen + states = stage) → `STAGES.md` |
+| `/stage-kickoff` | opens a stage: plan + decisions + sign-off before code |
+| `/stage-check` | closes a stage: checkers, fix-loop, journal, commit |
+| `/stage-force` | an autonomous run of the whole task |
+| `/pro-review` | senior review, the whole branch by default |
+| `/figma-compare`, `/proto-compare` | checks code against a mockup or an HTML prototype |
+| `/devtools-verify` | runtime check in the browser |
+| `/root-cause` | debugging to the cause: a fix did not work, a symptom with no explanation |
+| `/dead-code`, `/i18n-sweep`, `/deps-audit` | narrow passes: junk from the task, i18n, dependencies |
+| `/ds-parity` | parity with the design system before a PR |
+| `/task-converge` | the code on HEAD against the intent of the whole task: an uncovered criterion, a silently widened scope |
+| `/task-wrapup` | an MR description from the task journal → `PR.md`; manual only |
 
-## Агенты
+## Agents
 
-Запускает оркестратор сам; каждый работает в своём чистом контексте, чекеры пишут отчёт в `checks/`.
+The orchestrator launches them itself; each works in its own clean context, and the checkers write a report to `checks/`.
 
-| Агент | Что делает | Когда |
+| Agent | What it does | When |
 |---|---|---|
-| `stage-implement` | maker: реализация этапа или раунда фиксов fix-loop в чистом контексте (sonnet), назад — сводка | в `/stage-force` |
-| `figma-spec` | компактная спека экрана из Figma | до кода |
-| `proto-spec` | то же из HTML-прототипа + SPEC.md | до кода |
-| `docs-lookup` | API библиотеки по установленному пакету (типы, CHANGELOG) под версию из локфайла — вместо памяти модели | неуверенность в API |
-| `figma-compare` | pixel-perfect сверка: цвета, отступы, радиусы, тени, типографика | после кода |
-| `proto-compare` | то же против прототипа + поведение по SPEC.md | после кода |
-| `devtools-verify` | консоль и hydration, light/dark, ширины, живое состояние | после кода |
-| `pro-review` | корректность, конвенции, дубли, нейминг + адверсариальная перепроверка | всегда |
-| `dead-code` | что осиротело из-за дифа: символы, файлы, ключи локалей, ассеты | что-то удалялось |
-| `i18n-sweep` | хардкод текста, неполные локали, склеенные ключи, формат без локали | появился текст |
-| `deps-audit` | новые зависимости и ассеты: оправданность, эквивалент в репо, вес | тронут манифест |
-| `task-converge` | единственный, кто не смотрит в диф: `missing` / `partial` / `contradicts` / `unrequested` | перед PR |
+| `stage-implement` | maker: implementation of a stage or of a fix-loop fix round in a clean context (sonnet), a summary comes back | in `/stage-force` |
+| `figma-spec` | a compact screen spec from Figma | before code |
+| `proto-spec` | the same from an HTML prototype + SPEC.md | before code |
+| `docs-lookup` | a library API from the installed package (types, CHANGELOG) for the version from the lockfile — instead of the model's memory | unsure about an API |
+| `figma-compare` | pixel-perfect comparison: colors, spacing, radii, shadows, typography | after code |
+| `proto-compare` | the same against a prototype + behavior per SPEC.md | after code |
+| `devtools-verify` | console and hydration, light/dark, widths, live state | after code |
+| `pro-review` | correctness, conventions, duplicates, naming + an adversarial recheck | always |
+| `dead-code` | what the diff orphaned: symbols, files, locale keys, assets | something was removed |
+| `i18n-sweep` | hardcoded text, incomplete locales, concatenated keys, formatting without a locale | text appeared |
+| `deps-audit` | new dependencies and assets: justification, an equivalent in the repo, weight | the manifest was touched |
+| `task-converge` | the only one that does not look into the diff: `missing` / `partial` / `contradicts` / `unrequested` | before a PR |
 
-Признака нет → `[skip: нет признака]`, субагент не тратится.
+No trigger → `[skip: no trigger]`, no subagent is spent.
 
-**Критерии приёмки нумеруются.** `AC-<этап>.<n>` + тег того, кто способен проверить
+**Acceptance criteria are numbered.** `AC-<stage>.<n>` + a tag of whoever is able to check
 (`[verify: figma-compare]`, `[verify: devtools-verify]`, `[verify: pro-review]`,
-`[verify: user-review]`, `[live: user-side]`). Отчёты чекеров ссылаются на ID, а не
-пересказывают критерий; этап не закрывается с критерием без исхода; `TEST-PLAN.md`
-собирается по ID механически. Критерий, который проверить нечем, — дефект плана,
-и ловится он на kickoff, а не после PR.
+`[verify: user-review]`, `[live: user-side]`). Checker reports refer to the ID and do not
+retell the criterion; a stage is not closed with a criterion without an outcome; `TEST-PLAN.md`
+is assembled by ID mechanically. A criterion with nothing to check it is a defect of the plan,
+and it is caught at kickoff, not after the PR.
 
 ---
 
-## Файлы
+## Files
 
 ```
 <repo>/.claude/
-  pipeline.config.md        профиль проекта: пути, команды, dev-URL, брейкпоинты, baseline
-  tasks/<ТИКЕТ>/            (в .gitignore — личная рабочая память)
-    FEATURE-MAP.md          что уже есть в коде
-    STAGES.md               план, решения, журнал этапов
-    specs/                  спека экрана из дизайна
-    checks/                 отчёты чекеров
-    DESIGN-QUESTIONS.md     вопросы дизайнеру — закрывать батчем
-    PR.md                   описание MR
+  pipeline.config.md        project profile: paths, commands, dev URL, breakpoints, baseline
+  tasks/<TICKET>/            (in .gitignore — personal working memory)
+    FEATURE-MAP.md          what already exists in the code
+    STAGES.md               plan, decisions, stage journal
+    specs/                  screen spec from the design
+    checks/                 checker reports
+    DESIGN-QUESTIONS.md     questions for the designer — close in a batch
+    PR.md                   MR description
 ```
 
 ---
 
-## Правила, которые экономят время
+## Rules that save time
 
-- 1 экран + все его стейты = 1 этап.
-- Не начинать реализацию без sign-off на kickoff — иначе правки прилетят в середине.
-- Не закрывать этап с critical-находкой или вердиктом `Request changes`.
-- Fix-loop: 2 итерации оркестратора + третий прогон свежим субагентом чекера. Не сошлось и там — это расхождение в требованиях, несём человеку.
-- Идею не по теме этапа — в TODO журнала, а не в текущий диф.
-- Вопросы дизайнеру копить в `DESIGN-QUESTIONS.md` и закрывать пачкой.
-- После коммита этапа — `/clear`, а не `/compact`: состояние уже в файлах.
-- Проектные правила ревью — в `CLAUDE.md` / `pipeline.config.md`, **не** в скилл плагина: плагин читается во всех репозиториях, чужая рубрика даёт ложные Major.
-- Сообщение коммита — по сути изменения, а не «этап N»; без служебных подписей об авторстве инструмента.
+- 1 screen + all its states = 1 stage.
+- Do not start implementation without a sign-off at kickoff — otherwise edits arrive in the middle.
+- Do not close a stage with a critical finding or a `Request changes` verdict.
+- Fix-loop: 2 orchestrator iterations + a third run by a fresh checker subagent. If it does not converge there either, it is a discrepancy in the requirements, and we take it to a person.
+- An idea off the stage topic goes into the journal TODO, not into the current diff.
+- Accumulate questions for the designer in `DESIGN-QUESTIONS.md` and close them in a batch.
+- After a stage commit — `/clear`, not `/compact`: the state is already in files.
+- Project review rules go into `CLAUDE.md` / `pipeline.config.md`, **not** into a plugin skill: the plugin is read in all repositories, and someone else's rubric produces false Majors.
+- A commit message describes the substance of the change, not "stage N"; no service signatures about the tool's authorship.
 
-## Если чекеры не работают
+## If the checkers do not work
 
-- `/pipeline-doctor` — первым делом.
-- Figma MCP: «✓ Connected» ещё не значит, что тулы доступны. Нужен **открытый нужный файл** в десктопной Figma и **перезапуск сессии** (схемы тулов фиксируются на старте).
-- `devtools-verify`: нужен живой dev-сервер; `yarn build` при запущенном `yarn dev` роняет его; у Vite умирает esbuild-воркер — тогда любая страница отдаёт 500 до рестарта.
-- Проверять зависимости **по манифесту или симлинку**: соседний чекаут ui-lib ≠ установленный пакет.
-- type-check baseline дрейфует — мерить на `git stash`, а не верить записанному в конфиге.
+- `/pipeline-doctor` — first of all.
+- Figma MCP: "✓ Connected" does not yet mean the tools are available. You need **the right file open** in desktop Figma and **a session restart** (tool schemas are fixed at start).
+- `devtools-verify`: a live dev server is needed; `yarn build` while `yarn dev` runs kills it; with Vite the esbuild worker dies — then any page returns 500 until a restart.
+- Check dependencies **by the manifest or the symlink**: a neighbouring ui-lib checkout ≠ the installed package.
+- The type-check baseline drifts — measure on `git stash` and do not trust what is recorded in the config.

@@ -1,0 +1,13 @@
+{
+  "kind": "routing",
+  "why": "the English twin: an ordinary small edit pulls in neither the orchestrator nor a review",
+  "base": "../pro-review-clean-ac/base",
+  "prompt": "Rename the name prop to displayName in ProfileName.tsx.",
+  "forbidSkills": [
+    "stage-check",
+    "stage-force",
+    "stage-kickoff",
+    "pro-review",
+    "root-cause"
+  ]
+}

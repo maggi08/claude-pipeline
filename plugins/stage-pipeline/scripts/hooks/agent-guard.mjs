@@ -1,26 +1,28 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { CONFIRMED_LINE, MODE_WORD } from '../markers.mjs'
 import { openForceBlock, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
 
 /**
- * Два правила запуска субагентов, которые оркестратор держит только в памяти — и на длинном
- * прогоне теряет:
+ * Two rules for launching subagents that the orchestrator keeps only in memory — and loses
+ * on a long run:
  *
- * - whole-branch pro-review идёт на `review_model` (stage-check, Шаг 3.3). Модель передаётся
- *   параметром при вызове, и из 13 живых whole-branch ревью 5 ушли на sonnet из frontmatter
- *   агента: первое ревью прогона — на opus, второе, по соседней ветке или после догона, — уже нет.
- * - `stage-implement` стартует только после интервью прогона (stage-force, Шаг 0): оркестратор
- *   уточняет двусмысленные свободные ответы в самом батче и пишет в блок «Force-прогон» строку
- *   `Подтверждено:`. Без интервью свободный ответ «текущая ветка» тихо превращался в ветку от
- *   release вместо dev, а «вернуть в webview» — в «master не трогать». Отдельного «да» после
- *   ответов хук не требует: ответы на батч и есть старт, второй вопрос — лишняя остановка.
- *   Блоки, открытые до 0.12 (дата в заголовке раньше CONFIRM_SINCE), хук не трогает: идущий прогон
- *   не обязан переписывать свой блок, даже открытый в день релиза ещё на 0.11.
+ * - whole-branch pro-review runs on `review_model` (stage-check, Step 3.3). The model is passed
+ *   as a parameter on the call, and of 13 live whole-branch reviews 5 went to sonnet from the
+ *   agent's frontmatter: the first review of a run ran on opus, the second one, on a neighbouring
+ *   branch or after a catch-up, did not.
+ * - `stage-implement` starts only after the run interview (stage-force, Step 0): the orchestrator
+ *   clarifies ambiguous free-form answers in the batch itself and writes a `Confirmed:` line into the
+ *   "Force run" block. Without the interview a free-form answer "current branch" quietly turned into a
+ *   branch off release instead of dev, and "return it to the webview" into "do not touch master".
+ *   The hook does not require a separate "yes" after the answers: the answers to the batch are the
+ *   start, and a second question is an extra stop.
+ *   Blocks opened before 0.12 (a date in the heading earlier than CONFIRM_SINCE) are left alone: a run
+ *   in progress does not have to rewrite its block, even one opened on the release day on 0.11.
  */
 const CONFIRM_SINCE = '2026-10-03'
-const CONFIRMED = /^\s*[-*]?\s*\**Подтвержд[её]н[оа]?\**\s*:/im
-const WHOLE_BRANCH = /whole[-\s]branch\s+mode|(?:режим|mode)\s*:?\s*\**whole[-\s]branch/i
+const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*:?\\s*\\**whole[-\\s]branch`, 'i')
 
 const input = await readHookInput()
 const toolInput = input.tool_input ?? {}
@@ -36,8 +38,8 @@ if (agent === 'pro-review' && WHOLE_BRANCH.test(toolInput.prompt ?? '')) {
   const got = String(toolInput.model || agentModel('pro-review')).toLowerCase()
   if (!got.includes(want) && !want.includes(got)) {
     deny(
-      `stage-pipeline: whole-branch pro-review идёт на review_model — \`${want}\` (pipeline.config.md, по умолчанию opus), а вызов уходит на \`${got}\`. ` +
-        `Повтори тот же вызов с model: "${want}" (stage-check, Шаг 3.3).`,
+      `stage-pipeline: whole-branch pro-review runs on review_model — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
+        `Repeat the same call with model: "${want}" (stage-check, Step 3.3).`,
     )
   }
 }
@@ -45,11 +47,11 @@ if (agent === 'pro-review' && WHOLE_BRANCH.test(toolInput.prompt ?? '')) {
 if (agent === 'stage-implement') {
   const task = state.tasks.find((candidate) => candidate.current)
   const block = task && openForceBlock(task.stages)
-  if (block && block.date && block.date >= CONFIRM_SINCE && !CONFIRMED.test(block.body)) {
+  if (block && (block.date ? block.date >= CONFIRM_SINCE : block.unreadDate) && !CONFIRMED_LINE.test(block.body)) {
     deny(
-      `stage-pipeline: в блоке «${block.heading.replace(/^## /, '')}» задачи ${task.ticket} нет строки \`Подтверждено:\` (stage-force, Шаг 0). ` +
-        'Интервью прошло — допиши в блок `Подтверждено: <дата> — ответы интервью` (вопросов не было — `— вопросов нет`) и повтори запуск. ' +
-        'Отдельного подтверждения у пользователя не спрашивай: ответы на батч и есть старт прогона.',
+      `stage-pipeline: block "${block.heading.replace(/^## /, '')}" of task ${task.ticket} has no \`Confirmed:\` line (stage-force, Step 0). ` +
+        'The interview is done — add `Confirmed: <date> — interview answers` to the block (if there were no questions, `— no questions`) and launch again. ' +
+        'Do not ask the user for a separate confirmation: the answers to the batch are the start of the run.',
     )
   }
 }

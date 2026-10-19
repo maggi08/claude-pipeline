@@ -1,15 +1,15 @@
-# Прецеденты правил /pro-review
+# Precedents of the /pro-review rules
 
-Откуда взялось каждое правило. Для исполнения скилла файл не нужен — правила в `SKILL.md` самодостаточны; он нужен, когда правило хочется ослабить или переписать.
+Where each rule came from. The file is not needed to run the skill — the rules in `SKILL.md` are self-sufficient; it is needed when you want to weaken or rewrite a rule.
 
-## Удалённая ветка, а не локальная: отставший локальный dev тянет в диф чужие смёрженные коммиты.
+## The remote branch, not the local one: a lagging local dev pulls other people's merged commits into the diff.
 
-конфликт-резолв ребейза выбросил объявления переменных, сломанный компонент прожил в переписанных коммитах до финального ревью — тесты его не импортировали, а рабочее дерево содержало фикс.
+A rebase conflict resolution threw away variable declarations, and a broken component lived through the rewritten commits until the final review — the tests did not import it, and the working tree contained the fix.
 
-## Удалённая ветка, а не локальная: отставший локальный dev тянет в диф чужие смёрженные коммиты.
+## The remote branch, not the local one: a lagging local dev pulls other people's merged commits into the diff.
 
-ветка пинила beta-версию UI-кита, а `node_modules` был симлинком на локальный чекаут — через весь пайплайн (6 этапов, три чекера на каждом, cleanup-review перед PR) прошли 2 ошибки `type_check` на чистом клоне и пропавший индикатор выбора на одном экране.
+The branch pinned a beta version of the UI kit while `node_modules` was a symlink to a local checkout — through the whole pipeline (6 stages, three checkers on each, a cleanup-review before the PR) went 2 `type_check` errors on a clean clone and a selection indicator that vanished on one screen.
 
-## B. Senior best-practices (универсальные)
+## B. Senior best practices (universal)
 
-общий инфо-блок шага переписали со styled-components на Tailwind в редизайн-дереве; его через общий путь импортировали ПЯТЬ легаси-экранов, включая один вне области задачи, — на классическом дизайне заголовки стали 21px вместо 24/28px и потеряли центрирование и нижний отступ. Прошло весь пайплайн, поймано только финальным whole-branch-ревью.
+The shared info block of a step was rewritten from styled-components to Tailwind in the redesign tree; FIVE legacy screens imported it through the shared path, including one outside the scope of the task — on the classic design the headings became 21px instead of 24/28px and lost their centering and bottom margin. It went through the whole pipeline and was caught only by the final whole-branch review.

@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 /**
- * Нижняя планка качества по дифу — ловит ходы, которыми агент добирается до зелёного, не починив:
- * заглушённый чекер, ослабленный тест, незаконченная работа, ослабленный конфиг, секрет в коде.
+ * A lower quality floor over the diff — catches the moves by which an agent gets to green without fixing anything:
+ * a silenced checker, a weakened test, unfinished work, a loosened config, a secret in code.
  *
- *   node floor-guard.mjs                        # диф этапа: рабочее дерево + неотслеживаемые против HEAD
- *   node floor-guard.mjs --base origin/dev      # вся ветка: от merge-base с базой до рабочего дерева
- *   node floor-guard.mjs --json                 # то же машинно
- *   node floor-guard.mjs --pathspec-from-stdin  # только эти пути (pathspec'и git от корня, через NUL; пусто — нечего проверять)
+ *   node floor-guard.mjs                        # the stage diff: working tree + untracked files against HEAD
+ *   node floor-guard.mjs --base origin/dev      # the whole branch: from the merge-base with the base to the working tree
+ *   node floor-guard.mjs --json                 # the same, machine-readable
+ *   node floor-guard.mjs --pathspec-from-stdin  # only these paths (git pathspecs from the root, NUL-separated; empty — nothing to check)
  *
- * Без `--pathspec-from-stdin` смотрятся и все неотслеживаемые файлы: нарушения в них помечены `untracked`,
- * потому что в дереве разработчика рядом с кодом лежит и то, что никогда не будет закоммичено.
- * Код выхода: 0 — чисто, 1 — есть нарушения, 2 — проверить не удалось (не git-репо, нет базы).
- * 2 никогда не читается как 0: «не смог посмотреть» ≠ «посмотрел, чисто».
+ * Without `--pathspec-from-stdin` all untracked files are looked at too: violations in them are marked `untracked`,
+ * because in a developer's tree there also lies what will never be committed next to the code.
+ * Exit code: 0 — clean, 1 — there are violations, 2 — could not check (not a git repo, no base).
+ * 2 is never read as 0: "could not look" ≠ "looked, clean".
  *
- * Обоснованное исключение — маркер `floor-ok: <причина>` на той же или предыдущей строке, а также
- * идиоматичное обоснование самого подавления (`eslint-disable-line x -- причина`, `@ts-expect-error причина`).
- * Такие строки не нарушения, но печатаются отдельным списком: их видит ревью и пользователь.
- * Файл, где дефекты заложены намеренно (фикстуры тестов, сам guard), — `floor-ok-file: <причина>` в первых
- * 10 строках: все его находки уходят в исключения с этой причиной, а не пропадают. Маркер действует в тестах
- * и фикстурах или если стоял в файле до дифа: новый маркер в продовом файле глушил бы всё, что рядом добавлено.
- * Значение найденного секрета не печатается никогда — только правило и место; плейсхолдеры (`…EXAMPLE`,
- * `xxxx`, `0000`) секретом не считаются.
- * Правила подстраиваются под репо: `# noqa` и `# type: ignore` — подавление, только если в репо есть
- * Python-линтер / тайпчекер, которому они адресованы.
+ * A justified exception is a `floor-ok: <reason>` marker on the same or the previous line, or an
+ * idiomatic justification of the suppression itself (`eslint-disable-line x -- reason`, `@ts-expect-error reason`).
+ * Such lines are not violations, but they are printed as a separate list: review and the user see them.
+ * A file where defects are planted on purpose (test fixtures, the guard itself) gets `floor-ok-file: <reason>` in the first
+ * 10 lines: all its findings go into exceptions with this reason instead of vanishing. The marker works in tests
+ * and fixtures or if it stood in the file before the diff: a new marker in a production file would silence everything added next to it.
+ * The value of a found secret is never printed — only the rule and the place; placeholders (`…EXAMPLE`,
+ * `xxxx`, `0000`) do not count as secrets.
+ * The rules adapt to the repo: `# noqa` and `# type: ignore` are suppression only if the repo has the
+ * Python linter / type checker they are addressed to.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
@@ -31,10 +31,10 @@ import { basename } from 'node:path'
 const args = process.argv.slice(2)
 const json = args.includes('--json')
 const baseArg = args.includes('--base') ? args[args.indexOf('--base') + 1] : null
-// Упавший скрипт — не «нашёл нарушения»: код 1 хук читает как отказ в коммите, поэтому любая ошибка — код 2.
-process.on('uncaughtException', (error) => bail(`внутренняя ошибка: ${error.code ?? error.message}`))
-if (args.includes('--base') && (!baseArg || baseArg.startsWith('--'))) bail('--base ждёт ветку или коммит')
-// Охват от хука — то, что войдёт в коммит; `null` — всё дерево вместе с неотслеживаемыми.
+// A crashed script is not "found violations": the hook reads code 1 as a refusal to commit, so any error is code 2.
+process.on('uncaughtException', (error) => bail(`internal error: ${error.code ?? error.message}`))
+if (args.includes('--base') && (!baseArg || baseArg.startsWith('--'))) bail('--base expects a branch or a commit')
+// The scope from the hook is what goes into the commit; `null` — the whole tree including untracked files.
 const pathspecs = args.includes('--pathspec-from-stdin') ? readFileSync(0, 'utf8').split('\0').filter(Boolean) : null
 
 const git = (...cmd) => execFileSync('git', ['-c', 'core.quotePath=false', ...cmd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 512 * 1024 * 1024 })
@@ -47,38 +47,38 @@ const tryGit = (...cmd) => {
 }
 
 const root = tryGit('rev-parse', '--show-toplevel')?.trim()
-if (!root) bail('не git-репозиторий')
+if (!root) bail('not a git repository')
 process.chdir(root)
 
 let base = 'HEAD'
 if (baseArg) {
   base = tryGit('merge-base', baseArg, 'HEAD')?.trim()
-  if (!base) bail(`нет merge-base с ${baseArg} — нужен git fetch или другая база`)
+  if (!base) bail(`no merge-base with ${baseArg} — a git fetch or another base is needed`)
 } else if (!tryGit('rev-parse', '--verify', '-q', 'HEAD')) {
-  bail('в репо нет ни одного коммита')
+  bail('the repo has no commits')
 }
 
-// Код и конфиги. Markdown не смотрим: документация законно цитирует `@ts-ignore` и `.skip`.
+// Code and configs. Markdown is not looked at: documentation legitimately quotes `@ts-ignore` and `.skip`.
 const CODE = /\.(m?[jt]sx?|cjs|cts|mts|vue|svelte|astro|py|go|rb|kt|swift|java|php|rs|cs)$/
 const CONFIG = /(^|\/)(\.?eslintrc(\.\w+)?|eslint\.config\.\w+|biome\.jsonc?|tsconfig[\w.-]*\.json|(vitest|jest|vite|playwright)\.config\.\w+|package\.json|pipeline\.config\.md)$/
 const SKIP_PATH = /(^|\/)(node_modules|dist|build|\.next|\.nuxt|\.output|coverage|vendor|__generated__)\/|(\.lock|-lock\.json|\.lock\.yaml|\.min\.js|\.map|\.snap)$|\.(generated|gen)\.\w+$/
-// Тест — по имени файла. Сегмент `test/` в пути тестом не считается: в живых репо это бывает доменный
-// модуль («тесты/экзамены»), и его удаление читалось бы как «удалён тест».
+// A test is recognised by the file name. A `test/` segment in the path does not count as a test: in live repos it can be a domain
+// module ("tests/exams"), and its removal would read as "a test was deleted".
 const TEST_FILE = /\.(test|spec|cy|e2e)\.\w+$|(^|\/)__tests__\/|_test\.\w+$|(^|\/)test_\w+\.py$|^tests?\/|(^|\/)\w+Tests?\.(swift|kt|java)$/
-// Моки и фикстуры: приведения типов и проглоченный промис там — идиома, а не обход.
+// Mocks and fixtures: type casts and a swallowed promise there are an idiom, not a bypass.
 const TESTISH = new RegExp(`${TEST_FILE.source}|(^|\\/)(__mocks__|__fixtures__|fixtures?|testdata|mocks?)\\/`)
 
 const RULES = {
-  'silenced-checker': 'заглушён чекер',
-  'type-escape': 'типы обойдены приведением',
-  'test-made-easier': 'тест ослаблен',
-  'unfinished-work': 'незаконченная работа',
-  'loosened-config': 'ослаблен конфиг проверок',
-  'secret': 'похоже на секрет',
+  'silenced-checker': 'checker silenced',
+  'type-escape': 'types bypassed by a cast',
+  'test-made-easier': 'test weakened',
+  'unfinished-work': 'unfinished work',
+  'loosened-config': 'check config loosened',
+  'secret': 'looks like a secret',
 }
 
-// Директива работает, только когда стоит первым словом комментария (у noqa и type: ignore комментарий `#` — в конце
-// строки кода, поэтому он ищется где угодно). Упоминание директивы в прозе, в строке или в регэкспе — не директива.
+// A directive works only when it is the first word of a comment (for noqa and type: ignore the `#` comment is at the end
+// of a code line, so it is searched for anywhere). A mention of a directive in prose, in a string or in a regexp is not a directive.
 const COMMENT = String.raw`(?:\/\/|\/\*+|<!--|\{\/\*|^\s*\*)\s*`
 const SUPPRESSION = new RegExp(`${COMMENT}(?:@ts-ignore|@ts-nocheck|@ts-expect-error|eslint-disable|biome-ignore|oxlint-disable|stylelint-disable|(?:istanbul|c8|v8) ignore|nosemgrep|NOLINT)`)
 const PY_SUPPRESSION = /#\s*noqa\b/
@@ -86,13 +86,13 @@ const PY_TYPE_SUPPRESSION = /#\s*type:\s*ignore\b/
 const HARD_SUPPRESSION = new RegExp(`${COMMENT}@ts-(?:ignore|nocheck)`)
 const TYPE_ESCAPE = /\bas\s+any\b|\bas\s+unknown\s+as\b/
 const SKIPPED_TEST = /\b(it|test|describe|context|suite)\.(skip|only|todo)\s*\(|@pytest\.mark\.skip|\bt\.Skip\(/
-// `xit(`/`fit(` — только в тестах и не как метод: `model.fit(X, y)` и `fitAddon.fit()` — не фокус теста.
+// `xit(`/`fit(` — only in tests and not as a method: `model.fit(X, y)` and `fitAddon.fit()` are not a test focus.
 const SKIPPED_TEST_BARE = /(?<![.\w$])(xit|xdescribe|xtest|fit|fdescribe)\s*\(/
-// Пустой catch — проглоченная ошибка. `.catch(() => null)` — идиома «данные необязательны», не заглушка.
+// An empty catch is a swallowed error. `.catch(() => null)` is the "data is optional" idiom, not a stub.
 const EMPTY_CATCH = /\bcatch\s*(\(\s*\w*\s*\))?\s*\{\s*\}|\.catch\(\s*\(\s*\w*\s*\)\s*=>\s*\{\s*\}\s*\)/
 const STUB = [/throw\s+new\s+\w*Error\([^)]*not\s+implemented/i, new RegExp(`(?:${COMMENT}|#\\s*)(?:TODO|FIXME|XXX)\\b`)]
 const ASSERTION = /\b(expect|assert\w*|should)\b\s*[.(]/
-// Плейсхолдеры из документации и `.env.example`: AWS-овский `AKIAIOSFODNN7EXAMPLE`, `sk-proj-XXXX…`, `ctx7sk-0000…`.
+// Placeholders from documentation and `.env.example`: AWS's `AKIAIOSFODNN7EXAMPLE`, `sk-proj-XXXX…`, `ctx7sk-0000…`.
 const PLACEHOLDER = /EXAMPLE|X{6,}|x{6,}|0{8,}|\*{4,}|your[_-]?(api[_-]?)?key|placeholder|dummy|fake|redacted/i
 const SECRET = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
@@ -103,48 +103,48 @@ const SECRET = [
   /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
   /\bctx7sk-[A-Za-z0-9-]{16,}\b/,
 ]
-// Ослабление конфига — только по добавленным строкам и только в конфиге своего инструмента:
-// `retry: 0` в vitest.config — не выключенное правило, а `"off"` в package.json не встречается.
+// Config loosening — only by added lines and only in the config of its own tool:
+// `retry: 0` in vitest.config is not a switched-off rule, and `"off"` does not occur in package.json.
 const ESLINT_CONFIG = /(^|\/)(\.?eslintrc(\.\w+)?|eslint\.config\.\w+|biome\.jsonc?)$/
 const LOOSENED = [
   { file: /(^|\/)tsconfig[\w.-]*\.json$/, pattern: /["']?(strict|noImplicitAny|strictNullChecks|noUncheckedIndexedAccess|noImplicitReturns|noUnusedLocals|noUnusedParameters)["']?\s*:\s*false/ },
   { file: ESLINT_CONFIG, pattern: /:\s*\[?\s*["']off["']|:\s*\[?\s*0\s*[\],}]|["']?level["']?\s*:\s*["']off["']/ },
   { file: /(^|\/)package\.json$/, pattern: /--passWithNoTests|--no-verify/ },
 ]
-// Порог покрытия — только ключом в конфиге тест-раннера (или его секции в package.json), baseline — только
-// в конфиге пайплайна. Иначе версии зависимостей (`"baseline-browser-mapping": "^2.8.1"`) читаются как пороги,
-// а в JSON `floor-ok` поставить некуда.
+// A coverage threshold is only a key in the test runner's config (or its section in package.json), baseline — only
+// in the pipeline config. Otherwise dependency versions (`"baseline-browser-mapping": "^2.8.1"`) read as thresholds,
+// and in JSON there is nowhere to put `floor-ok`.
 const THRESHOLD_FILE = /(^|\/)((vitest|jest|vite)\.config\.\w+|package\.json|\.nycrc(\.json)?|\.c8rc(\.json)?)$/
 const THRESHOLD = /["']?\b(lines|branches|functions|statements)\b["']?\s*:\s*(\d+(?:\.\d+)?)/
 const BASELINE_FILE = /(^|\/)pipeline\.config(\.local)?\.md$/
 const BASELINE = /\b(baseline)\b[^\n]*?(\d+(?:\.\d+)?)/
 
-// floor-ok — для любого правила; идиомы обоснованного подавления — только для самого подавления.
+// floor-ok is for any rule; idioms of a justified suppression are only for the suppression itself.
 const FLOOR_OK = /floor-ok:\s*\S.{8,}/
 const JUSTIFIED_SUPPRESSION = [
   /eslint-disable(-next-line|-line)?\s+[\w@/-]+(\s*,\s*[\w@/-]+)*\s+--\s*\S.{4,}/,
   /@ts-expect-error:?\s+\S.{4,}/,
   /biome-ignore\s+\S+:\s*\S.{4,}/,
-  // `# noqa: BLE001 — причина`, `# noqa: E501  # причина`, `# type: ignore[attr-defined]  # причина`
+  // `# noqa: BLE001 — reason`, `# noqa: E501  # reason`, `# type: ignore[attr-defined]  # reason`
   /#\s*noqa:\s*[A-Z]+\d+(\s*,\s*[A-Z]+\d+)*\s*(?:[—–-]{1,2}|#|:)\s*\S.{4,}/,
   /#\s*type:\s*ignore(\[[\w,\s-]+\])?\s*#\s*\S.{4,}/,
 ]
 
-// ── диф ──────────────────────────────────────────────────────────────────────
+// ── diff ─────────────────────────────────────────────────────────────────────
 const files = new Map()
 const fileEntry = (path) => {
   if (!files.has(path)) files.set(path, { added: [], removed: [] })
   return files.get(path)
 }
 
-// Префиксы и переименования — явно: `diff.mnemonicPrefix`/`diff.noprefix`/`diff.renames` из конфига разработчика
-// меняют заголовки, и путь перестаёт совпадать с файлом.
+// Prefixes and renames are explicit: `diff.mnemonicPrefix`/`diff.noprefix`/`diff.renames` from the developer's config
+// change the headers, and the path stops matching the file.
 const DIFF = ['--no-color', '--no-ext-diff', '-M', '--src-prefix=a/', '--dst-prefix=b/']
-// Пустой охват — ни одного файла, а не «без ограничения»: `git diff --` без путей смотрит всё.
+// An empty scope means no files at all, not "no limit": `git diff --` without paths looks at everything.
 const scoped = (...cmd) => (pathspecs?.length === 0 ? '' : git(...cmd, '--', ...(pathspecs ?? [])))
 parseUnified(scoped('diff', '--unified=0', ...DIFF, base))
 
-// Обычный файл, а не каталог (вложенный репо, указатель субмодуля), не симлинк и не бинарь.
+// A regular file, not a directory (a nested repo, a submodule pointer), not a symlink and not a binary.
 const regularFile = (path) => {
   try {
     const stat = lstatSync(path)
@@ -179,7 +179,7 @@ function parseUnified(diff) {
   let oldLine = 0
   let newLine = 0
   for (const raw of diff.split('\n')) {
-    // Заголовок файла — от `diff --git` до первого `@@`: строка контента `-- x` внутри ханка — не заголовок.
+    // A file header runs from `diff --git` to the first `@@`: a content line `-- x` inside a hunk is not a header.
     if (raw.startsWith('diff --git ')) {
       entry = null
       header = true
@@ -197,7 +197,7 @@ function parseUnified(diff) {
   }
 }
 
-// `+++ b/my file.ts\t` — git дописывает таб к пути с пробелом; спецсимволы — C-кавычками даже при quotePath=false.
+// `+++ b/my file.ts\t` — git appends a tab to a path with a space; special characters are C-quoted even with quotePath=false.
 function diffPath(raw) {
   let path = raw.replace(/\t$/, '')
   if (path === '/dev/null') return null
@@ -207,7 +207,7 @@ function diffPath(raw) {
   return path.replace(/^b\//, '')
 }
 
-// ── правила ──────────────────────────────────────────────────────────────────
+// ── rules ────────────────────────────────────────────────────────────────────
 const violations = []
 const accepted = []
 let addedTotal = 0
@@ -232,18 +232,18 @@ const fileJustification = (path) => {
   if (!regularFile(path)) return null
   const why = fileMarker(readFileSync(path, 'utf8'))
   if (!why) return null
-  // Новый маркер в продовом файле — не исключение, а способ заглушить весь файл одной строкой.
+  // A new marker in a production file is not an exception but a way to silence the whole file with one line.
   return TESTISH.test(path) || fileMarker(tryGit('show', `${base}:${path}`)) ? why : null
 }
 
 const record = (rule, path, line, text, lines, index, { redact = false, justifiable = true } = {}) => {
-  const shown = redact ? '(значение скрыто)' : text.trim().slice(0, 120)
-  // Секрет не обосновывается ничем — ни строкой, ни файлом.
+  const shown = redact ? '(value hidden)' : text.trim().slice(0, 120)
+  // A secret is not justified by anything — neither by a line nor by a file.
   const why = rule === 'secret' ? null : currentFileOk ?? (justifiable && lines ? justification(lines, index, rule) : null)
   ;(why ? accepted : violations).push({ rule, file: path, line, text: shown, ...(why ? { justification: why } : {}), ...notInGit(path) })
 }
 
-// Неотслеживаемый файл мог не создаваться этапом — решает тот, кто знает список файлов этапа.
+// An untracked file may not have been created by the stage — whoever knows the stage's file list decides.
 const notInGit = (path) => (untracked.has(path) ? { untracked: true } : {})
 let currentFileOk = null
 const push = (rule, file, line, text) =>
@@ -277,7 +277,7 @@ for (const [path, { added, removed }] of files) {
     if (LOOSENED.some((rule) => rule.file.test(path) && rule.pattern.test(text))) record('loosened-config', path, line, text, added, i)
   })
 
-  // Порог опущен (покрытие) или baseline поднят (type_check): число в той же строке-ключе поменялось в сторону слабее.
+  // A threshold lowered (coverage) or a baseline raised (type_check): the number in the same key line changed toward weaker.
   const thresholds = THRESHOLD_FILE.test(path) ? THRESHOLD : BASELINE_FILE.test(path) ? BASELINE : null
   if (thresholds) {
     for (const before of removed) {
@@ -293,20 +293,20 @@ for (const [path, { added, removed }] of files) {
   }
 }
 
-// Удалённый тест — нарушение, если его не объясняет сам диф: удалён и код, который он проверял
-// (выпил компонента вместе с тестом), или тест с тем же именем появился в другом месте (перенос без `git add`).
+// A deleted test is a violation unless the diff itself explains it: the code it checked was deleted too
+// (a component removed together with its test), or a test with the same name appeared elsewhere (a move without `git add`).
 const stem = (path) => basename(path).replace(/\.(test|spec|cy|e2e)(?=\.)/, '').replace(/^test_|_test(?=\.)/, '').replace(/\.\w+$/, '')
 const deletedSources = new Set(deleted.filter((path) => !TEST_FILE.test(path)).map(stem))
 const addedTests = new Set([...files.keys()].filter((path) => TEST_FILE.test(path) && !deleted.includes(path)).map((path) => basename(path)))
 const deletedTests = deleted.filter((path) => TEST_FILE.test(path) && CODE.test(path) && !SKIP_PATH.test(path))
 for (const path of deletedTests) {
   if (deletedSources.has(stem(path)) || addedTests.has(basename(path))) continue
-  violations.push({ rule: 'test-made-easier', file: path, line: 0, text: 'тестовый файл удалён' })
+  violations.push({ rule: 'test-made-easier', file: path, line: 0, text: 'test file deleted' })
 }
 
-// Ассерт убран — по файлу: переписанный на месте ассерт (`toBe` → `toEqual`) балансом не шумит, убранный виден,
-// даже если ветка добавила тесты в другом месте. Перенесённым считается только ассерт, та же строка которого
-// появилась в другом тестовом файле дифа (тест разнесён на два файла). Удалённые файлы считает правило выше.
+// An assertion removed — per file: an assertion rewritten in place (`toBe` → `toEqual`) does not disturb the balance, a removed one shows,
+// even if the branch added tests elsewhere. An assertion counts as moved only if the same line
+// appeared in another test file of the diff (a test split into two files). Deleted files are counted by the rule above.
 const count = (lines) => lines.filter(({ text }) => ASSERTION.test(text)).length
 const normalized = (text) => text.trim().replace(/\s+/g, ' ').replace(/;$/, '')
 const testFiles = [...files].filter(([path]) => TEST_FILE.test(path) && CODE.test(path) && !SKIP_PATH.test(path) && !deleted.includes(path))
@@ -331,24 +331,24 @@ for (const [path, { added, removed }] of testFiles) {
   }
   if (lost <= 0) continue
   currentFileOk = fileJustification(path)
-  push('test-made-easier', path, removed.find(({ text }) => ASSERTION.test(text))?.line ?? 0, `ассертов стало меньше на ${lost}`)
+  push('test-made-easier', path, removed.find(({ text }) => ASSERTION.test(text))?.line ?? 0, `${lost} fewer assertions`)
 }
 
-// ── вывод ────────────────────────────────────────────────────────────────────
-const baseLabel = `${baseArg ? `${baseArg} (merge-base ${base.slice(0, 8)})` : 'HEAD'}${pathspecs ? ` · только пути коммита (${pathspecs.length})` : ''}`
+// ── output ───────────────────────────────────────────────────────────────────
+const baseLabel = `${baseArg ? `${baseArg} (merge-base ${base.slice(0, 8)})` : 'HEAD'}${pathspecs ? ` · commit paths only (${pathspecs.length})` : ''}`
 const size = { files: [...files.keys()].filter((path) => !SKIP_PATH.test(path)).length, added: addedTotal, removed: removedTotal }
 
 if (json) {
   process.stdout.write(JSON.stringify({ base: baseLabel, size, violations, accepted }, null, 2) + '\n')
 } else {
-  console.log(`floor-guard: база ${baseLabel} · диф +${size.added} −${size.removed} строк в ${size.files} файлах (без lock/сборки)`)
-  if (!violations.length) console.log('✔ нарушений нет')
+  console.log(`floor-guard: base ${baseLabel} · diff +${size.added} −${size.removed} lines in ${size.files} files (without lock/build)`)
+  if (!violations.length) console.log('✔ no violations')
   else {
-    console.log(`✘ нарушений: ${violations.length}`)
-    for (const v of violations) console.log(`  - [${v.rule}] ${v.file}${v.line ? `:${v.line}` : ''}${v.untracked ? ' (не в git)' : ''} — ${RULES[v.rule]}: ${v.text}`)
+    console.log(`✘ violations: ${violations.length}`)
+    for (const v of violations) console.log(`  - [${v.rule}] ${v.file}${v.line ? `:${v.line}` : ''}${v.untracked ? ' (not in git)' : ''} — ${RULES[v.rule]}: ${v.text}`)
   }
   if (accepted.length) {
-    console.log(`обоснованные исключения: ${accepted.length} (в журнал этапа и «⚠ Ожидают подтверждения»)`)
+    console.log(`justified exceptions: ${accepted.length} (for the stage journal and "⚠ Awaiting user confirmation")`)
     for (const a of accepted) console.log(`  - [${a.rule}] ${a.file}:${a.line} — ${a.justification}`)
   }
 }
@@ -356,6 +356,6 @@ process.exit(violations.length ? 1 : 0)
 
 function bail(message) {
   if (json) process.stdout.write(JSON.stringify({ error: message }) + '\n')
-  else console.error(`floor-guard: проверить не удалось — ${message}`)
+  else console.error(`floor-guard: could not check — ${message}`)
   process.exit(2)
 }

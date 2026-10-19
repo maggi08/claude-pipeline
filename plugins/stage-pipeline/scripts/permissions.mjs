@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Разрешения пайплайна в settings.json — доливка недостающего, без удаления чужого.
+ * Pipeline permissions in settings.json — topping up what is missing, without removing anything foreign.
  *
- * Профиль лежит в ../permissions/base.json; записи Skill(...) и mcp__* генерируются
- * из самого плагина, поэтому новый скилл попадает в разрешения автоматически.
+ * The profile lives in ../permissions/base.json; Skill(...) and mcp__* entries are generated
+ * from the plugin itself, so a new skill gets into the permissions automatically.
  *
- *   node permissions.mjs                     отчёт: чего не хватает (ничего не пишет)
- *   node permissions.mjs --apply             дописать в ~/.claude/settings.json
- *   node permissions.mjs --check             код возврата 1, если чего-то не хватает или перекрыто
- *   node permissions.mjs --scope project     цель — <cwd>/.claude/settings.local.json
+ *   node permissions.mjs                     report: what is missing (writes nothing)
+ *   node permissions.mjs --apply             append to ~/.claude/settings.json
+ *   node permissions.mjs --check             exit code 1 if something is missing or overridden
+ *   node permissions.mjs --scope project     the target is <cwd>/.claude/settings.local.json
  *   node permissions.mjs --groups pipeline,vcs | --all | --minimal
  *   node permissions.mjs --dirs ../ui-lib,../prototypes --scope project --apply
  */
@@ -25,7 +25,7 @@ const valueOf = (flag) => {
   const index = args.indexOf(flag)
   if (index === -1) return null
   const value = args[index + 1]
-  if (!value || value.startsWith('--')) die(`${flag} требует значение`)
+  if (!value || value.startsWith('--')) die(`${flag} requires a value`)
   return value
 }
 const die = (message) => {
@@ -33,7 +33,7 @@ const die = (message) => {
   process.exit(2)
 }
 
-if (has('--check') && has('--apply')) die('--check и --apply вместе не работают: --check только отчитывается, --apply пишет')
+if (has('--check') && has('--apply')) die('--check and --apply do not work together: --check only reports, --apply writes')
 
 const scope = valueOf('--scope') ?? 'user'
 if (!['user', 'project'].includes(scope)) die('--scope: user | project')
@@ -53,10 +53,10 @@ const explicit = valueOf('--groups')
 if (explicit) {
   groups = explicit.split(',').map((g) => g.trim()).filter(Boolean)
   const unknown = groups.filter((g) => !allGroups.includes(g))
-  if (unknown.length) die(`неизвестные группы: ${unknown.join(', ')} (есть: ${allGroups.join(', ')})`)
+  if (unknown.length) die(`unknown groups: ${unknown.join(', ')} (available: ${allGroups.join(', ')})`)
 }
 
-/** Skill(...) и mcp__* — из самого плагина, чтобы список не расходился с содержимым */
+/** Skill(...) and mcp__* — from the plugin itself, so the list does not diverge from its contents */
 const generated = () => {
   const manifest = JSON.parse(readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
   const entries = []
@@ -73,7 +73,7 @@ const generated = () => {
   if (existsSync(mcpPath)) {
     const raw = JSON.parse(readFileSync(mcpPath, 'utf8'))
     for (const server of Object.keys(raw.mcpServers ?? raw)) {
-      // сервер плагина видно под обоими именами — зависит от версии Claude Code
+      // the plugin's server is visible under both names — depends on the Claude Code version
       entries.push(`mcp__${server}`, `mcp__plugin_${manifest.name}_${server}`)
     }
   }
@@ -92,7 +92,7 @@ const readSettings = () => {
   try {
     return JSON.parse(readFileSync(target, 'utf8'))
   } catch (error) {
-    die(`${target} не парсится как JSON (${error.message}). Почини файл или восстанови из .bak-* рядом — трогать его вслепую скрипт не будет`)
+    die(`${target} does not parse as JSON (${error.message}). Fix the file or restore it from the .bak-* next to it — the script will not touch it blindly`)
   }
 }
 const settings = readSettings()
@@ -107,9 +107,9 @@ for (const key of ['allow', 'ask', 'deny']) {
   const existing = new Set(listOf(key))
   for (const entry of wanted[key]) {
     if (existing.has(entry)) continue
-    // строгий выбор пользователя не ослабляем: allow не перебивает уже стоящие deny/ask
+    // the user's strict choice is not weakened: allow does not override deny/ask already in place
     if (key === 'allow' && (listOf('deny').includes(entry) || listOf('ask').includes(entry))) {
-      conflicts.push(`${entry} — стоит в ${listOf('deny').includes(entry) ? 'deny' : 'ask'}, оставлено как есть`)
+      conflicts.push(`${entry} — is in ${listOf('deny').includes(entry) ? 'deny' : 'ask'}, left as is`)
       continue
     }
     if (!report[key].includes(entry)) report[key].push(entry)
@@ -117,10 +117,10 @@ for (const key of ['allow', 'ask', 'deny']) {
 }
 
 if (listOf('allow').includes('Bash')) {
-  notes.push('в allow есть голый "Bash" — разрешён весь Bash, точечные Bash(...) записи ничего не меняют')
+  notes.push('allow has a bare "Bash" — all of Bash is allowed, point Bash(...) entries change nothing')
 }
-// записи вида Skill(pro-review), оставшиеся с тех пор, когда скиллы лежали в user-скоупе:
-// после переезда в плагин субъект правила называется stage-pipeline:pro-review, и старая запись не разрешает ничего
+// Skill(pro-review)-style entries left over from when skills lived in the user scope:
+// after the move into the plugin the rule's subject is called stage-pipeline:pro-review, and the old entry allows nothing
 const ownSkills = new Set(
   generated()
     .filter((entry) => entry.startsWith('Skill('))
@@ -132,14 +132,14 @@ const staleSkills = listOf('allow').filter((entry) => {
 })
 if (staleSkills.length) {
   notes.push(
-    `записи без префикса плагина больше ничего не разрешают (скиллы переехали в плагин): ${staleSkills.slice(0, 4).join(', ')}${staleSkills.length > 4 ? ` (+${staleSkills.length - 4})` : ''} — можно удалить`,
+    `entries without the plugin prefix allow nothing any more (the skills moved into the plugin): ${staleSkills.slice(0, 4).join(', ')}${staleSkills.length > 4 ? ` (+${staleSkills.length - 4})` : ''} — can be removed`,
   )
 }
 
-// профиль раздавал эти записи раньше; удалять чужой settings скрипт не вправе, но молчать о них — тоже
+// the profile used to hand these entries out; the script has no right to remove foreign settings, but being silent about them is wrong too
 const retired = Object.entries(profile.retired ?? {}).filter(([entry]) => entry !== '$comment')
 for (const [entry, why] of retired) {
-  if (listOf('allow').includes(entry)) notes.push(`устаревшая запись "${entry}" — ${why}; сними её руками`)
+  if (listOf('allow').includes(entry)) notes.push(`obsolete entry "${entry}" — ${why}; remove it by hand`)
 }
 
 const dirsRaw = valueOf('--dirs')
@@ -148,50 +148,50 @@ const missingDirs = wantedDirs.filter((dir) => !(current.additionalDirectories ?
 const notOnDisk = wantedDirs.filter((dir) => !existsSync(dir))
 
 const missingTotal = report.allow.length + report.ask.length + report.deny.length + missingDirs.length
-// конфликт — это тоже отсутствующее разрешение: дописать его нельзя, и на нём будут спрашивать.
-// Считать «на месте» окружение, где нужная запись перекрыта своим deny, — ровно тот ложный зелёный,
-// ради которого /pipeline-doctor и вызывает --check.
+// a conflict is also a missing permission: it cannot be appended, and it will be asked about.
+// Counting as "in place" an environment where the needed entry is overridden by its own deny is exactly the false green
+// for which /pipeline-doctor calls --check.
 const blockedTotal = conflicts.length
 const notReadyTotal = missingTotal + blockedTotal
 
 console.log(`stage-pipeline permissions → ${target} (scope ${scope})`)
-console.log(`Группы: ${groups.join(', ')}${groups.length < allGroups.length ? `  |  ещё есть: ${allGroups.filter((g) => !groups.includes(g)).join(', ')}` : ''}`)
+console.log(`Groups: ${groups.join(', ')}${groups.length < allGroups.length ? `  |  also available: ${allGroups.filter((g) => !groups.includes(g)).join(', ')}` : ''}`)
 console.log('')
 for (const key of ['allow', 'ask', 'deny']) {
   const total = new Set(wanted[key]).size
-  console.log(`${key}: не хватает ${report[key].length} из ${total}`)
+  console.log(`${key}: ${report[key].length} of ${total} missing`)
   for (const entry of report[key]) console.log(`  + ${entry}`)
 }
 if (wantedDirs.length) {
-  console.log(`additionalDirectories: не хватает ${missingDirs.length} из ${wantedDirs.length}`)
+  console.log(`additionalDirectories: ${missingDirs.length} of ${wantedDirs.length} missing`)
   for (const dir of missingDirs) console.log(`  + ${dir}`)
 }
-for (const conflict of conflicts) console.log(`⚠ конфликт: ${conflict}`)
+for (const conflict of conflicts) console.log(`⚠ conflict: ${conflict}`)
 for (const note of notes) console.log(`⚠ ${note}`)
-for (const dir of notOnDisk) console.log(`⚠ пути нет на диске: ${dir}`)
+for (const dir of notOnDisk) console.log(`⚠ path not on disk: ${dir}`)
 
 if (has('--check')) {
   const problems = []
-  if (missingTotal) problems.push(`не хватает записей: ${missingTotal}`)
-  if (blockedTotal) problems.push(`перекрыто своими deny/ask: ${blockedTotal} (дописать нельзя — решает пользователь)`)
+  if (missingTotal) problems.push(`missing entries: ${missingTotal}`)
+  if (blockedTotal) problems.push(`overridden by own deny/ask: ${blockedTotal} (cannot be appended — the user decides)`)
   console.log('')
-  console.log(notReadyTotal === 0 ? '✔ разрешения на месте' : `✘ ${problems.join('; ')}`)
+  console.log(notReadyTotal === 0 ? '✔ permissions are in place' : `✘ ${problems.join('; ')}`)
   process.exit(notReadyTotal === 0 ? 0 : 1)
 }
 
 const blockedNote = blockedTotal
-  ? `\n  ${blockedTotal} запис${blockedTotal === 1 ? 'ь перекрыта' : 'ей перекрыто'} собственными deny/ask — скрипт их не трогает, сними или оставь осознанно (см. «конфликт» выше)`
+  ? `\n  ${blockedTotal} entr${blockedTotal === 1 ? 'y is' : 'ies are'} overridden by your own deny/ask — the script does not touch them, remove them or keep them knowingly (see "conflict" above)`
   : ''
 
 if (!has('--apply')) {
   console.log('')
-  console.log(missingTotal === 0 ? `✔ всё уже стоит, писать нечего${blockedNote}` : `Ничего не записано. Применить: node ${join(PLUGIN_ROOT, 'scripts', 'permissions.mjs')} --apply${scope === 'project' ? ' --scope project' : ''}${blockedNote}`)
+  console.log(missingTotal === 0 ? `✔ everything is already in place, nothing to write${blockedNote}` : `Nothing written. To apply: node ${join(PLUGIN_ROOT, 'scripts', 'permissions.mjs')} --apply${scope === 'project' ? ' --scope project' : ''}${blockedNote}`)
   process.exit(0)
 }
 
 if (missingTotal === 0) {
   console.log('')
-  console.log(`✔ всё уже стоит, файл не тронут${blockedNote}`)
+  console.log(`✔ everything is already in place, the file was not touched${blockedNote}`)
   process.exit(0)
 }
 
@@ -213,6 +213,6 @@ if (missingDirs.length) current.additionalDirectories = [...(current.additionalD
 writeFileSync(target, `${JSON.stringify(settings, null, 2)}\n`)
 
 console.log('')
-console.log(`✔ дописано записей: ${missingTotal} → ${target}${blockedNote}`)
-if (backup) console.log(`  бэкап: ${backup}`)
-console.log('  разрешения читаются при старте сессии — перезапусти Claude Code, иначе подтверждения продолжат спрашиваться')
+console.log(`✔ appended entries: ${missingTotal} → ${target}${blockedNote}`)
+if (backup) console.log(`  backup: ${backup}`)
+console.log('  permissions are read at session start — restart Claude Code, otherwise confirmations will keep being asked')

@@ -1,45 +1,45 @@
-# Раскатка на команду
+# Rollout to a team
 
-Для случая «плагин работает у меня, команда просит поставить у себя». Про сам workflow — [README плагина](plugins/stage-pipeline/README.md).
+For the case "the plugin works for me, the team asks to install it too". For the workflow itself, see the [plugin README](plugins/stage-pipeline/README.md).
 
-## Как это работает
+## How it works
 
-Маркетплейс — это **каталог указателей**, а не хранилище кода: git-репозиторий с файлом `.claude-plugin/marketplace.json`, в котором перечислено, какие есть плагины и где взять каждый. Плагин при этом может лежать в другом репозитории и на другом хосте. Поэтому каталог живёт в GitLab команды, а код плагина — здесь, на публичном GitHub.
+A marketplace is a **catalog of pointers**, not a code store: a git repository with a `.claude-plugin/marketplace.json` file that lists which plugins exist and where to get each one. The plugin itself can live in another repository and on another host. That is why the catalog lives in the team's GitLab, while the plugin code is here, on public GitHub.
 
 ```
-GitLab  <group>/claude-code-marketplace        ← каталог команды, ~20 строк, после создания не меняется
+GitLab  <group>/claude-code-marketplace        ← the team catalog, ~20 lines, does not change after creation
         .claude-plugin/marketplace.json  ──┐
-                                           │ ссылка: git-subdir → plugins/stage-pipeline, ref main
+                                           │ link: git-subdir → plugins/stage-pipeline, ref main
 GitHub  maggi08/claude-pipeline  ←──────────┘
-        main  ← прод: отсюда команда получает плагин и обновления
-        dev   ← если нужно, эксперименты живут здесь и в main не попадают
+        main  ← production: the team gets the plugin and its updates from here
+        dev   ← if needed, experiments live here and do not reach main
 ```
 
-Обновления идут двумя независимыми уровнями:
+Updates go on two independent levels:
 
-| Что обновляется | Команда | Откуда тянет | Когда нужно |
+| What is updated | Command | Where it pulls from | When it is needed |
 |---|---|---|---|
-| Каталог | `claude plugin marketplace update mycar-frontend` | GitLab | только если в каталог добавили плагин или сменили пин |
-| Сам плагин | `claude plugin update stage-pipeline` | **GitHub, ветка `main`** | каждый раз, когда вышла новая версия |
+| The catalog | `claude plugin marketplace update mycar-frontend` | GitLab | only when a plugin was added to the catalog or a pin was changed |
+| The plugin itself | `claude plugin update stage-pipeline` | **GitHub, branch `main`** | every time a new version is released |
 
-То есть: я пушу в `main` → разработчик делает `plugin update` + перезапуск Claude Code → доехало. **Репозиторий в GitLab при этом не трогается.**
+That is: I push to `main` → a developer runs `plugin update` + restarts Claude Code → it has arrived. **The GitLab repository is not touched.**
 
-Репозиторий с плагином публичный, поэтому ни креды, ни SSH-ключи, ни `gh auth` командe не нужны — ни для установки, ни для автообновлений.
+The plugin repository is public, so the team needs no credentials, no SSH keys and no `gh auth` — neither for the installation nor for auto-updates.
 
-## Шаг 1. Каталог в GitLab
+## Step 1. The catalog in GitLab
 
-Новый репозиторий в группе команды, например `<group>/claude-code-marketplace`, visibility internal. Единственный обязательный файл — `.claude-plugin/marketplace.json`:
+A new repository in the team group, for example `<group>/claude-code-marketplace`, visibility internal. The only required file is `.claude-plugin/marketplace.json`:
 
 ```json
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "mycar-frontend",
-  "description": "Плагины Claude Code для фронтенд-команды",
+  "description": "Claude Code plugins for the frontend team",
   "owner": { "name": "Frontend" },
   "plugins": [
     {
       "name": "stage-pipeline",
-      "description": "Поэтапный maker/checker-workflow для крупных UI-задач: разбивка на этапы, спека из дизайна, проверки субагентами (Figma/прототип, рантайм, код-ревью, мёртвый код, i18n, зависимости), автономный force-прогон, журнал состояния в файлах и описание PR",
+      "description": "A staged maker/checker workflow for large UI tasks: splitting into stages, a spec from the design, checks by subagents (Figma/prototype, runtime, code review, dead code, i18n, dependencies), an autonomous force run, a state journal kept in files and a PR description",
       "category": "workflow",
       "source": {
         "source": "git-subdir",
@@ -52,21 +52,21 @@ GitHub  maggi08/claude-pipeline  ←──────────┘
 }
 ```
 
-`git-subdir` нужен потому, что плагин лежит в подпапке репозитория, а не в корне: Claude Code делает sparse-клон только этой папки. `name` каталога определяет id плагина — `stage-pipeline@mycar-frontend`, именно он пишется в настройках репозиториев команды.
+`git-subdir` is needed because the plugin lies in a subfolder of the repository, not in the root: Claude Code makes a sparse clone of that folder only. The catalog `name` defines the plugin id — `stage-pipeline@mycar-frontend`, and it is the one written in the settings of the team repositories.
 
-Проверка на своей машине до анонса:
+Check on your own machine before the announcement:
 
 ```bash
 claude plugin marketplace add https://gitlab.<host>/<group>/claude-code-marketplace.git
 claude plugin install stage-pipeline@mycar-frontend
-claude plugin details stage-pipeline    # 18 скиллов, 12 агентов, 2 MCP-сервера
+claude plugin details stage-pipeline    # 18 skills, 12 agents, 2 MCP servers
 ```
 
-Дальше каталог можно расширять — второй плагин команды добавляется такой же записью.
+Later the catalog can be extended — a second team plugin is added with the same kind of entry.
 
-## Шаг 2. Подключение разработчиков
+## Step 2. Connecting developers
 
-**Через репозиторий продукта — основной вариант.** Коммит в `<repo>/.claude/settings.json`:
+**Through the product repository — the main option.** A commit to `<repo>/.claude/settings.json`:
 
 ```json
 {
@@ -82,74 +82,76 @@ claude plugin details stage-pipeline    # 18 скиллов, 12 агентов, 
 }
 ```
 
-Разработчик клонирует репозиторий, отвечает «доверяю папке» — каталог зарегистрирован, плагин помечен включённым; если он ещё не установлен на машине, установка — одна команда `claude plugin install stage-pipeline@mycar-frontend` или `/plugin` в сессии. Проверь, что `.gitignore` не глотает файл: нужно `.claude/*` + `!.claude/settings.json`.
+A developer clones the repository and answers "I trust this folder" — the catalog is registered and the plugin is marked enabled; if it is not yet installed on the machine, the installation is one command, `claude plugin install stage-pipeline@mycar-frontend`, or `/plugin` in a session. Make sure `.gitignore` does not swallow the file: you need `.claude/*` + `!.claude/settings.json`.
 
-**Руками** — если раскатывать на двоих-троих для пробы: те же две команды, что в проверке Шага 1. Без `--scope` попадёт в `~/.claude/settings.json`, то есть плагин включится во всех репозиториях этой машины.
+**By hand** — if you roll out to two or three people as a trial: the same two commands as in the check of Step 1. Without `--scope` it goes into `~/.claude/settings.json`, that is, the plugin gets enabled in all repositories of that machine.
 
-**Через admin-консоль** (Team/Enterprise) — если нужно раздать каталог всем без правки репозиториев: managed settings принимают те же `extraKnownMarketplaces`, разрешены источники `github`, `url`, `git-subdir`.
+**Through the admin console** (Team/Enterprise) — if you need to give the catalog to everyone without editing repositories: managed settings accept the same `extraKnownMarketplaces`; the sources `github`, `url`, `git-subdir` are allowed.
 
-## Шаг 3. Что нужно каждому разработчику один раз
+## Step 3. What every developer needs once
 
-| Что | Зачем | Проверка |
+| What | Why | Check |
 |---|---|---|
-| Свежий Claude Code | `git-subdir` и пины — относительно новый CLI | `claude --version` |
-| Node 22+ | `chrome-devtools` MCP ставится через `npx` | `node -v` |
-| Figma desktop, **Enable Dev Mode MCP Server** | `figma-spec` / `figma-compare`; в проектах на HTML-прототипах вместо них `proto-spec` / `proto-compare` | `/pipeline-doctor` |
-| Профиль разрешений | иначе чекеры спрашивают подтверждение на каждом шаге | `node "$PERMS" --check` |
-| Перезапуск Claude Code после install/update | иначе плагин не подхватится | `/plugin` |
+| A fresh Claude Code | `git-subdir` and pins need a relatively new CLI | `claude --version` |
+| Node 22+ | the `chrome-devtools` MCP is installed through `npx` | `node -v` |
+| Figma desktop, **Enable Dev Mode MCP Server** | `figma-spec` / `figma-compare`; in projects on HTML prototypes `proto-spec` / `proto-compare` are used instead | `/pipeline-doctor` |
+| The permission profile | otherwise the checkers ask for confirmation at every step | `node "$PERMS" --check` |
+| Restart Claude Code after install/update | otherwise the plugin is not picked up | `/plugin` |
 
-Отдельно, **один раз на репозиторий**, а не на человека: `/pipeline-init` генерит `.claude/pipeline.config.md` — стек, команды, dev-URL, токены, брейкпоинты, раскладка кода. Его делает один человек и коммитит, остальные получают вместе с кодом. Личные отклонения (пути к соседним репозиториям, порты) — в `pipeline.config.local.md`, его создаёт `/pipeline-doctor`.
+Separately, **once per repository**, not per person: `/pipeline-init` generates `.claude/pipeline.config.md` — the stack, commands, dev URL, tokens, breakpoints, code layout. One person makes it and commits it; the others get it together with the code. Personal deviations (paths to neighbouring repositories, ports) go into `pipeline.config.local.md`, which `/pipeline-doctor` creates.
 
-## Шаг 4. Как выходят обновления
+## Step 4. How updates are released
 
-Мой цикл:
+My cycle:
 
 ```bash
-# правка скилла проверяется локально: маркетплейс из папки, пушить не нужно
-claude plugin update stage-pipeline && перезапуск
+# a skill edit is checked locally: a marketplace from a folder, no push needed
+claude plugin update stage-pipeline && restart
 
-# релиз
-# 1. поднять version в plugins/stage-pipeline/.claude-plugin/plugin.json + запись в CHANGELOG.md
+# release
+# 1. raise version in plugins/stage-pipeline/.claude-plugin/plugin.json + an entry in CHANGELOG.md
 node scripts/validate.mjs
 claude plugin validate . --strict
-claude plugin tag plugins/stage-pipeline     # тег stage-pipeline--v<version>
+claude plugin tag plugins/stage-pipeline     # tag stage-pipeline--v<version>
 git push origin main --tags
 ```
 
-Команда: `claude plugin update stage-pipeline` + перезапуск. Что изменилось и что нужно сделать руками на апгрейде — [CHANGELOG.md](CHANGELOG.md).
+The team: `claude plugin update stage-pipeline` + restart. What changed and what to do by hand on an upgrade is in [CHANGELOG.md](CHANGELOG.md).
 
-`main` — движущаяся ветка: команда получает всё, что в неё попало. Если понадобится гейт на ревью — в записи каталога вместо `"ref": "main"` ставится тег (`"ref": "stage-pipeline--v0.7.0"`), и тогда каждое обновление становится MR в GitLab с правкой одной строки. Начинать проще с `main`, переключиться можно в любой момент.
+`main` is a moving branch: the team gets everything that lands in it. If a review gate is needed, a tag goes into the catalog entry instead of `"ref": "main"` (`"ref": "stage-pipeline--v0.7.0"`), and then every update becomes an MR in GitLab with a one-line edit. It is simpler to start with `main`; you can switch at any moment.
 
-## Хуки
+## Hooks
 
-Плагин ставит четыре хука. Работают только в репозитории с `.claude/pipeline.config.md`, в остальных молчат.
+The plugin installs six hooks. They work only in a repository with `.claude/pipeline.config.md` and stay silent elsewhere.
 
-- **session-start** — в начале сессии кладёт в контекст строку статуса задачи текущей ветки и напоминает свернуть разросшийся `STAGES.md`. После закрытого force-прогона называет коммиты ветки, которых нет в журнале задачи, — работу, не прошедшую чекеры.
-- **git-guard** — в обычном режиме на ветке задачи `git add`/`git commit` агента отклоняются при любом статусе этапа: агент выдаёт готовый текст коммита, коммитит разработчик в своём терминале — даже если попросить агента. В force-режиме (`/stage-force`) агент коммитит сам, но коммит проходит через `floor-guard` и отклоняется, если в дифе заглушён чекер, ослаблен тест или оставлена заглушка. Проверяется только то, что войдёт в коммит, — сохранённые страницы и черновики рядом с кодом коммит не блокируют. Служебная подпись в сообщении (`Co-Authored-By`) отклоняется.
-- **agent-guard** — финальное ревью всей ветки идёт только на `review_model` (по умолчанию opus), а агент реализации в force стартует только после интервью прогона — отдельного «да» после ответов нет.
-- **journal-gate** — после правки журнала задачи возвращает агенту критерий, закрытый без того чекера, который в нём указан, и голый PASS без замера в отчёте чекера. Старые задачи не проверяются — только то, что пишется сейчас.
+- **session-start** — at the start of a session puts into the context a status line for the task of the current branch and reminds you to shrink a bloated `STAGES.md`. After a closed force run it names the branch commits that are not in the task journal — work that did not pass the checkers.
+- **git-guard** — in normal mode on a task branch the agent's `git add`/`git commit` are rejected at any stage status: the agent hands over a ready commit text, and the developer commits in their own terminal — even if the agent is asked to. In force mode (`/stage-force`) the agent commits itself, but the commit goes through `floor-guard` and is rejected if the diff has a silenced checker, a weakened test or a leftover stub. Only what will go into the commit is checked — saved pages and drafts next to the code do not block the commit. A service signature in the message (`Co-Authored-By`) is rejected.
+- **force-guard** — before a Bash command in a force run: a call that would stop on a confirmation (`pkill`/`killall`, subcommands under `ask` in the settings) is rejected at once with an explanation and recorded as a run blocker. Outside force the hook is silent.
+- **agent-guard** — the final review of the whole branch goes only on `review_model` (opus by default), and the implementation agent in force starts only after the run interview — no separate "yes" is asked after the answers.
+- **journal-gate** — after an edit of the task journal returns to the agent a criterion closed without the checker named in it, and a bare PASS without a measurement in a checker report. Old tasks are not checked — only what is written now.
+- **frames-guard** — when devtools-verify finishes: the agent is not let go until it has opened every frame it captured.
 
-Задачу хук узнаёт по ветке: строка ``Ветка: `<branch>` `` в шапке `STAGES.md`, без неё — тикет (имя каталога задачи) в имени ветки. Задачу на два репо, чей `STAGES.md` лежит в каталоге задач соседнего, хук видит, когда тикет стоит в имени ветки, а `STAGES.md` называет репо по имени. Задачи других веток он не видит, поэтому параллельные задачи, worktree, сессии и соседние репозитории друг другу не мешают, а старые задачи ничего не блокируют — переписывать их под новую версию не нужно. Задачу, чей `STAGES.md` не менялся 21 день, хук считает брошенной и не видит; вернулся к ней — первый же kickoff или check обновит файл, и охрана включится снова.
+The hook recognizes the task by the branch: the line ``Branch: `<branch>` `` in the `STAGES.md` header, and without it the ticket (the name of the task directory) in the branch name. A task spanning two repositories, whose `STAGES.md` lies in the task directory of the neighbouring one, is seen by the hook when the ticket is in the branch name and `STAGES.md` names the repository. It does not see the tasks of other branches, so parallel tasks, worktrees, sessions and neighbouring repositories do not get in each other's way, and old tasks block nothing — there is no need to rewrite them for a new version. A task whose `STAGES.md` has not changed for 21 days the hook considers abandoned and does not see; if you come back to it, the first kickoff or check updates the file and the guard turns on again.
 
-Коммиты агента на ветке задачи отклоняются при любом статусе этапа — это правило обычного режима: коммитишь сам. Задачу, брошенную по-настоящему, хук перестанет видеть через 21 день без правок её `STAGES.md`. Агент коммитит сам там, где не должен, — force-прогон не закрыт: слово «завершён» в заголовке блока (`## Force-прогон 2026-09-24 — завершён 2026-09-25`) или в строке статуса («force-прогон завершён»).
+The agent's commits on a task branch are rejected at any stage status — this is the rule of normal mode: you commit yourself. A really abandoned task the hook stops seeing after 21 days without edits to its `STAGES.md`. The agent commits itself where it should not when a force run is not closed: the word "completed" in the block heading (`## Force run 2026-09-24 — completed 2026-09-25`) or in the status line ("force run completed").
 
-## Что знать до раскатки
+## What to know before the rollout
 
-- **Слабые машины.** При ОЗУ ≤ 16 GB тяжёлые проверки (`lint`/`test`/`type_check`/`build`) всех проектов машины идут по очереди и с пониженным приоритетом: 3–4 параллельных проекта не уходят в своп, но проверка может подождать соседнюю («жду очереди»). Сильной машине — `- resources: normal` в `pipeline.config.local.md`.
-- **Публичный личный GitHub становится зависимостью dev-машин команды.** Пропал аккаунт или репозиторий — у команды ломается установка и обновление. Лечится сменой `url` в одной строке каталога (например, на зеркало в GitLab), но решить, устраивает ли это, лучше заранее.
-- **Доступность github.com из корпоративной сети** — единственное, что стоит проверить руками до анонса.
-- **Профиль разрешений широкий.** `permissions/base.json` разрешает `node`/`npx`/`python3`, то есть произвольное исполнение; `deny` в нём — защита от случайной команды агента, а не граница безопасности. Кому не подходит — `node "$PERMS" --minimal --apply`: только скиллы и MCP.
-- **Секретов в плагине нет.** В `.mcp.json` только два локальных сервера: `127.0.0.1:3845` для Figma и `npx chrome-devtools-mcp`.
-- **Наружу с машины уходит немного.** API библиотек сверяется по установленному пакету в `node_modules` — локально. В сеть идут только `npm view <pkg>` в реестр (`deps-audit`: не deprecated ли добавленная версия) и, если установленного не хватило, WebFetch официальной документации по доменам из профиля разрешений — в запросе имя пакета и версия, код репозитория не отправляется.
-- **Плагин не пушит и не создаёт MR.** `git push`, `gh pr create`, `glab mr create`, комментирование существующих MR запрещены в скиллах жёстко, включая автономный `/stage-force`; `/task-wrapup` только готовит текст описания в `PR.md`.
-- **Состояние — файлы в репозитории** (`STAGES.md`, `FEATURE-MAP.md`, `PR.md` в `task_dir` из конфига). Команде надо решить, коммитить их или игнорить; коммитить удобнее — это и есть журнал задачи для ревьюера.
-- **Язык скиллов — русский**: на нём Claude ведёт этапы и пишет отчёты.
+- **Weak machines.** With RAM ≤ 16 GB the heavy checks (`lint`/`test`/`type_check`/`build`) of all the machine's projects go one after another and at a lowered priority: 3–4 parallel projects do not go into swap, but a check may wait for a neighbouring one ("waiting in the queue"). For a strong machine — `- resources: normal` in `pipeline.config.local.md`.
+- **A public personal GitHub becomes a dependency of the team's dev machines.** If the account or the repository disappears, installation and updates break for the team. It is cured by changing `url` in one line of the catalog (for example, to a GitLab mirror), but it is better to decide in advance whether this is acceptable.
+- **Availability of github.com from the corporate network** is the only thing worth checking by hand before the announcement.
+- **The permission profile is broad.** `permissions/base.json` allows `node`/`npx`/`python3`, that is, arbitrary execution; its `deny` list protects against an accidental agent command and is not a security boundary. For whom it does not fit — `node "$PERMS" --minimal --apply`: only skills and MCP.
+- **There are no secrets in the plugin.** `.mcp.json` has only two local servers: `127.0.0.1:3845` for Figma and `npx chrome-devtools-mcp`.
+- **Little leaves the machine.** Library APIs are checked against the installed package in `node_modules` — locally. Only `npm view <pkg>` to the registry goes to the network (`deps-audit`: whether the added version is deprecated) and, if the installed package was not enough, a WebFetch of the official documentation on the domains from the permission profile — the request carries the package name and version, the repository code is not sent.
+- **The plugin does not push and does not create an MR.** `git push`, `gh pr create`, `glab mr create` and commenting on existing MRs are strictly forbidden in the skills, including the autonomous `/stage-force`; `/task-wrapup` only prepares the description text in `PR.md`.
+- **State is files in the repository** (`STAGES.md`, `FEATURE-MAP.md`, `PR.md` in the `task_dir` from the config). The team has to decide whether to commit them or ignore them; committing is more convenient — it is the task journal for the reviewer.
+- **The language of the skills is English**: the plugin is written in English. The language of a task is the `Language:` line in its `STAGES.md` (a new task — by the user's request, else by `language:` in the config, else by the language of the starting message); only `ru` and `en` are supported; Russian tasks keep going in Russian, the model talks to the user in the user's language, and commits and PR descriptions follow the language of the repo history (or the user's request), not the task language. See `references/language.md` in the plugin.
 
-## Чеклист
+## Checklist
 
-- [ ] Создан репозиторий-каталог в GitLab, в нём `.claude-plugin/marketplace.json` из Шага 1
-- [ ] Установка с нуля проверена на одной машине (`marketplace add` → `install` → `details`)
-- [ ] В пилотном репозитории продукта лежит `.claude/settings.json` с каталогом и `enabledPlugins`
-- [ ] В пилотном репозитории есть `.claude/pipeline.config.md` от `/pipeline-init`
-- [ ] Один разработчик прошёл онбординг по Шагу 3 с нуля, `/pipeline-doctor` зелёный
-- [ ] Команде отправлены README плагина, этот файл и CHANGELOG
+- [ ] A catalog repository is created in GitLab, with `.claude-plugin/marketplace.json` from Step 1 in it
+- [ ] The installation from scratch is checked on one machine (`marketplace add` → `install` → `details`)
+- [ ] The pilot product repository has `.claude/settings.json` with the catalog and `enabledPlugins`
+- [ ] The pilot repository has `.claude/pipeline.config.md` from `/pipeline-init`
+- [ ] One developer went through the onboarding of Step 3 from scratch, `/pipeline-doctor` is green
+- [ ] The README of the plugin, this file and CHANGELOG are sent to the team

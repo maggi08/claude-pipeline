@@ -1,0 +1,7 @@
+{
+  "kind": "routing",
+  "why": "the English twin: a request to compare markup with a Figma design finds figma-compare",
+  "base": "../pro-review-clean-ac/base",
+  "prompt": "Compare the ProfileName markup with the Figma design: https://www.figma.com/design/abc123/Profile?node-id=12-445",
+  "expectSkill": "figma-compare"
+}
