@@ -6,7 +6,21 @@ import { spawnSync } from 'node:child_process'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const errors = []
-const fail = (file, msg) => errors.push(`${file}: ${msg}`)
+const fail = (file, msg) => {
+  const line = `${file}: ${msg}`
+  if (!errors.includes(line)) errors.push(line)
+}
+
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+// A link inside the plugin is never followed (it may dangle or lead out of the repo): the walkers report it and skip it.
+const failLink = (path) => fail(path.replace(`${ROOT}/`, ''), 'is a symbolic link — links are not allowed in the plugin; replace it with a regular file or directory')
 
 const readJson = (path) => {
   try {
@@ -73,12 +87,37 @@ for (const entry of marketplace?.plugins ?? []) {
   validatePluginTree(pluginDir)
 }
 
+// Every file read below assumes a regular file. A link in the plugin (dangling, or out of the repo) would crash the
+// readers with ENOENT, so links are collected first and, if there are any, the rest of the tree checks are skipped.
+function reportLinks(dir) {
+  let found = 0
+  if (isLink(dir)) {
+    failLink(dir)
+    return 1
+  }
+  for (const name of readdirSync(dir)) {
+    if (name === 'node_modules' || name === '.git') continue
+    const path = join(dir, name)
+    const kind = lstatSync(path)
+    if (kind.isSymbolicLink()) {
+      failLink(path)
+      found++
+    } else if (kind.isDirectory()) found += reportLinks(path)
+  }
+  return found
+}
+
 function validatePluginTree(pluginDir) {
+  if (reportLinks(join(ROOT, pluginDir))) return
   const skillsDir = join(ROOT, pluginDir, 'skills')
   if (existsSync(skillsDir)) {
     for (const name of readdirSync(skillsDir)) {
       const skillPath = join(skillsDir, name, 'SKILL.md')
       const rel = `${pluginDir}/skills/${name}/SKILL.md`
+      if (isLink(join(skillsDir, name))) {
+        failLink(join(skillsDir, name))
+        continue
+      }
       if (!statSync(join(skillsDir, name)).isDirectory()) continue
       if (!existsSync(skillPath)) {
         fail(rel, 'skill without SKILL.md')
@@ -232,14 +271,6 @@ function validateDeclaredCounts(pluginDir) {
  * The human-text skill and agent are a vendored copy (scripts/sync-human-text.mjs): every file must match the sha256
  * in human-text.lock.json, nothing may be added to or missing from the vendored paths, and the lock paths stay inside the plugin.
  */
-function isLink(path) {
-  try {
-    return lstatSync(path).isSymbolicLink()
-  } catch {
-    return false
-  }
-}
-
 function validateVendoredHumanText(pluginDir) {
   if (pluginDir !== 'plugins/stage-pipeline') return
   const lockRel = `${pluginDir}/human-text.lock.json`
@@ -287,7 +318,10 @@ function validateNoHomePaths(pluginDir) {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name)
       const kind = lstatSync(path)
-      if (kind.isSymbolicLink()) continue // a link is never followed; the vendored-files check reports it
+      if (kind.isSymbolicLink()) {
+        failLink(path)
+        continue
+      }
       if (kind.isDirectory()) walk(path)
       else if (name.endsWith('.md')) {
         const lines = readFileSync(path, 'utf8').split('\n')
@@ -432,7 +466,10 @@ function walkMarkdown(dir) {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name)
     const kind = lstatSync(path)
-    if (kind.isSymbolicLink()) return [] // never followed; the vendored-files check reports links
+    if (kind.isSymbolicLink()) {
+      failLink(path)
+      return []
+    }
     if (kind.isDirectory()) return walkMarkdown(path)
     return name.endsWith('.md') ? [path] : []
   })
@@ -485,7 +522,10 @@ function validateXrefs(pluginDir) {
       if (name === 'node_modules' || name === '.git') return []
       const path = join(dir, name)
       const kind = lstatSync(path)
-      if (kind.isSymbolicLink()) return []
+      if (kind.isSymbolicLink()) {
+        failLink(path)
+        return []
+      }
       if (kind.isDirectory()) return walkFiles(path)
       return /\.(md|mjs|json)$/.test(name) ? [path] : []
     })
