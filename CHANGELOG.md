@@ -5,6 +5,14 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.16.1 — 2026-10-19
+
+### The journal gates stay fast on Node 22
+
+Two patterns of the journal gates took seconds on a long run of whitespace under Node 22: the caveat check of a `✅` criterion (about a minute on 50 000 newlines) and the closing word of a Force run heading (about 7 s on 50 000 tabs). Under Node 24 both were fast. Both now take about a millisecond, and what they match has not changed.
+
+Nothing to do on upgrade.
+
 ## 0.16.0 — 2026-10-17
 
 ### The plugin is in English, tasks keep their own language

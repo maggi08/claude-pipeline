@@ -1386,7 +1386,7 @@ for (const [lang, text, head, moved, journal, entryWord] of [
 }
 
 // ── validate.mjs: the "N skills / N agents" count in a showcase, Russian and English forms (AC-4.2) ──
-// A temporary repo with one skill and one agent; validate.mjs is copied into it and run as in CI.
+// A temporary repo with one skill and one agent; validate.mjs is copied into it and run without the CI flag (the repo is not a git checkout).
 // English forms plus a permanent Russian regression case (these are validate fixtures, not hook fixtures).
 {
   const vRoot = mkdtempSync(join(tmpdir(), 'validate-test-'))
@@ -1400,7 +1400,8 @@ for (const [lang, text, head, moved, journal, entryWord] of [
   })
   const validateWith = (readme) => {
     write(vRoot, { 'README.md': readme })
-    const run = spawnSync(process.execPath, [join(vRoot, 'scripts/validate.mjs')], { encoding: 'utf8' })
+    // The temp repo is not a git checkout: under CI the skipped Cyrillic check would fail it. This fixture checks the count only.
+    const run = spawnSync(process.execPath, [join(vRoot, 'scripts/validate.mjs')], { encoding: 'utf8', env: { ...process.env, CI: '' } })
     return { ok: run.status === 0, out: run.stderr + run.stdout }
   }
   const SHOWCASE = [
