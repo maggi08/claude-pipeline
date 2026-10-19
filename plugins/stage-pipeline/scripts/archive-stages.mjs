@@ -1,37 +1,64 @@
 #!/usr/bin/env node
 /**
- * Архивация закрытых этапов STAGES.md → STAGES-ARCHIVE.md (/stage-check, Шаг 4.2).
+ * Archiving of closed STAGES.md stages → STAGES-ARCHIVE.md (/stage-check, Step 4.2).
  *
- *   node archive-stages.mjs <STAGES.md>            # что будет перенесено (ничего не пишет)
- *   node archive-stages.mjs <STAGES.md> --apply    # перенести
- *   --journal-keep N                               # сколько свежих записей журнала оставить (по умолчанию 8)
+ *   node archive-stages.mjs <STAGES.md>            # what would be moved (writes nothing)
+ *   node archive-stages.mjs <STAGES.md> --apply    # move it
+ *   --journal-keep N                               # how many fresh journal entries to keep (8 by default)
  *
- * Прозой правило не держалось: по живым задачам STAGES.md дорастали до 150 KB (~40k токенов
- * на каждое чтение), архивы были у пяти задач из тридцати. Скрипт детерминированный:
- * этап `[status: done…]`/`[status: cancelled…]` длиннее свёрнутого вида уезжает в архив
- * целиком, в STAGES.md остаются заголовок (статус и пометки в нём), строки «Коммит»/
- * «Решения»/`metrics:`, всё незакрытое (`- [ ]`, `[live: …]`, `⏳`) и ссылка на архив.
- * Уже свёрнутые этапы и этапы внутри «Force-прогона» и «Журнала» не трогаются.
- * Журнал: записи (строки `- …` с датой и их продолжение) сверх N самых свежих по дате
- * уезжают в архив — порядок записей в живых файлах бывает и прямым, и обратным, даты —
- * и `2026-08-22`, и `22.08.2026`, а подзаголовки `###` внутри журнала остаются на месте.
+ * Prose did not hold this rule: in live tasks STAGES.md grew to 150 KB (~40k tokens
+ * per read), and only five tasks out of thirty had archives. The script is deterministic:
+ * a `[status: done…]`/`[status: cancelled…]` stage longer than its folded form goes to the archive
+ * as a whole; STAGES.md keeps the heading (with the status and marks in it), the Commit/
+ * Decisions/`metrics:` lines, everything unclosed (`- [ ]`, `[live: …]`, `⏳`) and a link to the archive.
+ * Already folded stages and stages inside the "Force run" and "Journal" sections are left alone.
+ * Journal: entries (`- …` lines with a date and their continuation) beyond the N freshest by date
+ * go to the archive — the order of entries in live files is both direct and reversed, dates are
+ * both `2026-08-22` and `22.08.2026`, and `###` subheadings inside the journal stay in place.
+ *
+ * The texts the script writes into task files (the archive header, stubs, the "Older entries" line) are in the
+ * task language (taskLanguage; unknown → ru, as before). Both forms are read back. Console output is always English.
  */
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { taskLanguage } from './hooks/pipeline-state.mjs'
+import {
+  ARCHIVED_STUB,
+  CLOSED_STAGE,
+  JOURNAL_HEADING,
+  KEEP_LINE,
+  OLDER_ENTRIES,
+  PROTECTED_SECTION,
+  STAGE_HEADING,
+} from './markers.mjs'
 
-const KEEP = /^(\s*[-*]\s*)?(\*\*)?(Коммит|Commit|Решени|metrics:)|^\s*[-*]\s*\[x\]\s*commit:|^\s*[-*]\s*\[ \](?!.*\bskip\b)|\[live:|⏳/i
-const STAGE_HEADING = /^(#{2,3}) Этап [\w.]+/
-const CLOSED = /\[status:\s*(done|cancelled|отмен)/i
-const PROTECTED_SECTION = /^#{1,2} (Force-прогон|Журнал)/i
-const ARCHIVED = 'Полная запись: STAGES-ARCHIVE.md'
+// Texts written into task files, by task language. In a ru task they stay as they were, byte for byte.
+const WRITTEN = {
+  ru: {
+    stub: (title) => `Полная запись: STAGES-ARCHIVE.md — «${title}»`,
+    older: (count) => `Старые записи (${count}): STAGES-ARCHIVE.md — «Журнал».`,
+    header: '# Архив этапов\n\nПолные записи закрытых этапов, перенесённые из STAGES.md.\n\n',
+    moved: (date) => `<!-- перенесено ${date} -->`,
+    journal: '## Журнал',
+  },
+  en: {
+    stub: (title) => `Full record: STAGES-ARCHIVE.md — "${title}"`,
+    older: (count) => `Older entries (${count}): STAGES-ARCHIVE.md — "Journal".`,
+    header: '# Stage archive\n\nFull records of closed stages, moved from STAGES.md.\n\n',
+    moved: (date) => `<!-- moved ${date} -->`,
+    journal: '## Journal',
+  },
+}
+const writtenFor = (source) => WRITTEN[taskLanguage(source) ?? 'ru']
 const bytes = (text) => Buffer.byteLength(text, 'utf8')
 
 export function planArchive(source, { journalKeep = 8 } = {}) {
   const lines = source.split('\n')
   const moved = []
+  const written = writtenFor(source)
 
-  // Блок этапа — от его заголовка до следующего заголовка того же или более высокого уровня.
+  // A stage block runs from its heading to the next heading of the same or a higher level.
   const blocks = []
   let section = ''
   for (let i = 0; i < lines.length; i++) {
@@ -50,19 +77,19 @@ export function planArchive(source, { journalKeep = 8 } = {}) {
   }
 
   for (const block of blocks.reverse()) {
-    if (!CLOSED.test(block.heading)) continue
+    if (!CLOSED_STAGE.test(block.heading)) continue
     const body = lines.slice(block.start + 1, block.end)
-    if (body.some((line) => line.startsWith(ARCHIVED))) continue
-    const kept = body.filter((line) => KEEP.test(line))
-    const collapsed = [block.heading, ...kept, `${ARCHIVED} — «${block.heading.replace(/^#+ /, '')}»`, '']
+    if (body.some((line) => ARCHIVED_STUB.test(line))) continue
+    const kept = body.filter((line) => KEEP_LINE.test(line))
+    const collapsed = [block.heading, ...kept, written.stub(block.heading.replace(/^#+ /, '')), '']
     if (bytes(body.join('\n').trim()) <= bytes(collapsed.slice(1).join('\n')) + 200) continue
     moved.unshift({ heading: block.heading, text: lines.slice(block.start, block.end).join('\n').trimEnd() })
     lines.splice(block.start, block.end - block.start, ...collapsed)
   }
 
-  // Журнал — после этапов, чтобы индексы блоков этапов выше уже не сдвигались.
+  // The journal goes after the stages, so the stage block indexes above no longer shift.
   let movedJournal = []
-  const journalStart = lines.findIndex((line) => /^## Журнал(?:\s|$)/i.test(line))
+  const journalStart = lines.findIndex((line) => JOURNAL_HEADING.test(line))
   if (journalStart !== -1) {
     let journalEnd = journalStart + 1
     while (journalEnd < lines.length && !/^#{1,2} /.test(lines[journalEnd])) journalEnd++
@@ -70,7 +97,7 @@ export function planArchive(source, { journalKeep = 8 } = {}) {
     if (journal.entries.length > journalKeep) {
       const keep = freshest(journal.entries, journalKeep)
       movedJournal = journal.entries.filter((entry) => !keep.has(entry))
-      lines.splice(journalStart + 1, journalEnd - journalStart - 1, ...rebuildJournal(journal, keep, movedJournal.length))
+      lines.splice(journalStart + 1, journalEnd - journalStart - 1, ...rebuildJournal(journal, keep, movedJournal.length, written))
     }
   }
 
@@ -78,7 +105,7 @@ export function planArchive(source, { journalKeep = 8 } = {}) {
   return { result, moved, movedJournal, sourceBytes: bytes(source), resultBytes: bytes(result) }
 }
 
-// Записи журнала сгруппированы по подзаголовкам `###` (у многих задач — «Этап N — ход»), подзаголовок — не запись.
+// Journal entries are grouped by `###` subheadings (in many tasks "Stage N — progress"); a subheading is not an entry.
 function parseJournal(journalLines) {
   const preamble = []
   const groups = [{ heading: null, preamble: [], entries: [] }]
@@ -104,7 +131,7 @@ function entryDate(line) {
   return ru ? `${ru[3]}-${ru[2]}-${ru[1]}` : ''
 }
 
-// N самых свежих: по дате, при равной — по положению в файле с учётом того, сверху новые записи или снизу.
+// The N freshest: by date, on a tie by position in the file, taking into account whether new entries are on top or at the bottom.
 function freshest(entries, count) {
   const dated = entries.filter((entry) => entry.date)
   let down = 0
@@ -119,13 +146,13 @@ function freshest(entries, count) {
   return new Set(ranked.slice(0, count).map(({ entry }) => entry))
 }
 
-function rebuildJournal(journal, keep, movedCount) {
-  const previous = journal.preamble.map((line) => Number(line.match(/^Старые записи \((\d+)\)/)?.[1] ?? 0)).reduce((a, b) => a + b, 0)
-  const preamble = journal.preamble.filter((line) => !line.startsWith('Старые записи (')).join('\n').trim()
-  const out = [...(preamble ? ['', preamble] : []), '', `Старые записи (${previous + movedCount}): STAGES-ARCHIVE.md — «Журнал».`, '']
+function rebuildJournal(journal, keep, movedCount, written) {
+  const previous = journal.preamble.map((line) => Number(line.match(OLDER_ENTRIES)?.[1] ?? 0)).reduce((a, b) => a + b, 0)
+  const preamble = journal.preamble.filter((line) => !OLDER_ENTRIES.test(line)).join('\n').trim()
+  const out = [...(preamble ? ['', preamble] : []), '', written.older(previous + movedCount), '']
   for (const group of journal.groups) {
     const kept = group.entries.filter((entry) => keep.has(entry))
-    // Группа, из которой уехали все записи, уезжает вместе с подзаголовком.
+    // A group all of whose entries moved goes away together with its subheading.
     if (group.entries.length && !kept.length) continue
     if (group.heading) out.push(group.heading, ...group.preamble)
     out.push(...kept.flatMap((entry) => entry.lines))
@@ -140,7 +167,7 @@ function archiveJournal(movedJournal) {
   for (const entry of movedJournal) {
     if (entry.group !== group) {
       group = entry.group
-      // Группа уехала целиком — с ней уезжает и текст под подзаголовком, иначе он остаётся в STAGES.md.
+      // The group moved as a whole — the text under the subheading goes with it, otherwise it stays in STAGES.md.
       const whole = group.entries.every((candidate) => moved.has(candidate))
       if (group.heading) out.push(group.heading, ...(whole ? group.preamble : []))
     }
@@ -151,14 +178,14 @@ function archiveJournal(movedJournal) {
 
 function main([stagesPath, ...flags]) {
   if (!stagesPath || !existsSync(stagesPath)) {
-    console.error('Использование: node archive-stages.mjs <STAGES.md> [--apply] [--journal-keep N]')
+    console.error('Usage: node archive-stages.mjs <STAGES.md> [--apply] [--journal-keep N]')
     process.exit(2)
   }
   const apply = flags.includes('--apply')
   const keepIndex = flags.indexOf('--journal-keep')
   const journalKeep = keepIndex === -1 ? 8 : Number(flags[keepIndex + 1])
   if (!Number.isInteger(journalKeep) || journalKeep < 0) {
-    console.error('--journal-keep ждёт целое число ≥ 0')
+    console.error('--journal-keep expects an integer ≥ 0')
     process.exit(2)
   }
   const archivePath = join(dirname(stagesPath), 'STAGES-ARCHIVE.md')
@@ -167,32 +194,33 @@ function main([stagesPath, ...flags]) {
   const kb = (n) => (n / 1024).toFixed(0)
 
   if (!moved.length && !movedJournal.length) {
-    console.log(`Нечего архивировать: закрытые этапы свёрнуты, в журнале ≤ ${journalKeep} записей (${kb(sourceBytes)} KB).`)
+    console.log(`Nothing to archive: closed stages are folded, the journal has ≤ ${journalKeep} entries (${kb(sourceBytes)} KB).`)
     process.exit(0)
   }
 
   console.log(
-    `${apply ? 'Перенесено' : 'Будет перенесено'} этапов: ${moved.length}, записей журнала: ${movedJournal.length}, ` +
+    `${apply ? 'Moved' : 'Would move'} stages: ${moved.length}, journal entries: ${movedJournal.length}, ` +
       `STAGES.md: ${kb(sourceBytes)} KB → ${kb(resultBytes)} KB (−${((sourceBytes - resultBytes) / 1024).toFixed(1)} KB)`,
   )
   for (const stage of moved) console.log(`  ${stage.heading}`)
 
   if (!apply) {
-    console.log('\nОстальные разделы (Force-прогон, подтверждения, вопросы) не трогаются. Применить: --apply')
+    console.log('\nOther sections (Force run, awaiting confirmation, questions) are not touched. To apply: --apply')
     process.exit(0)
   }
 
+  const written = writtenFor(source)
   const date = new Date().toISOString().slice(0, 10)
   const header = existsSync(archivePath)
     ? readFileSync(archivePath, 'utf8').trimEnd() + '\n\n'
-    : `# Архив этапов\n\nПолные записи закрытых этапов, перенесённые из STAGES.md.\n\n`
-  const archivedStages = moved.map((stage) => `<!-- перенесено ${date} -->\n${stage.text}`)
-  const archivedJournal = movedJournal.length ? [`## Журнал\n<!-- перенесено ${date} -->\n${archiveJournal(movedJournal)}`] : []
+    : written.header
+  const archivedStages = moved.map((stage) => `${written.moved(date)}\n${stage.text}`)
+  const archivedJournal = movedJournal.length ? [`${written.journal}\n${written.moved(date)}\n${archiveJournal(movedJournal)}`] : []
 
   copyFileSync(stagesPath, `${stagesPath}.bak`)
   writeFileSync(archivePath, `${header}${[...archivedStages, ...archivedJournal].join('\n\n')}\n`)
   writeFileSync(stagesPath, result)
-  console.log(`\nАрхив: ${archivePath}\nБэкап: ${stagesPath}.bak`)
+  console.log(`\nArchive: ${archivePath}\nBackup: ${stagesPath}.bak`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))

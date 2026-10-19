@@ -1,81 +1,83 @@
 ---
 name: stage-kickoff
-description: Мини-оркестратор ОТКРЫТИЯ этапа задачи — перед реализацией показывает пользователю план этапа, сводит его с накопленными правками/TODO/вопросами, собирает бизнес/UX-ввод, фиксирует решения в STAGES.md и берёт sign-off, затем запускает спеку. Парен к stage-check (закрытие). Use when starting/opening a new stage, before implementation begins.
+description: Mini-orchestrator for OPENING a task stage — before implementation shows the user the stage plan, merges it with accumulated edits/TODOs/questions, collects business/UX input, records decisions in STAGES.md and gets sign-off, then launches the spec. Paired with stage-check (closing). Use when starting/opening a new stage, before implementation begins. RU triggers — «открываем следующий этап», «возьми sign-off»
 ---
 
-# Stage Kickoff — открытие этапа
+# Stage Kickoff — opening a stage
 
-Цель: не начинать кодить вслепую. Правки, прилетающие в СЕРЕДИНЕ этапа, стоят переделок — дешевле собрать всё на входе. Kickoff показывает план этапа, сверяет его с тем, что накопилось, забирает продуктовый ввод и sign-off — и только потом передаёт в реализацию.
+Goal: do not start coding blind. Edits that arrive in the MIDDLE of a stage cost rework — it is cheaper to collect everything at the entrance. Kickoff shows the stage plan, checks it against what has piled up, takes the product input and the sign-off — and only then hands over to implementation.
 
-Это пара к /stage-check: **kickoff открывает этап, check закрывает**.
+This is the pair of /stage-check: **kickoff opens the stage, check closes it**.
 
-> **Project config.** `<task_dir>` и раскладку кода бери из `<repo>/.claude/pipeline.config.md` (нет файла — `/pipeline-init`). `<task_dir>` = поле `task_path` (по умолчанию `<repo>/.claude/tasks/ (в репо)`).
+> **Project config.** Take `<task_dir>` and the code layout from `<repo>/.claude/pipeline.config.md` (no file — `/pipeline-init`). `<task_dir>` = the `task_path` field (default `<repo>/.claude/tasks/ (in the repo)`).
 
-## Вход
+> **Task language.** Read and write the service headings and fields of STAGES.md (`## Journal`, `Decisions:`, the "Awaiting user confirmation" block and the rest) in the form of the task language — the `Language:` line of the header; the English and Russian forms are in the table of `${CLAUDE_PLUGIN_ROOT}/references/language.md`. Write the free text (journal entries, decisions) in the task language as well.
 
-- `<task_dir>/<TICKET>/STAGES.md` — обязателен (план задачи). Нет — предложи /stage-plan и остановись.
-- Номер/название этапа (не сказан — следующий `todo` по порядку).
+## Input
 
-## Процедура
+- `<task_dir>/<TICKET>/STAGES.md` — required (the task plan). If missing, suggest /stage-plan and stop.
+- The stage number/name (if not given — the next `todo` in order).
 
-### Шаг 1. Прочитать этап
-Из STAGES.md: скоуп, Figma-ноды, критерии приёмки (`AC-*`, WHEN/THEN), что переиспользовать, где матчить с adaptive/webview, плюс строки таблицы «Общие элементы», где этот этап значится ПОТРЕБИТЕЛЕМ — их владелец уже написан, и писать заново нечего. Читай точечно (offset/grep), а не весь файл — STAGES.md бывает большим.
+## Procedure
 
-**Гейт качества критериев — до sign-off, а не после.** Проверяется здесь не реализация (её ещё нет), а сами формулировки: неизмеримый критерий проходит в implement беспрепятственно и всплывает уже правкой после PR. Прогони критерии этапа по восьми вопросам:
+### Step 1. Read the stage
+From STAGES.md: scope, Figma nodes, acceptance criteria (`AC-*`, WHEN/THEN), what to reuse, where to match with adaptive/webview, plus the rows of the "Shared elements" table where this stage is listed as the CONSUMER — their owner is already written, and there is nothing to write again. Read selectively (offset/grep), not the whole file — STAGES.md can be big.
 
-1. **Измерим?** Есть токен, число, имя стейта или наблюдаемое событие. «Как в дизайне», «аккуратно», «заметно» — не критерии, а намерения.
-2. **Назван верификатор?** Тег `[verify: …]` стоит и достижим на этом этапе (`figma-compare` для logic-only этапа — противоречие, `devtools-verify` без MCP — `skip`, а не «проверим»).
-3. **Стейты закрыты?** Для каждого экрана этапа empty / loading / error / offline либо описаны критерием, либо явно вынесены строкой «вне этапа».
-4. **Копия из источника?** Пользовательский текст либо взят из источника, либо помечен плейсхолдером — и тогда это вопрос в `DESIGN-QUESTIONS.md`, а не «поправим потом».
-5. **Нет висящих `[Gap]` / `[Ambiguity]`?** Незакрытая развилка в критериях этапа не доживает до implement: либо закрывается фактом из источника (Шаг 4), либо уходит в батч вопросов, либо этап явно сужается.
-6. **Образец назван путём?** «Как у X», «как сейчас», «как было» в критерии или решении несут `путь:строка` X — прочитай его сейчас и перенеси в критерий то, что там на деле (условия активности кнопки, что уходит на сервер). Строку без пути вернёт хук journal-gate.
-7. **Действия с условиями — таблицей?** Сохранение, отправка, смена статуса с условиями — таблица «состояние × действие» (stage-plan, Шаг 3). Ячейку, где действие ничего не сохраняет или теряет введённое, покажи пользователю отдельно: критерий, который такое закрепляет, пройдёт все чекеры.
-8. **UI-этап: эталон, паритет, словарь?** Назван «Эталон вида» (соседняя секция, путь и URL); этап удаляет или заменяет UI — есть таблица паритета; показывает статусы — матрица «место → поле API → текст». Вид «как в прототипе» вместо кита — решение пользователя, а не умолчание.
+**The criteria quality gate — before sign-off, not after.** What is checked here is not the implementation (it does not exist yet) but the wording itself: an unmeasurable criterion passes into implement unhindered and surfaces as an edit after the PR. Run the stage's criteria through eight questions:
 
-Провалившиеся пункты — не блокер этапа, а материал для Шага 3 и 4: показываешь их пользователю формулировкой «вот это непроверяемо, предлагаю так». Критерий, переформулированный на kickoff, правится в STAGES.md тут же (ID сохраняется).
+1. **Measurable?** There is a token, a number, a state name or an observable event. "As in the design", "neat", "noticeable" are not criteria but intentions.
+2. **Verifier named?** The `[verify: …]` tag is present and reachable at this stage (`figma-compare` for a logic-only stage is a contradiction, `devtools-verify` without MCP is `skip`, not "we'll check").
+3. **States closed?** For every screen of the stage, empty / loading / error / offline are either described by a criterion or explicitly moved out by an "out of stage" line.
+4. **Copy from the source?** User-facing text is either taken from the source or marked with a placeholder — and then it is a question in `DESIGN-QUESTIONS.md`, not "we'll fix it later".
+5. **No dangling `[Gap]` / `[Ambiguity]`?** An unclosed fork in the stage's criteria does not live to implement: it is either closed by a fact from the source (Step 4), or goes into the question batch, or the stage is explicitly narrowed.
+6. **Example named by a path?** "Like X", "as now", "as before" in a criterion or decision carry the `path:line` of X — read it now and carry into the criterion what is actually there (conditions for a button being active, what goes to the server). A line without a path is returned by the journal-gate hook.
+7. **Actions with conditions — a table?** Saving, sending, a status change with conditions — a "state × action" table (stage-plan, Step 3). Show the user separately a cell where the action saves nothing or loses what was entered: a criterion that locks that in will pass all the checkers.
+8. **UI stage: reference, parity, vocabulary?** A "Visual reference" is named (a neighboring section, path and URL); the stage removes or replaces UI — there is a parity table; it shows statuses — a matrix "place → API field → text". A look "as in the prototype" instead of the kit is a user decision, not a default.
 
-### Шаг 2. Свести с накопленным
-Собери всё, что может повлиять на этот этап, ДО старта:
-- `<task_dir>/<TICKET>/DESIGN-QUESTIONS.md` — открытые вопросы, релевантные этапу (🔴/🟡).
-- **Блок «⚠ Ожидают подтверждения пользователя» в STAGES.md** — непустой показывай пользователю на КАЖДОМ kickoff, пока пункты не подтверждены явно (иначе продуктовое изменение доживает до QA и разворачивается).
-- Блоки «TODO от пользователя» и «Решения пользователя» в STAGES.md.
-- Эскалации и «вопросы дизайнеру» из журналов прошлых этапов.
-- Mid-flight решения из недавнего диалога, ещё не зафиксированные.
-Отметь, что из этого меняет скоуп/подход текущего этапа.
+Failed items are not a blocker for the stage but material for Steps 3 and 4: you show them to the user in the form "this is unverifiable, I propose this". A criterion reworded at kickoff is edited in STAGES.md right there (the ID is kept).
 
-### Шаг 3. Показать план этапа пользователю
-Компактно (не дамп): что строим, какие компоненты/composables **переиспользуем** (конкретные пути), что пишем с нуля, какие решения нужны, какие вопросы открыты и как предлагаешь их закрыть. Если нужна Figma-спека — скажи, что запустишь `figma-spec` после sign-off (сама спека — не в kickoff-контекст, она уходит в субагент).
+### Step 2. Merge with what has piled up
+Collect everything that may affect this stage, BEFORE the start:
+- `<task_dir>/<TICKET>/DESIGN-QUESTIONS.md` — open questions relevant to the stage (🔴/🟡).
+- **The "⚠ Awaiting user confirmation" block in STAGES.md** — if non-empty, show it to the user at EVERY kickoff until the items are explicitly confirmed (otherwise a product change lives to QA and gets reversed).
+- The "TODO from the user" and "User decisions" blocks in STAGES.md.
+- Escalations and "questions to the designer" from the journals of past stages.
+- Mid-flight decisions from the recent dialogue that are not yet recorded.
+Note what of this changes the scope/approach of the current stage.
 
-### Шаг 4. Забрать бизнес/UX-ввод
-Прямо спроси: «что учесть или дополнить с продуктовой/пользовательской стороны перед стартом?». Дай пользователю добавить требования, краевые случаи, приоритеты. Открытый вопрос собирает то, о чём пользователь думает сам; чтобы не потерять то, о чём он не думает, пройди перед ним таксономию категорий из `/stage-force`, Шаг 0 — но только по категориям, релевантным этому этапу, и спрашивай лишь про статусы `Частично`/`Не покрыто` с реальным влиянием на реализацию. Открытые дизайн-вопросы, которые он не может решить сейчас, — в DESIGN-QUESTIONS.md, не блокируй ими старт, если этап без них имплементируем.
+### Step 3. Show the stage plan to the user
+Compactly (not a dump): what we build, which components/composables we **reuse** (specific paths), what we write from scratch, which decisions are needed, which questions are open and how you propose to close them. If a Figma spec is needed — say that you will run `figma-spec` after sign-off (the spec itself does not go into the kickoff context, it goes to a subagent).
 
-**Поведенческая развилка → демо перед имплементацией.** Если решение касается видимого пользователю ПОВЕДЕНИЯ (дефолты, гейтинг, когда что показывается) — не проси выбрать в абстракции: предложи живое демо обеих альтернатив на dev-сервере (тумблер/временный патч/query-параметр) ДО полной имплементации. Выбор «на словах» разворачивается после первого живого взгляда; 5-минутное демо дешевле цикла имплементация+тесты+откат. Для визуальных токенов/размеров демо не нужно — их ловят чекеры.
+### Step 4. Collect business/UX input
+Ask directly: "what should be taken into account or added from the product/user side before the start?". Let the user add requirements, edge cases, priorities. An open question collects what the user thinks about on their own; to not lose what they do not think about, walk the user through the taxonomy of categories from `/stage-force`, Step 0 — but only the categories relevant to this stage, and ask only about the statuses `Partially`/`Not covered` with a real impact on the implementation. Open design questions that they cannot decide now go to DESIGN-QUESTIONS.md; do not block the start with them if the stage can be implemented without them.
 
-**Скиновая развилка закрывается ФАКТОМ, а не голосованием — и до имплементации.** Если дизайн-источник содержит больше одного визуального варианта одного экрана (скин, glass/flat, Modern/Classic, proposal/current), это НЕ вопрос вкуса в «Ожидают подтверждения» — это вопрос «какой из них источник реально отдал», и он разрешается чтением источника: класс на корневом элементе флоу-файла, подключён ли тогл, есть ли перекрывающий блок в CSS, что говорит самоописывающий комментарий (методология — `${CLAUDE_PLUGIN_ROOT}/agents/proto-spec.md`, шаг 0, или figma-spec для Figma-проектов). Спрашивать пользователя можно только когда источник действительно даёт два живых варианта.
-Правило: **выбранный вариант — строкой в решениях этапа с ссылкой `file:line`, из которой он следует.** Вариант, выбранный без такой ссылки, не считается закрытым и не должен уходить в implement: пункт «уточнить скин» в блоке подтверждений живёт до QA и возвращается полным кругом правок.
+**A behavioral fork → a demo before implementation.** If the decision concerns BEHAVIOR visible to the user (defaults, gating, when what is shown) — do not ask to choose in the abstract: offer a live demo of both alternatives on the dev server (a toggle/temporary patch/query parameter) BEFORE the full implementation. A choice "in words" is reversed after the first live look; a 5-minute demo is cheaper than a cycle of implementation + tests + rollback. Visual tokens/sizes do not need a demo — the checkers catch them.
 
-### Force-режим — где меняется процедура
+**A fork between visual variants (skins) is closed by a FACT, not by a vote — and before implementation.** If the design source contains more than one visual variant of one screen (a skin, glass/flat, Modern/Classic, proposal/current), this is NOT a question of taste for "Awaiting user confirmation" — it is the question "which of them did the source actually deliver", and it is resolved by reading the source: the class on the root element of the flow file, whether the toggle is wired, whether there is an overriding block in the CSS, what the self-describing comment says (the method is `${CLAUDE_PLUGIN_ROOT}/agents/proto-spec.md`, step 0, or figma-spec for Figma projects). You may ask the user only when the source really gives two live variants.
+The rule: **the chosen variant goes as a line in the stage's decisions with a `file:line` reference it follows from.** A variant chosen without such a reference is not considered closed and must not go into implement: an item "settle the glass skin" in the confirmations block lives to QA and comes back as a full circle of edits.
 
-В STAGES.md есть незакрытый блок «Force-прогон» (без «завершён» в заголовке — задача идёт через `/stage-force`) → шаги 3 и 4 не выполняются как остановки: план этапа пользователю не показывается и sign-off не запрашивается — вопросы уже собраны интервью на старте прогона. Шаги 1, 2 и 5 остаются: этап всё равно читается, сводится с накопленным и его решения всё равно пишутся в STAGES.md.
+### Force mode — where the procedure changes
 
-Гейт качества критериев (Шаг 1) в force остаётся, но его провалы никого не ждут: неизмеримый критерий переформулируй до измеримого сам и запиши правку в STAGES.md; если измеримым он становится только после продуктового решения — строкой в «⚠ Ожидают подтверждения пользователя» с указанием, где это видно, и дальше по плану.
+STAGES.md has an unclosed "Force run" block (no "completed" in the heading — the task is running through `/stage-force`) → steps 3 and 4 are not performed as stops: the stage plan is not shown to the user and sign-off is not requested — the questions were already collected by the interview at the run start. Steps 1, 2 and 5 stay: the stage is still read, merged with what has piled up, and its decisions are still written to STAGES.md.
 
-Сведение с накопленным (шаг 2) вскрыло развилку, которой не было в интервью, — в force это тоже не остановка. Обратимую решай сам строкой в «⚠ Ожидают подтверждения». Необратимую или конфликт источников откладывай блокером и доводи этап без неё (`/stage-force`, Шаг 2).
+The criteria quality gate (Step 1) stays in force, but its failures wait for no one: reword an unmeasurable criterion to a measurable one yourself and record the edit in STAGES.md; if it becomes measurable only after a product decision — a line in "⚠ Awaiting user confirmation" saying where it is visible, and go on with the plan.
 
-### Шаг 5. Зафиксировать и sign-off
-- Запиши согласованное в STAGES.md: решения этапа — строкой `Решения:` в блок этапа (её сохраняет архивация), бизнес-ввод и ход обсуждения — в «Журнал» (дата, что решили и **для чего**). Это часть сохранности флоу, не опционально. Компактно: 3–6 строк, детали → `checks/`/`specs/`.
-- Этап без визуальных изменений — пометь `logic-only` в заголовке этапа (дизайн-чекеры skip, см. /stage-check Шаг 0). Критерии приёмки, достижимые только под логином, — сразу пометь `[live: user-side]`, если авторизованный Chrome-профиль недоступен (см. skill devtools-verify).
-- Возьми явный **sign-off** пользователя на старт. Без него реализацию не начинать (если он заранее явно не разрешил идти без подтверждения).
-- После sign-off: запусти `figma-spec` (субагент, спека → `specs/<stage>.md`) и передавай в implement.
-- Этап опирается на API сторонней библиотеки, в котором нет уверенности (новая зависимость, свежий мажор, редкая опция, миграция), — до кода запусти субагент `docs-lookup` (типы и CHANGELOG установленного пакета под версию из локфайла). Ответ — в спеку этапа, а не дамп документации в главный контекст.
+If merging with what has piled up (step 2) reveals a fork that was not in the interview, in force this is not a stop either. Decide a reversible one yourself with a line in "⚠ Awaiting user confirmation". Park an irreversible one or a conflict of sources as a blocker and bring the stage to the end without it (`/stage-force`, Step 2).
 
-## Выход — резюме пользователю
+### Step 5. Record and sign-off
+- Write what was agreed to STAGES.md: the stage's decisions — as a `Decisions:` line in the stage block (archiving keeps it), business input and the course of the discussion — into the "Journal" (date, what was decided and **what for**). This is part of preserving the flow, not optional. Compactly: 3–6 lines, details → `checks/`/`specs/`.
+- A stage without visual changes — mark `logic-only` in the stage heading (design checkers skip, see /stage-check Step 0). Acceptance criteria reachable only under a login — mark `[live: user-side]` right away if the authorized Chrome profile is unavailable (see the devtools-verify skill).
+- Take the user's explicit **sign-off** for the start. Do not begin implementation without it (unless they explicitly allowed going on without confirmation in advance).
+- After sign-off: run `figma-spec` (a subagent, spec → `specs/<stage>.md`; its prompt carries the task's `Language:` line) and pass it to implement.
+- The stage relies on a third-party library API you are not sure about (a new dependency, a fresh major, a rare option, a migration) — before the code, run the `docs-lookup` subagent (types and CHANGELOG of the installed package for the version from the lockfile). The answer goes into the stage's spec, not a dump of documentation into the main context.
+
+## Output — summary to the user
 
 ```
-Этап N: <название> — kickoff
-Строим: <1–2 строки>  | Переиспользуем: <composables/компоненты>
-Решения этапа: <что согласовали>  | Открытые вопросы: <в DESIGN-QUESTIONS>
-Жду: sign-off на старт (или правки к плану).
+Stage N: <name> — kickoff
+We build: <1–2 lines>  | We reuse: <composables/components>
+Stage decisions: <what was agreed>  | Open questions: <in DESIGN-QUESTIONS>
+Waiting for: sign-off for the start (or edits to the plan).
 ```
 
-Никогда не переходи к реализации, пока есть неотвеченный вопрос, блокирующий скоуп этапа.
+Never move to implementation while there is an unanswered question that blocks the scope of the stage.

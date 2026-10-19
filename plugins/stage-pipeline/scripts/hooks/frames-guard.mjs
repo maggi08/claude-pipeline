@@ -3,17 +3,17 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
- * Рантайм-чекер не заканчивает работу, пока не посмотрел каждый снятый им кадр.
+ * The runtime checker does not finish until it has looked at every frame it took.
  *
- * Прецедент: финальный прогон снял 12 кадров, агент открыл 2, оркестратор ни одного, а пользователю ушло
- * «12 кадров». Обрезанная плашка — единственный настоящий дефект задачи — была на непросмотренном кадре.
- * На этапе 2 той же задачи агент открыл 5 кадров из 13. В другой задаче название страны в три строки
- * вылезало из карточки на скриншотах самого чекера — их тоже никто не открыл.
+ * Precedent: the final run took 12 frames, the agent opened 2, the orchestrator none, and the user was told
+ * "12 frames". A clipped badge — the only real defect of the task — was on an unviewed frame.
+ * At stage 2 of the same task the agent opened 5 frames out of 13. In another task a country name in three
+ * lines stuck out of the card on the checker's own screenshots — nobody opened those either.
  *
- * SubagentStop агента devtools-verify: кадры — `take_screenshot` с `filePath` в его транскрипте и картинки
- * в `checks/` задачи текущей ветки, записанные за время его работы (фолбэк-скрипты puppeteer/playwright
- * пишут их сами). Просмотрен — значит, открыт Read'ом. Непросмотренные — причина продолжить.
- * Петлю Stop-хуков Claude Code обрывает сам (не больше 8 продолжений подряд).
+ * SubagentStop of the devtools-verify agent: frames are `take_screenshot` calls with `filePath` in its
+ * transcript and images in `checks/` of the current branch's task written while it worked (fallback
+ * puppeteer/playwright scripts write them themselves). Viewed means opened with Read. Unviewed frames are
+ * a reason to continue. Claude Code itself breaks the Stop-hook loop (no more than 8 continuations in a row).
  */
 const IMAGE = /\.(png|jpe?g|webp)$/i
 const input = await readHookInput()
@@ -54,7 +54,7 @@ for (const line of readFileSync(transcript, 'utf8').split('\n')) {
 
 const frames = new Set([...shot].filter((path) => existsSync(path)))
 const task = readPipelineState(cwd)?.tasks.find((candidate) => candidate.current)
-// Окно — время работы агента: кадры соседнего прогона или пользователя ему не принадлежат.
+// The window is the agent's working time: frames of a neighbouring run or of the user are not its own.
 const during = (path) => statSync(path).mtimeMs >= started && statSync(path).mtimeMs <= ended + 60_000
 if (task && Number.isFinite(started)) for (const path of images(join(task.dir, 'checks'))) if (during(path)) frames.add(real(path))
 
@@ -66,15 +66,15 @@ process.stdout.write(
   JSON.stringify({
     decision: 'block',
     reason:
-      `stage-pipeline: ты снял ${frames.size} кадр(ов), а открыл не все — ${missed.length} не просмотрено:\n${shown.join('\n')}${missed.length > 15 ? `\n- … ещё ${missed.length - 15}` : ''}\n` +
-      'Открой каждый Read-ом и посмотри глазами: обрезка, наезды, лишние рамки, текст за краем, пустые места. Дефект, найденный на кадре, допиши в отчёт находкой; ' +
-      'кадр-артефакт съёмки (кольцо фокуса от синтетического клика, обрезка окном) — переснять, а не пропустить. ' +
-      'В одной задаче единственный настоящий дефект задачи был на кадре, который никто не открыл.',
+      `stage-pipeline: you took ${frames.size} frame(s) but did not open all of them — ${missed.length} not viewed:\n${shown.join('\n')}${missed.length > 15 ? `\n- … ${missed.length - 15} more` : ''}\n` +
+      'Open each one with Read and look at it: clipping, overlaps, extra borders, text past the edge, empty spaces. Add a defect found on a frame to the report as a finding; ' +
+      'a capture artifact (a focus ring from a synthetic click, clipping by the window) — retake the frame, do not skip it. ' +
+      'In one task the only real defect of the task was on a frame that nobody opened.',
   }),
 )
 process.exit(0)
 
-// Каталог задач бывает за симлинком (`/var` → `/private/var`, `~/.claude/<team>-tasks`): сравниваются реальные пути.
+// The task directory can sit behind a symlink (`/var` → `/private/var`, `~/.claude/<team>-tasks`): real paths are compared.
 function real(path) {
   try {
     return realpathSync(path)

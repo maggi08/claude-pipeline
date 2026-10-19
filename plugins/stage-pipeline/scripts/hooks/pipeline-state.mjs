@@ -2,17 +2,31 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import {
+  BRANCH_BOUNDARY,
+  BRANCH_LABEL,
+  CLOSED_WORD,
+  EN_HEADINGS,
+  LANGUAGE_LINE,
+  NOT_CLOSED,
+  NO_BRANCH,
+  RU_HEADINGS,
+  STATUS_FORCE_CLOSED,
+  STATUS_FORCE_CLOSED_WITH_DATE,
+  STATUS_LINE,
+  forceHeadings,
+} from '../markers.mjs'
 
 /**
- * Общее состояние пайплайна для хуков и скриптов. Плагин включён во всех репозиториях,
- * поэтому всё, что не находит `.claude/pipeline.config.md`, возвращает null —
- * хук в чужом репо обязан молчать.
+ * Shared pipeline state for hooks and scripts. The plugin is enabled in all repos,
+ * so anything that does not find `.claude/pipeline.config.md` returns null —
+ * a hook in a foreign repo must stay silent.
  *
- * Хуки смотрят только на задачи ТЕКУЩЕЙ ВЕТКИ (`current`). Задачи других веток — параллельная
- * работа в соседней сессии или worktree, брошенные и давно закрытые — на эту ветку не влияют:
- * иначе один забытый `[status: in-progress]` блокирует коммиты во всём репо, а блок
- * «Force-прогон» старой задачи разрешает их всем. Файлы задач читаются как есть: живые
- * конфиги и STAGES.md никто не обязан переписывать под новую версию плагина.
+ * Hooks look only at tasks of the CURRENT BRANCH (`current`). Tasks of other branches — parallel
+ * work in a neighbouring session or worktree, abandoned and long-closed ones — do not affect this branch:
+ * otherwise one forgotten `[status: in-progress]` blocks commits across the whole repo, and the
+ * "Force run" block of an old task allows them for everyone. Task files are read as they are: live
+ * configs and STAGES.md do not have to be rewritten for a new plugin version.
  */
 export function readPipelineState(cwd) {
   const worktree = git(cwd, 'rev-parse', '--show-toplevel') ?? cwd
@@ -21,7 +35,7 @@ export function readPipelineState(cwd) {
 
   const config = readConfig(root)
   const taskDir = taskDirFromConfig(config, root)
-  // Ветка — рабочего дерева, где идёт команда: у каждого worktree своя.
+  // The branch of the worktree where the command runs: each worktree has its own.
   const branch = git(worktree, 'symbolic-ref', '--short', '-q', 'HEAD')
   const tasks = readTasks(taskDir, branch)
   if (!tasks.some((task) => task.current)) tasks.push(...foreignTasks(taskDir, mainRoot(cwd) ?? root, branch))
@@ -45,12 +59,13 @@ function readTasks(taskDir, branch) {
         stages,
         mtime: mtimeMs,
         sizeKb: Math.round(size / 1024),
-        status: stages.match(/^## Статус:\s*(.+)$/m)?.[1]?.trim() ?? null,
+        status: stages.match(STATUS_LINE)?.[1]?.trim() ?? null,
+        language: taskLanguage(stages),
         branches,
-        // Задача, которую не трогали дольше STALE_DAYS, ничего не охраняет: брошенный статус не должен
-        // блокировать ветку навсегда, а вернувшаяся в работу задача обновит STAGES.md первым же kickoff/check.
+        // A task untouched for longer than STALE_DAYS guards nothing: an abandoned status must not
+        // block a branch forever, and a task that returns to work updates STAGES.md at its first kickoff/check.
         current: Date.now() - mtimeMs < STALE_DAYS * DAY && isCurrentTask(ticket, branches, branch),
-        // Живые форматы: `[status: in-progress]`, `[status: in-progress — ждёт user-review]`, `[status: in progress; …]`.
+        // Live formats: `[status: in-progress]`, `[status: in-progress — waiting for user-review]`, `[status: in progress; …]`.
         open: /\[status:\s*(todo|in[-\s]progress)\b/i.test(stages),
         forceActive: forceActive(stages),
       }
@@ -59,12 +74,12 @@ function readTasks(taskDir, branch) {
 }
 
 /**
- * Задача на несколько репо живёт в каталоге одного из них: задача правит core и вебвью, а STAGES.md лежит
- * в `task_path` core. Без этого во втором репо хуки задачу не видели — коммиты оркестратора шли мимо
- * обычного режима и мимо floor-guard. Каталоги задач других репо берутся из реестра (его пополняет
- * session-start), и чужая задача считается своей только при двух условиях сразу: тикет вида `ABC-12`
- * стоит в имени ветки и STAGES.md называет этот репо по имени. По одной строке `Ветка:` — нельзя:
- * `Ветка: master` задачи из соседнего проекта захватила бы master любого репо.
+ * A task over several repos lives in the task directory of one of them: the task edits core and the webview, and STAGES.md lies
+ * in core's `task_path`. Without this the hooks did not see the task in the second repo — the orchestrator's commits bypassed
+ * the normal mode and floor-guard. Task directories of other repos come from the registry (session-start
+ * fills it), and a foreign task counts as own only under two conditions at once: a ticket like `ABC-12`
+ * is in the branch name and STAGES.md names this repo. The `Branch:` line alone is not enough:
+ * a `Branch: master` of a task from a neighbouring project would capture master of any repo.
  */
 function foreignTasks(ownTaskDir, root, branch) {
   if (!branch) return []
@@ -79,8 +94,8 @@ function foreignTasks(ownTaskDir, root, branch) {
 }
 
 /**
- * Каталог данных плагина: Claude Code отдаёт его хукам в CLAUDE_PLUGIN_DATA. Запасной путь — тот же
- * каталог, что Claude Code заводит плагину сам, чтобы скрипты, запущенные руками, видели те же данные.
+ * The plugin data directory: Claude Code gives it to hooks in CLAUDE_PLUGIN_DATA. The fallback path is the same
+ * directory Claude Code creates for the plugin itself, so scripts run by hand see the same data.
  */
 export function pluginDataDir() {
   return process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.claude/plugins/data/stage-pipeline')
@@ -106,29 +121,40 @@ export function registerTaskDir(dir) {
     mkdirSync(pluginDataDir(), { recursive: true })
     writeFileSync(registryPath(), JSON.stringify([...dirs, real], null, 2))
   } catch {
-    // Реестр — подсказка для соседних репо; не записался — хук этого репо работает как раньше.
+    // The registry is a hint for neighbouring repos; if it is not written, this repo's hook works as before.
   }
 }
 
-/** `review_model` из конфига: модель whole-branch ревью и свежего прогона чекера (stage-check, Шаг 3.3). */
+/** `review_model` from the config: the model of the whole-branch review and of the fresh checker run (stage-check, Step 3.3). */
 export function reviewModel(config) {
   const raw = config.match(/^\s*-\s*review_model:\s*[`*]*([\w.-]+)/m)?.[1]
   return raw ? raw.toLowerCase() : 'opus'
 }
 
 /**
- * Открытый блок «Force-прогон» (последний без «завершён» в заголовке): заголовок, дата из него
- * (`2026-09-30`, `2026-09-30b`, `28.09.2026`) и текст до следующего раздела `## `.
+ * An open "Force run" block (the last one without "completed" in the heading): the heading, the date from it
+ * (`2026-09-30`, `2026-09-30b`, `28.09.2026`; `unreadDate` — the heading has a date in another form) and the text up to the next `## ` section.
  */
 export function openForceBlock(stages) {
   if (!forceActive(stages)) return null
-  const blocks = [...stages.matchAll(/^## Force-прогон.*$/gm)].filter(([heading]) => !/заверш/i.test(heading))
+  const blocks = forceHeadings(stages).filter(([heading]) => !CLOSED_WORD.test(heading))
   const last = blocks.at(-1)
   if (!last) return null
   const rest = stages.slice(last.index + last[0].length)
   const end = rest.search(/^## /m)
-  return { heading: last[0], date: headingDate(last[0]), body: end === -1 ? rest : rest.slice(0, end) }
+  const date = headingDate(last[0])
+  // A date the parser did not understand ("Oct 17, 2026", "10/17/2026") is a new block, not an old one: fail closed, `Confirmed:` is required.
+  const unreadDate = date === null && UNREAD_DATE.test(last[0])
+  return { heading: last[0], date, unreadDate, body: end === -1 ? rest : rest.slice(0, end) }
 }
+
+// Something that looks like a date, not any digits and not a month-like word ("deck", "may need a rebase", "stages 4-6" are not dates):
+// a year, d/m/y, d.m, "17 October", "17th of Oct", "Oct 17th", "Oct. 17", "Oct-17". "17-10" is not flagged: it is a range of stages as often as a date.
+const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+const UNREAD_DATE = new RegExp(
+  `\\b(?:19|20)\\d{2}\\b|\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b|\\b\\d{1,2}[/.]\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?(?:\\s+of)?[\\s-]+${MONTH}\\b|\\b${MONTH}\\.?[\\s-]+\\d{1,2}(?:st|nd|rd|th)?\\b`,
+  'i',
+)
 
 function headingDate(heading) {
   const iso = heading.match(/(\d{4})-(\d{2})-(\d{2})/)
@@ -138,19 +164,19 @@ function headingDate(heading) {
 }
 
 /**
- * Коммиты задачи, о которых журнал не знает: ни SHA, ни заголовок, ни содержимое не встречаются в STAGES.md,
- * STAGES-ARCHIVE.md и PR.md. Так выглядит работа после закрытия force — правки в главном контексте
- * и коммиты пользователя, которые не прошли ни один чекер. Где искать:
- * - все ветки задачи из строки `Ветка:` (локальные и origin/) и текущая, если она ветка задачи: после
- *   сквош-мержа вечерние коммиты остаются только на старой ветке, а новая ветка от dev их не видит;
- * - интеграционная ветка после закрытия force — только коммиты автора этого репо (`user.email`) в файлах
- *   задачи, которые не называют её тикет: фикс задачи под чужим тикетом прямо в dev — та же работа мимо журнала.
- * Пересобранный без подписи коммит — тот же коммит: журнал узнаёт его по заголовку или по patch-id.
+ * Task commits the journal does not know: neither the SHA, nor the subject, nor the content appear in STAGES.md,
+ * STAGES-ARCHIVE.md and PR.md. This is what work after a force run closed looks like — edits in the main context
+ * and the user's commits that did not pass any checker. Where to look:
+ * - all task branches from the `Branch:` line (local and origin/) and the current one if it is a task branch: after
+ *   a squash merge the evening commits remain only on the old branch, and a new branch off dev does not see them;
+ * - the integration branch after the force run closed — only commits by this repo's author (`user.email`) in task
+ *   files that do not name its ticket: a task fix under someone else's ticket straight in dev is the same work bypassing the journal.
+ * A commit rebuilt without a signature is the same commit: the journal recognises it by subject or by patch-id.
  */
 export function unjournaledCommits(state, task, limit = 50) {
   const cwd = state.worktree
-  // База — ближайшая из интеграционных веток, а не только `main_branch`: в живых конфигах он бывает
-  // `main` при PR в dev, и тогда в «работу мимо журнала» попали бы чужие смёрженные PR.
+  // The base is the nearest of the integration branches, not only `main_branch`: in live configs it can be
+  // `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
   const configured = state.config.match(/^\s*-\s*main_branch:\s*[`*]*([\w./-]+)/m)?.[1]
   const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
   const integration = names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
@@ -169,11 +195,11 @@ export function unjournaledCommits(state, task, limit = 50) {
   const add = (where, ...args) => {
     for (const line of (git(cwd, 'log', '--no-merges', `--max-count=${limit}`, '--format=%H%x09%s', ...args) ?? '').split('\n').filter(Boolean)) {
       const [sha, ...subject] = line.split('\t')
-      // Мерж-коммиты и сквош смёрженного PR («… (#17)») — не работа задачи мимо журнала.
+      // Merge commits and the squash of a merged PR ("… (#17)") are not task work bypassing the journal.
       if (!candidates.has(sha) && !/\(#\d+\)\s*$/.test(subject.join('\t'))) candidates.set(sha, { sha, subject: subject.join('\t'), where })
     }
   }
-  // Ветки задачи — из шапки и по тикету в имени: шапку переписывают на новую ветку, старая с вечерними коммитами остаётся.
+  // Task branches come from the header and from the ticket in the name: the header is rewritten for a new branch, the old one with evening commits stays.
   const named = (git(cwd, 'for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes/origin') ?? '')
     .split('\n')
     .filter((ref) => ref && isCurrentTask(task.ticket, [], ref.replace(/^origin\//, '')))
@@ -184,7 +210,7 @@ export function unjournaledCommits(state, task, limit = 50) {
   for (const ref of refs) {
     const base = nearest(ref)
     bases.add(base.ref)
-    // Ветка уже влита сквошем («Feat(ABC-1): … (#17)» в базе позже её последнего коммита) — её работа в базе, напоминать не о чем.
+    // The branch is already merged by squash ("Feat(ABC-1): … (#17)" in the base after its last commit) — its work is in the base, nothing to remind about.
     const merged = Number(git(cwd, 'log', '-1', '--format=%ct', '-F', '-i', `--grep=${task.ticket}`, base.ref) ?? 0)
     if (base.ahead && !(merged && merged >= Number(git(cwd, 'log', '-1', '--format=%ct', ref) ?? Infinity))) add('branch', `${base.ref}..${ref}`)
   }
@@ -194,7 +220,7 @@ export function unjournaledCommits(state, task, limit = 50) {
   const known = journalCommits(cwd, journal)
   if (closed && me && known.length) {
     const ticket = new RegExp(`(^|[^\\w-])${escapeRegExp(task.ticket)}([^\\w-]|$)`, 'i')
-    // Коммиты задачи из журнала — с тикетом в заголовке: журнал ссылается и на базу («на базе 422729d0»), её файлы не задача.
+    // Task commits from the journal are those with the ticket in the subject: the journal also refers to the base ("on base 422729d0"), its files are not the task.
     const info = (git(cwd, 'log', '--no-walk=unsorted', '--format=%H %ct %s', ...known) ?? '')
       .split('\n')
       .filter(Boolean)
@@ -205,15 +231,15 @@ export function unjournaledCommits(state, task, limit = 50) {
     const own = info.some(({ subject }) => ticket.test(subject)) ? info.filter(({ subject }) => ticket.test(subject)) : info
     const files = [...new Set((git(cwd, 'show', '--name-only', '--format=', ...own.map(({ sha }) => sha)) ?? '').split('\n').filter(Boolean))]
     const before = new Set(candidates.keys())
-    // После закрытия — после последнего коммита прогона, а не с начала дня: утренний хотфикс до прогона — не доработка.
-    // Доработка после «готово» идёт в первые дни; дальше те же файлы правят уже другие задачи.
+    // After the close — after the last commit of the run, not from the start of the day: a morning hotfix before the run is not follow-up work.
+    // Follow-up work after "done" happens in the first days; later the same files are edited by other tasks.
     const since = Math.max(Date.parse(`${closed}T00:00:00`), ...own.map(({ time }) => time + 1000))
     const until = Date.parse(`${closed}T00:00:00`) + AFTER_CLOSE_DAYS * DAY
     const iso = (time) => new Date(time).toISOString().replace(/\.\d+Z$/, 'Z')
     for (const ref of bases.size ? bases : [nearest('HEAD').ref]) {
       if (files.length) add(ref, `--since=${iso(since)}`, `--until=${iso(until)}`, `--author=${escapeRegExp(me)}`, ref, '--', ...files.slice(0, 400))
     }
-    // Свой сквош задачи в dev («Feat(KC-1): …») — не работа мимо журнала; откат чужого коммита — тоже не доработка задачи.
+    // The task's own squash into dev ("Feat(KC-1): …") is not work bypassing the journal; a revert of someone else's commit is not task follow-up either.
     for (const [sha, commit] of candidates) if (!before.has(sha) && (ticket.test(commit.subject) || /^Revert\s/.test(commit.subject))) candidates.delete(sha)
   }
 
@@ -224,16 +250,16 @@ export function unjournaledCommits(state, task, limit = 50) {
   return left.filter(({ sha }) => !journaled.has(ids.get(sha)))
 }
 
-/** Дата закрытия последнего force-прогона — из заголовка «завершён …» или строки статуса; null — не закрыт. */
+/** The closing date of the last force run — from a "completed …" heading or a status line; null — not closed. */
 export function closedForceDate(stages) {
-  const heading = [...stages.matchAll(/^## Force-прогон.*$/gm)].at(-1)?.[0]
-  const status = stages.match(/^## Статус:\s*(.+)$/m)?.[1]?.match(/force-прогон[^.;\n]{0,40}?завершён[^.;\n]{0,20}/i)?.[0]
-  const closed = heading && /заверш/i.test(heading) ? heading : status
+  const heading = forceHeadings(stages).at(-1)?.[0]
+  const status = stages.match(STATUS_LINE)?.[1]?.match(STATUS_FORCE_CLOSED_WITH_DATE)?.[0]
+  const closed = heading && CLOSED_WORD.test(heading) ? heading : status
   if (!closed) return null
-  return headingDate(closed.slice(closed.search(/заверш/i))) ?? headingDate(closed)
+  return headingDate(closed.slice(closed.search(CLOSED_WORD))) ?? headingDate(closed)
 }
 
-// SHA из журнала, которые есть в репо как коммиты: по ним журнал узнаёт пересобранный коммит и файлы задачи.
+// SHAs from the journal that exist in the repo as commits: through them the journal recognises a rebuilt commit and task files.
 function journalCommits(cwd, journal) {
   const words = [...new Set(journal.match(/\b[0-9a-f]{7,40}\b/g) ?? [])].slice(0, 400)
   if (!words.length) return []
@@ -252,9 +278,9 @@ function patchIds(cwd, shas) {
 const isCommit = (cwd, ref) => Boolean(git(cwd, 'rev-parse', '-q', '--verify', `${ref}^{commit}`))
 
 /**
- * Каталог задач из строки `task_path` конфига. В живых конфигах путь бывает в бэктиках,
- * с `~`, с плейсхолдером `<ТИКЕТ>/` и с комментарием после — всё это один и тот же каталог.
- * `pipeline.config.local.md` (раскладка машины) перекрывает общий конфиг.
+ * The task directory from the config's `task_path` line. In live configs the path may be in backticks,
+ * with `~`, with a `<TICKET>/` placeholder and with a comment after it — all of these are the same directory.
+ * `pipeline.config.local.md` (the machine's layout) overrides the shared config.
  */
 export function taskDirFromConfig(config, root) {
   const raw = config.match(/^\s*-\s*task_path:\s*(.+)$/m)?.[1]
@@ -270,36 +296,36 @@ export function taskDirFromConfig(config, root) {
 export function readConfig(root) {
   const local = join(root, '.claude/pipeline.config.local.md')
   const shared = join(root, '.claude/pipeline.config.md')
-  // local — поверх shared: поле, которого нет в local, берётся из общего конфига.
+  // local goes over shared: a field missing in local is taken from the shared config.
   return [local, shared].filter(isFile).map((path) => readFileSync(path, 'utf8')).join('\n')
 }
 
 /**
- * Ветки задачи — из строки `Ветка:`/`Ветки:`/`Branch:` в шапке STAGES.md: имена в бэктиках,
- * а без бэктиков — первое слово, если оно похоже на имя ветки. Хвост строки — откуда ветка
- * отведена и куда идёт PR («влита в `dev`», «от `redesign-2.0`») — задаче не принадлежит:
- * иначе задача стала бы текущей для всех, кто сидит на базовой ветке. Явное `Ветка: master`
- * (репо без PR-флоу) — принадлежит.
+ * Task branches — from the `Branch:`/`Branches:` line in the STAGES.md header: names in backticks,
+ * and without backticks the first word if it looks like a branch name. The tail of the line — where the branch
+ * was cut from and where the PR goes ("merged into `dev`", "off `redesign-2.0`") — does not belong to the task:
+ * otherwise the task would become current for everyone sitting on the base branch. An explicit `Branch: master`
+ * (a repo without a PR flow) does belong.
  */
 export function taskBranches(stages) {
   const head = stages.split(/^## /m)[0]
-  // Рядом с веткой в шапке живут SHA коммитов, флаги (`--no-track`) и пути соседних репо — это не ветки.
+  // Next to the branch in the header live commit SHAs, flags (`--no-track`) and paths of neighbouring repos — these are not branches.
   const own = (name) => !name.startsWith('origin/') && !/^[-.]|^[0-9a-f]{7,40}$/.test(name)
   const found = new Set()
-  // Шаблон stage-plan пишет ветку посреди строки через два пробела: `Figma: <url>  Ветка: <branch>  Контексты: …`;
-  // «База ветки:» — не ветка задачи.
-  for (const [, line] of head.matchAll(/(?:^|\s{2,}|[·|]\s*)\**(?:Ветк[аи](?:\s+задачи)?|Branch(?:es)?)\**:\s*(.+)$/gimu)) {
-    // Дальше по строке — откуда ветка отведена и куда идёт PR: `(срезана с …)`, `от \`redesign-2.0\``, `→ PR в …`.
-    const rest = line.split(/\s+[·|]\s+|\s+(?=[\p{L}/]+:\s)|\s*\(|,?\s+(?:от|из|from|off|срезана|отведена|пересажена|база|base|влита|merged|→|PR\b)/iu)[0]
+  // The stage-plan template writes the branch in the middle of a line after two spaces: `Figma: <url>  Branch: <branch>  Contexts: …`;
+  // "Branch base:" is not the task branch.
+  for (const [, line] of head.matchAll(new RegExp(`(?:^|\\s{2,}|[·|]\\s*)\\**(?:${BRANCH_LABEL})\\**:\\s*(.+)$`, 'gimu'))) {
+    // Further along the line — where the branch was cut from and where the PR goes: `(cut from …)`, `off \`redesign-2.0\``, `→ PR into …`.
+    const rest = line.split(new RegExp(`\\s+[·|]\\s+|\\s+(?=[\\p{L}/]+:\\s)|\\s*\\(|,?\\s+(?:${BRANCH_BOUNDARY})`, 'iu'))[0]
     const quoted = [...rest.matchAll(/`([^`\s]+)`/g)].map((m) => m[1]).filter(own)
     const bare = rest.match(/^([\w.\-/]+)(?=[\s,;]|$)/)?.[1]
-    const names = quoted.length ? quoted : bare && /^[a-z0-9]/i.test(bare) && own(bare) && !/^(TBD|нет|none|—)$/i.test(bare) ? [bare] : []
+    const names = quoted.length ? quoted : bare && /^[a-z0-9]/i.test(bare) && own(bare) && !NO_BRANCH.test(bare) ? [bare] : []
     for (const name of names) found.add(name)
   }
   return [...found]
 }
 
-// Тикет в имени ветки — отдельным сегментом: `KC-480/feat/x`, `feat/KC-480-x`, но не `KC-4801/…`.
+// A ticket in the branch name as a separate segment: `KC-480/feat/x`, `feat/KC-480-x`, but not `KC-4801/…`.
 export function isCurrentTask(ticket, branches, branch) {
   if (!branch || branch === 'HEAD') return false
   if (branches.includes(branch)) return true
@@ -307,16 +333,33 @@ export function isCurrentTask(ticket, branches, branch) {
 }
 
 /**
- * Блок «Force-прогон» открыт, пока в строке его заголовка нет «завершён» (stage-force, Выход). Прогоны до 0.11
- * закрывали не заголовок, а строку статуса — «force-прогон 2026-09-23 завершён», «force-прогон завершён 16.09»:
- * это тоже конец прогона, и старую задачу ради хука никто не обязан переписывать. Признак «все этапы done»
- * не годится: после последнего этапа force ещё идёт — финальные проверки и догон коммитятся тем же прогоном.
+ * The task language from the STAGES.md text: a `Language: en` line in the header (or its Russian form with `ru`); without it — by the headings
+ * (`## Journal` / `### Stage` → en, their Russian forms → ru; with both — whichever comes first).
+ * `null` — cannot be determined.
+ */
+export function taskLanguage(stages) {
+  const head = stages.split(/^## /m)[0]
+  const declared = head.match(LANGUAGE_LINE)?.[1]?.toLowerCase()
+  if (declared) return declared
+  const ru = stages.search(RU_HEADINGS)
+  const en = stages.search(EN_HEADINGS)
+  if (ru === -1 && en === -1) return null
+  if (en === -1) return 'ru'
+  if (ru === -1) return 'en'
+  return ru < en ? 'ru' : 'en'
+}
+
+/**
+ * A "Force run" block is open while there is no "completed" in its heading line (stage-force, Output). Runs before 0.11
+ * were closed not by the heading but by the status line — "force run 2026-09-23 completed", "force run completed 16.09":
+ * that is also the end of a run, and nobody has to rewrite an old task for the hook. The "all stages done" sign
+ * does not work: after the last stage force is still going — the final checks and the catch-up are committed in the same run.
  */
 export function forceActive(stages) {
-  const status = stages.match(/^## Статус:\s*(.+)$/m)?.[1] ?? ''
-  const finished = status.match(/force-прогон[^.;\n]{0,40}?завершён/i)?.[0]
-  if (finished && !/не\s+завершён/i.test(finished)) return false
-  return [...stages.matchAll(/^## Force-прогон.*$/gm)].some(([heading]) => !/заверш/i.test(heading))
+  const status = stages.match(STATUS_LINE)?.[1] ?? ''
+  const finished = status.match(STATUS_FORCE_CLOSED)?.[0]
+  if (finished && !NOT_CLOSED.test(finished)) return false
+  return forceHeadings(stages).some(([heading]) => !CLOSED_WORD.test(heading))
 }
 
 const DAY = 24 * 60 * 60 * 1000
@@ -324,8 +367,8 @@ export const STALE_DAYS = 21
 export const AFTER_CLOSE_DAYS = 14
 
 /**
- * Корень репо с конфигом пайплайна. В worktree `.claude/` может быть не закоммичен
- * (исключён через .git/info/exclude) — тогда конфиг ищется в основном рабочем дереве.
+ * The repo root with the pipeline config. In a worktree `.claude/` may be uncommitted
+ * (excluded via .git/info/exclude) — then the config is looked for in the main working tree.
  */
 function configRoot(cwd, worktree) {
   if (isFile(join(worktree, '.claude/pipeline.config.md'))) return worktree
@@ -333,7 +376,7 @@ function configRoot(cwd, worktree) {
   return main && main !== worktree && isFile(join(main, '.claude/pipeline.config.md')) ? main : null
 }
 
-// Основное рабочее дерево: у worktree `webview-abc12` репо всё равно называется `webview`.
+// The main working tree: for a worktree `webview-abc12` the repo is still called `webview`.
 function mainRoot(cwd) {
   const common = git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
   return common && basename(common) === '.git' ? dirname(common) : null

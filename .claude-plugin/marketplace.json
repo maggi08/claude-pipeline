@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "magzhan",
-  "description": "Личный маркетплейс Claude Code — плагины для своих проектов",
+  "description": "A personal Claude Code marketplace — plugins for my own projects",
   "owner": {
     "name": "Magzhan Mussaiyn"
   },
   "plugins": [
     {
       "name": "stage-pipeline",
-      "description": "Поэтапный maker/checker-workflow для крупных UI-задач: разбивка на этапы, спека из дизайна, проверки субагентами (Figma/прототип, рантайм, код-ревью, мёртвый код, i18n, зависимости), автономный force-прогон, журнал состояния в файлах и описание PR",
+      "description": "A staged maker/checker workflow for large UI tasks: splitting into stages, a spec from the design, checks by subagents (Figma/prototype, runtime, code review, dead code, i18n, dependencies), an autonomous force run, a state journal kept in files and a PR description",
       "category": "workflow",
       "author": {
         "name": "Magzhan Mussaiyn"

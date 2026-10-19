@@ -4,18 +4,18 @@ import { basename, join } from 'node:path'
 import { commandSegments } from './git-command.mjs'
 
 /**
- * Какие части Bash-команды остановят прогон на вопросе пользователю — без запуска Claude Code.
- * Повторяет его правила настолько, насколько это нужно force-guard: команда режется на подкоманды
- * по `&& || ; | &` и переводу строки, у каждой снимаются `FOO=1`, `nohup`, `time`, `nice`, `timeout N`,
- * и подкоманда сверяется с `Bash(...)` из `ask`. Слова в кавычках и тела heredoc — не команды:
- * `echo "pkill later"` и `grep -rn "git push" .` никого не останавливают.
+ * Which parts of a Bash command will stop the run on a question to the user — without launching Claude Code.
+ * It repeats Claude Code's rules as far as force-guard needs: the command is cut into subcommands
+ * at `&& || ; | &` and newline, `FOO=1`, `nohup`, `time`, `nice`, `timeout N` are stripped from each,
+ * and the subcommand is matched against `Bash(...)` from `ask`. Words in quotes and heredoc bodies are
+ * not commands: `echo "pkill later"` and `grep -rn "git push" .` stop nobody.
  */
 
-// `pkill`/`killall` снимают процессы по имени — в том числе dev-сервер пользователя и соседнюю сессию.
+// `pkill`/`killall` kill processes by name — including the user's dev server and a neighbouring session.
 const NAME_KILLERS = new Set(['pkill', 'killall'])
 const WRAPPERS = new Set(['command', 'nohup', 'time', 'nice', 'exec'])
 
-/** Подкоманды строки: слова без обёрток, в том виде, в каком их сверяют правила. */
+/** Subcommands of a line: words without wrappers, in the form the rules match against. */
 export function subcommands(line) {
   return commandSegments(line)
     .map((words) => {
@@ -31,7 +31,7 @@ export function subcommands(line) {
     .filter((words) => words.length)
 }
 
-/** Подкоманда, которая снимает процессы по имени: `pkill -f x`, `/usr/bin/killall node`, `… | xargs pkill`. */
+/** A subcommand that kills processes by name: `pkill -f x`, `/usr/bin/killall node`, `… | xargs pkill`. */
 export function nameKill(line) {
   for (const words of subcommands(line)) {
     let i = 0
@@ -42,9 +42,9 @@ export function nameKill(line) {
 }
 
 /**
- * `Bash(...)` → регулярка. `*` — любые символы, хвост ` *` — сама команда или она же с аргументами,
- * старая форма `:*` — то же. Голое `Bash` и `Bash(*)` в ask не берутся: «спрашивать всё» хук не превратит
- * в «отклонять всё» — force с таким профилем не работает и без хука.
+ * `Bash(...)` → regexp. `*` is any characters, the tail ` *` is the command itself or the same with arguments,
+ * the old form `:*` means the same. A bare `Bash` and `Bash(*)` in ask are not taken: the hook does not turn
+ * "ask about everything" into "deny everything" — force does not work with such a profile even without the hook.
  */
 export function bashRulePattern(rule) {
   const body = String(rule).match(/^Bash\((.*)\)$/s)?.[1]?.trim()
@@ -56,7 +56,7 @@ export function bashRulePattern(rule) {
   return new RegExp(`^${source}${anyTail ? '(?:\\s.*)?' : ''}$`, 's')
 }
 
-/** Первая подкоманда строки, которую остановит одно из ask-правил: `{ command, rule, source }` или null. */
+/** The first subcommand of a line that one of the ask rules will stop: `{ command, rule, source }` or null. */
 export function askMatch(line, rules) {
   const patterns = rules.map((rule) => ({ ...rule, pattern: bashRulePattern(rule.rule) })).filter((rule) => rule.pattern)
   if (!patterns.length) return null
@@ -69,8 +69,8 @@ export function askMatch(line, rules) {
 }
 
 /**
- * Ask-правила Bash из settings, которые видит сессия: пользовательский и оба проектных файла.
- * Битый или отсутствующий файл — не ошибка хука: правил из него просто нет.
+ * Bash ask rules from the settings the session sees: the user file and both project files.
+ * A broken or missing file is not a hook error: there are just no rules from it.
  */
 export function askRules(projectDir) {
   const files = [join(homedir(), '.claude/settings.json')]

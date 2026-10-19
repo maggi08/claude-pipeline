@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 /**
- * Маршрутизация скиллов по описаниям — детерминированно, без модели, гоняется в CI.
+ * Skill routing by descriptions — deterministic, no model, runs in CI.
  *
- *   node scripts/routing.mjs            # проверка по evals/routing.json
- *   node scripts/routing.mjs --explain  # плюс топ-3 по каждой фразе и матрица близости описаний
+ *   node scripts/routing.mjs            # check against evals/routing.json
+ *   node scripts/routing.mjs --explain  # plus the top 3 per phrase and a description similarity matrix
  *
- * Модель выбирает скилл по description, поэтому два класса багов маршрутизации видны ещё до
- * прогона модели: в описании нет слов, которыми пользователь просит (скилл не вызовется), и два
- * описания почти совпадают (вызовется не тот). Здесь это приближено лексически: TF-IDF по
- * описаниям с грубым стеммингом русского и английского. Семантику это не заменяет — для неё
- * живые кейсы `kind: "routing"` в scripts/eval.mjs, — но ловит пропавшую лексику и слипшиеся описания.
- * Упавшая проверка обычно значит «поправь description», а не «поправь фразу».
+ * The model picks a skill by its description, so two classes of routing bugs are visible before
+ * any model run: the description lacks the words users ask with (the skill never fires), and two
+ * descriptions nearly coincide (the wrong one fires). Here that is approximated lexically: TF-IDF over
+ * the descriptions with crude Russian and English stemming. It does not replace semantics — for that
+ * there are the live `kind: "routing"` cases in scripts/eval.mjs — but it catches lost vocabulary and merged descriptions.
+ * A failed check usually means "fix the description", not "fix the phrase".
+ *
+ * Russian stop words and endings stay on purpose: descriptions keep a Russian tail of trigger phrases
+ * and routing.json keeps Russian phrases (Russian is a full second language of the plugin).
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -51,17 +54,17 @@ function tokens(text) {
     .map(stem)
 }
 
-// ── индекс по описаниям ──────────────────────────────────────────────────────
+// ── index over descriptions ──────────────────────────────────────────────────────
 const all = readdirSync(SKILLS)
   .filter((name) => existsSync(join(SKILLS, name, 'SKILL.md')))
   .map((name) => {
     const text = readFileSync(join(SKILLS, name, 'SKILL.md'), 'utf8')
     const description = text.match(/^description:\s*(.*)$/m)?.[1] ?? ''
-    // Имя скилла — тоже лексика вызова: «/stage-check» и «stage check» пользователь пишет буквально.
+    // The skill name is invocation vocabulary too: users write "/stage-check" and "stage check" literally.
     return { name, manual: /^disable-model-invocation:\s*true\s*$/m.test(text), terms: tokens(`${name.replaceAll('-', ' ')} ${description}`) }
   })
-// Ручной скилл (disable-model-invocation) зовёт только пользователь командой: его описания модель не видит,
-// поэтому в маршрутизации он не участвует — ни кандидатом, ни соседом по близости описаний.
+// A manual skill (disable-model-invocation) is invoked only by the user with a command: the model never sees its description,
+// so it does not take part in routing — neither as a candidate nor as a neighbour in description similarity.
 const skills = all.filter((skill) => !skill.manual)
 const manual = new Set(all.filter((skill) => skill.manual).map((skill) => skill.name))
 
@@ -85,7 +88,7 @@ const rank = (prompt) => {
   return skills.map((skill) => ({ name: skill.name, score: cosine(q, skill.vector) })).sort((a, b) => b.score - a.score)
 }
 
-// ── проверки ─────────────────────────────────────────────────────────────────
+// ── checks ─────────────────────────────────────────────────────────────────
 const errors = []
 const known = new Set(skills.map((skill) => skill.name))
 const topK = spec.topK ?? 2
@@ -94,8 +97,8 @@ let positives = 0
 
 for (const c of spec.cases) {
   for (const name of [c.expect, ...(c.not ?? [])].filter(Boolean)) {
-    if (manual.has(name)) errors.push(`«${c.prompt}»: ${name} ручной (disable-model-invocation) — модель его не выбирает, фраза ничего не проверяет`)
-    else if (!known.has(name)) errors.push(`«${c.prompt}»: нет скилла ${name}`)
+    if (manual.has(name)) errors.push(`«${c.prompt}»: ${name} is manual (disable-model-invocation) — the model does not pick it, the phrase checks nothing`)
+    else if (!known.has(name)) errors.push(`«${c.prompt}»: no skill ${name}`)
   }
   const ranking = rank(c.prompt)
   const top = ranking.slice(0, topK).map((r) => r.name)
@@ -105,24 +108,24 @@ for (const c of spec.cases) {
     if (ranking[0].name === c.expect) rank1++
     else if (!top.includes(c.expect)) {
       const place = ranking.findIndex((r) => r.name === c.expect) + 1
-      errors.push(`«${c.prompt}» → ждали ${c.expect}, он ${place}-й; впереди ${top.join(', ')} — в описании ${c.expect} нет этой лексики`)
+      errors.push(`«${c.prompt}» → expected ${c.expect}, it is #${place}; ahead: ${top.join(', ')} — the description of ${c.expect} lacks this vocabulary`)
     }
   }
-  // Фраза, для которой ни один скилл не набрал заметного веса, первым ставит кого угодно — это шум, а не маршрут.
+  // A phrase for which no skill gained noticeable weight puts anyone first — that is noise, not a route.
   for (const name of c.not ?? []) {
-    if (ranking[0].name === name && ranking[0].score >= (spec.noiseFloor ?? 0.12)) errors.push(`«${c.prompt}» → первым ${name}, а не должен — описание ${name} слишком широкое`)
+    if (ranking[0].name === name && ranking[0].score >= (spec.noiseFloor ?? 0.12)) errors.push(`«${c.prompt}» → ${name} is first but must not be — the description of ${name} is too broad`)
   }
 }
 
-// Скилл без единой фразы проверкой не покрыт: новый скилл прошёл бы молча, даже если его не находит ничто.
+// A skill without a single phrase is not covered by the check: a new skill would pass silently even if nothing finds it.
 const covered = new Set(spec.cases.map((c) => c.expect).filter(Boolean))
-for (const name of known) if (!covered.has(name)) errors.push(`у скилла ${name} нет ни одной фразы в evals/routing.json`)
+for (const name of known) if (!covered.has(name)) errors.push(`skill ${name} has no phrase in evals/routing.json`)
 
 const floor = spec.minRank1 ?? 0.8
 const rate = positives ? rank1 / positives : 1
-if (rate < floor) errors.push(`первым местом попало ${rank1}/${positives} (${Math.round(rate * 100)}%) при пороге ${Math.round(floor * 100)}%`)
+if (rate < floor) errors.push(`first place hit ${rank1}/${positives} (${Math.round(rate * 100)}%) against a threshold of ${Math.round(floor * 100)}%`)
 
-// Слипшиеся описания: пара, неразличимая лексически, различается для модели только удачей.
+// Merged descriptions: a pair that is lexically indistinguishable is told apart by the model only by luck.
 const allowed = new Map((spec.allowCollisions ?? []).map((a) => [[...a.pair].sort().join('|'), a.why]))
 const maxSimilarity = spec.maxSimilarity ?? 0.5
 const pairs = []
@@ -132,18 +135,18 @@ for (let i = 0; i < skills.length; i++) {
     pairs.push({ pair: [skills[i].name, skills[j].name], similarity })
     const key = [skills[i].name, skills[j].name].sort().join('|')
     if (similarity > maxSimilarity && !allowed.has(key)) {
-      errors.push(`описания ${skills[i].name} и ${skills[j].name} близки (${similarity.toFixed(2)} > ${maxSimilarity}) — разведи лексику или впиши пару в allowCollisions с причиной`)
+      errors.push(`descriptions of ${skills[i].name} and ${skills[j].name} are close (${similarity.toFixed(2)} > ${maxSimilarity}) — separate the vocabulary or add the pair to allowCollisions with a reason`)
     }
   }
 }
 if (explain) {
-  console.log('\nСамые близкие пары описаний:')
+  console.log('\nClosest description pairs:')
   for (const p of pairs.sort((a, b) => b.similarity - a.similarity).slice(0, 8)) console.log(`  ${p.similarity.toFixed(2)} ${p.pair.join(' ↔ ')}`)
 }
 
 if (errors.length) {
-  console.error(`✘ Маршрутизация (${errors.length}):\n`)
+  console.error(`✘ Routing (${errors.length}):\n`)
   for (const error of errors) console.error(`  ${error}`)
   process.exit(1)
 }
-console.log(`✔ Маршрутизация: ${rank1}/${positives} фраз находят свой скилл первым, остальные — в топ-${topK}; слипшихся описаний нет`)
+console.log(`✔ Routing: ${rank1}/${positives} phrases find their skill first, the rest in the top ${topK}; no merged descriptions`)

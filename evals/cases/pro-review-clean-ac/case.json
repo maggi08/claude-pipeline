@@ -1,21 +1,21 @@
 {
   "agent": "pro-review",
-  "why": "чистый диф не получает ложный Request changes, а PASS критерия несёт доказательство file:line",
-  "prompt": "Тикет EVAL-1, этап 1. Режим: stage. База сравнения: незакоммиченные изменения (git diff HEAD + git status). Критерии этапа с тегом pro-review:\n- `AC-1.1` WHEN name пустой, null или из пробелов THEN вместо имени выводится `t('profile.anonymous')` (выбор локали вне задачи — `src/i18n.ts` не трогаем) — [verify: pro-review]",
+  "why": "a clean diff gets no false Request changes, and the PASS of a criterion carries file:line evidence",
+  "prompt": "Ticket EVAL-1, stage 1. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN name is empty, null or whitespace THEN `t('profile.anonymous')` is shown instead of the name (locale selection is out of scope — we do not touch `src/i18n.ts`) — [verify: pro-review]",
   "expect": [
     {
       "pattern": "AC-1\\.1[^\\n]*PASS[^\\n]*ProfileName\\.tsx:\\d+",
-      "why": "PASS по AC-1.1 со ссылкой file:line"
+      "why": "PASS on AC-1.1 with a file:line reference"
     },
     {
       "pattern": "Approve",
-      "why": "вердикт Approve / Approve with comments"
+      "why": "the verdict Approve / Approve with comments"
     }
   ],
   "forbid": [
     {
       "pattern": "Request changes\\*{0,2}\\s*$",
-      "why": "ложный Request changes на чистом дифе"
+      "why": "a false Request changes on a clean diff"
     }
   ]
 }

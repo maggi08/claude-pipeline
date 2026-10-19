@@ -1,52 +1,70 @@
 #!/usr/bin/env node
 /**
- * Переопределения кита и ручная типографика в добавленных строках дифа: вес шрифта, uppercase, трекинг,
- * произвольные `text-[…]`, `rounded-[…]`, отступы и ширины, `!important`, переменные компонентов кита.
+ * Kit overrides and hand-set typography in the added lines of the diff: font weight, uppercase, tracking,
+ * arbitrary `text-[…]`, `rounded-[…]`, spacing and widths, `!important`, kit component variables.
  *
- * Зачем: в одной задаче вид взяли из прототипа, а не из кита и соседних секций дашборда — пятнадцать
- * констант с `uppercase 11px extrabold`, кнопки 36px с `font-bold`, таблица своего вида, `max-w-[70ch]`.
- * Ни один чекер это не назвал: прототип совпадал с кодом, а сверки с соседями не было. Пользователь вернул
- * «жирно», «разные кнопки», «другая таблица» тремя волнами правок после «готово».
+ * Why: in one task the look was taken from the prototype, not from the kit and neighbouring dashboard sections — fifteen
+ * constants with `uppercase 11px extrabold`, 36px buttons with `font-bold`, a table with its own look, `max-w-[70ch]`.
+ * No checker named it: the prototype matched the code, and there was no comparison with neighbours. The user sent back
+ * "too bold", "different buttons", "another table" in three waves of edits after "done".
  *
- * Каждый файл с переопределениями — находка major. Отчёт в формате чекера, поэтому дальше работает
- * «Итог находок» (references/checker-report.md): исправлено, ложная — с доказательством, что эталонная
- * секция делает так же (`путь:строка`), или решение пользователя «вид как в прототипе».
+ * Each file with overrides is a major finding. The report is in the checker format, so "Findings outcome"
+ * (references/checker-report.md) works further: fixed, false — with proof that the reference
+ * section does the same (`path:line`), or a user decision "the look as in the prototype".
  *
- *   node kit-override-scan.mjs                         # незакоммиченное против HEAD (этап перед коммитом)
- *   node kit-override-scan.mjs --base origin/dev       # всё от merge-base
+ *   node kit-override-scan.mjs                         # uncommitted against HEAD (the stage before its commit)
+ *   node kit-override-scan.mjs --base origin/dev       # everything from the merge-base
  *   node kit-override-scan.mjs --out <task>/checks/stage-3-kit-overrides.md
  *
- * Каталоги кита из `ui_lib` / `ui_kit` конфига не сканируются — правка там и есть правка кита. В самом
- * репо кита скан выключается строкой `- kit_overrides: off` в pipeline.config.md.
- * Код выхода: 1 — есть находки (без `--out`), 0 — нет или отчёт записан, 2 — скрипт не смог.
+ * Kit directories from the config's `ui_lib` / `ui_kit` are not scanned — an edit there is an edit of the kit. In the
+ * kit's own repo the scan is switched off by the line `- kit_overrides: off` in pipeline.config.md.
+ * Exit code: 1 — there are findings (without `--out`), 0 — none or the report is written, 2 — the script could not run.
+ *
+ * The report is a file of the task, so its text is written in the task language (taskLanguage; unknown → ru, as before).
+ * The kind of a hit (`kind`) is a language-neutral English label; the report and messages translate it. Console output is English.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { readConfig } from './hooks/pipeline-state.mjs'
+import { readConfig, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
+import { KIT_OVERRIDES_OFF, LEDGER_HEADING } from './markers.mjs'
 
 const CODE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|html?|css|scss|sass|less|styl)$/
 const SKIP =
   /(^|\/)(?:\.claude|node_modules|dist|build|\.next|\.nuxt|\.output|coverage|vendor|__generated__|__mocks__|fixtures?|mocks?)\/|\.(?:test|spec|stories|story|cy|e2e)\.\w+$|(^|\/)(?:tailwind|postcss|vite|next|nuxt)\.config\.\w+$|(^|\/)(?:design-)?tokens?[^/]*\.\w+$|(^|\/)theme[^/]*\.\w+$/
-// Произвольное значение через переменную токена — `text-[var(--text-secondary)]` — это токен, а не переопределение.
+// An arbitrary value through a token variable — `text-[var(--text-secondary)]` — is a token, not an override.
 const TOKEN_VALUE = /\[var\(--[\w-]+\)\]$/
 
 const RULES = [
-  ['вес шрифта', /(?<![\w-])font-(?:semibold|bold|extrabold|black)(?![\w-])|font-weight\s*:\s*(?:[6-9]00|bold(?:er)?)\b|fontWeight\s*:\s*['"]?(?:[6-9]00|bold)\b/g],
-  ['регистр', /(?<![\w-])uppercase(?![\w-])|text-transform\s*:\s*uppercase|textTransform\s*:\s*['"]uppercase/g],
-  ['трекинг', /(?<![\w-])tracking-(?:\[[^\]\s]+\]|tighter|tight|wider|widest|wide)(?![\w-])|letter-spacing\s*:|letterSpacing\s*:/g],
-  ['кегль', /(?<![\w-])(?:text|leading)-\[[^\]\s]+\]|font-size\s*:\s*\d+(?:\.\d+)?px|fontSize\s*:\s*['"]?\d+/g],
-  ['радиус', /(?<![\w-])rounded(?:-[trblse]{1,2})?-\[[^\]\s]+\]|border-radius\s*:\s*\d+(?:\.\d+)?px/g],
-  ['отступ', /(?<![\w-])-?(?:p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy])-\[[^\]\s]+\]/g],
-  ['ширина текста', /(?<![\w-])max-w-\[[^\]\s]+\]/g],
-  ['тень', /(?<![\w-])shadow-\[[^\]\s]+\]/g],
+  ['font weight', /(?<![\w-])font-(?:semibold|bold|extrabold|black)(?![\w-])|font-weight\s*:\s*(?:[6-9]00|bold(?:er)?)\b|fontWeight\s*:\s*['"]?(?:[6-9]00|bold)\b/g],
+  ['text case', /(?<![\w-])uppercase(?![\w-])|text-transform\s*:\s*uppercase|textTransform\s*:\s*['"]uppercase/g],
+  ['tracking', /(?<![\w-])tracking-(?:\[[^\]\s]+\]|tighter|tight|wider|widest|wide)(?![\w-])|letter-spacing\s*:|letterSpacing\s*:/g],
+  ['font size', /(?<![\w-])(?:text|leading)-\[[^\]\s]+\]|font-size\s*:\s*\d+(?:\.\d+)?px|fontSize\s*:\s*['"]?\d+/g],
+  ['radius', /(?<![\w-])rounded(?:-[trblse]{1,2})?-\[[^\]\s]+\]|border-radius\s*:\s*\d+(?:\.\d+)?px/g],
+  ['spacing', /(?<![\w-])-?(?:p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy])-\[[^\]\s]+\]/g],
+  ['text width', /(?<![\w-])max-w-\[[^\]\s]+\]/g],
+  ['shadow', /(?<![\w-])shadow-\[[^\]\s]+\]/g],
   ['!important', /!important\b/g],
-  ['переменная кита', /--(?:button|btn|table|input|badge|chip|tag|card|select|tooltip|modal|dialog|pill)-[\w-]+\s*:/g],
+  ['kit variable', /--(?:button|btn|table|input|badge|chip|tag|card|select|tooltip|modal|dialog|pill)-[\w-]+\s*:/g],
 ]
 const COMMENT = /^\s*(?:\/\/|\/?\*|<!--)/
 
-/** Каталоги кита внутри репо — из `ui_lib` / `ui_kit` конфига: пути в бэктиках или со слешем, которые существуют. */
+// How a kind of hit is called in a report of a ru task (the English label is the kind itself).
+const RU_KIND = {
+  'font weight': 'вес шрифта',
+  'text case': 'регистр',
+  tracking: 'трекинг',
+  'font size': 'кегль',
+  radius: 'радиус',
+  spacing: 'отступ',
+  'text width': 'ширина текста',
+  shadow: 'тень',
+  '!important': '!important',
+  'kit variable': 'переменная кита',
+}
+
+/** Kit directories inside the repo — from the config's `ui_lib` / `ui_kit`: paths in backticks or with a slash that exist. */
 export function kitDirs(config, root) {
   const dirs = []
   for (const [, value] of config.matchAll(/^\s*-\s*ui_(?:lib|kit)\s*:\s*(.+)$/gim)) {
@@ -56,18 +74,18 @@ export function kitDirs(config, root) {
       try {
         if (statSync(join(root, path)).isDirectory()) dirs.push(`${path}/`)
       } catch {
-        // не путь в репо — имя пакета или комментарий
+        // not a path in the repo — a package name or a comment
       }
     }
   }
   return [...new Set(dirs)]
 }
 
-export const scanDisabled = (config) => /^\s*-\s*kit_overrides\s*:\s*`?(?:off|false|no|нет)\b/im.test(config)
+export const scanDisabled = (config) => KIT_OVERRIDES_OFF.test(config)
 
 /**
- * Переопределения в добавленных строках: `[{ file, hits: [{ kind, token, line }] }]`.
- * `against` — с чем сравнивать рабочее дерево (HEAD или merge-base), `paths` — pathspec'и коммита (null — всё).
+ * Overrides in the added lines: `[{ file, hits: [{ kind, token, line }] }]`.
+ * `against` is what the working tree is compared with (HEAD or the merge-base), `paths` are the commit's pathspecs (null — everything).
  */
 export function scanOverrides(root, { against = 'HEAD', paths = null, config = readConfig(root) } = {}) {
   if (scanDisabled(config)) return []
@@ -112,8 +130,8 @@ export function scanOverrides(root, { against = 'HEAD', paths = null, config = r
   return found
 }
 
-/** Строка находки: «вес шрифта (`font-bold` ×3), регистр (`uppercase`)». */
-export function summarize(hits) {
+/** A finding line: "font weight (`font-bold` ×3), text case (`uppercase`)"; `language: 'ru'` gives the Russian labels. */
+export function summarize(hits, language = 'en') {
   const kinds = new Map()
   for (const { kind, token } of hits) {
     if (!kinds.has(kind)) kinds.set(kind, new Map())
@@ -121,27 +139,57 @@ export function summarize(hits) {
     tokens.set(token, (tokens.get(token) ?? 0) + 1)
   }
   return [...kinds]
-    .map(([kind, tokens]) => `${kind} (${[...tokens].map(([token, count]) => `\`${token.replace(/\|/g, '\\|')}\`${count > 1 ? ` ×${count}` : ''}`).join(', ')})`)
+    .map(([kind, tokens]) => `${language === 'ru' ? (RU_KIND[kind] ?? kind) : kind} (${[...tokens].map(([token, count]) => `\`${token.replace(/\|/g, '\\|')}\`${count > 1 ? ` ×${count}` : ''}`).join(', ')})`)
     .join(', ')
 }
 
-export function renderReport(found, { title = 'рабочее дерево против HEAD', previous = '' } = {}) {
-  const lines = [`# kit-overrides: ${title}`, `Находки: critical 0 · major ${found.length} · minor 0`, '']
-  if (found.length) {
-    lines.push(
+// Report texts by task language. In a ru task they stay as they were, byte for byte.
+const REPORT = {
+  ru: {
+    title: 'рабочее дерево против HEAD',
+    summary: (n) => `Находки: critical 0 · major ${n} · minor 0`,
+    intro: [
       'Переопределения кита и ручная типографика в добавленных строках. Вид — из кита и эталонной секции («Эталон вида» этапа в STAGES.md);',
       'переопределение остаётся только с доказательством, что эталон делает так же (`путь:строка`), или решением пользователя «вид как в прототипе».',
+    ],
+    columns: ['| # | Файл | Что переопределено | Строки | Severity |', '|---|---|---|---|---|'],
+    none: 'Переопределений кита в добавленных строках нет.',
+    unverified: '## Не удалось проверить',
+    runtime:
+      '- стили, собранные в рантайме (`cn(cond && …)`, значения из переменных), скрипт видит только литералами — вычисленный вид сверяет devtools-verify с эталонной секцией.',
+  },
+  en: {
+    title: 'working tree against HEAD',
+    summary: (n) => `Findings: critical 0 · major ${n} · minor 0`,
+    intro: [
+      'Kit overrides and hand-set typography in the added lines. The look comes from the kit and the reference section (the stage\'s "Visual reference" in STAGES.md);',
+      'an override stays only with proof that the reference does the same (`path:line`), or a user decision "the look as in the prototype".',
+    ],
+    columns: ['| # | File | What is overridden | Lines | Severity |', '|---|---|---|---|---|'],
+    none: 'No kit overrides in the added lines.',
+    unverified: '## Could not verify',
+    runtime:
+      '- styles assembled at runtime (`cn(cond && …)`, values from variables) are seen by the script only as literals — devtools-verify checks the computed look against the reference section.',
+  },
+}
+
+export function renderReport(found, { title, previous = '', language = 'ru' } = {}) {
+  const text = REPORT[language] ?? REPORT.ru
+  const lines = [`# kit-overrides: ${title ?? text.title}`, text.summary(found.length), '']
+  if (found.length) {
+    lines.push(
+      ...text.intro,
       '',
-      '| # | Файл | Что переопределено | Строки | Severity |',
-      '|---|---|---|---|---|',
-      ...found.map(({ file, hits }, index) => `| K-${index + 1} | \`${file}\` | ${summarize(hits)} | ${[...new Set(hits.map(({ line }) => line))].slice(0, 12).join(', ')} | major |`),
+      ...text.columns,
+      ...found.map(({ file, hits }, index) => `| K-${index + 1} | \`${file}\` | ${summarize(hits, language)} | ${[...new Set(hits.map(({ line }) => line))].slice(0, 12).join(', ')} | major |`),
     )
   } else {
-    lines.push('Переопределений кита в добавленных строках нет.')
+    lines.push(text.none)
   }
-  lines.push('', '## Не удалось проверить', '- стили, собранные в рантайме (`cn(cond && …)`, значения из переменных), скрипт видит только литералами — вычисленный вид сверяет devtools-verify с эталонной секцией.')
-  // Повторный скан после фиксов не стирает итог: строки «исправлено» относятся к прошлым находкам.
-  const ledger = previous.match(/^#{2,3}\s*Итог находок[\s\S]*$/m)?.[0]
+  lines.push('', text.unverified, text.runtime)
+  // A repeated scan after fixes does not erase the outcome: the "fixed" lines belong to earlier findings.
+  const ledgerAt = previous.search(LEDGER_HEADING)
+  const ledger = ledgerAt === -1 ? null : previous.slice(ledgerAt)
   if (ledger) lines.push('', ledger.trimEnd())
   return `${lines.join('\n')}\n`
 }
@@ -150,13 +198,24 @@ function git(cwd, ...args) {
   return execFileSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
 }
 
+/** The language of the report to write: the task whose `checks/` it goes into (`<task>/checks/<file>`), else the current branch's task; unknown — ru. */
+function taskLanguageFor(reportPath, root) {
+  const stages = join(dirname(dirname(reportPath)), 'STAGES.md')
+  try {
+    if (existsSync(stages)) return taskLanguage(readFileSync(stages, 'utf8')) ?? 'ru'
+  } catch {
+    // unreadable — fall back to the current task
+  }
+  return readPipelineState(root)?.tasks.find((candidate) => candidate.current)?.language ?? 'ru'
+}
+
 function main(args) {
   const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null)
   let root
   try {
     root = git(process.cwd(), 'rev-parse', '--show-toplevel').trim()
   } catch {
-    console.error('kit-override-scan: не git-репозиторий')
+    console.error('kit-override-scan: not a git repository')
     process.exit(2)
   }
   const base = option('--base')
@@ -165,7 +224,7 @@ function main(args) {
     try {
       against = git(root, 'merge-base', base, 'HEAD').trim()
     } catch {
-      console.error(`kit-override-scan: нет merge-base с ${base}`)
+      console.error(`kit-override-scan: no merge-base with ${base}`)
       process.exit(2)
     }
   }
@@ -173,12 +232,14 @@ function main(args) {
   const out = option('--out')
   if (out) {
     const path = resolve(out)
-    writeFileSync(path, renderReport(found, { title: base ? `ветка от ${base}` : 'рабочее дерево против HEAD', previous: existsSync(path) ? readFileSync(path, 'utf8') : '' }))
-    console.log(`kit-override-scan: ${found.length} файл(ов) с переопределениями → ${path}`)
+    const language = taskLanguageFor(path, root)
+    const title = base ? (language === 'en' ? `branch off ${base}` : `ветка от ${base}`) : undefined
+    writeFileSync(path, renderReport(found, { title, previous: existsSync(path) ? readFileSync(path, 'utf8') : '', language }))
+    console.log(`kit-override-scan: ${found.length} file(s) with overrides → ${path}`)
     process.exit(0)
   }
   for (const { file, hits } of found) console.log(`- ${file}: ${summarize(hits)}`)
-  if (!found.length) console.log('Переопределений кита в добавленных строках нет.')
+  if (!found.length) console.log('No kit overrides in the added lines.')
   process.exit(found.length ? 1 : 0)
 }
 

@@ -1,5 +1,5 @@
 {
-  "$comment": "Профиль разрешений stage-pipeline. Читает scripts/permissions.mjs. Записи Skill(...) и mcp__* не перечислены — они генерируются из самого плагина (skills/*, .mcp.json), поэтому новый скилл не надо дописывать сюда руками. Bash(...) — ПРЕФИКСНОЕ совпадение: пробел перед * литеральный, поэтому «Bash(rm -rf dist *)» не покрывает «rm -rf dist», а «Bash(curl -s http://localhost *)» не покрывает «curl -s http://localhost:3000/». deny здесь — защита от случайности, а не граница безопасности: профиль разрешает node/npx/python3, то есть произвольное исполнение, и обойти любой запрет из него тривиально.",
+  "$comment": "The stage-pipeline permission profile. Read by scripts/permissions.mjs. Skill(...) and mcp__* entries are not listed — they are generated from the plugin itself (skills/*, .mcp.json), so a new skill does not have to be added here by hand. Bash(...) is a PREFIX match: the space before * is literal, so \"Bash(rm -rf dist *)\" does not cover \"rm -rf dist\", and \"Bash(curl -s http://localhost *)\" does not cover \"curl -s http://localhost:3000/\". deny here is protection against accidents, not a security boundary: the profile allows node/npx/python3, which is arbitrary execution, and bypassing any prohibition from it is trivial.",
   "defaultGroups": [
     "pipeline",
     "fs-read",
@@ -11,14 +11,14 @@
   ],
   "groups": {
     "pipeline": {
-      "title": "Скиллы и MCP плагина",
-      "why": "Без этого каждый чекер на каждом этапе спрашивает подтверждение — самый частый источник простоя",
+      "title": "Plugin skills and MCP",
+      "why": "Without this every checker asks for confirmation at every stage — the most frequent source of idle time",
       "generated": "skills + mcp",
       "allow": []
     },
     "fs-read": {
-      "title": "Чтение и поиск",
-      "why": "Чекеры и спека-агенты читают репо целиком; подтверждение на каждый файл делает прогон неработоспособным. В группе только то, что не пишет и не запускает чужие команды",
+      "title": "Reading and search",
+      "why": "Checkers and spec agents read the whole repo; a confirmation per file makes a run unworkable. The group holds only what neither writes nor runs foreign commands",
       "allow": [
         "Read(**)",
         "Bash(ls *)",
@@ -51,8 +51,8 @@
       ]
     },
     "shell-tools": {
-      "title": "Обработка текста и обход дерева (пишут и запускают)",
-      "why": "Нужны чекерам для поиска и правок, но это НЕ read-only: sed -i пишет файл, find -exec / xargs / awk system() запускают произвольную команду. Отдельная группа, чтобы --groups без неё давал честно read-only набор",
+      "title": "Text processing and tree traversal (they write and run)",
+      "why": "Checkers need them for search and edits, but this is NOT read-only: sed -i writes a file, find -exec / xargs / awk system() run an arbitrary command. A separate group so that --groups without it gives an honestly read-only set",
       "allow": [
         "Bash(sed *)",
         "Bash(awk *)",
@@ -61,8 +61,8 @@
       ]
     },
     "fs-write": {
-      "title": "Правка файлов и чистка артефактов сборки",
-      "why": "Реализация этапа и fix-loop пишут код; удаление — только перечисленные артефакты сборки по точному имени. Голого «rm -f *» здесь быть не должно: префиксное совпадение пропустило бы «rm -f -r <любой путь>»",
+      "title": "File edits and build artifact cleanup",
+      "why": "Stage implementation and the fix-loop write code; deletion is only of the listed build artifacts by exact name. A bare \"rm -f *\" must not be here: a prefix match would let through \"rm -f -r <any path>\"",
       "allow": [
         "Edit(**)",
         "Write(**)",
@@ -85,15 +85,15 @@
       ]
     },
     "vcs": {
-      "title": "Git (кроме публикующих команд)",
-      "why": "Диф этапа, merge-base, stash для замера baseline, коммит этапа. push / reset --hard / clean остаются в ask, force-push — в deny",
+      "title": "Git (except publishing commands)",
+      "why": "The stage diff, merge-base, stash for the baseline measurement, the stage commit. push / reset --hard / clean stay in ask, force-push in deny",
       "allow": [
         "Bash(git *)"
       ]
     },
     "js-toolchain": {
-      "title": "Пакетные менеджеры и локальные бинарники",
-      "why": "lint / type-check / тесты / сборка гоняются на каждом этапе и в чекерах",
+      "title": "Package managers and local binaries",
+      "why": "lint / type-check / tests / build run at every stage and in the checkers",
       "allow": [
         "Bash(yarn *)",
         "Bash(npm *)",
@@ -117,8 +117,8 @@
       ]
     },
     "devserver": {
-      "title": "Dev-сервер и локальные порты",
-      "why": "devtools-verify требует живого сервера: найти процесс, проверить порт, снять свой инстанс. curl — только на localhost/127.0.0.1; pkill по маске в ask, он снимает не только своё",
+      "title": "Dev server and local ports",
+      "why": "devtools-verify needs a live server: find the process, check the port, stop its own instance. curl is only for localhost/127.0.0.1; pkill by mask is in ask, because it kills more than your own",
       "allow": [
         "Bash(lsof *)",
         "Bash(ps *)",
@@ -132,8 +132,8 @@
       ]
     },
     "docker": {
-      "title": "Docker (опционально)",
-      "why": "Нужен только проектам, у которых dev-окружение поднимается контейнерами",
+      "title": "Docker (optional)",
+      "why": "Needed only by projects whose dev environment is brought up by containers",
       "allow": [
         "Bash(docker compose *)",
         "Bash(docker ps *)",
@@ -149,8 +149,8 @@
       ]
     },
     "web": {
-      "title": "Поиск и доки (опционально)",
-      "why": "Сверка с документацией фреймворка во время ревью; список доменов узкий",
+      "title": "Search and docs (optional)",
+      "why": "Checking against framework documentation during review; the list of domains is narrow",
       "allow": [
         "WebSearch",
         "WebFetch(domain:developer.mozilla.org)",
@@ -196,20 +196,20 @@
     "Bash(cat ~/.aws/*)"
   ],
   "retired": {
-    "$comment": "Записи, которые профиль раздавал раньше и которые скрипт удалять не имеет права (settings принадлежат пользователю). Он их находит и объясняет, почему стоит снять руками.",
-    "mcp__plugin_stage-pipeline_context7": "Context7 убран из плагина в 0.11.0 — сервера с таким именем больше нет, запись ни к чему не относится",
-    "Bash(rm -f *)": "разрешает «rm -f -r <любой путь>»: префиксное совпадение не смотрит на порядок флагов",
-    "Bash(rm -rf .next *)": "требует аргумента ПОСЛЕ .next — не покрывает «rm -rf .next», зато покрывает «rm -rf .next /чужой/путь»",
-    "Bash(rm -rf out *)": "то же самое",
-    "Bash(rm -rf dist *)": "то же самое",
-    "Bash(rm -rf node_modules *)": "то же самое",
-    "Bash(rm -rf tsconfig.tsbuildinfo)": "заменено на «rm -f tsconfig.tsbuildinfo»",
-    "Bash(pkill -f *)": "переехало в ask: маска снимает не только свой dev-сервер",
-    "Bash(curl -s http://localhost *)": "пробел перед * литеральный — не покрывает «curl -s http://localhost:3000/»",
-    "Bash(curl -sI http://localhost *)": "то же самое",
-    "Bash(curl -s http://127.0.0.1 *)": "то же самое",
-    "Bash(curl -sI http://127.0.0.1 *)": "то же самое",
-    "Bash(curl -sk https://localhost *)": "то же самое",
-    "Bash(curl -sk https://127.0.0.1 *)": "то же самое"
+    "$comment": "Entries the profile used to hand out and that the script has no right to remove (settings belong to the user). It finds them and explains why they should be removed by hand.",
+    "mcp__plugin_stage-pipeline_context7": "Context7 was removed from the plugin in 0.11.0 — there is no server with that name any more, the entry refers to nothing",
+    "Bash(rm -f *)": "allows \"rm -f -r <any path>\": a prefix match does not look at the order of flags",
+    "Bash(rm -rf .next *)": "requires an argument AFTER .next — does not cover \"rm -rf .next\", but does cover \"rm -rf .next /someone/elses/path\"",
+    "Bash(rm -rf out *)": "the same",
+    "Bash(rm -rf dist *)": "the same",
+    "Bash(rm -rf node_modules *)": "the same",
+    "Bash(rm -rf tsconfig.tsbuildinfo)": "replaced by \"rm -f tsconfig.tsbuildinfo\"",
+    "Bash(pkill -f *)": "moved to ask: the mask kills more than your own dev server",
+    "Bash(curl -s http://localhost *)": "the space before * is literal — does not cover \"curl -s http://localhost:3000/\"",
+    "Bash(curl -sI http://localhost *)": "the same",
+    "Bash(curl -s http://127.0.0.1 *)": "the same",
+    "Bash(curl -sI http://127.0.0.1 *)": "the same",
+    "Bash(curl -sk https://localhost *)": "the same",
+    "Bash(curl -sk https://127.0.0.1 *)": "the same"
   }
 }

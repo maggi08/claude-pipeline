@@ -2,15 +2,15 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 /**
- * `main` — прод: всё, что в него попало, команда получает на `plugin update`.
- * Поэтому правка плагина без поднятой версии невидима для обновления (кэш версионированный),
- * а без записи в CHANGELOG — непонятна тому, кто обновился.
+ * `main` is production: whatever lands in it, the team gets on `plugin update`.
+ * So a plugin change without a bumped version is invisible to the update (the cache is versioned),
+ * and without a CHANGELOG entry it is unclear to whoever updated.
  *
  *   node scripts/release-check.mjs <base-ref>
  */
 const base = process.argv[2]
 if (!base) {
-  console.error('Использование: node scripts/release-check.mjs <base-ref>')
+  console.error('Usage: node scripts/release-check.mjs <base-ref>')
   process.exit(2)
 }
 
@@ -20,7 +20,7 @@ const MANIFEST = 'plugins/stage-pipeline/.claude-plugin/plugin.json'
 const changed = git('diff', '--name-only', `${base}...HEAD`).split('\n').filter(Boolean)
 const pluginChanged = changed.filter((path) => path.startsWith('plugins/'))
 if (!pluginChanged.length) {
-  console.log('✔ Плагин не менялся — версия и CHANGELOG не требуются')
+  console.log('✔ Plugin unchanged — no version bump or CHANGELOG needed')
   process.exit(0)
 }
 
@@ -29,11 +29,11 @@ let baseVersion = null
 try {
   baseVersion = JSON.parse(git('show', `${base}:${MANIFEST}`)).version
 } catch {
-  // манифеста в базе нет — первый релиз
+  // no manifest in base — the first release
 }
 
 const errors = []
-// Версия должна вырасти, а не просто поменяться: откат версии ломает `claude plugin update` у команды.
+// The version must grow, not merely change: rolling a version back breaks `claude plugin update` for the team.
 const semver = (v) => v.split('.').map(Number)
 const grew = (a, b) => {
   const [x, y] = [semver(a), semver(b)]
@@ -41,14 +41,14 @@ const grew = (a, b) => {
   return false
 }
 if (baseVersion && !grew(version, baseVersion)) {
-  errors.push(`плагин изменён (${pluginChanged.length} файлов), а версия ${version} не выше базовой ${baseVersion} — подними version в ${MANIFEST}`)
+  errors.push(`plugin changed (${pluginChanged.length} files), but version ${version} is not above the base ${baseVersion} — bump version in ${MANIFEST}`)
 }
 if (!new RegExp(`^## ${version.replace(/\./g, '\\.')}\\b`, 'm').test(readFileSync('CHANGELOG.md', 'utf8'))) {
-  errors.push(`в CHANGELOG.md нет раздела «## ${version}»`)
+  errors.push(`CHANGELOG.md has no section «## ${version}»`)
 }
 
 if (errors.length) {
-  console.error(`✘ Релиз не готов:\n${errors.map((e) => `  ${e}`).join('\n')}`)
+  console.error(`✘ Release not ready:\n${errors.map((e) => `  ${e}`).join('\n')}`)
   process.exit(1)
 }
-console.log(`✔ Релиз ${baseVersion ?? '—'} → ${version}, CHANGELOG на месте`)
+console.log(`✔ Release ${baseVersion ?? '—'} → ${version}, CHANGELOG in place`)

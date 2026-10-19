@@ -1,69 +1,73 @@
 ---
 name: dead-code
-description: Узкий проход по мёртвому коду, который образовался ИЗ-ЗА этой задачи — осиротевшие компоненты, хуки, утилиты, ассеты, ключи локалей, экспорты. Use as a checker step of /stage-check (со второго этапа) или перед PR. Не ищет баги — для этого /pro-review; не ищет дубли с китом — для этого /ds-parity.
+description: Narrow pass over dead code created BY this task — orphaned components, hooks, utilities, assets, locale keys, exports. Use as a checker step of /stage-check (from the second stage) or before a PR. Does not hunt bugs (that is /pro-review) or kit duplicates (that is /ds-parity). RU triggers — «мёртвый код», «что осиротело после моих изменений», «что стало мёртвым кодом»
 ---
 
-# Dead code — что осиротело из-за этой задачи
+# Dead code — what became orphaned because of this task
 
-Цель узкая: найти код, который **перестал использоваться в результате этих изменений**. Пре-существующий мусор — не наша добыча: его удаление раздувает диф и прячет суть задачи.
+The goal is narrow: find code that **stopped being used as a result of these changes**. Pre-existing junk is not our target: deleting it bloats the diff and hides the point of the task.
 
-> **Project config.** `main_branch`, раскладку кода, `ui_lib` и `i18n` бери из `<repo>/.claude/pipeline.config.md`; конвенции — из `CLAUDE.md`.
+> **Project config.** Take `main_branch`, the code layout, `ui_lib` and `i18n` from `<repo>/.claude/pipeline.config.md`; the conventions from `CLAUDE.md`.
 
-## Область
+## Scope
 
-| Запуск | Область |
+| Run | Scope |
 |---|---|
-| из `/stage-check` | диф этапа (uncommitted+staged или `git diff <prev-stage-commit>...HEAD`) |
-| перед PR | вся ветка: `git diff $(git merge-base <main_branch> HEAD)...HEAD` |
+| from `/stage-check` | the diff of the stage (uncommitted+staged or `git diff <prev-stage-commit>...HEAD`) |
+| before the PR | the whole branch: `git diff $(git merge-base <main_branch> HEAD)...HEAD` |
 
-Смотри в первую очередь на **удалённые и заменённые** места дифа: именно они оставляют сирот. Файл, который задача только добавила, осиротеть не может.
+Look first at the **removed and replaced** places of the diff: they are what leaves orphans. A file that the task only added cannot become an orphan.
 
-## Сначала — детерминированный прогон
+## First — the deterministic run
 
-Конфиг объявляет `unused_code` в секции «Static analysis» — начинай с него, а не с грепа: парсер видит реэкспорты, типы и barrel'ы точнее текстового поиска и стоит дешевле.
+The config declares `unused_code` in the "Static analysis" section — start with it, not with grep: a parser sees re-exports, types and barrels more precisely than a text search and costs less.
 
-Вывод такого тула — по **всему репозиторию**, а наша область — только сироты этого дифа. Сведи одно к другому:
+The output of such a tool is over the **whole repository**, while our scope is only the orphans of this diff. Reconcile the two:
 
-- Пересеки список тула с файлами и символами, затронутыми дифом. Всё остальное — пре-существующий долг, он вне области; упомяни его одной строкой в конце отчёта и не тащи в находки.
-- Прогон быстрый (меньше минуты) — точнее сделать иначе: прогнать на базе сравнения и на HEAD, взять разницу списков. Появилось после дифа = осиротело из-за него.
+- Intersect the tool's list with the files and symbols touched by the diff. Everything else is pre-existing debt, outside the scope; mention it in one line at the end of the report and do not drag it into the findings.
+- The run is fast (under a minute) — more precise to do it this way: run on the comparison base and on HEAD, take the difference of the lists. Appeared after the diff = became orphaned because of it.
 
-Вывод тула — это **кандидаты, а не находки**: процедуру подтверждения ниже он не отменяет. Динамические ключи, `url(...)` в CSS, таблицы роутов и склеенные ключи переводов парсер не видит и регулярно объявляет мёртвым живое. Тул не объявлен или не запускается — работай грепом по чеклисту ниже, это по-прежнему рабочий путь.
+The output of the tool is **candidates, not findings**: it does not cancel the confirmation procedure below. Dynamic keys, `url(...)` in CSS, route tables and concatenated translation keys are invisible to a parser, and it regularly declares live code dead. The tool is not declared or does not run — work by grep with the checklist below, that is still a working path.
 
-## Что искать
+## What to look for
 
-1. **Символы, потерявшие последний call-site.** Компонент/хук/утилита/тип, чьё единственное использование задача убрала или переписала.
-2. **Осиротевшие файлы целиком** — модуль, из которого больше никто не импортирует.
-3. **Недостижимый код внутри изменённых функций.** Высокоурожайный случай: `return`/`throw`, добавленный в середину, оставляет хвост мёртвым. Трассируй ветвления, а не читай глазами.
-4. **Ключи локалей**, оставшиеся от удалённой копии (пути `i18n` из конфига).
-5. **Ассеты** — картинки, иконки, шрифты, на которые больше нет ссылок.
-6. **Экспорты из barrel-файлов**, ведущие в никуда.
+1. **Symbols that lost their last call-site.** A component/hook/utility/type whose only use the task removed or rewrote.
+2. **Whole orphaned files** — a module nobody imports from any more.
+3. **Unreachable code inside changed functions.** A high-yield case: a `return`/`throw` added in the middle leaves the tail dead. Trace the branching, do not read it by eye.
+4. **Locale keys** left over from a removed copy (the `i18n` paths from the config).
+5. **Assets** — images, icons, fonts that no longer have references.
+6. **Exports from barrel files** that lead nowhere.
 
-## Подтверждение — главная часть работы
+## Confirmation — the main part of the work
 
-«Удали, оно не используется» на живом коде — самая стыдная находка чекера. Прежде чем включить пункт в отчёт, пройди все проверки:
+"Delete it, it is not used" on live code is the worst finding a checker can make. Before you put an item into the report, go through all the checks:
 
-- Грепни имя по всему репозиторию, **включая barrel-файлы, которые ре-экспортируют его под другим именем**.
-- Поищи ссылки, собираемые в рантайме: доступ по строковому ключу, динамические пути импорта, склеенные ключи переводов, таблицы роутов и конфигов, где символ лежит как данные.
-- В монорепозитории ищи по **всем** приложениям и пакетам, а не только в том, где идёт задача.
-- Достижимость ≠ упоминание: код может импортироваться и всё равно быть мёртвым, если более ранняя ветка всегда выигрывает. И наоборот.
-- Ассет может подключаться из CSS (`url(...)`), из манифеста или по вычисленному пути — грепай не только по коду.
-- Символ может быть публичным API пакета. Если файл экспортируется наружу из `package.json`/barrel корня — это не мёртвый код, а контракт.
+- Grep the name over the whole repository, **including barrel files that re-export it under another name**.
+- Look for references assembled at runtime: access by a string key, dynamic import paths, concatenated translation keys, route and config tables where the symbol lies as data.
+- In a monorepo search in **all** apps and packages, not only in the one the task goes in.
+- Reachable ≠ mentioned: code can be imported and still be dead if an earlier branch always wins. And the other way round.
+- An asset can be hooked up from CSS (`url(...)`), from a manifest or by a computed path — grep not only the code.
+- A symbol can be the public API of a package. If a file is exported outward from `package.json`/barrel of the root — it is not dead code but a contract.
 
-Не подтвердилось за разумное время — пункт не в «удалить», а в «под вопросом» с указанием, что именно осталось непроверенным.
+Not confirmed in a reasonable time — the item goes not into "to remove" but into "in question", saying what exactly stayed unchecked.
 
-## Отчёт
+## Report
 
-Сохрани в `<task_dir>/<TICKET>/checks/dead-code-<stage>.md` и верни компактно:
+Save to `<task_dir>/<TICKET>/checks/dead-code-<stage>.md` and return compactly. The report follows the common contract `${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`, written in the task language: the title, the second line with the summary (one line: the severity counters and the counter "N to remove / N in question" — journal-check reads "N to remove" as major), the table, then the sections:
 
+```markdown
+# Dead code: <stage or branch>
+Findings: critical 0 · major N · minor N — N to remove / N in question
+
+| # | What | Where | Why it became orphaned | How checked | Confidence |
+|---|------|-------|------------------------|-------------|------------|
 ```
-| # | Что | Где | Почему осиротело | Как проверено | Уверенность |
-|---|-----|-----|------------------|---------------|-------------|
-```
 
-`Как проверено` — конкретно: «knip + grep по монорепо, 0 ссылок; в barrel нет; динамических ключей не найдено» (тул назван, если он был). Без этой колонки находке нельзя верить.
+`How checked` — concretely: "knip + grep over the monorepo, 0 references; not in the barrel; no dynamic keys found" (the tool is named if there was one). Without this column the finding cannot be believed.
 
-Отдельными строками:
-- **Под вопросом** — что не удалось подтвердить и чего не хватило.
-- **Осознанно оставлено** — что выглядит мёртвым, но живое (публичный API, легаси-ветка, используется динамически). Без этого раздела остальному отчёту не верят.
+As separate sections:
+- **In question** — what could not be confirmed and what was missing.
+- **Deliberately kept** — what looks dead but is alive (public API, a legacy branch, used dynamically). Without this section the rest of the report is not believed.
+- **Could not verify** — what the pass could not reach; nothing left — "everything verified".
 
-Если ничего не осиротело — так и скажи, перечислив, что смотрел. Пустой отчёт лучше выдуманного.
+If nothing became orphaned — say so, listing what you looked at. An empty report is better than an invented one.

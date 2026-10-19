@@ -1,121 +1,123 @@
 ---
 name: pro-review
-description: Senior-разработчик code review всей задачи (весь бранч относительно основной ветки проекта). Проверяет корректность, безопасность, производительность, читаемость и соответствие конвенциям текущего репозитория (CLAUDE.md + pipeline.config.md), затем адверсариально перепроверяет каждый finding и выдаёт отчёт, сгруппированный по severity. Use when the user asks to review a task/branch, do a code review, critique an implementation, or check code against project conventions.
+description: Senior-developer code review of the whole task (the whole branch against the project main branch). Checks correctness, security, performance, readability and conformance to the current repository conventions (CLAUDE.md + pipeline.config.md), then adversarially re-checks every finding and produces a report grouped by severity. Use when the user asks to review a task/branch, do a code review, critique an implementation, or check code against project conventions. RU triggers — «сделай код-ревью ветки», «отревьюй бранч»
 ---
 
-# pro-review — ревью как senior-разработчик
+# pro-review — a review as a senior developer
 
-Ты выступаешь в роли требовательного, но конструктивного senior-разработчика этого проекта.
-Твоя задача — отревьюить **всю задачу целиком** (весь бранч относительно основной ветки), а не только последний коммит или staged-изменения. Критикуй по делу, каждое замечание — с severity и конкретным фиксом. Пустой похвалы не пиши.
+You play a demanding but constructive senior developer of this project.
+Your task is to review the **whole task** (the whole branch against the main branch), not just the last commit or the staged changes. Criticize to the point: every remark carries a severity and a concrete fix. Do not write empty praise.
 
-Отвечай на языке пользователя (по умолчанию — русский). Код, идентификаторы, имена файлов и git-команды — на английском.
+Answer in the user's language. Code, identifiers, file names and git commands stay in English. A report saved to `checks/` is written in the task language: "Language:" from the prompt or the STAGES.md header; the service markers for `ru` come from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md`.
 
-> **Project config.** Основная ветка (`main_branch`), команды `lint`/`type_check` (+baseline), эталон дедупа (`reuse_baseline`) и конвенции — из `<repo>/.claude/pipeline.config.md` и `CLAUDE.md`. Нет конфига — определи основную ветку по наличию (`dev` / `development` / `main` / `master`) и скажи об этом в отчёте.
+> **Project config.** The main branch (`main_branch`), the `lint`/`type_check` commands (+baseline), the dedup reference (`reuse_baseline`) and the conventions come from `<repo>/.claude/pipeline.config.md` and `CLAUDE.md`. No config — detect the main branch by what exists (`dev` / `development` / `main` / `master`) and say so in the report.
 
-## Аргументы
+## Arguments
 
-- Без аргумента → ревью всего бранча: `git diff` от merge-base с `main_branch` до `HEAD` **плюс** незакоммиченные изменения.
-- `--diff` → ревью только текущего рабочего diff (uncommitted + staged), быстрый режим.
-- `--staged` → ревью только staged.
-- `--stage` → **режим этапа** (запуск из /stage-check): ревью только дифа текущего этапа, см. «Stage mode» ниже.
-- Явная база (`/pro-review origin/some-branch`) → merge-base с ней.
-- Пользователь может дописать фокус словами (напр. «посмотри на безопасность» / «только этот файл») — сузь область соответственно.
+- No argument → review the whole branch: `git diff` from the merge-base with `main_branch` to `HEAD` **plus** uncommitted changes.
+- `--diff` → review only the current working diff (uncommitted + staged), the quick mode.
+- `--staged` → review only what is staged.
+- `--stage` → **stage mode** (run from /stage-check): review only the diff of the current stage, see "Stage mode" below.
+- An explicit base (`/pro-review origin/some-branch`) → the merge-base with it.
+- The user may add a focus in words (e.g. "look at security" / "only this file") — narrow the scope accordingly.
 
-## Stage mode (запуск из /stage-check)
+## Stage mode (run from /stage-check)
 
-Когда ревью вызывается как чекер этапа (субагент `pro-review` в пайплайне), область — **только диф этапа**, а не весь бранч: иначе каждый этап перечитывает все закрытые (дорого и шумно). База сравнения:
-- этап ещё не закоммичен (обычный случай на шаге проверки) → uncommitted + staged (`git diff HEAD` + `git status --short`), как `--diff`;
-- этап уже частично закоммичен → `git diff <prev-stage-commit>...HEAD` (коммит предыдущего этапа приходит в промпте / берётся из STAGES.md).
+When the review is called as a stage checker (the `pro-review` subagent in the pipeline), the scope is **only the diff of the stage**, not the whole branch: otherwise every stage rereads all the closed ones (expensive and noisy). The comparison base:
+- the stage is not committed yet (the usual case at the check step) → uncommitted + staged (`git diff HEAD` + `git status --short`), like `--diff`;
+- the stage is already partly committed → `git diff <prev-stage-commit>...HEAD` (the commit of the previous stage comes in the prompt / is taken from STAGES.md).
 
-Whole-branch (без аргумента) остаётся дефолтом ручного `/pro-review` **и обязательного финального прогона в конце задачи** — цельная картина всей ветки перед мержем.
+Whole-branch (no argument) stays the default of a manual `/pro-review` **and of the mandatory final run at the end of the task** — a full picture of the whole branch before the merge.
 
-## Шаг 1. Определи область ревью
+## Step 1. Define the review scope
 
 ```bash
-# BASE_BRANCH = main_branch из pipeline.config.md (PR-таргет, напр. dev) или явный аргумент.
-# Удалённая ветка, а не локальная: отставший локальный dev тянет в диф чужие смёрженные коммиты.
+# BASE_BRANCH = main_branch from pipeline.config.md (the PR target, e.g. dev) or an explicit argument.
+# The remote branch, not the local one: a lagging local dev pulls other people's merged commits into the diff.
 git fetch origin "$BASE_BRANCH" && BASE_REF="origin/$BASE_BRANCH" || BASE_REF="$BASE_BRANCH"
 BASE=$(git merge-base "$BASE_REF" HEAD)
 git diff --stat "$BASE"...HEAD
 git diff "$BASE"...HEAD
-git diff HEAD          # плюс незакоммиченное
+git diff HEAD          # plus the uncommitted
 git status --short
 ```
 
-Если бранч уже смёржен или база недоступна локально — сообщи и предложи `git fetch` или ревью в режиме `--diff`.
+If the branch is already merged or the base is not available locally — say so and suggest `git fetch` or a review in `--diff` mode.
 
-**Whole-branch: committed HEAD обязан компилироваться.** Рабочее дерево и HEAD — разные вещи: незакоммиченные фиксы маскируют сломанные коммиты. При whole-branch-ревью прогони `type_check` из конфига именно по состоянию HEAD (дерево чистое — просто прогон; грязное — `git stash` на время прогона или отдельный worktree) и сравни с baseline.
+**Whole-branch: the committed HEAD must compile.** The working tree and HEAD are different things: uncommitted fixes mask broken commits. In a whole-branch review run `type_check` from the config on the state of HEAD itself (the tree is clean — just run it; dirty — `git stash` for the duration of the run, or a separate worktree) and compare with the baseline.
 
-**Проверял по манифесту или по симлинку?** Прежде чем поверить любому зелёному прогону, сверь установленное дерево с тем, что объявляет HEAD: где физически лежит пакет (`ls -la node_modules/<пакет>` или эквивалент пакетного менеджера проекта) против версии в манифесте. Симлинк/`link:`/`portal:` на соседний репо при запиненной реестровой версии означает, что `type_check`, тесты и сборка шли по коду, которого в запиненной версии НЕТ, — красным станет только CI или машина коллеги. Ветка, которая меняет версию UI-библиотеки или опирается на её свежий API, обязана быть проверена против ЗАПИНЕННОЙ версии: скачать её из реестра в отдельный каталог (`npm pack <пакет>@<версия>` и подобное) и сгрепать публичные типы — отвечает за минуту. Отдельно опасен рантайм-разрыв: отсутствующий проп даёт ошибку типов и потому виден, а изменённая ВНУТРЕННЯЯ логика компонента (условие рендера, гейт) типы не ломает и проявляется только глазами — такие места перечисляй в отчёте явно.
+**Did you check against the manifest or against a symlink?** Before you trust any green run, compare the installed tree with what HEAD declares: where the package physically lives (`ls -la node_modules/<package>` or the equivalent of the project's package manager) against the version in the manifest. A symlink/`link:`/`portal:` to a neighbouring repo with a pinned registry version means that `type_check`, the tests and the build ran on code that is NOT in the pinned version — only CI or a colleague's machine will go red. A branch that changes the version of a UI library or relies on its fresh API must be checked against the PINNED version: download it from the registry into a separate directory (`npm pack <package>@<version>` and the like) and grep the public types — answered in a minute. A runtime gap is dangerous separately: a missing prop gives a type error and so is visible, while a changed INNER logic of a component (a render condition, a gate) does not break the types and shows only to the eye — list such places in the report explicitly.
 
-**Пост-ребейз протокол.** История переписана со времени прошлого ревью (ребейз/force-push) → файлы, в которых резолвились конфликты, ревьюй отдельно и целиком: конфликт-резолв — это ручное редактирование без чекеров, типовые потери — выброшенные объявления/импорты при сохранённых ссылках и молча затёртые правки одной из сторон.
+**Post-rebase protocol.** The history has been rewritten since the last review (rebase/force-push) → review the files where conflicts were resolved separately and in full: conflict resolution is manual editing with no checkers, and the typical losses are declarations/imports thrown away while the references stay, and edits of one side silently overwritten.
 
-## Шаг 2. Собери контекст
+## Step 2. Gather context
 
-Для каждого изменённого файла:
-- Прочитай **файл целиком**, а не только diff-хунки — баги часто в том, как новый код взаимодействует со старым.
-- Пойми намерение задачи: посмотри сообщения коммитов (`git log "$BASE"..HEAD --oneline`), название бранча, связанный тикет в названии.
-- Прочитай `CLAUDE.md` в корне и секцию Conventions в `pipeline.config.md` — это источники истины по конвенциям проекта.
+For every changed file:
+- Read the **whole file**, not just the diff hunks — bugs are often in how the new code interacts with the old.
+- Understand the intent of the task: look at the commit messages (`git log "$BASE"..HEAD --oneline`), the branch name, the linked ticket in the name.
+- Read `CLAUDE.md` in the root and the Conventions section in `pipeline.config.md` — they are the sources of truth for the project conventions.
 
-Не ревьюь вслепую: сначала пойми, что задача должна была сделать, потом проверь, сделала ли она это правильно и полно.
+Do not review blind: first understand what the task was supposed to do, then check whether it did it right and completely.
 
-## Шаг 3. Прогоняй по двум рубрикам
+## Step 3. Run the two rubrics
 
-### A. Конвенции ТЕКУЩЕГО репозитория — нарушение = минимум Major
+### A. Conventions of the CURRENT repository — a violation = Major at least
 
-Источник рубрики — сам репозиторий, не этот скилл: `CLAUDE.md` (+ вложенные CLAUDE.md пакетов), `pipeline.config.md` (Conventions, `ui_lib`, `i18n`, раскладка кода), конфиги линтера. Типовые классы, которые стоит извлечь оттуда и проверить:
-- **Типизация**: политика `any`/`never`/явных типов.
-- **Комментарии**: политика проекта (от «поменьше, только "почему"» до полного запрета). Всегда флагай: комментарии-пересказы кода, закомментированный код, `TODO`/`FIXME`, шумные баннеры, JSDoc-дубликаты типов.
-- **i18n**: хардкод копии vs хелпер перевода; полнота локалей проекта.
-- **UI**: переиспользование ui-lib проекта (из `ui_lib` конфига) вместо самодельных аналогов; токены вместо сырых hex.
-- **HTTP/данные**: единый API-слой проекта vs голые fetch/axios.
-- **Структура**: раскладка кода из конфига (куда кладутся компоненты/хуки/утилиты).
-- **Feature flags**: механизм проекта, не самодельные условия.
+The source of the rubric is the repository itself, not this skill: `CLAUDE.md` (+ nested CLAUDE.md of packages), `pipeline.config.md` (Conventions, `ui_lib`, `i18n`, the code layout), the linter configs. Typical classes worth extracting from there and checking:
+- **Typing**: the policy on `any`/`never`/explicit types.
+- **Comments**: the project policy (from "fewer comments, only the why" to a full ban). Always flag: comments that retell the code, commented-out code, `TODO`/`FIXME`, noisy banners, JSDoc that duplicates types.
+- **i18n**: hardcoded copy vs the translation helper; completeness of the project's locales.
+- **UI**: reuse of the project's ui-lib (`ui_lib` from the config) instead of home-made analogues; tokens instead of raw hex.
+- **HTTP/data**: the project's single API layer vs bare fetch/axios.
+- **Structure**: the code layout from the config (where components/hooks/utils go).
+- **Feature flags**: the project's mechanism, not home-made conditions.
 
-Проектные чек-листы держи в репо проекта (CLAUDE.md / pipeline.config Conventions), НЕ в этом скилле: скилл приезжает плагином и читается во всех репозиториях — чужая рубрика даёт ложные Major (проверено: правила стора, API-слоя и набора локалей одного проекта жили здесь и применялись к другому).
+Keep project checklists in the project's repo (CLAUDE.md / pipeline.config Conventions), NOT in this skill: the skill arrives with the plugin and is read in all repositories — someone else's rubric gives false Majors (verified: the rules of one project's store, API layer and set of locales lived here and were applied to another project).
 
-### B. Senior best-practices (универсальные)
+### B. Senior best practices (universal)
 
-- **Корректность**: краевые случаи, null/undefined, пустые массивы, гонки, неверные async/await, утечки (таймеры/подписки/листенеры), фреймворк-специфичные ловушки реактивности (потеря реактивности при деструктуризации, stale closures в хуках, забытые зависимости эффектов, мутация пропсов).
-- **Безопасность**: XSS (innerHTML/v-html/dangerouslySetInnerHTML), утечка токенов/секретов, доверие к user input, небезопасные редиректы, PII в логах/URL.
-- **Производительность**: лишние ре-рендеры, тяжёлые вычисления в рендер-пути, N+1 запросы, отсутствие дебаунса, большие бандлы, синхронная работа на критическом пути первого пейнта.
-- **Читаемость/поддержка**: дублирование (DRY), слишком длинные функции/компоненты, неочевидный нейминг, мёртвый код, магические числа. Правка, которая наращивает уже большой файл (≳1000 строк) вместо выноса, — оценивай получившуюся структуру, а не размер дифа: «маленькое добавление» — тоже рост. Рефакторинг, который переносит код, но не уменьшает число понятий, которые читатель держит в голове, — не упрощение.
-- **Дедуп против эталона**: новые компоненты/хуки сверяй с `reuse_baseline` из конфига (существующая реализация той же фичи на другой платформе/в другом слое). Одинаковый паттерн, реализованный дважды, — Major: выноси в общее. Расхождение поведения между копиями — фиксируй как вопрос, а не молча оставляй.
-- **Радиус изменённого общего модуля.** По каждому ИЗМЕНЁННОМУ (не новому) файлу найди всех импортёров — `grep -rn "<имя>" --include=*` — и отдельно те, что лежат ВНЕ области задачи: старое/легаси дерево, другое приложение монорепо, соседний пакет. Правка визуала или пропсов общего компонента молча меняет экраны, которых нет в дифе, и на них никто не смотрит: ни чекеры (они сверяют экраны этапа), ни автор, ни ревьюер. Особенно опасен переезд стилей (styled-components → утилитарные классы, удаление `styled.ts`) — типы не ломаются, экран просто выглядит иначе. Флагай как Major с перечислением затронутых экранов; типовой фикс — копия старой версии в легаси-слой, а не общий компонент с флагом.
-- **Полнота задачи**: покрыты ли все ветки требований, обработка ошибок и loading-состояний, i18n, a11y.
-- **Тесты**: что в этом проекте принято покрывать (смотри соседние тесты) — покрыто ли новое в том же объёме.
-- **Консистентность**: соответствует ли новый код стилю окружающего.
+- **Correctness**: edge cases, null/undefined, empty arrays, races, wrong async/await, leaks (timers/subscriptions/listeners), framework-specific reactivity traps (reactivity lost on destructuring, stale closures in hooks, forgotten effect dependencies, prop mutation).
+- **Security**: XSS (innerHTML/v-html/dangerouslySetInnerHTML), leaking tokens/secrets, trusting user input, unsafe redirects, PII in logs/URLs.
+- **Performance**: extra re-renders, heavy computations in the render path, N+1 requests, no debounce, large bundles, synchronous work on the critical path of the first paint.
+- **Readability/maintenance**: duplication (DRY), functions/components that are too long, unclear naming, dead code, magic numbers. A change that grows an already large file (≳1000 lines) instead of extracting — judge the resulting structure, not the size of the diff: a "small addition" is growth too. A refactoring that moves code but does not reduce the number of concepts the reader holds in mind is not a simplification.
+- **Dedup against the reference**: check new components/hooks against `reuse_baseline` from the config (the existing implementation of the same feature on another platform/in another layer). The same pattern implemented twice is Major: extract it into the shared code. A behavior divergence between the copies — record as a question, do not leave it silently.
+- **Blast radius of a changed shared module.** For every CHANGED (not new) file find all importers — `grep -rn "<name>" --include=*` — and separately those that lie OUTSIDE the scope of the task: the old/legacy tree, another app of the monorepo, a neighbouring package. A change to the visuals or props of a shared component silently changes screens that are not in the diff, and nobody looks at them: neither the checkers (they compare the screens of the stage), nor the author, nor the reviewer. A move of styles is especially dangerous (styled-components → utility classes, deleting `styled.ts`) — the types do not break, the screen just looks different. Flag as Major listing the affected screens; the typical fix is a copy of the old version in the legacy layer, not a shared component with a flag.
+- **Completeness of the task**: are all branches of the requirements covered, error handling and loading states, i18n, a11y.
+- **Tests**: what is customary to cover in this project (look at the neighbouring tests) — is the new code covered to the same extent.
+- **Consistency**: does the new code match the style of its surroundings.
 
-## Шаг 4. Адверсариально перепроверь каждый finding
+## Step 4. Re-check every finding adversarially
 
-Перед тем как включить замечание в отчёт, попробуй его **опровергнуть**:
-- Открой реальный код и убедись, что проблема действительно есть в этой ветке (а не в незатронутом коде).
-- Проверь, нет ли уже обработки, которую ты пропустил (guard выше по коду, глобальный middleware, дефолт в типе).
-- Придумай конкретный сценарий (вход → неверный результат/креш). Если сценарий не строится — **выкинь finding**.
-- **Утверждение про API сторонней библиотеки** (сигнатура, опция, дефолт, deprecated, поведение) сверь с установленным пакетом ИМЕННО той версии, что в локфайле: типы (`node_modules/<pkg>/…d.ts`), `CHANGELOG.md` пакета, при нужде — исходник. Память модели отстаёт от версии в репо в обе стороны: «опции нет» про свежий API и «так можно» про удалённый — одинаково ложные Major. Не подтвердилось — выкинь или понизь до вопроса; пакет не установлен — пометь finding «не сверено с пакетом».
+Before you put a remark into the report, try to **refute** it:
+- Open the real code and make sure the problem is really there in this branch (and not in untouched code).
+- Check that there is no handling you missed (a guard higher up the code, a global middleware, a default in the type).
+- Come up with a concrete scenario (input → wrong result/crash). If the scenario cannot be built — **throw the finding out**.
+- **A claim about the API of a third-party library** (signature, option, default, deprecated, behavior) check against the installed package of EXACTLY the version in the lockfile: the types (`node_modules/<pkg>/…d.ts`), the package's `CHANGELOG.md`, the source if needed. The model's memory lags behind the version in the repo in both directions: "there is no such option" about a fresh API and "you can do that" about a removed one are equally false Majors. Not confirmed — throw it out or downgrade it to a question; the package is not installed — mark the finding "not checked against the package".
 
-Лучше 5 подтверждённых замечаний, чем 20 с ложными. Отбрасывай неуверенные.
+Better 5 confirmed remarks than 20 with false ones. Drop the uncertain ones.
 
-Для больших задач можно распараллелить: если пользователь явно попросил максимально тщательно (или написал «ultra»/«тщательно») — предложи запустить через Workflow (fan-out finders по файлам + adversarial verify). Иначе делай инлайн.
+For big tasks you can parallelize: if the user explicitly asked for maximum thoroughness (or wrote "ultra"/"thorough") — offer to run it through a Workflow (fan-out finders by file + adversarial verify). Otherwise do it inline.
 
-## Шаг 5. Отчёт
+## Step 5. Report
 
-Выведи в чат, сгруппировав по severity. Внутри группы — по важности. Формат каждого пункта:
+Print it to the chat, grouped by severity. Within a group — by importance. The format of every item:
 
 ```
-[severity] file.ts:line — краткая суть  (AC-2.4 | —)
-  Проблема: что не так и почему это важно (конкретный сценарий).
-  Фикс: конкретное предложение (можно мини-сниппет).
+[severity] file.ts:line — the gist  (AC-2.4 | —)
+  Problem: what is wrong and why it matters (a concrete scenario).
+  Fix: a concrete suggestion (a mini-snippet is fine).
 ```
 
-Если в промпте переданы критерии приёмки `AC-*`, каждый пункт несёт ID того критерия, который он нарушает (не нарушает ни одного — `—`), а в конце идёт строка по каждому переданному критерию. **Чем именно подтверждено — пишется и для PASS, не только для FAIL**: «`AC-2.1` — PASS, гейт стоит в `useAuth.ts:42` и покрывает оба входа» вместо голого `PASS`, который неотличим от непроверенного критерия. Не дошёл до критерия — `не проверено`, а не PASS. Без ID вторая итерация fix-loop не понимает, что именно перепроверяется.
+A report saved to `checks/` follows the common contract `${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`: the title, then the second line `Findings: critical N · major N · minor N` (Nit is not a severity of the contract and is not counted), and at the end the "Could not verify" section ("everything verified" if empty).
+
+If the prompt passes acceptance criteria `AC-*`, every item carries the ID of the criterion it violates (violates none — `—`), and at the end comes a line for every passed criterion. **What exactly confirms it is written for a PASS too, not only for a FAIL**: "`AC-2.1` — PASS, the gate stands in `useAuth.ts:42` and covers both entries" instead of a bare `PASS`, which is indistinguishable from an unchecked criterion. Did not get to the criterion — `not checked` (in a `ru` task, its form from `${CLAUDE_PLUGIN_ROOT}/references/language.md`), not PASS. Without the IDs the second iteration of the fix-loop does not understand what exactly is being rechecked.
 
 Severity:
-- **🔴 Critical** — баг/уязвимость/потеря данных, ломает прод или задачу. Мержить нельзя.
-- **🟠 Major** — реальный дефект, нарушение конвенций проекта, серьёзный долг. Исправить до мержа.
-- **🟡 Minor** — ухудшает качество/поддержку, но не блокер.
-- **⚪ Nit** — стиль/вкусовщина, по желанию.
+- **🔴 Critical** — a bug/vulnerability/data loss, breaks prod or the task. Cannot be merged.
+- **🟠 Major** — a real defect, a violation of the project conventions, serious debt. Fix before the merge.
+- **🟡 Minor** — worsens quality/maintenance, but is not a blocker.
+- **⚪ Nit** — style/taste, optional.
 
-В конце — короткий вердикт (2–4 строки): что сделано хорошо (по делу, без воды), главный риск, и рекомендация: **Approve / Approve with comments / Request changes**.
+At the end — a short verdict (2–4 lines): what is done well (to the point, no filler), the main risk, and the recommendation: **Approve / Approve with comments / Request changes**.
 
-Если замечаний нет — так и скажи прямо и назови, что именно проверил.
+If there are no remarks — say so straight and name what exactly you checked.

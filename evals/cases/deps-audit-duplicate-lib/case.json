@@ -1,25 +1,25 @@
 {
   "agent": "deps-audit",
-  "why": "вторая библиотека дат рядом с date-fns, тулинг в рантайм-разделе, ассет без ссылок",
-  "prompt": "Тикет EVAL-1, этап 1. База сравнения: незакоммиченные изменения (git diff HEAD + git status, включая неотслеживаемые файлы). Этап добавил отчёт по периоду.",
+  "why": "a second date library next to date-fns, tooling in the runtime section, an asset with no references",
+  "prompt": "Ticket EVAL-1, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status, including untracked files). The stage added a period report.",
   "expect": [
     {
       "pattern": "moment[\\s\\S]{0,400}date-fns|date-fns[\\s\\S]{0,400}moment",
-      "why": "moment — дубль уже используемой date-fns"
+      "why": "moment duplicates date-fns, which is already used"
     },
     {
       "pattern": "eslint-plugin-react-hooks[\\s\\S]{0,300}dev|dev[\\s\\S]{0,300}eslint-plugin-react-hooks",
-      "why": "eslint-plugin-react-hooks — в devDependencies"
+      "why": "eslint-plugin-react-hooks belongs in devDependencies"
     },
     {
       "pattern": "summer-promo\\.png",
-      "why": "новый ассет без единой ссылки"
+      "why": "a new asset with no references at all"
     }
   ],
   "forbid": [
     {
       "pattern": "typescript[^\\n]{0,80}(перенес|move)",
-      "why": "пре-существующие зависимости вне дифа не ревьюятся"
+      "why": "pre-existing dependencies outside the diff are not reviewed"
     }
   ],
   "budgetUsd": 1
