@@ -62,8 +62,8 @@ export function acViolation(line, reports = null) {
   const outcome = line.slice(line.indexOf('✅') + 1).replace(/\[verify:[^\]]*\]/gi, '')
   const prose = stripQuoted(outcome)
   const id = line.match(/AC-[\w.]+/)[0]
-  // `[live: user-side]` is a marker, written in backticks too: it is read from the whole outcome; the words of a decision and "⏳ checker" — from the prose.
-  const deferred = /\[live:/.test(outcome) || /решени[а-яё]* пользователя|user\s+decision/i.test(prose) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(prose))
+  // `[live: user-side]` and "⏳ checker" are markers, written in backticks too: they are read from the whole outcome; the words of a decision — from the prose.
+  const deferred = /\[live:/.test(outcome) || /решени[а-яё]* пользователя|user\s+decision/i.test(prose) || required.some((checker) => new RegExp(`⏳[^·;]*${checker}`).test(outcome))
   if (deferred) return null
   const named = required.filter((checker) => outcome.includes(checker))
   // A runtime criterion is also closed by a live check without a subagent (a smoke run, "checked live"); a design criterion only by a checker comparison.
@@ -116,10 +116,18 @@ export function skipViolation(line) {
 // ✅ with a caveat inside — "✅ (dark theme not captured)", "✅ only by cookie, look not checked": the criterion is half-closed.
 const CAVEAT_RU = 'не\\s+снят|не\\s+проверен|не\\s+проверял|не\\s+смотрел|не\\s+открывал|только\\s+по\\s+коду|частично|не\\s+удалось\\s+(?:проверить|снять|открыть|посмотреть)'
 // "checkbox is not checked by default", "drawer not opened on load" describe the interface, not what was verified: a control word before "not checked/opened" is not a caveat.
-const UI_STATE =
-  "(?<!\\b(?:checkbox|box|toggle|radio|radio\\s+button|switch|option|row|item|drawer|modal|menu|dropdown|accordion|popover|sidebar|dialog|sheet|tab|window|page|link|panel|terms|consent|agreement)\\s+(?:(?:is|are|was|stays|remains)\\s+)?)"
+// Words that also name what a checker opens ("page", "tab", "link") describe the interface only with a verb: "the tab is not opened again" is the interface, "settings page not checked" is a caveat.
+const CONTROL = 'checkbox|box|toggle|radio|radio\\s+button|switch|option|row|item|drawer|modal|menu|dropdown|accordion|popover|sidebar'
+const SURFACE = 'dialog|sheet|tab|window|page|link|panel|terms|consent|agreement'
+const COPULA = '(?:is|are|was|were|stays|remains)\\s+'
+const UI_STATE = `(?<!\\b(?:${CONTROL})\\s+(?:${COPULA})?)(?<!\\b(?:${SURFACE})\\s+${COPULA})`
+// "Twice" after a verb describes the interface too ("the button is not opened twice"); "again" does not: "1024 was not checked again after the fix" is a caveat,
+// and "the tab is not opened again" is already excluded by UI_STATE. Without a verb ("1024 not checked twice") both are caveats.
+const NOT_OPENED =
+  `${UI_STATE}(?<!\\b${COPULA})\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first)\\b)|` +
+  `${UI_STATE}(?<=\\b${COPULA})\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first|twice|repeatedly|more\\s+than\\s+once)\\b)`
 const CAVEAT_EN =
-  `\\bnot\\s+(?:captured|verified|tested)\\b|\\b(?:is|are|was|were|left|stays?|remains?)\\s+(?:unverified|untested)\\b|\\b(?:unverified|untested)\\s*(?=[;,.)—–:]|$)|\\b(?:unverified|untested)\\s+(?:at|on|in|for|under)\\s+\\d|${UI_STATE}\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first|twice|again|repeatedly|more\\s+than\\s+once)\\b)|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)`
+  `\\bnot\\s+(?:captured|verified|tested)\\b|\\b(?:is|are|was|were|left|stays?|remains?)\\s+(?:unverified|untested)\\b|\\b(?:unverified|untested)\\s*(?=[;,.)—–:]|$)|\\b(?:unverified|untested)\\s+(?:at|on|in|for|under|with|yet|so\\s+far)\\b|${NOT_OPENED}|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)`
 const CAVEAT = new RegExp(`${CAVEAT_RU}|${CAVEAT_EN}`, 'i')
 // "No data" instead of putting a state in place: 46 "[live: user-side]" in one task, the user found six defects among them.
 const NO_DATA = /нет\s+(?:подходящ[а-яё]*\s+|живых\s+|тестов[а-яё]*\s+)?(?:данных|брон[а-яё]*|лид[а-яё]*|записей|объявлен[а-яё]*|заказ[а-яё]*)(?![а-яё])|нет\s+на\s+аккаунте|\bno\s+(?:suitable\s+|matching\s+|live\s+|test\s+)?(?:data|bookings|leads|records|listings|orders)\b(?!\s+(?:loss|lost|was\s+lost|were\s+lost|changed?)\b)|\bnot\s+on\s+the\s+account|\bno\s+such\s+data/i
@@ -290,6 +298,14 @@ const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![
 
 const FIXED_WORD = /исправлен|починен|удал[её]н|(?<!\bnot\s)(?<!n['’]t\s)\b(?:fixed|removed|resolved|repaired)\b/i
 const refused = (text) => PARKED.test(text) || PARKED_FILE.test(text) || NOT_FIXED_YET.test(text)
+// The description of a fix may say "later" or "keeping" about the code; only an explicit deferral of a remainder makes the outcome parked:
+// "fixed: a.ts:1, fix the tests later", "fixed: a.ts:1 — the rest is out of scope", and the Russian forms.
+const DEFERRED_REST =
+  /\bwill\s+be\s+(?:fixed|resolved|addressed|done)\b|(?<!\bused\s)\bto\s+be\s+(?:fixed|resolved|addressed|done)\b|\b(?:fix(?:es|ing)?|do(?:ing)?|handle|handling|address(?:ing)?|cover(?:ing)?)\s+(?:\S+\s+){0,3}later\b|\brest\b[^.;]{0,40}\b(?:later|as\s+is)\b|separate\s+task|\bfollow-?up\s+(?:PR|MR|task|ticket|issue|commit|stage)\b|\b(?:in|into|to)\s+a\s+follow-?up\b|out\s+of\s+scope|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|(?:исправим|починим|поправим)(?![а-яё])|будет\s+(?:исправлен|починен)|отдельн[а-яё]{0,4}\s+задач|вне\s+(?:скоуп|границ)|остальн[а-яё]{0,4}[^.;]{0,40}(?:позже|потом)(?![а-яё])|оставля[а-яё]{0,4}\s+как\s+есть/i
+// The forbidden outcomes of references/checker-report.md that cannot describe code, and a short "<one or two words> later" closing the clause ("— tests later").
+const REFUSED_REST =
+  /компромисс|\bcompromise\b|\bwon['’]?t\s+fix|не\s+чин|(?:в|to|into)\s+findings\b|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|question\s+(?:for|to)\s+(?:the\s+)?(?:product|design|backend|reviewer|qa)\b|принят[а-яё]*\s+как|accepted\s+as\b|ожида[а-яё]*\s+подтвержд|awaiting\s+(?:user\s+)?confirmation|не\s+в\s+скоуп|not\s+in\s+scope|outside\s+(?:the\s+)?(?:scope|boundaries)|в\s+кит(?![а-яё])|(?:to|into)\s+the\s+kit\b|(?:^|[—–,]\s*)(?:[^\s.;,—–]+\s+){0,2}(?:later|afterwards|позже|потом)\s*$/i
+const deferredRest = (text) => DEFERRED_REST.test(text) || REFUSED_REST.test(text) || PARKED_FILE.test(text)
 /** The wording of an outcome: the clause up to the first ":" or dash after the outcome word ("fixed: a.ts:10 — the promise is not resolved twice" → "fixed"). The description of the fix is not the outcome. */
 function outcomeHead(clause) {
   const word = FIXED_WORD.exec(clause)
@@ -303,10 +319,12 @@ function outcomeHead(clause) {
 export function disposition(entry) {
   const proven = PRE_EXISTING.test(entry) && BASE_EVIDENCE.test(entry)
   if (PRE_EXISTING.test(entry) && !proven) return 'unproven'
-  // Code and quotes are identifiers and copy; a refusal is looked for in the head of the outcome and in the clauses after ";" ("fixed: a.ts:1; fix the tests later"), not in the description of the fix.
+  // Code and quotes are identifiers and copy; a refusal is looked for in the head of the outcome and in the clauses after ";" ("fixed: a.ts:1; fix the tests later"),
+  // in the description of the fix — only an explicit deferral of a remainder ("fixed: a.ts:1, fix the tests later").
   const [first, ...rest] = stripQuoted(entry).split(';')
-  if ((refused(outcomeHead(first)) || rest.some(refused)) && !proven) return 'parked'
-  if (/исправлен|починен|удал[её]н|(?<!\bnot\s)(?<!n['’]t\s)\b(?:fixed|removed|resolved|repaired)\b/i.test(entry)) return 'fixed'
+  const head = outcomeHead(first)
+  if ((refused(head) || deferredRest(first.slice(head.length)) || rest.some(refused)) && !proven) return 'parked'
+  if (FIXED_WORD.test(entry)) return 'fixed'
   if (proven || /ложн|не\s+подтвердил|не\s+воспроизв|(?:^\s*(?:[-*]|\d+\.)?\s*|[—–]\s*|\s-\s+)false\s*[:(]|\bfalse\s+positive\b|\bnot\s+confirmed\b|\b(?:could\s+not|couldn['’]t|cannot|unable\s+to)\s+reproduce|\bnot\s+reproduc(?:ed|ible)/i.test(entry)) return 'false'
   if (/\bB\d+\b/.test(entry)) return 'blocker'
   if (/(?:решени[а-яё]*\s+пользователя|user\s+decision|user\s+decided)[^\n]{0,200}?(?:«|"|“|\d{2}\.\d{2}|\d{4}-\d{2})/i.test(entry)) return 'user'

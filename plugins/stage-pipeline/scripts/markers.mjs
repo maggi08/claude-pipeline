@@ -90,23 +90,32 @@ export const MODE_WORD = 'режим|mode'
 
 /** A blocker `B<n> — …`. */
 export const BLOCKER_LINE = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**\s*[—–:-]/
-// A request for the user's answer ("needs a user decision", "waiting for a user answer", and the Russian forms): it lifts nothing, even if the line also says "closed by".
-const USER_REQUEST = '\\b(?:needs?|needed|waiting\\s+for|waits?\\s+for|requires?|required)\\s+(?:an?\\s+|the\\s+)?user\\s+(?:answer|decision)\\b'
+// A request for the user's answer ("needs a user decision", "awaiting a user answer", and the Russian forms): it lifts nothing, even if the line also says "closed by" or quotes the options.
+// One list for both languages: `\b` is ASCII, so in the branches that put it before the list only the English words take part.
+const REQUEST_WORDS =
+  '(?:needs?|needed|waiting\\s+for|waits?\\s+for|awaiting|pending|requires?|required|нужно|нужен|нужна|нужны|необходим[а-яё]*|жд[её]т|жд[её]м|жду|ожида[а-яё]*|требуется)'
+const USER_REQUEST = `\\b${REQUEST_WORDS}\\s+(?:an?\\s+|the\\s+)?user\\s+(?:answer|decision)\\b`
 const NO_REQUEST_AFTER = `(?![^\\n]{0,200}${USER_REQUEST})`
 const NO_REQUEST_BEFORE = `(?<!${USER_REQUEST}[^\\n]{0,200})`
 const NOT_BEFORE = '(?<!\\bnot\\s)'
 const DATE_OR_QUOTE = '(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})'
+// A quote followed by a second option ("v1" or "v2", and the Russian form) lists what is asked, it is not the answer.
+const NOT_OPTIONS = '(?![^»"”\\n]{0,80}[»"”]\\s*(?:или|or|vs\\.?|/)\\s*[«"“])'
+// The answer: a date or a quote right after the words, with at most a short "on", "dated", "(", "in chat" (and the Russian forms) or a ":" / dash between them.
+// One optional separator and no adjacent "\s*" pairs: the tail stays linear on long runs of spaces.
+const ANSWER_EN = `(?:\\s*(?:on|dated|in\\s+(?:the\\s+)?chat|\\())?\\s*(?:[:—–-]\\s*)?${DATE_OR_QUOTE}${NOT_OPTIONS}`
+const ANSWER_RU = `(?:\\s*(?:от|в\\s+чате|\\())?\\s*(?:[:—–-]\\s*)?${DATE_OR_QUOTE}${NOT_OPTIONS}`
 /** A blocker is lifted: `lifted by`, `resolved by`, `user decision` … and their Russian forms. */
 export const BLOCKER_LIFTED = new RegExp(
   [
     'снят|закрыт|отвечен',
     // The Russian "resolved" (masculine, neuter, feminine) as a word of its own, without a negation before it: the noun "decision" and "not resolved" do not lift.
     '(?<![а-яё])(?<!не\\s)реш[её]н[оа]?(?![а-яё])',
-    // "Needs the user's decision/answer …" is a request, not a lift: the date or the quote must follow the words at once, and a request word must not stand before them (the Russian forms too).
-    `(?<!(?:нужно|нужен|нужна|ждёт|ждет|требуется)\\s+)(?:ответ|решение)\\s+пользователя\\s*[:—–-]?\\s*${DATE_OR_QUOTE}`,
+    // "Needs the user's decision/answer …" is a request, not a lift: the answer (ANSWER_*) must follow the words, and a request word must not stand before them (the Russian forms too).
+    `(?<!${REQUEST_WORDS}\\s+)(?:ответ|решение)\\s+пользователя${ANSWER_RU}`,
     `${NO_REQUEST_BEFORE}${NOT_BEFORE}\\b(?:lifted|closed|answered)\\s+by${NO_REQUEST_AFTER}|${NO_REQUEST_BEFORE}${NOT_BEFORE}\\bresolved\\s+by${NO_REQUEST_AFTER}|(?<![\\w-])${NOT_BEFORE}resolved:`,
-    // "waiting for a user answer", "needs a user decision — I recommend "v2"" are requests; a date or a quote right after the words makes it a lift.
-    `(?<!\\b(?:needs?|needed|waiting\\s+for|waits?\\s+for|requires?|required)\\s+(?:an?\\s+|the\\s+)?)\\buser\\s+(?:answer|decision)\\s*[:—–-]?\\s*${DATE_OR_QUOTE}`,
+    // "waiting for a user answer", "needs a user decision — I recommend "v2"" are requests; the answer after the words (ANSWER_*) makes it a lift.
+    `(?<!\\b${REQUEST_WORDS}\\s+(?:an?\\s+|the\\s+)?)\\buser\\s+(?:answer|decision)${ANSWER_EN}`,
   ].join('|'),
   'i',
 )

@@ -148,9 +148,13 @@ export function openForceBlock(stages) {
   return { heading: last[0], date, unreadDate, body: end === -1 ? rest : rest.slice(0, end) }
 }
 
-// Something that looks like a date, not any digits and not a month-like word ("deck", "may need a rebase", "stages 4-6" are not dates): a year, d/m/y, d.m, "17 October", "Oct 17".
+// Something that looks like a date, not any digits and not a month-like word ("deck", "may need a rebase", "stages 4-6" are not dates):
+// a year, d/m/y, d.m, "17 October", "17th of Oct", "Oct 17th", "Oct. 17", "Oct-17". "17-10" is not flagged: it is a range of stages as often as a date.
 const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
-const UNREAD_DATE = new RegExp(`\\b(?:19|20)\\d{2}\\b|\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b|\\b\\d{1,2}[/.]\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}\\b|\\b${MONTH}\\s+\\d{1,2}\\b`, 'i')
+const UNREAD_DATE = new RegExp(
+  `\\b(?:19|20)\\d{2}\\b|\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b|\\b\\d{1,2}[/.]\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?(?:\\s+of)?[\\s-]+${MONTH}\\b|\\b${MONTH}\\.?[\\s-]+\\d{1,2}(?:st|nd|rd|th)?\\b`,
+  'i',
+)
 
 function headingDate(heading) {
   const iso = heading.match(/(\d{4})-(\d{2})-(\d{2})/)

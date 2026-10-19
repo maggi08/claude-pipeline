@@ -1711,6 +1711,87 @@ rmSync(retroRoot, { recursive: true, force: true })
     rmSync(sectionDir, { recursive: true, force: true })
   }
 
+  // 12. Fresh review of stage 18 (AC-19.1…19.6): the remainder deferred after a comma or a dash, caveats, blocker requests, dates, ⏳ in backticks.
+  {
+    // M-1: a deferral of the remainder in the description of a fix is parked; "later" and "keeping" about the code are not.
+    for (const entry of [
+      'fixed: a.ts:1, fix the tests later',
+      'fixed: a.ts:10 — the rest later',
+      'fixed in a.ts:10, the rest later',
+      'fixed: a.ts:1 — the second case will be fixed in a follow-up PR',
+      'fixed: a.ts:1 — the dark theme part is out of scope',
+      'fixed: a.ts:1 — rest moved to FINDINGS.md',
+      'fixed partially: a.ts:1 — mobile is a separate task',
+      'fixed: a.ts:1 — leaving the rest as is',
+      'исправлено: a.ts:1 — вторую часть исправим позже',
+      'исправлено: a.ts:1, остальное потом',
+      'исправлено в a.ts:1 — мобильную версию оставляем как есть',
+      'исправлено частично: a.ts:1 — остальное отдельной задачей',
+      'исправлено: a.ts:1 — мобилка позже',
+      'исправлено: a.ts:1 — тесты потом',
+      'исправлено: a.ts:1 — иконку в кит',
+      'исправлено: a.ts:1 — вторая часть — компромисс',
+      'исправлено: a.ts:1 — остальное — вопрос к бэкенду',
+      'исправлено: a.ts:1 — остальное не в скоупе',
+      'исправлено: a.ts:1 — мобилку не чиним',
+      'исправлено: a.ts:1, остальное в findings',
+      "fixed: a.ts:1 — the rest: won't fix",
+      'fixed: a.ts:1, the rest accepted as a compromise',
+      'fixed: a.ts:1 — the rest is a question for the backend',
+      'fixed: a.ts:1 — rest into Awaiting user confirmation',
+      'fixed: a.ts:1 — the dark theme is not in scope',
+      'fixed: a.ts:1, the rest to findings',
+      'fixed: a.ts:1 — tests later',
+    ])
+      check(`deferred remainder "${entry.slice(0, 50)}" is parked`, jc.disposition(`- M-1 — ${entry}`) === 'parked', jc.disposition(`- M-1 — ${entry}`))
+    for (const entry of ['fixed: a.ts:1 — the download starts later than the toast', 'fixed: a.ts:1 — the follow-up request is deduplicated', 'fixed: a.ts:1 — the findings counter shows 0'])
+      check(`description "${entry.slice(0, 50)}" is fixed`, jc.disposition(`- M-1 — ${entry}`) === 'fixed', jc.disposition(`- M-1 — ${entry}`))
+
+    // m-2: a preposition after "untested", a telegraphic "<noun> not checked" and "not checked again" without a verb are caveats.
+    const AC = '- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify 1440/1280'
+    for (const tail of [', untested on mobile', '— unverified in Safari', '(unverified for the guest role)', ', settings page not checked', '; the profile page not opened', ', the billing tab not opened', ', the help link not checked', '(1024 not checked again after the fix)', ', dark theme untested yet', ': 1024 was not checked again after the fix', ': dark theme is not checked again after the fix'])
+      check(`EN "${tail.slice(1, 50)}" is a caveat`, Boolean(jc.caveatViolation(`${AC}${tail}`)), tail)
+
+    // m-3: a lift marker followed by a long run of spaces stays linear.
+    const worstLift = Math.max(
+      ...['- B1 — user decision', '- B1 — решение пользователя', '- B1 — user decision on', '- B1 — ответ пользователя от'].flatMap((head) =>
+        [' ', '\t'].map((pad) => {
+          const start = performance.now()
+          jc.openBlockers(`${head}${pad.repeat(50_000)}x`)
+          return performance.now() - start
+        }),
+      ),
+    )
+    check('openBlockers: a lift marker + 50 000 spaces or tabs < 100 ms', worstLift < 100, `${worstLift.toFixed(0)} ms`)
+
+    // m-4: a day with an ordinal suffix, a dot or a dash after the month is a date the parser does not read: fail closed.
+    const unreadH = (heading) => openForceBlock(`${heading}\nMode: autonomous.\n\n`)?.unreadDate
+    for (const heading of ['## Force run October 17th', '## Force run Oct 17th', '## Force run Oct. 17', '## Force run Oct-17', '## Force run Tuesday, Oct 17th', '## Force run 17th of October'])
+      check(`Force heading "${heading.slice(3)}" — an unread date: fail closed`, unreadH(heading) === true, heading)
+
+    // m-5: a request with a quote of the options stays open; an answer with a date or a quote after "on", "(", "in chat" (and the Russian forms) lifts.
+    const open = (line) => jc.openBlockers(`- B0 — x — lifted by the user\n${line}\n`).length === 1
+    for (const line of [
+      '- B1 — AC-3.2 (этап 3) — контракт неизвестен — ждём решение пользователя: «v1» или «v2» — рекомендую v2 — этап 4',
+      '- B1 — ожидаем ответ пользователя «да/нет» — рекомендация: да',
+      '- B1 — жду ответ пользователя «да»',
+      '- B1 — AC-3.2 — contract unknown — awaiting user decision: "v1" or "v2" — recommend v2',
+      '- B1 — pending user decision: "v1" or "v2"',
+      '- B1 — AC-3.2 (stage 3) — contract unknown — user decision ("v1" or "v2") — recommend v2 — stage 4',
+      '- B1 — AC-3.2 (этап 3) — контракт неизвестен — решение пользователя («v1» или «v2») — рекомендую v2 — этап 4',
+      '- B1 — waiting: user decision on "v1" or "v2"',
+      '- B1 — user decision on "v1" vs "v2" needed — recommend v2',
+      '- B1 — необходимо решение пользователя: «v1» или «v2»',
+    ])
+      check(`blocker request stays open: ${line.slice(2, 60)}`, open(line), line)
+    for (const line of ['- B1 — решение пользователя от 16.10.2026: v2', '- B1 — решение пользователя (16.10.2026): v2', '- B1 — ответ пользователя в чате: «токен задан»', '- B1 — user decision (2026-10-16): v2', '- B1 — user decision on 2026-10-16: v2', '- B1 — user answer in chat: "token is set"'])
+      check(`blocker lifted: ${line.slice(2, 60)}`, !open(line), line)
+
+    // m-6: "⏳ `checker`" in backticks defers the criterion, as "⏳ checker" does.
+    const v = jc.acViolation('- `AC-3.1` WHEN open THEN ok — [verify: devtools-verify] ✅ pro-review: logic · ⏳ `devtools-verify`', ['pro-review-3.md'])
+    check('"⏳ `devtools-verify`" in backticks defers a runtime criterion', v === null, v?.rule)
+  }
+
   // 5. Linear time (AC-16.2): 50 000 characters of pathological input — every pattern under 100 ms.
   {
     const { languageMismatch } = await import(join(PLUGIN, 'report-language.mjs'))
@@ -1720,6 +1801,7 @@ rmSync(retroRoot, { recursive: true, force: true })
       spaces: ' '.repeat(N), tabs: '\t'.repeat(N), newlines: '\n'.repeat(N), 'blank lines': rep('\n  '), stars: '*'.repeat(N), 'guillemets': '«'.repeat(N), 'curly quotes': '“'.repeat(N),
       'link opens': rep(']('), 'bang run': `a${'!'.repeat(N)}a`, 'html opens': rep('<!--'), 'ac ids': rep('AC-1.1 '), 'ids': rep('1.1 '), 'user decision': rep('user decision '),
       'figma-compare': rep('figma-compare '), dots: rep('· '), 'Confirmed': rep('- Confirmed '),
+      'lift + spaces': `- B1 — user decision${' '.repeat(N)}x`, 'ru lift + spaces': `- B1 — решение пользователя${' '.repeat(N)}x`, 'deferral words': rep('fixed: a.ts:1, fix the rest остальное '),
     }
     const SUBJECTS = {
       CONFIRMED_LINE: (t) => markers.CONFIRMED_LINE.test(t), LANGUAGE_LINE: (t) => markers.LANGUAGE_LINE.test(t), PARITY_TABLE: (t) => markers.PARITY_TABLE.test(t),
