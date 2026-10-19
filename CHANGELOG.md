@@ -5,6 +5,14 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.16.1 — 2026-10-19
+
+### The journal gates stay fast on Node 22
+
+Two patterns of the journal gates took seconds on a long run of whitespace under Node 22: the caveat check of a `✅` criterion (about a minute on 50 000 newlines) and the closing word of a Force run heading (about 7 s on 50 000 tabs). Under Node 24 both were fast. Both now take about a millisecond, and what they match has not changed.
+
+Nothing to do on upgrade.
+
 ## 0.16.0 — 2026-10-17
 
 ### The plugin is in English, tasks keep their own language
@@ -43,17 +51,6 @@ Claude Code exposes the tools of servers from the plugin's `.mcp.json` with a pr
 - **`/pipeline-doctor`** checks `mcp__plugin_stage-pipeline_chrome-devtools__list_pages` (or `mcp__chrome-devtools__list_pages` for your own server).
 
 Nothing to do by hand on upgrade.
-
-## 0.15.2 — 2026-10-16
-
-### devtools-verify находит chrome-devtools плагина
-
-Claude Code отдаёт тулы серверов из `.mcp.json` плагина с префиксом: `mcp__plugin_stage-pipeline_chrome-devtools__*`. devtools-verify и pipeline-doctor искали `mcp__chrome-devtools__*`, поэтому сервер плагина для них не находился, и проверка уходила в skip «MCP не подключён».
-
-- **devtools-verify** (скилл и агент) грузит тулы по имени с префиксом плагина. У разработчика со своим сервером `chrome-devtools` остаются прежние `mcp__chrome-devtools__*`. Переподключение — `/mcp reconnect plugin:stage-pipeline:chrome-devtools`.
-- **`/pipeline-doctor`** проверяет `mcp__plugin_stage-pipeline_chrome-devtools__list_pages` (или `mcp__chrome-devtools__list_pages` для своего сервера).
-
-Руками на апгрейде — ничего.
 
 ## 0.15.1 — 2026-10-05
 

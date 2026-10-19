@@ -70,8 +70,10 @@ export const FORCE_BLOCK_PRESENT = /^## (?:Force-прогон|Force run)/m
 /** "completed" or "complete" (or the Russian form) — the run is closed. "complete" is accepted on purpose: a heading that closes the run in
  * neither form would leave it both open (forceActive) and not checked on close (forceCloseViolations).
  * "completed" right after a dash or a colon closes with any tail ("— completed on 2026-10-18", "— completed (B1 open)", "— completed, with blockers").
- * "complete" closes only before a date, "with blockers" or at the end of the heading after a dash ("— complete"; "stage 3 complete" is progress): "— complete the migration" is an ordinary title word. */
-export const CLOSED_WORD = /заверш|\bcomplete(?:d)?\b(?=\s*(?:with\s+blockers\b|\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}))|(?<=(?:\s[—–-]|[—–:])\s*)\bcompleted\b|(?<=(?:\s[—–-]|[—–:])\s*)\bcomplete\s*$/im
+ * "complete" closes only before a date, "with blockers" or at the end of the heading after a dash ("— complete"; "stage 3 complete" is progress): "— complete the migration" is an ordinary title word.
+ * The lookbehinds stand after the word: on Node 22 (V8 12.4) a positive lookbehind at the head of an alternative turns off the start-position skip,
+ * and the regexp goes quadratic on long whitespace. */
+export const CLOSED_WORD = /заверш|\bcomplete(?:d)?\b(?=\s*(?:with\s+blockers\b|\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}))|\bcompleted\b(?<=(?:\s[—–-]|[—–:])\s*completed)|\bcomplete(?<=(?:\s[—–-]|[—–:])\s*complete)\s*$/im
 /** "completed with blockers" (or the Russian form). */
 export const WITH_BLOCKERS = /с\s+блокер|with\s+blockers/i
 /** In a status line: "force run … completed" (or the Russian form), without "not". */

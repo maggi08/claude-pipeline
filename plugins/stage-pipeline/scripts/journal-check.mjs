@@ -120,12 +120,14 @@ const CAVEAT_RU = 'не\\s+снят|не\\s+проверен|не\\s+прове�
 const CONTROL = 'checkbox|box|toggle|radio|radio\\s+button|switch|option|row|item|drawer|modal|menu|dropdown|accordion|popover|sidebar'
 const SURFACE = 'dialog|sheet|tab|window|page|link|panel|terms|consent|agreement'
 const COPULA = '(?:is|are|was|were|stays|remains)\\s+'
-const UI_STATE = `(?<!\\b(?:${CONTROL})\\s+(?:${COPULA})?)(?<!\\b(?:${SURFACE})\\s+${COPULA})`
+// Placed after "not": on Node 22 (V8 12.4) a positive lookbehind at the head of an alternative turns off the start-position skip for the whole regexp,
+// and every \s+ lookbehind in it then runs at every position — quadratic on long whitespace.
+const UI_STATE = `(?<!\\b(?:${CONTROL})\\s+(?:${COPULA})?not)(?<!\\b(?:${SURFACE})\\s+${COPULA}not)`
 // "Twice" after a verb describes the interface too ("the button is not opened twice"); "again" does not: "1024 was not checked again after the fix" is a caveat,
 // and "the tab is not opened again" is already excluded by UI_STATE. Without a verb ("1024 not checked twice") both are caveats.
 const NOT_OPENED =
-  `${UI_STATE}(?<!\\b${COPULA})\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first)\\b)|` +
-  `${UI_STATE}(?<=\\b${COPULA})\\bnot\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first|twice|repeatedly|more\\s+than\\s+once)\\b)`
+  `\\bnot${UI_STATE}(?<!\\b${COPULA}not)\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first)\\b)|` +
+  `\\bnot${UI_STATE}(?<=\\b${COPULA}not)\\s+(?:checked|opened)\\b(?!\\s+(?:by\\s+default|on\\s+load|initially|at\\s+first|twice|repeatedly|more\\s+than\\s+once)\\b)`
 const CAVEAT_EN =
   `\\bnot\\s+(?:captured|verified|tested)\\b|\\b(?:is|are|was|were|left|stays?|remains?)\\s+(?:unverified|untested)\\b|\\b(?:unverified|untested)\\s*(?=[;,.)—–:]|$)|\\b(?:unverified|untested)\\s+(?:at|on|in|for|under|with|yet|so\\s+far)\\b|${NOT_OPENED}|\\b(?:did\\s+not|didn['’]t)\\s+(?:check|look|verify|open|capture)|\\b(?:from|by)\\s+code[- ]only\\b|\\(\\s*code[- ]only\\s*\\)|\\bonly\\s+(?:from|by|in)\\s+(?:the\\s+)?code\\b|\\bpart(?:ly|ially)\\b(?!\\s+(?:hidden|visible|covered|obscured|overlapped|collapsed|clipped|shown|open|expanded|loaded|filled|transparent))|\\b(?:could\\s+not|couldn['’]t|unable\\s+to)\\s+(?:verify|capture|open|view|check)`
 const CAVEAT = new RegExp(`${CAVEAT_RU}|${CAVEAT_EN}`, 'i')
