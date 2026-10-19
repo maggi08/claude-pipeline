@@ -101,7 +101,7 @@ function foreignTasks(ownTaskDir, root, branch) {
  * for a `--plugin-dir` session). A script run from Bash has no such variable and used to fall back to a bare `stage-pipeline`
  * directory — a different one, so the snapshots and the gate runs of the two never met. Now the name comes from where the script itself lies:
  * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it gives
- * `stage-pipeline-<marketplace>`; a script outside every install (a `--plugin-dir` run, a working tree) gives `stage-pipeline-inline`, as the hooks of that session do.
+ * `stage-pipeline-<marketplace>`; else the `installLocation` / `source.path` of a marketplace in `known_marketplaces.json` that contains it (a marketplace connected as a directory) gives `stage-pipeline-<marketplace>`; a script outside both (a `--plugin-dir` run) gives `stage-pipeline-inline`, as the hooks of that session do.
  */
 export function pluginDataDir() {
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA
@@ -116,6 +116,17 @@ export function pluginDataDir() {
     }
   } catch {
     // no registry — treated as a script outside every install
+  }
+  // A marketplace connected as a directory runs the plugin from its working tree while `installPath` points into the cache:
+  // the script lies in the marketplace's source directory, and that marketplace's name is the hooks' one.
+  try {
+    const known = JSON.parse(readFileSync(join(homedir(), '.claude/plugins/known_marketplaces.json'), 'utf8'))
+    for (const [name, entry] of Object.entries(known ?? {})) {
+      const inside = [entry?.installLocation, entry?.source?.path].some((dir) => typeof dir === 'string' && dir && (here === dir || here.startsWith(dir.replace(/[\\/]+$/, '') + sep)))
+      if (inside) return join(root, `stage-pipeline-${name.replace(/[^\w.-]/g, '-')}`)
+    }
+  } catch {
+    // no list of marketplaces
   }
   return join(root, 'stage-pipeline-inline')
 }

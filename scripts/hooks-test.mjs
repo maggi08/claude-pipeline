@@ -10,7 +10,7 @@
  * supported task language (Russian). The English twins next to them must give the same results.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -829,12 +829,13 @@ spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', kRe
       kits.summarize([{ kind: 'new kind', token: 'x', line: 1 }], 'ru') === 'new kind (`x`)',
   )
 }
-const soon = Date.now() / 1000 + 5
-utimesSync(kReport, soon, soon)
+// Read at the moment of use: a time fixed once goes stale on a slow run, and the report falls before the task snapshot.
+const touchAhead = (path) => utimesSync(path, Date.now() / 1000 + 5, Date.now() / 1000 + 5)
+touchAhead(kReport)
 const noKitLedger = kCommit('git add -A && git commit -m "T-12: карточка"')
 check('force commit: a kit-overrides report exists, no outcome — denied', noKitLedger.decision === 'deny' && /stage-1-kit-overrides\.md/.test(noKitLedger.text), noKitLedger.text)
 writeFileSync(kReport, `${readFileSync(kReport, 'utf8')}\n## Итог находок\n- K-1 — ложная: эталон src/Other.tsx:1 — тот же font-bold\n`)
-utimesSync(kReport, soon, soon)
+touchAhead(kReport)
 const kitOk = kCommit('git add -A && git commit -m "T-12: карточка"')
 check('force commit: the outcome is proven by the reference — passes', kitOk.decision === 'allow', kitOk.text)
 git(kApp, 'add', '-A')
@@ -926,11 +927,11 @@ spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', eRe
   check('EN kit-overrides report: read back (summary, language, "Could not verify" counted by the digest)', jc.findingCounts(enReport, 'stage-1-kit-overrides.md').major === 1 && jc.languageViolation(enReport, 'stage-1-kit-overrides.md', 'en') === null)
   check('EN kit-overrides report: a rerun keeps the "Findings outcome" of the previous run', /## Findings outcome\n- K-1 — fixed/.test(kits.renderReport([], { language: 'en', previous: '# old\n## Findings outcome\n- K-1 — fixed: src/Card.tsx:1\n' })))
 }
-utimesSync(eReport, soon, soon)
+touchAhead(eReport)
 const noKitLedgerEn = eCommit('git add -A && git commit -m "T-13: card"')
 check('EN force commit: report without an outcome — denied', noKitLedgerEn.decision === 'deny' && /stage-1-kit-overrides\.md/.test(noKitLedgerEn.text), noKitLedgerEn.text)
 writeFileSync(eReport, `${readFileSync(eReport, 'utf8')}\n## Findings outcome\n- K-1 — false positive: reference src/Other.tsx:1 — the same font-bold\n`)
-utimesSync(eReport, soon, soon)
+touchAhead(eReport)
 check('EN force commit: outcome proven by the reference — passes', eCommit('git add -A && git commit -m "T-13: card"').decision === 'allow')
 git(eApp, 'add', '-A')
 git(eApp, 'commit', '-qm', 'T-13: card')
@@ -1143,6 +1144,18 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
   check('openBlockers (en): a common mark "both lifted" lifts every item of the line', jc.openBlockers('Blockers: B1 — contract; B2 — race — both lifted by the user 2026-10-14.').length === 0)
   check('openBlockers: a mark before the items (Russian and English forms) lifts them', jc.openBlockers('Блокеры: сняты 2026-10-14 ответами интервью. B1 — a; B2 — b; B3 — c.').length === 0 && jc.openBlockers('Blockers: all lifted by the user. B1 — a; B2 — b').length === 0)
   check('openBlockers: a singular mark lifts only its own item', jc.openBlockers('Блокеры: B1 — a — снят; B2 — b').length === 1 && jc.openBlockers('Blockers: B1 — a — lifted by the user; B2 — b').length === 1)
+  // M3: a lift mark counts in the head of the field or as its closing phrase; "not all closed" in an item is not a lift.
+  for (const line of ['Blockers: B1 — staging is down; not all closed yet', 'Блокеры: B1 — PR-ы ещё не все закрыты', 'Блокеры: B2 — тикеты закрыты не все, e2e красный', 'Blockers: B1 — CI red, all closed issues reopened', 'Blockers: not all lifted. B1 — a', 'Блокеры: не все сняты. B1 — a'])
+    check(`openBlockers: "${line.slice(0, 50)}" keeps the blocker open`, jc.openBlockers(line).length === 1, line)
+  check('openBlockers: the closing phrase "both lifted <date>" and the head mark still lift (ru, en)', jc.openBlockers('Блокеры: B1 — a; B2 — b — оба сняты 2026-10-14.').length === 0 && jc.openBlockers('Blockers: B1 — a; B2 — b. Both lifted by the user 2026-10-14.').length === 0)
+  {
+    const pathological = ['B1 — x; not all closed ', 'B1 — ', 'Blockers: lifted ', '; '].map((unit) => `Blockers: ${unit}${' '.repeat(50_000)};${'—'.repeat(50_000)}${'. '.repeat(25_000)}`)
+    const t0 = performance.now()
+    for (const line of pathological) jc.openBlockers(line)
+    check('openBlockers: the field-lift regexes on 50 000 characters of pathological input < 100 ms', performance.now() - t0 < 100, `${(performance.now() - t0).toFixed(0)} ms`)
+  }
+  check('openBlockers (ru): a single "closed" in one item does not lift the other blockers of the line', jc.openBlockers('Блокеры: B1 — e2e не гоняются: порты закрыты в CI. B2 — нет доступа к staging, нужен токен').some((item) => item.startsWith('B2')))
+  check('openBlockers (ru): "resolved partly" in one item lifts no one', jc.openBlockers('Блокеры: B1 — нужен доступ к staging. B2 — вопросы по контракту решены частично, ждём ответ бэка').length === 2)
   check('openBlockers: an empty `Blockers:` field and "none" give nothing', jc.openBlockers('Блокеры: \n').length === 0 && jc.openBlockers('Blockers: none').length === 0)
 }
 
@@ -1205,6 +1218,22 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
     utimesSync(join(task, 'checks', 'dead-code-3.md'), new Date(Date.now() + 90_000), new Date(Date.now() + 90_000))
     check(`digest ${language}: the next run overwrites the file`, readFileSync(publishDigest(task, data, null).path, 'utf8').includes('dead-code-3.md'))
     check(`digest ${language}: no file is written without the write flag`, (() => { rmSync(published.path); publishDigest(task, data, null, { write: false }); return !existsSync(published.path) })())
+    // M2: RUN-DIGEST.md as a symlink to a file outside the task is neither followed nor written; the short view says why.
+    {
+      const outside = join(mkdtempSync(join(tmpdir(), 'digest-outside-')), 'victim.txt')
+      writeFileSync(outside, 'user file')
+      rmSync(published.path, { force: true })
+      symlinkSync(outside, published.path)
+      const linked = publishDigest(task, data, null)
+      check(`digest ${language}: a RUN-DIGEST.md symlink is not written through`, readFileSync(outside, 'utf8') === 'user file' && linked.path === null && linked.short.includes(language === 'ru' ? 'Полный дайджест не записан: RUN-DIGEST.md — симлинк' : 'Full digest not written: RUN-DIGEST.md is a symlink'), linked.short.slice(-120))
+      rmSync(published.path, { force: true })
+      const taskLink = join(mkdtempSync(join(tmpdir(), 'digest-link-')), 'T-40')
+      symlinkSync(task, taskLink)
+      const viaLink = publishDigest(taskLink, data, null)
+      check(`digest ${language}: a task directory symlink is refused`, viaLink.path === null && !existsSync(published.path))
+      const elsewhere = publishDigest(task, data, { worktree: mkdtempSync(join(tmpdir(), 'digest-repo-')), config: '' })
+      check(`digest ${language}: a task directory outside the config's repo is refused`, elsewhere.path === null && !existsSync(published.path))
+    }
     rmSync(task, { recursive: true, force: true })
   }
   // The scope of the run: from the date of the run, a journal line dated before it belongs to an earlier run.
@@ -1279,6 +1308,10 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
     const after = runDigest(task, data, null, 'short')
     check(`digest ${language}: one line names the reports with Request changes or critical`, after.includes(t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])) && after.split('\n').filter((line) => line === t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])).length === 1, after)
     check(`digest ${language}: the full view does not carry the line (the verdicts are in the checkers' section of the file)`, !runDigest(task, data, null).includes(t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])))
+    // M-3: the verdict in the head is the first round's; a major closed by an outcome line makes the report ready.
+    writeFileSync(join(task, 'checks', 'pro-review-4.md'), `# pro-review\nFindings: critical 0 · major 1 · minor 0 · ${language === 'ru' ? 'Вердикт' : 'Verdict'}: Request changes\n\n## ${language === 'ru' ? 'Итог находок' : 'Findings outcome'}\n- M-1 — ${language === 'ru' ? 'исправлено' : 'fixed'}: src/a.ts:1\n`)
+    utimesSync(join(task, 'checks', 'pro-review-4.md'), new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+    check(`digest ${language}: a major closed in "Findings outcome" does not make the report not ready`, !runDigest(task, data, null, 'short').includes('pro-review-4.md'))
     rmSync(dir, { recursive: true, force: true })
   }
   // The data directory: a script run from Bash (no CLAUDE_PLUGIN_DATA) finds the hooks' directory and still reads the bare one.
@@ -1286,12 +1319,16 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
     const home = mkdtempSync(join(tmpdir(), 'digest-home-'))
     const root = join(home, '.claude/plugins/data')
     // The name comes from where the script lies: `installPath` in installed_plugins.json that contains it; none — `-inline`.
-    const dataFor = (installed) => {
+    const dataFor = (installed, known = null) => {
       const own = mkdtempSync(join(tmpdir(), 'digest-home-'))
       mkdirSync(join(own, '.claude/plugins/data/stage-pipeline'), { recursive: true })
       if (installed) {
         mkdirSync(join(own, '.claude/plugins'), { recursive: true })
         writeFileSync(join(own, '.claude/plugins/installed_plugins.json'), JSON.stringify({ version: 2, plugins: installed }))
+      }
+      if (known) {
+        mkdirSync(join(own, '.claude/plugins'), { recursive: true })
+        writeFileSync(join(own, '.claude/plugins/known_marketplaces.json'), JSON.stringify(known))
       }
       const env = { ...process.env, HOME: own }
       delete env.CLAUDE_PLUGIN_DATA
@@ -1301,7 +1338,11 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
     check('data dir: no registry — the --plugin-dir one (-inline), as the hooks of that session', dataFor(null).endsWith('/.claude/plugins/data/stage-pipeline-inline'))
     check('data dir: the script lies in the installPath of stage-pipeline@magzhan — the hooks\' directory', dataFor({ 'stage-pipeline@magzhan': [{ installPath: pluginRoot }] }).endsWith('/stage-pipeline-magzhan'))
     check('data dir: two marketplaces — the one whose installPath holds the script', dataFor({ 'stage-pipeline@other': [{ installPath: '/elsewhere/stage-pipeline' }], 'stage-pipeline@magzhan': [{ installPath: pluginRoot }] }).endsWith('/stage-pipeline-magzhan'))
-    check('data dir: an install elsewhere (the script is a --plugin-dir copy) — -inline, not the install\'s directory', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/stage-pipeline/0.16.0' }] }).endsWith('/stage-pipeline-inline'))
+    const marketplaceDir = dirname(dirname(pluginRoot))
+    check('data dir: an install elsewhere, no marketplace holds the script (a --plugin-dir copy) — -inline, not the install\'s directory', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/stage-pipeline/0.16.0' }] }).endsWith('/stage-pipeline-inline'))
+    check('data dir: a marketplace connected as a directory, the install in the cache elsewhere — the marketplace\'s directory (source.path)', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/cache/magzhan/stage-pipeline/0.16.0' }] }, { magzhan: { source: { source: 'directory', path: marketplaceDir }, installLocation: '/elsewhere/magzhan' } }).endsWith('/stage-pipeline-magzhan'))
+    check('data dir: the same through installLocation, with a trailing slash', dataFor(null, { magzhan: { installLocation: `${marketplaceDir}/` } }).endsWith('/stage-pipeline-magzhan'))
+    check('data dir: a marketplace directory that is only a name prefix of the script path does not match', dataFor(null, { magzhan: { source: { path: `${marketplaceDir}-ht1` } } }).endsWith('/stage-pipeline-inline'))
     check('data dir: the legacy directory is the bare one beside a marketplace one, and none beside the bare one', legacyDataDir(join(root, 'stage-pipeline-magzhan')) === join(root, 'stage-pipeline') && legacyDataDir(join(root, 'stage-pipeline')) === null)
     // A snapshot and a gate run written to the bare directory earlier are still read through the hooks' directory.
     const { task } = fixture('ru')

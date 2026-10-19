@@ -24,8 +24,8 @@
  * The digest is a text for the user and belongs to the task's files, so its headings and lines are in the
  * task language (taskLanguage; unknown → ru, as before). Console messages are always English.
  */
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   baselineInfo,
@@ -70,6 +70,7 @@ const TEXT = {
     sameDay: (n, date) => `В охват попал и ранний прогон того же дня (${date}): ещё блоков — ${n}. Отчёты и строки журнала с даты прогона относятся к обоим.`,
     checkers: (n) => `### Чекеры — вердикты по отчётам (${n})`,
     file: (path) => `Полный дайджест: ${path} — «подробнее» раскрою оттуда нужный раздел.`,
+    notWritten: (reason) => `Полный дайджест не записан: ${{ dirLink: 'каталог задачи — симлинк', fileLink: 'RUN-DIGEST.md — симлинк', notDir: 'путь задачи не каталог', missing: 'каталога задачи нет', outside: 'каталог задачи вне репозитория из конфига', readonly: 'в каталог задачи нельзя писать' }[reason]}.`,
     // The lines of the "Findings without outcome" section, from the violation's data (journal-check, ledgerViolations); as before the English hook messages.
     ledger: ({ rule, id: name, shown, what, accepted }) =>
       ({
@@ -101,6 +102,7 @@ const TEXT = {
     sameDay: (n, date) => `An earlier run of the same day (${date}) is inside the scope: ${n} more block(s). Reports and journal lines from the run date belong to both.`,
     checkers: (n) => `### Checkers — verdicts by report (${n})`,
     file: (path) => `Full digest: ${path} — ask "more" and I will open the section you need from it.`,
+    notWritten: (reason) => `Full digest not written: ${{ dirLink: 'the task directory is a symlink', fileLink: 'RUN-DIGEST.md is a symlink', notDir: 'the task path is not a directory', missing: 'the task directory does not exist', outside: 'the task directory is outside the repo of the config', readonly: 'the task directory is not writable' }[reason]}.`,
     ledger: ({ message }) => message,
   },
 }
@@ -192,9 +194,10 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const summary = text.split('\n').find((line) => SUMMARY_LINE.test(line) && /\d/.test(line))
     return summary ? `- ${name}: ${bullet(summary).slice(0, 200)}` : `- ${name}`
   })
-  // Reports of the run with `Request changes` in their head or a critical finding: "ready for PR" is not written over them.
+  // A report is not ready for PR while a critical or major finding has no allowed outcome in its "Findings outcome" (fixed / false with proof / blocker / user decision).
+  // The verdict in the head of the report is the first round's: a finding closed by an outcome line no longer counts.
   const notReady = reports
-    .filter(({ name, text }) => text.split('\n').slice(0, 6).some((line) => /request changes/i.test(line)) || (findingCounts(text, name).critical ?? 0) > 0)
+    .filter(({ name, text }) => ledgerViolations(text, name, { complete: true }).some((violation) => violation.rule === 'ledger-missing'))
     .map(({ name }) => name)
   return { language, text: TEXT[language], notReady, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers }
 }
@@ -223,7 +226,7 @@ function renderFull(d) {
  * one line with the names of the reports that carry `Request changes` or a critical finding (none — no line); the unverified — a number by stage plus the number of the checkers' "could not verify"; minor — a number; accepted on my own — a number and the first three.
  * A category with nothing in it is folded into one "None: …" line, a category with something in it is never dropped.
  */
-function renderShort(d, path) {
+function renderShort(d, path, unwritten = null) {
   const { text } = d
   const out = [text.blockers(d.blockers.length), ...(d.blockers.length ? d.blockers : [text.none])]
   if (d.notReady.length) out.push(text.notReady(d.notReady))
@@ -252,6 +255,7 @@ function renderShort(d, path) {
   if (empty.length) out.push(text.noneOf(empty))
   if (d.scope.sameDay) out.push(text.sameDay(d.scope.sameDay, d.scope.date))
   if (path) out.push(text.file(path))
+  else if (unwritten) out.push(text.notWritten(unwritten))
   return out.join('\n')
 }
 
@@ -295,15 +299,58 @@ export function publishDigest(taskDir, dataDir = pluginDataDir(), repo = null, {
     '',
   ].join('\n')
   let path = null
+  let unwritten = null
   if (write) {
-    try {
-      writeFileSync(digestFilePath(dir), full)
-      path = digestFilePath(dir)
-    } catch {
-      // the task directory is read-only — the short view just has no path
+    unwritten = unsafeDigestTarget(taskDir, dir, repo)
+    if (!unwritten) {
+      // A temp file next to the target and a rename: rename replaces the name, never the file a link points to.
+      const target = digestFilePath(dir)
+      const temp = `${target}.${process.pid}.tmp`
+      try {
+        writeFileSync(temp, full, { flag: 'wx' })
+        renameSync(temp, target)
+        path = target
+      } catch {
+        // the task directory is read-only — the short view just has no path
+        try {
+          unlinkSync(temp)
+        } catch {
+          // no temp file was made
+        }
+        unwritten = 'readonly'
+      }
     }
   }
-  return { short: renderShort(digest, path), full, path }
+  return { short: renderShort(digest, path, unwritten), full, path }
+}
+
+/** Why `RUN-DIGEST.md` must not be written (null — it may): the task directory or the file is a symlink, or the task directory is outside the repo of the config. */
+function unsafeDigestTarget(taskDir, realDir, repo) {
+  const isLink = (path) => {
+    try {
+      return lstatSync(path).isSymbolicLink()
+    } catch {
+      return false
+    }
+  }
+  if (isLink(resolve(taskDir))) return 'dirLink'
+  if (isLink(digestFilePath(realDir))) return 'fileLink'
+  try {
+    if (!lstatSync(realDir).isDirectory()) return 'notDir'
+  } catch {
+    return 'missing'
+  }
+  if (repo?.worktree) {
+    let root
+    try {
+      root = realpathSync(repo.worktree)
+    } catch {
+      return null
+    }
+    const rel = relative(root, realDir)
+    if (rel.startsWith('..') || isAbsolute(rel)) return 'outside'
+  }
+  return null
 }
 
 function section(text, heading) {

@@ -700,18 +700,39 @@ export function lastForceBlock(stages) {
 // A blocker `B<n> — …` without a mark that the user lifted it. A blocker also stands on the `Blockers:` field line itself (the Russian field name too),
 // and several of them can follow each other there ("Blockers: B1 — … B7 — …"): each one is an item of its own, and the lift mark is looked for in its own text.
 const BLOCKERS_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Блокеры|Blockers)\**\s*:\s*(\S.*)$/i
-// One mark for the whole field: "both lifted", "all lifted" (the Russian plural forms too), or "lifted …" before the first item ("Blockers: lifted on 2026-10-14. B1 — …").
+// One mark for the whole field: "both lifted", "all lifted" (the Russian plural forms too), or "lifted …". It counts only in the head of the field, before the first
+// `B<n>` ("Blockers: lifted on 2026-10-14. B1 — …"), or as the closing phrase of the line ("B1 — …; B2 — … — both lifted by the user 2026-10-14."). A mark in the middle of an item
+// ("B1 — CI red, all closed issues reopened") is that item's own words. A negation anywhere in the head ("not all", the Russian "not all" and "none of them") takes the mark back.
 const FIELD_LIFTED =
-  /(?<![а-яё])(?<!не\s)(?:(?:оба|обе|все)\s+)?(?:сняты|закрыты|решены)(?![а-яё])|\b(?:both|all)(?:\s+of\s+them)?\s+(?:are\s+|were\s+)?(?:lifted|closed|resolved|answered)\b|^(?:all\s+)?(?:lifted|closed|resolved)\b/i
+  /(?<![а-яё])(?:(?:оба|обе|все)\s+)?(?:сняты|закрыты|решены)(?![а-яё])|\b(?:both|all)(?:\s+of\s+them)?\s+(?:are\s+|were\s+)?(?:lifted|closed|resolved|answered)\b|^(?:all\s+)?(?:lifted|closed|resolved)\b/i
+const FIELD_NEGATED =
+  /(?<![а-яё])(?:не|ни)(?![а-яё])|\b(?:not|none|no|never|neither)\b/i
+const FIELD_ITEM = /(?<![\w*])\**B\d+/
+const FIELD_CLOSING =
+  /^(?:(?:оба|обе|все|both|all)(?:\s+of\s+them)?\s+(?:are\s+|were\s+)?(?:сняты|закрыты|решены|lifted|closed|resolved|answered))(?:\s+(?:by|on|in|the|user|users|answers?|interview|пользователем|пользователя|ответом|ответами|интервью|в|по|\d{4}-\d{2}-\d{2}))*$/i
+// "Not all closed", "closed not all": a lift word under a negation of the whole group lifts nothing, in the field head and in an item alike.
+const GROUP_NEGATION =
+  /(?:(?<![а-яё])не\s+(?:все|оба|обе)|(?:сняты|закрыты|решены)\s+не\s+все|(?<![а-яё])ни\s+один[а-яё]*|\bnot\s+(?:all|both)\b)(?![а-яё])(?:\s+(?:сняты|закрыты|решены|lifted|closed|resolved|answered)(?![а-яё\w]))?/gi
+const fieldLifted = (field) => {
+  const item = field.search(FIELD_ITEM)
+  const head = item < 0 ? field : field.slice(0, item)
+  if (FIELD_LIFTED.test(head) && !FIELD_NEGATED.test(head)) return true
+  if (item < 0) return false
+  // A loop, not `/[\s.;]+$/`: that one is quadratic on a long run of spaces in the middle of the line.
+  let end = field.length
+  while (end > 0 && /[\s.;]/.test(field[end - 1])) end--
+  const last = field.slice(0, end).split(/[.;—–]/).pop().trim()
+  return FIELD_CLOSING.test(last)
+}
 export const openBlockers = (body) =>
   body
     .split('\n')
     .flatMap((line) => {
       const field = line.match(BLOCKERS_FIELD)
-      if (field && FIELD_LIFTED.test(field[1])) return []
+      if (field && fieldLifted(field[1])) return []
       return field ? field[1].replace(/([.;])\s+(?=B\d+\s*[—–:-])/g, '$1\n').split('\n') : [line]
     })
-    .filter((line) => BLOCKER_LINE.test(line) && !BLOCKER_LIFTED.test(line))
+    .filter((line) => BLOCKER_LINE.test(line) && !BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' ')))
     .map((line) => line.trim())
 
 /**
