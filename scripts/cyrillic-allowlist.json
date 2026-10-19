@@ -138,6 +138,11 @@
       "reason": "plural-category example in Russian"
     },
     {
+      "glob": "plugins/stage-pipeline/skills/feature-doc/SKILL.md",
+      "line": "^\\*\\*6\\. The ending and the markup\\.\\*\\*.*данный",
+      "reason": "Russian marker words that the doc rule adds to rule 11 for a document written in Russian"
+    },
+    {
       "glob": "scripts/cyrillic-allowlist.json",
       "line": "^\\s*\"line\": \"(?:[^\"\\\\]|\\\\.)*\",?$",
       "reason": "the allowlist quotes the Russian tokens that it allows, only inside the value of a line regex; glob and reason stay English"

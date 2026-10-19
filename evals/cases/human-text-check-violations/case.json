@@ -17,8 +17,8 @@
       "why": "question 6 named with the planted quote"
     },
     {
-      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?10\\b[^\\n]*Итого",
-      "why": "question 10 named with the planted quote"
+      "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?(?:1|10)\\b[^\\n]*Итого",
+      "why": "the closing summary paragraph violates both Q1 (final conclusion) and Q10 (retell); the case checks that it is caught, not which of the two overlapping questions names it"
     },
     {
       "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?11\\b[^\\n]*Важно отметить",
@@ -33,6 +33,10 @@
     {
       "pattern": "(?:^|\\n)[^\\wа-яё]*(?:Q|D)?\\d{1,2}\\s*[.):—-]\\s*(?:Нарушений нет|no violations?|no\\b)",
       "why": "questions answered no are not listed"
+    },
+    {
+      "pattern": "(?:^|\\n)(?![^\\n]*\\bchecked\\b)[^\\n]*\\b(?:not flagged|not a violation|no violations?|are (?:also )?clean|is clean|(?:is|are) not violations?)\\b",
+      "why": "a recap of clean questions in any form (not flagged, are clean, not a violation) is not returned; only violation lines and the closing line"
     }
   ],
   "maxSummaryLines": 20,

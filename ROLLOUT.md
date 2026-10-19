@@ -59,7 +59,7 @@ Check on your own machine before the announcement:
 ```bash
 claude plugin marketplace add https://gitlab.<host>/<group>/claude-code-marketplace.git
 claude plugin install stage-pipeline@mycar-frontend
-claude plugin details stage-pipeline    # 19 skills, 13 agents, 2 MCP servers
+claude plugin details stage-pipeline    # 20 skills, 13 agents, 2 MCP servers
 ```
 
 Later the catalog can be extended — a second team plugin is added with the same kind of entry.

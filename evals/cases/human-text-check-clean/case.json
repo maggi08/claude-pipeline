@@ -17,6 +17,10 @@
     {
       "pattern": "checked[^:\\n]*:\\s*(?!0 violations)\\d+",
       "why": "a non-zero violation count"
+    },
+    {
+      "pattern": "(?:^|\\n)(?![^\\n]*\\bchecked\\b)[^\\n]*\\b(?:not flagged|not a violation|no violations?|are (?:also )?clean|is clean|(?:is|are) not violations?)\\b",
+      "why": "a recap of clean questions in any form (not flagged, are clean, not a violation) is not returned; only violation lines and the closing line"
     }
   ],
   "maxSummaryLines": 6,
