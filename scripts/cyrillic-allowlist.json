@@ -16,7 +16,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/journal-check.mjs",
-      "line": "^\\s*(?:const (?:FIXED_WORD|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
+      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
       "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones); messages are not covered"
     },
     {
@@ -46,7 +46,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted): ",
+      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notReady): ",
       "reason": "run digest headings written for a ru task, byte for byte as before"
     },
     {
@@ -66,8 +66,8 @@
     },
     {
       "glob": "scripts/hooks-test.mjs",
-      "line": "^check\\('(?:journal: a new \"✅ pro-review по коду|stage-implement: a new Force block w|neighbouring repo on master: \"Ветка:|force \"завершён с блокерами\" — close|FAIL on a criterion is a finding, \"б|outcome: \"оставляю\" — ledger-parked |\\[live\\] because of \"нет броней\" — liv|RU checker report with «Находки: cri|visual reference: RU stage field is |snapshot v1 → v2: the old line \"\\[x\\] |outcome \"оставляю\" — returned in the|\"завершён\" with an open blocker — re|\"завершён с блокерами\" — the run sum|gates: the \"Гейты CI\" table — names |gates: \"e2e: НЕТ\" is not a gate|EN gates: \"kit_overrides: disabled\" |devtools-verify on a stage with a \"Э|closing \"завершён\" without a CI gate|\"с блокерами\": a non-green gate name)",
-      "reason": "the 19 check names that quote a Russian token (STAGES.md/report phrase) in quotes; a new Russian check name is not allowed"
+      "line": "^check\\('(?:journal: a new \"✅ pro-review по коду|stage-implement: a new Force block w|neighbouring repo on master: \"Ветка:|force \"завершён с блокерами\" — close|FAIL on a criterion is a finding, \"б|outcome: \"оставляю\" — ledger-parked |\\[live\\] because of \"нет броней\" — liv|RU checker report with «Находки: cri|visual reference: RU stage field is |snapshot v1 → v2: the old line \"\\[x\\] |outcome \"оставляю\" — returned in the|\"завершён\" with an open blocker — re|gates: the \"Гейты CI\" table — names |gates: \"e2e: НЕТ\" is not a gate|EN gates: \"kit_overrides: disabled\" |devtools-verify on a stage with a \"Э|closing \"завершён\" without a CI gate|\"с блокерами\": a non-green gate name)",
+      "reason": "the 18 check names that quote a Russian token (STAGES.md/report phrase) in quotes; a new Russian check name is not allowed"
     },
     {
       "glob": "scripts/hooks-test.mjs",

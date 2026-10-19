@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   BRANCH_BOUNDARY,
   BRANCH_LABEL,
@@ -15,6 +16,8 @@ import {
   STATUS_FORCE_CLOSED_WITH_DATE,
   STATUS_LINE,
   forceHeadings,
+  freshestForceHeading,
+  headingDate,
 } from '../markers.mjs'
 
 /**
@@ -94,22 +97,58 @@ function foreignTasks(ownTaskDir, root, branch) {
 }
 
 /**
- * The plugin data directory: Claude Code gives it to hooks in CLAUDE_PLUGIN_DATA. The fallback path is the same
- * directory Claude Code creates for the plugin itself, so scripts run by hand see the same data.
+ * The plugin data directory: Claude Code gives it to hooks in CLAUDE_PLUGIN_DATA (`stage-pipeline-<marketplace>`; `stage-pipeline-inline`
+ * for a `--plugin-dir` session). A script run from Bash has no such variable and used to fall back to a bare `stage-pipeline`
+ * directory — a different one, so the snapshots and the gate runs of the two never met. Now the name comes from where the script itself lies:
+ * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it gives
+ * `stage-pipeline-<marketplace>`; a script outside every install (a `--plugin-dir` run, a working tree) gives `stage-pipeline-inline`, as the hooks of that session do.
  */
 export function pluginDataDir() {
-  return process.env.CLAUDE_PLUGIN_DATA || join(homedir(), '.claude/plugins/data/stage-pipeline')
+  if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA
+  const root = join(homedir(), '.claude/plugins/data')
+  const here = dirname(fileURLToPath(import.meta.url))
+  try {
+    const { plugins } = JSON.parse(readFileSync(join(homedir(), '.claude/plugins/installed_plugins.json'), 'utf8'))
+    for (const [key, entries] of Object.entries(plugins ?? {})) {
+      const match = key.match(/^stage-pipeline@(.+)$/)
+      const inside = (entries ?? []).some(({ installPath }) => typeof installPath === 'string' && (here === installPath || here.startsWith(installPath + sep)))
+      if (match && inside) return join(root, `stage-pipeline-${match[1].replace(/[^\w.-]/g, '-')}`)
+    }
+  } catch {
+    // no registry — treated as a script outside every install
+  }
+  return join(root, 'stage-pipeline-inline')
+}
+
+/** The bare `…/stage-pipeline` directory next to a `stage-pipeline-<marketplace>` one: where scripts from Bash used to write. Read after the main one, so nothing written earlier is lost. */
+export function legacyDataDir(dataDir) {
+  return basename(dataDir).startsWith('stage-pipeline-') ? join(dirname(dataDir), 'stage-pipeline') : null
+}
+
+/** The texts of a data file in the main directory and in the legacy one, main first; a missing file is skipped. */
+export function readDataFiles(dataDir, ...path) {
+  return [dataDir, legacyDataDir(dataDir)].flatMap((dir) => {
+    if (!dir) return []
+    try {
+      return [readFileSync(join(dir, ...path), 'utf8')]
+    } catch {
+      return []
+    }
+  })
 }
 
 const registryPath = () => join(pluginDataDir(), 'task-dirs.json')
 
 export function knownTaskDirs() {
-  try {
-    const dirs = JSON.parse(readFileSync(registryPath(), 'utf8'))
-    return Array.isArray(dirs) ? dirs.filter((dir) => typeof dir === 'string' && isDir(dir)) : []
-  } catch {
-    return []
-  }
+  const dirs = readDataFiles(pluginDataDir(), 'task-dirs.json').flatMap((text) => {
+    try {
+      const list = JSON.parse(text)
+      return Array.isArray(list) ? list : []
+    } catch {
+      return []
+    }
+  })
+  return [...new Set(dirs)].filter((dir) => typeof dir === 'string' && isDir(dir))
 }
 
 export function registerTaskDir(dir) {
@@ -155,13 +194,6 @@ const UNREAD_DATE = new RegExp(
   `\\b(?:19|20)\\d{2}\\b|\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b|\\b\\d{1,2}[/.]\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?(?:\\s+of)?[\\s-]+${MONTH}\\b|\\b${MONTH}\\.?[\\s-]+\\d{1,2}(?:st|nd|rd|th)?\\b`,
   'i',
 )
-
-function headingDate(heading) {
-  const iso = heading.match(/(\d{4})-(\d{2})-(\d{2})/)
-  if (iso) return iso[0]
-  const ru = heading.match(/(\d{2})\.(\d{2})\.(\d{4})/)
-  return ru ? `${ru[3]}-${ru[2]}-${ru[1]}` : null
-}
 
 /**
  * Task commits the journal does not know: neither the SHA, nor the subject, nor the content appear in STAGES.md,
@@ -252,7 +284,7 @@ export function unjournaledCommits(state, task, limit = 50) {
 
 /** The closing date of the last force run — from a "completed …" heading or a status line; null — not closed. */
 export function closedForceDate(stages) {
-  const heading = forceHeadings(stages).at(-1)?.[0]
+  const heading = freshestForceHeading(stages)?.[0]
   const status = stages.match(STATUS_LINE)?.[1]?.match(STATUS_FORCE_CLOSED_WITH_DATE)?.[0]
   const closed = heading && CLOSED_WORD.test(heading) ? heading : status
   if (!closed) return null

@@ -145,12 +145,14 @@ After the final (including the catch-up) rename the block heading to `## Force r
 
 ```
 <TICKET> — force run completed: stages N of M, commits K
-Stages: 1 ✅ 2 ✅ 3 ⛔ B1 …   | Checkers: <summary of verdicts>
-<the output of run-digest.mjs in full: blockers, findings without an outcome, not verified, minor, accepted on its own>
+Stages: 1 ✅ 2 ✅ 3 ⛔ B1 …
+<the short view of run-digest.mjs, whole: blockers, red CI gates and findings without an outcome line by line; the rest as numbers; the path to RUN-DIGEST.md>
 Not done: <what was put outside the boundaries>
 Next: answers to the blockers → /stage-force will continue from the blocked one. The description — /task-wrapup, if needed. The push is yours.
 ```
 
-The middle of the summary is assembled by `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-digest.mjs <task_dir>/<TICKET>` from the journal and the reports. When the block is closed, the hook puts the same into the context. Paste it in full, without retelling or selecting. A precedent: a summary reduced everything to "kk/en texts and minor deviations", and under it lay two defects the user found themselves. Blockers go first: only they need an answer. "Ready for PR" is written only if there are no blockers, no critical findings and no `Request changes` from pro-review.
+The middle of the summary is assembled by `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-digest.mjs <task_dir>/<TICKET>`: it writes the full digest to `<task_dir>/<TICKET>/RUN-DIGEST.md` (every line of every category, the checkers' verdicts by report, the run date in the header) and prints the short view. When the block is closed, the hook puts the same short view and the path into the context. The script, not you, picks what the short view shows, and every category is in it with a number, so **paste it whole, without retelling or selecting** — do not shorten it further and do not add a "Checkers: …" line of your own: the verdicts are in the file. A precedent: a summary reduced everything to "kk/en texts and minor deviations", and under it lay two defects the user found themselves; that is why the choice belongs to the script. Blockers go first: only they need an answer. "Ready for PR" is written only if there are no blockers and the short view has no "Not ready for PR" line (it names the reports with `Request changes` or a critical finding; the verdicts of all the checkers are in the "Checkers" section of `RUN-DIGEST.md`). If the short view has no path (the file could not be written), run `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-digest.mjs <task_dir>/<TICKET> --full --no-write` for the full view when the user asks "more".
+
+When the user then writes "more" or "what about X" (the unverified, the accepted, a checker), open that section of `RUN-DIGEST.md` and show it; do not repeat the whole digest and do not summarise it from memory.
 
 **After "completed", a code edit is a stage, not "a quick fix".** The user's remarks after the run, a manual check, edits from a review — a catch-up stage (`/stage-kickoff` → `/stage-check`) with a journal line. Otherwise they go into the PR without a single checker: that is how seven commits after the run were merged in four minutes in one task. The branch commits the journal does not know, the next session will see in the status line from the hook.

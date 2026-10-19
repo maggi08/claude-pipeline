@@ -71,6 +71,10 @@ if (unknown.length) {
   process.exit(2)
 }
 
+// The plugin data of the runs (snapshots, gate records) goes to a directory of its own, never to the live one of the hooks.
+const DATA = mkdtempSync(join(tmpdir(), 'stage-pipeline-eval-data-'))
+const runEnv = { ...process.env, CLAUDE_PLUGIN_DATA: DATA }
+
 const plugin = preparePlugin(overrides)
 const label = Object.entries(overrides).map(([agent, model]) => `${agent}=${model}`).join(',') || 'as-is'
 
@@ -222,7 +226,7 @@ function runRouting(name, attempt, spec) {
       '--max-turns', String(spec.maxTurns ?? 3),
       '--max-budget-usd', String(spec.budgetUsd ?? 0.3),
     ],
-    { cwd: repo, encoding: 'utf8', timeout: (spec.timeoutSec ?? 180) * 1000 },
+    { cwd: repo, encoding: 'utf8', timeout: (spec.timeoutSec ?? 180) * 1000, env: runEnv },
   )
   const seconds = Math.round((Date.now() - started) / 1000)
   const events = (result.stdout ?? '').split('\n').flatMap((line) => {
@@ -288,7 +292,7 @@ function runCase(name, attempt) {
     ],
     // In -p, servers from --mcp-config connect asynchronously: without this the agent manages to decide
     // there are no tools before the server is up.
-    { cwd: repo, encoding: 'utf8', timeout: (spec.timeoutSec ?? 600) * 1000, env: { ...process.env, MCP_CONNECTION_NONBLOCKING: 'false' } },
+    { cwd: repo, encoding: 'utf8', timeout: (spec.timeoutSec ?? 600) * 1000, env: { ...runEnv, MCP_CONNECTION_NONBLOCKING: 'false' } },
   )
   const seconds = Math.round((Date.now() - started) / 1000)
 
@@ -377,4 +381,5 @@ for (const row of table) {
 const total = table.reduce((sum, row) => sum + row.cost, 0)
 console.log(`\nTotal: ${table.reduce((s, r) => s + r.passed, 0)}/${table.length * runs} runs, $${total.toFixed(2)}`)
 if (plugin !== SOURCE_PLUGIN) rmSync(plugin, { recursive: true, force: true })
+rmSync(DATA, { recursive: true, force: true })
 process.exit(table.every((row) => row.passed === runs) ? 0 : 1)
