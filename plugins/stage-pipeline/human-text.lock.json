@@ -1,9 +1,9 @@
 {
   "source": "maggi08/human-text",
-  "ref": "471180e9e8d7cf367124b6b8a5f268112cafa453",
+  "ref": "57d7f0fdb5306de4c4642a99b7858d0c10fa589a",
   "version": "0.1.0",
   "files": {
-    "agents/human-text-check.md": "def65f68d223a097d588adc573200d419215e976eaba92693ff52338e347d9e2",
+    "agents/human-text-check.md": "c2b54480fea5eb38769217b3f5ea0bcd620c3ad0b8fdd82511b3d71c787084ee",
     "skills/human-text/SKILL.md": "77762489a434ecaab38ee4a3c4201165cd7648e2afa25cdb663bacb5aad205da",
     "skills/human-text/references/rules.md": "3444d6e263d20767c19a62edd696099cf2d5b38165a5a57ac5b23a83e62acd4e"
   }

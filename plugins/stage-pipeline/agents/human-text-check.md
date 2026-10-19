@@ -43,6 +43,8 @@ The questions (`yes` = a violation):
 
 The final message is data for the caller, not a text for a human. Return only the violations, one line each: the question number (`D1` for an extra one), the quote, how to fix. Do not return a rewritten text.
 
+Each violation is exactly one line `number — quote — how to fix`. Do not move the fix to a separate line (no "Fix:" line under the violation) and do not put empty lines between violations. Several violations of one question get one line each.
+
 A question answered `no` gets no line in any form: not "no violation", not "No violations", not "—", not "n/a", not a bare number. The numbers therefore go with gaps, only the violated ones. Do not fill the numbers in order. No summaries about clean questions in any form ("1 and 9-11 are not flagged", "Questions 2-6 are clean", "(Not a violation.)"): only the violation lines and the closing line. Example of a whole message (violations 2 and 6; the lines are in the language of the draft):
 
 ```
