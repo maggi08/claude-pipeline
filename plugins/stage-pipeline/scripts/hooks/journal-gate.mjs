@@ -29,6 +29,10 @@ import { pluginDataDir, readDataFiles, readHookInput, readPipelineState } from '
  * stamps the mtime and size of STAGES.md and `checks/*.md` of the current tasks and of the tasks the command names by path; the PostToolUse run acts only on the tasks where one of them changed
  * during the call. No stamp (the pre-hook did not run) — nothing to compare, so the hook stays silent.
  *
+ * Stage 5 of VT-1 — a `false` outcome needs a proof of its own kind: "the fix is impossible", "not reproduced" without two attempts and the route, a plan line instead of code are returned
+ * (dismissals.mjs); a critical dismissed as false must cite the fresh report that confirmed it; a new "Awaiting" line or Force assumption needs a rollback cost and a basis (decisions.mjs).
+ * Reports and lines that were there when the task was first seen on this version are not touched.
+ *
  * Stage 3 of VT-1 — "completed" also needs the whole-branch pro-review and task-converge reports newer than the last commit that changed the tree
  * (receipts.mjs); the force commit itself is judged by git-guard against the stage's checker reports.
  *
@@ -123,8 +127,9 @@ for (const task of tasks) {
       : []
     : [...changed].filter((path) => inside(checks, path))
   // The language is checked only for a report that did not exist when the task was first seen: an old report is not rewritten, however it is edited.
-  const { reports: known } = baselineInfo(pluginDataDir(), task.dir)
-  const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: !known.has(basename(path)) }))
+  // VT-1 stage 5: the weak-dismissal and critical-needs-a-fresh-report rules look only at reports that were not there at the first look on this version (`ledgerOld`).
+  const { reports: known, ledgerOld } = baselineInfo(pluginDataDir(), task.dir)
+  const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: !known.has(basename(path)), strict: !ledgerOld.has(basename(path)) }))
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   if (!closing.length) {

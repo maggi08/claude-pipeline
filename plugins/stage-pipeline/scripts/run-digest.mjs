@@ -29,6 +29,7 @@ import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:pat
 import { pathToFileURL } from 'node:url'
 import {
   baselineInfo,
+  collectDismissals,
   disposition,
   findingCounts,
   fingerprint,
@@ -45,6 +46,7 @@ import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
 import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceHeadings, headingDate } from './markers.mjs'
 import { pluginDataDir, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
+import { bulletText, rollbackRank } from './decisions.mjs'
 
 const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
 
@@ -59,6 +61,10 @@ const TEXT = {
     minor: (n) => `### Minor без итога (${n})`,
     accepted: (n) => `### Принято само — проверь, дорогие откаты первыми (${n})`,
     noRuntime: (n) => `### Этапы без проверки в рантайме (${n})`,
+    dismissed: (n) => `### Отклонено как ложное — критичные, major и FAIL, дословно (${n})`,
+    dismissedLine: ({ checker, name, severity, line }) => `- [${checker}] ${name}${severity ? ` (${severity})` : ''}: ${line}`,
+    notFinding: (n) => `Критерий не упал, «ложная» стоит вместо «не FAIL» (${n}):`,
+    dismissedShort: (n, critical) => `### Отклонено как ложное: ${n}${critical ? `, из них critical ${critical}` : ''} — список дословно в файле`,
     noRuntimeLine: ({ stage, sha, ui, skip }) => `- ${stage ?? sha}: изменены UI-файлы (${ui}), отчёта devtools-verify нет${skip ? ` — пропуск: ${skip}` : ''}`,
     // The short view and the file. The category names are the same words as in the headings above.
     labels: { noOutcome: 'находок без итога', notVerified: 'непроверенного', minor: 'minor', accepted: 'принятого само', noRuntime: 'этапов без проверки в рантайме' },
@@ -75,7 +81,7 @@ const TEXT = {
     file: (path) => `Полный дайджест: ${path} — «подробнее» раскрою оттуда нужный раздел.`,
     notWritten: (reason) => `Полный дайджест не записан: ${{ dirLink: 'каталог задачи — симлинк', fileLink: 'RUN-DIGEST.md — симлинк', notDir: 'путь задачи не каталог', missing: 'каталога задачи нет', outside: 'каталог задачи вне каталога задач из конфига', readonly: 'в каталог задачи нельзя писать' }[reason]}.`,
     // The lines of the "Findings without outcome" section, from the violation's data (journal-check, ledgerViolations); as before the English hook messages.
-    ledger: ({ rule, id: name, shown, what, accepted }) =>
+    ledger: ({ rule, id: name, shown, what, accepted, form }) =>
       ({
         'ledger-parked': `checks/${name}: «${shown}» — это решение не исправлять, его принимает пользователь. Итог — исправлено, ложная (с доказательством) или блокер B<n> (${LEDGER_DOC}).`,
         'ledger-unproven': `checks/${name}: «${shown}» — «давнее» без доказательства на базе. Проверь на sha базы или на проде и впиши замер, иначе это находка задачи.`,
@@ -83,6 +89,8 @@ const TEXT = {
         'ledger-missing':
           `checks/${name}: ${what}, а итогов в «## Итог находок» — ${accepted}. Каждая находка закрывается строкой: исправлено / ложная / B<n> ` +
           `(${LEDGER_DOC}). Находку, которую fix-loop не исправил, не откладывают — это блокер.`,
+        'ledger-weak': `checks/${name}: «${shown}» — отклонение без доказательства (${form}). Находка остаётся: исправить, вынести блокером B<n> или решение пользователя (${LEDGER_DOC}).`,
+        'ledger-critical-fresh': `checks/${name}: «${shown}» — critical, отклонённый как ложный, проходит свежий прогон на review_model, и строка ссылается на его отчёт (checks/<чекер>-<этап>-fresh.md).`,
       })[rule],
   },
   en: {
@@ -94,6 +102,10 @@ const TEXT = {
     minor: (n) => `### Minor without outcome (${n})`,
     accepted: (n) => `### Accepted on my own — check, expensive rollbacks first (${n})`,
     noRuntime: (n) => `### Stages without runtime check (${n})`,
+    dismissed: (n) => `### Dismissed as false — critical, major and FAIL, verbatim (${n})`,
+    dismissedLine: ({ checker, name, severity, line }) => `- [${checker}] ${name}${severity ? ` (${severity})` : ''}: ${line}`,
+    notFinding: (n) => `The criterion did not fail, "false" stands for "not a FAIL" (${n}):`,
+    dismissedShort: (n, critical) => `### Dismissed as false: ${n}${critical ? `, of them critical ${critical}` : ''} — the list is verbatim in the file`,
     noRuntimeLine: ({ stage, sha, ui, skip }) => `- ${stage ?? sha}: UI files changed (${ui}), no devtools-verify report${skip ? ` — skipped: ${skip}` : ''}`,
     labels: { noOutcome: 'findings without an outcome', notVerified: 'unverified items', minor: 'minor', accepted: 'items accepted on my own', noRuntime: 'stages without runtime check' },
     noneOf: (names) => `None: ${names.join(', ')}.`,
@@ -140,7 +152,7 @@ export function runScope(stages, block, ledgerSince) {
 
 /** The numbers and lines of the digest — one structure for both views, so that no category exists in one and not in the other. */
 export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
-  const { lines, ledgerSince } = baselineInfo(dataDir, taskDir)
+  const { lines, ledgerSince, ledgerOld } = baselineInfo(dataDir, taskDir)
   const stages = existsSync(join(taskDir, 'STAGES.md')) ? readFileSync(join(taskDir, 'STAGES.md'), 'utf8') : ''
   const language = taskLanguage(stages) ?? 'ru'
   const block = lastForceBlock(stages)
@@ -159,10 +171,12 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     return !(byDate && scope.date && dated && dated < scope.date)
   }
   const reports = newReports(taskDir, scope.since).map((name) => ({ name, text: readFileSync(join(taskDir, 'checks', name), 'utf8') }))
+  // Stage 5 rules (weak dismissals, a critical needs a fresh report) apply to the reports that are not in the snapshot's `ledgerOld`.
+  const strictFor = (name) => !ledgerOld.has(name)
 
   const blockers = (block ? openBlockers(block.body) : []).map((line) => `- ${bullet(line)}`)
   const gates = (repo ? gateStatus(dataDir, repo.worktree, repo.config, forceSkips(taskDir)) : []).map((gate) => ({ ok: gateAccepted(gate), skipped: gate.status === 'skipped', lastRed: Boolean(gate.lastRed), line: `- ${gate.status === 'green' ? '✅' : gate.status === 'skipped' ? '⏭' : '✗'} ${describe(gate, language)}` }))
-  const noOutcome = reports.flatMap(({ name, text }) => ledgerViolations(text, name, { complete: true }).map((violation) => `- ${TEXT[language].ledger(violation)}`))
+  const noOutcome = reports.flatMap(({ name, text }) => ledgerViolations(text, name, { complete: true, strict: strictFor(name), taskDir }).map((violation) => `- ${TEXT[language].ledger(violation)}`))
 
   const unverifiedReports = []
   for (const { name, text } of reports) {
@@ -190,10 +204,16 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     .filter(({ left }) => left)
 
   // "Awaiting confirmation" is a live list: an item leaves it only when the user confirms it, so a date earlier than the run does not cut it.
-  const accepted = section(stages, AWAITING_SECTION)
-    .filter((line) => fresh(line, { byDate: false }))
-    .filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line))
-    .map((line) => `- ${bullet(line).slice(0, 220)}`)
+  // Stage 5: the rows are sorted by what undoing the decision costs, expensive first (a stable sort: rows of the same cost keep the journal order).
+  const awaiting = section(stages, AWAITING_SECTION)
+  const accepted = awaiting
+    .map((line, index) => ({ line, rank: rollbackRank(bulletText(awaiting, index)), index }))
+    .filter(({ line }) => fresh(line, { byDate: false }))
+    .filter(({ line }) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ line }) => `- ${bullet(line).slice(0, 220)}`)
+  // Stage 5: every dismissal of a critical, major or FAIL finding, verbatim with its checker (the short view gives the count).
+  const dismissals = collectDismissals(reports)
 
   const checkers = reports.map(({ name, text }) => {
     const summary = text.split('\n').find((line) => SUMMARY_LINE.test(line) && /\d/.test(line))
@@ -211,7 +231,7 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const ui = uiFiles(receipt.files ?? [])
     return `${TEXT[language].noRuntimeLine({ stage: receipt.stage, sha: String(receipt.sha).slice(0, 7), ui: `${ui.slice(0, 3).join(', ')}${ui.length > 3 ? ` +${ui.length - 3}` : ''}`, skip: skip?.reason })}`
   })
-  return { language, text: TEXT[language], receipted, noRuntime, notReady, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers }
+  return { language, text: TEXT[language], receipted, noRuntime, notReady, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals }
 }
 
 /** The full view: every line of every category (as the digest was before it had two views, plus the early-run note). */
@@ -223,6 +243,12 @@ function renderFull(d) {
     out.push('', text.gates(d.gates.filter(({ ok }) => ok).length - skipped, d.gates.length, skipped), ...d.gates.map(({ line }) => line))
   }
   if (d.noOutcome.length) out.push('', text.noOutcome(d.noOutcome.length), ...d.noOutcome)
+  if (d.dismissals.length) {
+    const real = d.dismissals.filter(({ notFinding }) => !notFinding)
+    const passed = d.dismissals.filter(({ notFinding }) => notFinding)
+    out.push('', text.dismissed(d.dismissals.length), ...real.map((item) => text.dismissedLine(item)))
+    if (passed.length) out.push(text.notFinding(passed.length), ...passed.map((item) => text.dismissedLine(item)))
+  }
   const unverified = d.unverifiedJournal.length + d.unverifiedReports.length
   out.push('', text.notVerified(unverified), ...(unverified ? [...d.unverifiedJournal.map(({ line }) => line), ...d.unverifiedReports] : [text.none]))
   if (d.minors.length) {
@@ -252,6 +278,9 @@ function renderShort(d, path, unwritten = null) {
   const empty = []
   if (d.noOutcome.length) out.push(text.noOutcome(d.noOutcome.length), ...d.noOutcome)
   else empty.push(text.labels.noOutcome)
+  // Stage 5: dismissals of critical, major and FAIL findings — the short view gives the count (the list is verbatim in the file); no dismissals — no line.
+  const dismissed = d.dismissals.filter(({ notFinding }) => !notFinding)
+  if (dismissed.length) out.push(text.dismissedShort(dismissed.length, dismissed.filter(({ severity }) => severity === 'critical').length))
   const unverified = d.unverifiedJournal.length + d.unverifiedReports.length
   if (unverified) {
     out.push(text.notVerified(unverified))

@@ -72,7 +72,7 @@ Record the block in STAGES.md:
 ## Force run <date>
 Mode: autonomous until the end of the stages. Push and PR — manually by the user.
 Interview answers: <decision — what it affects>
-Assumptions: <what is accepted — why — how to roll back>
+Assumptions: <what is accepted — why — Rollback: how to roll back and what it costs — Basis: path:line | quote | guess>
 Unresolved: <taxonomy categories with status Partially/Not covered that did not make it into the batch — and where they went: assumption / DESIGN-QUESTIONS.md / "Awaiting user confirmation">
 Boundaries: <what we explicitly do NOT do in this task>
 Confirmed: <date> — interview answers
@@ -104,7 +104,7 @@ After the `Confirmed:` line the user is not at the screen. A question in the mid
 
 **A checker finding is not a fork.** It is fixed in the fix-loop; if not fixed — a blocker. Findings do not go into "Awaiting user confirmation" or "leaving as is": Request changes "accepted as a compromise" — and the user fixed a duplicate of the request the next day. The outcome of every finding is in the report (`references/checker-report.md`).
 
-**Decidable and reversible — decide yourself.** These are product decisions without a defect: a default, a text, an order. Take the reversible option and write it as a line into "⚠ Awaiting user confirmation": what was changed, where it is visible and **what the rollback will cost if the decision is wrong** ("rewrite the email template" against "rebuild three screens"). Then continue. This is cheaper than a stop and is not lost: the block is read at every kickoff and in the final checks. The cost is needed not for reporting but for the order of review: by the end of an autonomous run there are a dozen such lines, the user reads them at once and must see which to check first without opening each.
+**Decidable and reversible — decide yourself.** These are product decisions without a defect: a default, a text, an order. Take the reversible option and write it as a line into "⚠ Awaiting user confirmation": what was changed, where it is visible, **what the rollback will cost if the decision is wrong** (`Rollback: …`) and **what it stands on** (`Basis: <path:line | node-id | a ticket quote | a decision id | guess>` — an honest "guess" is allowed, an empty basis is not; the journal-gate hook rejects a new line without either; the digest lists the rows by rollback cost) ("rewrite the email template" against "rebuild three screens"). Then continue. This is cheaper than a stop and is not lost: the block is read at every kickoff and in the final checks. The cost is needed not for reporting but for the order of review: by the end of an autonomous run there are a dozen such lines, the user reads them at once and must see which to check first without opening each.
 
 **Cannot be decided for the user — a blocker.** These are:
 

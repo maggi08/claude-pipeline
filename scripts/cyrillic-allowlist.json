@@ -25,8 +25,18 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/journal-check.mjs",
-      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN|CLOSING_TAIL_WORD|CLOSING_TAIL_TOKEN|FIELD_CLOSING_MARK)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
+      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|NEGATED_FIXED|FALSE_OUTCOME|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN|CLOSING_TAIL_WORD|CLOSING_TAIL_TOKEN|FIELD_CLOSING_MARK)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
       "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones); messages are not covered"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/decisions.mjs",
+      "line": "^\\s*(?:(?:export )?const [A-Z_]+ = |/|inForce = |const at = |const tail = |    if \\(/)",
+      "reason": "RU alternatives of the rollback-cost and basis regexes (RU|EN pairs), and the Force heading regexp"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/dismissals.mjs",
+      "line": "^\\s*(?:(?:export )?const [A-Z_]+ = |if \\((?:DEFERRED|SELF_SOURCED)|const before = |    ')",
+      "reason": "RU alternatives of the weak-dismissal phrase regexes (RU|EN pairs)"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/archive-stages.mjs",
@@ -55,12 +65,12 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|noRuntime|noRuntimeLine): ",
+      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|noRuntime|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort): ",
       "reason": "run digest headings written for a ru task, byte for byte as before"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^\\s*(?:'ledger-(?:parked|unproven|unknown)': |`checks/\\$\\{name\\}: \\$\\{what\\}, а итогов|`\\(\\$\\{LEDGER_DOC\\}\\)\\. Находку)",
+      "line": "^\\s*(?:'ledger-(?:parked|unproven|unknown|weak|critical-fresh)': |`checks/\\$\\{name\\}: \\$\\{what\\}, а итогов|`\\(\\$\\{LEDGER_DOC\\}\\)\\. Находку)",
       "reason": "the lines of the \"findings without outcome\" section of a ru task's run digest, byte for byte as the base hook messages"
     },
     {

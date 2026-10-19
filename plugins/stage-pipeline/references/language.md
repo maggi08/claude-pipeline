@@ -71,6 +71,8 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | devtools-verify report line (new reports) | `doctor: <verdict of verify-doctor>` | `окружение: <вердикт verify-doctor>` (the verdict text itself, `doctor: ok` / `wrong app` / `down` / `no dev url`, is printed by the script and stays as it is) |
 | devtools-verify report line (new reports) | `auth: ok \| not logged in — <route> → <observed> \| not needed` | `вход: ок \| нет входа — <маршрут> → <что видно> \| не нужен` |
 | Deferral to the user, criterion line | `[live: user-side — <prerequisite>; <route> → <observed>]` | `[live: user-side — <что мешало>; <маршрут> → <что видно>]` (the tag, `—`, `;` and `→` are the same; only the words inside are in the task language; a bare `[live: user-side]` on a new line is rejected in both) |
+| Decision line, new (Awaiting, assumption) | `Rollback: <what undoing it costs>` | `Откат: <во что обойдётся откат>` |
+| Decision line, new (Awaiting, assumption) | `Basis: <path:line \| node-id \| URL \| a quote \| D<n> / A<n> / AC-<n> \| guess>` | `Основание: <path:line \| node-id \| URL \| цитата \| D<n> / A<n> / AC-<n> \| догадка>` |
 | Report section | `## Findings outcome` | `## Итог находок` |
 | Verdict line, criterion not reached | `not checked` | `не проверено` |
 | Report section | `## Could not verify` | `## Не удалось проверить` |

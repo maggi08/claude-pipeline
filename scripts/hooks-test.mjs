@@ -2742,4 +2742,236 @@ rmSync(retroRoot, { recursive: true, force: true })
   rmSync(gRoot, { recursive: true, force: true })
 }
 
+// ── VT-1 stage 5: dismissal trail and evidence for decisions taken alone ──────
+{
+  const jcs = await import(join(PLUGIN, 'journal-check.mjs'))
+  const { decisionViolations } = await import(join(PLUGIN, 'decisions.mjs'))
+  const { weakForm, entrySeverity } = await import(join(PLUGIN, 'dismissals.mjs'))
+  const { collectDigest, runDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+  const weak = (line) => jcs.disposition(line, { strict: true }) === 'weak'
+  const kept = (line) => jcs.disposition(line, { strict: true }) === 'false'
+  // Live incident forms (analysis/dismissals.md, verbatim) and the live legitimate forms of the same forms.
+  const FORMS = {
+    'not-ours': {
+      reject: '4, 5, 6 — ложная для ветки: в ките нет слота подписи у `UICheckbox`, действия у `UIInlineAlert` и адаптивной модалки — сборка из компонентов кита вынужденная; кандидаты K-1…K-3 — работа кита',
+      pass: 'minor (`autocheckLead:consentLabel` повторяет видимую фразу) — ложная: предложенная альтернатива `aria-labelledby` не доходит до `<input>` в `UICheckbox` 0.0.184 — `node_modules/@mycar/ui-lib/dist/runtime/components/Checkbox.vue:9` (`:aria-label="ariaLabel ?? label ?? \'Checkbox\'"`, без `inheritAttrs: false`), подтверждено checks/ds-parity-branch.md M-2',
+    },
+    'data-seen': {
+      reject: 'minor 2 — ложная для данных: на 60 публикациях dev-стенда `engine_power` только целые («80 л.с.», «600 л.с», «200 л.с.», «» — замер `scratchpad/live/det/*.json`), дробной и нулевой мощности нет; поведение `parseInt` совпадает с прежним отображением целого числа',
+      pass: 'опасение из «Не удалось проверить» (протухший Bearer ломает анонимную заявку) — ложная: проверено оркестратором 2026-10-09: `POST /cars/api/credit/autocheck/leads/` с `Authorization: Bearer invalid.token.value` и пустым телом → 400 `{"code":"invalid_full_name",…}`, не 401 — ручка токен не проверяет',
+    },
+    untouched: {
+      reject: 'K-1 — ложная: карточка повторяет образец — `page-components/marketplace/details/ConfigSummaryCard.vue:43` (`rounded-[20px] bg-neutral-base-container pb-2`), класс не менялся этим этапом',
+      pass: 'F6 — ложная: воспроизводится 1:1 на базе origin/dev `bf3ac953` (worktree :3100, 2 из 2 прогонов, iPhone UA 390); строка `page-components/announcement/Price.vue:239` этапом не менялась',
+    },
+    deferred: {
+      reject: '#3 (ключи автоотмен и `unknown` без потребителя) — ложная для этапа: потребитель — страница участника в этапе 13 (STAGES.md «Общие элементы»: справочник причин, владелец 12, потребитель 13; `specs/13.md`); финальный dead-code перепроверит',
+      pass: 'minor AC-10.5 ветка «новый документ — blob» в новых спеках не проверяется — ложная: покрыта спеками скачивания этапа 3 — `tests/smoke/specs/admin.student-document-actions.spec.ts` (путь `…/file`, `suggestedFilename` = название + `.pdf`); полный прогон `student-document` 169 passed, красные только B2.',
+    },
+    'self-sourced': {
+      reject: 'minor (общий `start_at` vs `first_start_date` у многослотовых очных) — ложная как дефект: сам отчёт — «сценарий слабый, поведение допустимо»; допущение записано в журнал этапа 20',
+      pass: 'K-1 (тень поповера arbitrary value) — ложная: решение пользователя «вид как в прототипе» — запрос 05.10.2026 «здесь можешь посмотреть как выглядит CountrySelect»; значение снято с прототипа — `specs/stage-18-country-select-reference.md:31` (поповер: shadow `0 8px 24px rgba(3,7,18,.094)`)',
+    },
+    unrelated: {
+      reject: '#6 — ложная для задачи: «Передний», «Автомат» — значения справочника dev-api на ru',
+      pass: '2 — ложная: окружение — после повтора `curl https://dev-api.mycredit.kz/calculator/v1/configs/latest` → 200, SSR `/prime/26385` в 3 холодных загрузках отдаёт «579 000» и «112 599»; код прайма до/после ребейза идентичен (`git diff 902b60af 9ae24cbf -- store/prime page-components/prime pages/prime` пуст)',
+    },
+    'not-reproduced': {
+      reject: '#2 — false: not reproduced',
+      pass: '#2 — false: not reproduced (2 attempts, /root-cause): 2 cold loads on /orders and 2 on the base, no mismatch',
+    },
+    downgrade: {
+      reject: '#3 — false: demoted to minor',
+      pass: '#3 — false: demoted to minor at the re-check — the only caller passes a constant (`src/a.ts:12`), so the empty value never reaches it',
+    },
+  }
+  for (const [form, { reject, pass }] of Object.entries(FORMS)) {
+    check(`dismissal ${form}: the incident form is a weak dismissal under the new rule`, weak(reject) && weakForm(reject)?.form === form, JSON.stringify(weakForm(reject)))
+    check(`dismissal ${form}: the legitimate form stays a dismissal`, kept(pass), JSON.stringify(weakForm(pass)))
+    check(`dismissal ${form}: an old report (not strict) reads the incident form as before`, jcs.disposition(reject) === 'false')
+  }
+  const NOT_REPRO_RU = ['#2 — ложная: не воспроизвелось', '#2 — ложная: не воспроизвелось (2 попытки, /root-cause)']
+  check('dismissal not-reproduced RU: no attempts is weak, two attempts and the route pass', weak(NOT_REPRO_RU[0]) && kept(NOT_REPRO_RU[1]))
+  check('dismissal not-reproduced: one attempt is not two', weak('#2 — false: not reproduced (1 attempt, /root-cause)') && weak('#2 — false: not reproduced (2 attempts)'))
+  check('dismissal not-ours: "the fix is impossible" alone is weak, in both languages', weak('#4 — false: the fix is impossible') && weak('#4 — ложная: исправить невозможно'))
+  check('dismissal: the 17 live weak lines of the machine stay weak, the proof lines of the ledger scan are not touched (see the AC-5.5 scan)', Object.values(FORMS).every(({ reject }) => weak(reject)))
+
+  // The ledger of a report: the hook rule (strict) and the old report (not strict).
+  const critReportOf = (line) => `# pro-review\nFindings: critical 1 · major 0 · minor 0\n\n- C-1 critical: the token leaks\n\n## Findings outcome\n- ${line}\n`
+  const ledgerOf = (lines) => `# devtools-verify\nFindings: critical 0 · major 2 · minor 0\n\n## Findings outcome\n${lines.join('\n')}\n`
+  const weakLedger = ledgerOf([`- ${FORMS['not-ours'].reject}`, '- M-2 — fixed: a.ts:1'])
+  check('AC-5.2: a new report with "the fix is impossible" / a weak dismissal is rejected, rule ledger-weak', jcs.ledgerViolations(weakLedger, 'pro-review-2.md', { strict: true }).some(({ rule }) => rule === 'ledger-weak'))
+  check('AC-5.2: the same report as an old one (not strict) raises no weak rule', !jcs.ledgerViolations(weakLedger, 'pro-review-2.md').some(({ rule }) => rule === 'ledger-weak'))
+  check('AC-5.2: "not reproduced (2 attempts, /route)" passes in a new report', jcs.ledgerViolations(ledgerOf(['- #1 — false: not reproduced (2 attempts, /route)', '- #2 — fixed: a.ts:1']), 'pro-review-2.md', { strict: true }).length === 0)
+  check('AC-5.2: bare "not reproduced" in a new report is rejected', jcs.ledgerViolations(ledgerOf(['- #1 — false: not reproduced', '- #2 — fixed: a.ts:1']), 'pro-review-2.md', { strict: true }).some(({ rule }) => rule === 'ledger-weak'))
+  check('AC-5.2: a weak dismissal does not count toward the outcome total (ledger-missing with complete)', jcs.ledgerViolations(weakLedger, 'pro-review-2.md', { strict: true, complete: true }).some(({ rule }) => rule === 'ledger-missing'))
+
+  // AC-5.3: a dismissed critical needs the fresh report on disk.
+  const critTask = mkdtempSync(join(tmpdir(), 'crit-task-'))
+  mkdirSync(join(critTask, 'checks'), { recursive: true })
+  const critReport = (line) => `# pro-review\nFindings: critical 1 · major 0 · minor 0\n\n- C-1 critical: the token leaks\n\n## Findings outcome\n- ${line}\n`
+  const CRIT = 'C-1 — false: the token is hashed before the log call, `src/log.ts:14`'
+  const rules = (line) => jcs.ledgerViolations(critReport(line), 'pro-review-3.md', { strict: true, taskDir: critTask }).map(({ rule }) => rule)
+  check('AC-5.3: a critical dismissed with no fresh report is rejected', rules(CRIT).includes('ledger-critical-fresh'))
+  check('AC-5.3: a cited fresh report that is not in checks/ is rejected, and the message names it', jcs.ledgerViolations(critReport(`${CRIT} — fresh report checks/pro-review-3-fresh.md`), 'pro-review-3.md', { strict: true, taskDir: critTask }).some(({ message }) => /pro-review-3-fresh\.md does not exist/.test(message)))
+  writeFileSync(join(critTask, 'checks', 'pro-review-3-fresh.md'), '# pro-review\nFindings: critical 0 · major 0 · minor 0\n')
+  check('AC-5.3: with the fresh report on disk and cited, the line passes', rules(`${CRIT} — fresh report checks/pro-review-3-fresh.md`).length === 0, JSON.stringify(rules(`${CRIT} — fresh report checks/pro-review-3-fresh.md`)))
+  check('AC-5.3: a "fixed" critical needs no fresh report; an old report (not strict) is not asked', rules('C-1 — fixed: src/log.ts:14').length === 0 && jcs.ledgerViolations(critReport(CRIT), 'pro-review-3.md').length === 0)
+  rmSync(critTask, { recursive: true, force: true })
+
+  // Review round 1 of stage 5: paraphrases of the same forms, task-code proofs, negated "fixed", anchored ids, inline assumptions, rollback ranking.
+  check('dismissal #1: "false: can\'t be fixed" / "cannot be fixed here" is weak, not fixed', ['M-1 — false: can\'t be fixed in this task', 'M-1 — false: cannot be fixed here', 'M-1 — ложная: не может быть исправлен в этой задаче'].every((line) => jcs.disposition(line, { strict: true }) === 'weak') && jcs.disposition('M-1 — false: can\'t be fixed in this task') === 'false')
+  check('dismissal #1: a true "fixed: path:line" is still fixed; "fixed" before a later "false positive" stays fixed', jcs.disposition('M-1 — fixed: a.ts:3', { strict: true }) === 'fixed' && jcs.disposition('M-1 — fixed: a.ts:3 — not a false alarm', { strict: true }) === 'fixed')
+  check('dismissal #1: the ledger of a new report with "false: can\'t be fixed" raises ledger-weak', jcs.ledgerViolations(ledgerOf(['- M-1 — false: cannot be fixed here', '- M-2 — fixed: a.ts:1']), 'pro-review-2.md', { strict: true }).some(({ rule }) => rule === 'ledger-weak'))
+  for (const line of ['#4 — false: the backend owns this', '#4 — false: this is the backend\'s job', '#4 — false: the kit has no such slot', '#4 — false: can\'t fix', '#4 — false: not possible to fix', '#4 — false: infeasible', '#4 — false: unfixable', '#4 — false: by design', '#4 — false: not introduced by this change']) {
+    check(`dismissal #3: English twin is weak — ${line.slice(12)}`, weak(line), JSON.stringify(weakForm(line)))
+  }
+  check('dismissal #3: the same wordings pass with their proof', kept('#4 — false: the backend owns this — `node_modules/@x/ui-lib/dist/a.vue:9`') && kept('#4 — false: by design — `src/a.ts:12` and the spec «the dialog stays open»') && kept('#4 — false: not introduced by this change — `git diff 902b60a -- src/a.ts` is empty'))
+  check('dismissal #4: a task-code `path:line` settles impossible / forced / unavoidable', ['#4 — false: impossible state — the reducer at store.ts:40 never emits it', '#4 — false: forced-colors media query is handled at theme.css:44', '#4 — false: the tab is unavoidable only in Safari; Tab.vue:9 renders it'].every(kept))
+  check('dismissal #4: "impossible" about the kit with a task-code line only is still weak', weak('#4 — false: impossible, the kit has no slot (see Card.vue:12)'))
+  check('dismissal #4: a spec file path is the route of "not reproduced"', kept('#2 — false: not reproduced after 2 runs of the spec e2e/orders.spec.ts') && weak('#2 — false: not reproduced after 2 runs'))
+  // Round 2, m-1: a task-code `path:line` settles "no such prop" and "can't be done / avoided" about the task's own code; the kit or the backend still needs its own proof.
+  check('dismissal m-1: "no such prop" / "cannot be avoided" with a task-code `path:line` is a dismissal', ['#4 — false: there is no such prop on the component — packages/ui/Button.vue:12 declares only `size`', '#4 — false: this cannot be avoided — Tab.vue:9 renders it unconditionally', '#4 — false: can\'t be done twice, store.ts:40 returns early'].every(kept))
+  check('dismissal m-1: the same wording without a line, or about the kit / backend, stays weak', ['#4 — false: there is no such prop on the component', '#4 — false: cannot be avoided', '#4 — false: there is no such prop in the kit — Button.vue:12', '#4 — false: the backend cannot be changed — api.ts:3'].every(weak))
+  // Round 2, m-2: paraphrases of the same forms, each with the same proof escape.
+  for (const line of ['#4 — false: the code was not touched by this change', '#4 — false: this stage did not change it', '#4 — ложная: этап этого не трогал', '#4 — false: we cannot do anything about it', '#4 — false: kit limitation', '#4 — false: backend returns it that way', '#4 — false: not our code, kit issue']) {
+    check(`dismissal m-2: paraphrase is weak — ${line.slice(12)}`, weak(line), JSON.stringify(weakForm(line)))
+  }
+  check('dismissal m-2: the paraphrases pass with their proof', kept('#4 — false: this stage did not change it — `git diff 902b60a -- src/a.ts` is empty') && kept('#4 — ложная: этап этого не трогал — `git diff 902b60a -- src/a.ts` пуст') && kept('#4 — false: kit limitation — `node_modules/@x/ui-lib/dist/a.vue:9`') && kept('#4 — false: we cannot do anything about it — the reducer at store.ts:40 never emits it'))
+  // Round 2, m-3: the manual CLI applies the stage 5 rules like the hook (a report outside `ledgerOld` is strict).
+  {
+    const cData = mkdtempSync(join(tmpdir(), 'cli-data-'))
+    const cTask = mkdtempSync(join(tmpdir(), 'cli-task-'))
+    mkdirSync(join(cTask, 'checks'), { recursive: true })
+    writeFileSync(join(cTask, 'STAGES.md'), '# T-65\nLanguage: en\n\n## Journal\n- 2026-10-01 start\n')
+    writeFileSync(join(cTask, 'checks', 'pro-review-2.md'), ledgerOf(['- M-1 — false: the fix is impossible', '- M-2 — fixed: a.ts:1']))
+    const cli = () => spawnSync('node', [join(PLUGIN, 'journal-check.mjs'), cTask, '--ledger'], { encoding: 'utf8', env: { ...process.env, CLAUDE_PLUGIN_DATA: cData } })
+    const fresh = cli()
+    check('m-3: the CLI rejects a weak dismissal in a report the snapshot has not seen', fresh.status === 1 && /impossible|proof|dismiss/i.test(fresh.stdout), fresh.stdout)
+    jcs.baselineInfo(cData, cTask)
+    const old = cli()
+    check('m-3: the same report listed in `ledgerOld` is not judged strictly by the CLI', old.stdout !== fresh.stdout && !/impossible/i.test(old.stdout), old.stdout)
+    rmSync(cData, { recursive: true, force: true })
+    rmSync(cTask, { recursive: true, force: true })
+  }
+  // #6: bare numeric ids resolve severity only on an anchored row; the fresh report belongs to the same checker and stage.
+  const NUM_REPORT = '# pro-review\nFindings: critical 1 · major 0 · minor 0\n\n### 🔴 Critical\n1. Race\n\n## Findings outcome\n- 1 — false: `Save.vue:12`\n'
+  check('dismissal #6: a bare numeric id on an anchored row (`1.`, `| 1 |`, `#1`) gives the severity', entrySeverity('1 — false: `Save.vue:12`', NUM_REPORT) === 'critical' && entrySeverity('2 — false: x.ts:1', '### Major\n| 2 | a |\n\n## Findings outcome\n') === 'major' && entrySeverity('3 — false: x.ts:1', '### Minor\n#3 text\n\n## Findings outcome\n') === 'minor')
+  check('dismissal #6: a stray line starting with the digit is not the row', entrySeverity('1 — false: x.ts:1', '### 🔴 Critical\n10 files changed\n\n## Findings outcome\n') === null)
+  check('dismissal #6: a critical dismissed as "1 — false: …" needs the fresh report', jcs.ledgerViolations(NUM_REPORT, 'pro-review-3.md', { strict: true }).some(({ rule }) => rule === 'ledger-critical-fresh'))
+  const freshTask = mkdtempSync(join(tmpdir(), 'fresh-task-'))
+  mkdirSync(join(freshTask, 'checks'), { recursive: true })
+  writeFileSync(join(freshTask, 'checks', 'ds-parity-1-fresh.md'), '# ds-parity\n')
+  writeFileSync(join(freshTask, 'checks', 'pro-review-4-fresh.md'), '# pro-review\n')
+  writeFileSync(join(freshTask, 'checks', 'pro-review-3-fresh-r2.md'), '# pro-review\n')
+  const freshRules = (cite) => jcs.ledgerViolations(critReportOf(`C-1 — false: \`src/log.ts:14\` — fresh report ${cite}`), 'pro-review-3.md', { strict: true, taskDir: freshTask }).map(({ rule }) => rule)
+  check('dismissal #6: a fresh report of another checker or another stage does not count; the same checker and stage does', freshRules('checks/ds-parity-1-fresh.md').includes('ledger-critical-fresh') && freshRules('checks/pro-review-4-fresh.md').includes('ledger-critical-fresh') && freshRules('checks/pro-review-3-fresh-r2.md').length === 0)
+  rmSync(freshTask, { recursive: true, force: true })
+
+  // AC-5.4: decisions taken alone carry a rollback cost and a basis.
+  const AW_BAD = '- Stage 4: verify-doctor keys are `verify_routes:`. Where: any repo that adds these keys.'
+  const AW_NO_BASIS = '- Stage 4: verify-doctor keys are `verify_routes:`. Where: any repo that adds these keys. Rollback is cheap: two key names.'
+  const AW_NO_COST = '- Stage 4: verify-doctor keys are `verify_routes:`. Where: any repo that adds these keys. Basis: checks/pro-review-4.md #1.'
+  const AW_OK = '- Stage 4: verify-doctor keys are `verify_routes:`. Where: any repo that adds these keys. Rollback is cheap: two key names. Basis: checks/pro-review-4.md #1.'
+  const AW_GUESS = '- Stage 4: a default of 3 retries. Where: the doctor. Rollback is cheap: one constant. Basis: guess.'
+  const journalWith = (...rows) => `# T-60\nLanguage: en\n\n## Journal\n- 2026-10-01 old\n\n## ⚠ Awaiting user confirmation\n${rows.join('\n')}\n`
+  check('AC-5.4: an Awaiting line with neither cost nor basis is rejected, naming both', decisionViolations(journalWith(AW_BAD)).some(({ message }) => /rollback cost and no basis/.test(message)))
+  check('AC-5.4: no basis — rejected; no cost — rejected', decisionViolations(journalWith(AW_NO_BASIS)).some(({ message }) => /no basis/.test(message)) && decisionViolations(journalWith(AW_NO_COST)).some(({ message }) => /no rollback cost/.test(message)))
+  check('AC-5.4: cost and basis — passes; an explicit "Basis: guess" passes', decisionViolations(journalWith(AW_OK, AW_GUESS)).length === 0, JSON.stringify(decisionViolations(journalWith(AW_OK, AW_GUESS))))
+  check('AC-5.4: a continuation line of the item carries the evidence', decisionViolations(journalWith('- Stage 4: a default of 3 retries. Where: the doctor.', '  Rollback is moderate: three texts. Basis: `a.ts:9`.')).length === 0)
+  const forceBlock = (assumption) => `# T-61\nLanguage: en\n\n## Force run 2026-10-19\nMode: auto\nAssumptions:\n${assumption}\nBoundaries:\n- no push\nConfirmed: 2026-10-19 — interview\n`
+  check('AC-5.4: a Force assumption without cost and basis is rejected; with both it passes', decisionViolations(forceBlock('- A1 This run covers stages 1-5 only.')).length === 1 && decisionViolations(forceBlock('- A1 This run covers stages 1-5 only. Rollback: none needed. Basis: interview answer 2.')).length === 0)
+  check('AC-5.4: the Russian basis and rollback words count', decisionViolations(journalWith('- Этап 4: ключи doctor. Где: любой репо. Откат дешёвый: два имени ключей. Основание: checks/pro-review-4.md #1.')).length === 0)
+  check('AC-5.4: the journal chain returns it for a new line, rule decision-evidence', jcs.journalViolations(journalWith(AW_BAD)).some(({ rule }) => rule === 'decision-evidence'))
+
+  // Review round 1: the inline `Assumptions:` template form, and the rollback ranking.
+  const inlineForce = (text) => `# T-63\nLanguage: en\n\n## Force run 2026-10-19\nMode: auto\nAssumptions: ${text}\nUnresolved: none\nBoundaries:\n- no push\nConfirmed: 2026-10-19 — interview\n`
+  check('AC-5.4 #2: an inline `Assumptions:` line without rollback and basis is rejected, with both it passes', decisionViolations(inlineForce('use X as default — because the plan says so')).length === 1 && decisionViolations(inlineForce('use X as default — because Rollback: cheap, one constant — Basis: `a.ts:9`')).length === 0)
+  check('AC-5.4 #2: an inline assumption with a rollback and no basis is rejected naming the basis; "none" is empty', /no basis/.test(decisionViolations(inlineForce('use X — Rollback: cheap'))[0]?.message ?? '') && decisionViolations(inlineForce('none')).length === 0)
+  check('AC-5.4 #2: the bullet form under `Assumptions:` still works next to an inline first line', decisionViolations(forceBlock('- A1 This run covers stages 1-5 only.')).length === 1)
+  // Round 2, M-1: the inline form keys on the journal line; a bold header is not an item.
+  const boldHeader = (head, rest = '') => `# T-64\nLanguage: ru\n\n## Force-прогон 2026-10-19\nMode: auto\n${head}${rest}\nUnresolved: none\nBoundaries:\n- no push\nConfirmed: 2026-10-19 — interview\n`
+  check('AC-5.5 M-1: a bold-colon header (RU or EN) is not an item', decisionViolations(boldHeader('**Допущения:**')).length === 0 && decisionViolations(boldHeader('**Assumptions:**')).length === 0 && decisionViolations(boldHeader('- **Assumptions**:')).length === 0)
+  check('AC-5.5 M-1: a bold header with an inline remainder reads the remainder without the marks, `**none**` is empty', decisionViolations(boldHeader('**Допущения:** none')).length === 0 && decisionViolations(boldHeader('**Assumptions:** **none**')).length === 0 && decisionViolations(boldHeader('**Assumptions:** use X — Rollback: cheap — Basis: guess')).length === 0 && decisionViolations(boldHeader('**Assumptions:** use X'))[0]?.line === '**Assumptions:** use X')
+  const oData = mkdtempSync(join(tmpdir(), 'inl-data-'))
+  const oTask = mkdtempSync(join(tmpdir(), 'inl-task-'))
+  writeFileSync(join(oTask, 'STAGES.md'), inlineForce('use 7 days — nothing else — visible at /settings'))
+  jcs.baselineInfo(oData, oTask)
+  check('AC-5.5 M-1: an old inline assumption is silent after the first snapshot', jcs.newJournalViolations(oData, oTask).length === 0, JSON.stringify(jcs.newJournalViolations(oData, oTask)))
+  appendFileSync(join(oTask, 'STAGES.md'), '\n## Force run 2026-10-20\nMode: auto\nAssumptions: use 3 days — nothing else\nUnresolved: none\n')
+  check('AC-5.5 M-1: a NEW inline assumption without a basis is rejected', jcs.newJournalViolations(oData, oTask).some(({ rule }) => rule === 'decision-evidence'))
+  const oSnap = join(oData, 'journal-baseline', readdirSync(join(oData, 'journal-baseline'))[0])
+  const oOld = JSON.parse(readFileSync(oSnap, 'utf8'))
+  delete oOld.dismissSeen
+  delete oOld.ledgerOld
+  oOld.lines = oOld.lines.filter((fp) => fp !== jcs.fingerprint('Assumptions: use 7 days — nothing else — visible at /settings'))
+  writeFileSync(oSnap, JSON.stringify(oOld))
+  check('AC-5.5 M-1: the migration baselines the old inline assumptions by their journal lines', jcs.newJournalViolations(oData, oTask).length === 0, JSON.stringify(jcs.newJournalViolations(oData, oTask)))
+  appendFileSync(join(oTask, 'STAGES.md'), '\n## Force run 2026-10-21\nMode: auto\nAssumptions: use 1 day — nothing else\nUnresolved: none\n')
+  check('AC-5.5 M-1: after the migration a new inline assumption without a basis is rejected', jcs.newJournalViolations(oData, oTask).some(({ message }) => /1 day/.test(message)))
+  rmSync(oData, { recursive: true, force: true })
+  rmSync(oTask, { recursive: true, force: true })
+  const { rollbackRank } = await import(join(PLUGIN, 'decisions.mjs'))
+  check('AC-5.4 #5: the first non-negated cost word after "rollback" ranks, the Basis clause is cut', [
+    ['Rollback: cheap — not expensive', 3],
+    ['Rollback: cheap, no data migration needed', 3],
+    ['Rollback is cheap. Basis: «costly to undo» checks/a.md', 3],
+    ['Откат: дёшево, без миграции', 3],
+    ['Rollback: expensive, a data migration', 0],
+    ['Rollback: not cheap, a data migration', 0],
+    ['Rollback: moderate, three skill texts', 2],
+    ['Rollback: no data migration', 1],
+  ].every(([text, rank]) => rollbackRank(text) === rank), JSON.stringify([['Rollback: cheap — not expensive'], ['Rollback: cheap, no data migration needed'], ['Откат: дёшево, без миграции'], ['Rollback: not cheap, a data migration'], ['Rollback: no data migration']].map(([t]) => rollbackRank(t))))
+
+  // D7: the one-shot migration. A v2 snapshot from 0.18 before this release has no dismissSeen / ledgerOld.
+  const mData = mkdtempSync(join(tmpdir(), 'dis-mig-data-'))
+  const mTask = mkdtempSync(join(tmpdir(), 'dis-mig-task-'))
+  mkdirSync(join(mTask, 'checks'), { recursive: true })
+  writeFileSync(join(mTask, 'STAGES.md'), journalWith('- old row without evidence'))
+  jcs.baselineInfo(mData, mTask)
+  const mDir = join(mData, 'journal-baseline')
+  const mFile = join(mDir, readdirSync(mDir)[0])
+  const snap = JSON.parse(readFileSync(mFile, 'utf8'))
+  check('D7: a fresh snapshot carries dismissSeen and ledgerOld', snap.dismissSeen === true && Array.isArray(snap.ledgerOld))
+  delete snap.dismissSeen
+  delete snap.ledgerOld
+  snap.lines = snap.lines.filter((fp) => fp !== jcs.fingerprint('- old row without evidence'))
+  writeFileSync(mFile, JSON.stringify(snap))
+  writeFileSync(join(mTask, 'checks', 'pro-review-1.md'), weakLedger)
+  writeFileSync(join(mTask, 'STAGES.md'), journalWith('- old row without evidence', AW_OK))
+  check('D7: after the migration the old evidence-less row is not new', jcs.newJournalViolations(mData, mTask).length === 0, JSON.stringify(jcs.newJournalViolations(mData, mTask)))
+  check('D7: the migration marks the snapshot and lists the existing reports as old', (() => { const now = JSON.parse(readFileSync(mFile, 'utf8')); return now.dismissSeen === true && now.ledgerOld.includes('pro-review-1.md') })())
+  check('D7: the report that was there is old (not strict), a report written later is strict', jcs.baselineInfo(mData, mTask).ledgerOld.has('pro-review-1.md') && !jcs.baselineInfo(mData, mTask).ledgerOld.has('pro-review-9.md'))
+  appendFileSync(join(mTask, 'STAGES.md'), `${AW_BAD}\n`)
+  check('D7: after the migration a NEW evidence-less row is rejected', jcs.newJournalViolations(mData, mTask).some(({ rule }) => rule === 'decision-evidence'))
+  rmSync(mData, { recursive: true, force: true })
+  rmSync(mTask, { recursive: true, force: true })
+
+  // AC-5.1 and the digest: dismissed as false in the full view, the count in the short one; Awaiting sorted by rollback cost.
+  for (const language of ['en', 'ru']) {
+    const dData = mkdtempSync(join(tmpdir(), 'dis-dig-data-'))
+    const dTask = mkdtempSync(join(tmpdir(), 'dis-dig-task-'))
+    mkdirSync(join(dTask, 'checks'), { recursive: true })
+    const ru = language === 'ru'
+    writeFileSync(join(dTask, 'STAGES.md'), `# T-62\n${ru ? 'Язык: ru' : 'Language: en'}\n`)
+    jcs.baselineInfo(dData, dTask)
+    const awaiting = ['- Cheap thing. Where: a. Rollback is cheap: one constant. Basis: guess.', '- Expensive thing. Where: b. Rollback is expensive: a data migration. Basis: guess.', '- Middle thing. Where: c. Rollback is moderate: three texts. Basis: guess.']
+    writeFileSync(join(dTask, 'STAGES.md'), `# T-62\n${ru ? 'Язык: ru' : 'Language: en'}\n\n## Force run 2026-10-19\nMode: auto\nConfirmed: 2026-10-19 — x\n\n## ⚠ ${ru ? 'Ожидают подтверждения пользователя' : 'Awaiting user confirmation'}\n${awaiting.join('\n')}\n`)
+    const head = ru ? '## Итог находок' : '## Findings outcome'
+    const body = `# pro-review\nFindings: critical 0 · major 2 · minor 1\n\n| # | severity |\n|---|---|\n| M-1 | major |\n| M-2 | major |\n| m-1 | minor |\n\n${head}\n- M-1 — false: \`src/a.ts:12\` — the only caller passes a constant\n- M-2 — fixed: b.ts:3\n- m-1 — false: \`c.ts:4\` is dead\n`
+    writeFileSync(join(dTask, 'checks', 'pro-review-1.md'), body)
+    const later = new Date(Date.now() + 60_000)
+    utimesSync(join(dTask, 'checks', 'pro-review-1.md'), later, later)
+    const d = collectDigest(dTask, dData, null)
+    const full = runDigest(dTask, dData, null)
+    const short = runDigest(dTask, dData, null, 'short', '/x/RUN-DIGEST.md')
+    check(`AC-5.1 digest ${language}: the full view lists the major dismissal verbatim with its checker, not the minor one`, full.includes(d.text.dismissed(1)) && full.includes('[pro-review] pro-review-1.md (major): M-1 — false:') && !full.includes('m-1 — false'), full)
+    check(`AC-5.1 digest ${language}: the short view gives the count and not the line`, short.includes(d.text.dismissedShort(1, 0)) && !short.includes('only caller passes'), short)
+    const order = (view) => ['Expensive', 'Middle', 'Cheap'].map((word) => view.indexOf(`${word} thing`))
+    check(`AC-5.4 digest ${language}: Awaiting rows come sorted by rollback cost, expensive first`, order(full).every((at, i, all) => at !== -1 && (i === 0 || at > all[i - 1])), order(full).join(','))
+    rmSync(dData, { recursive: true, force: true })
+    rmSync(dTask, { recursive: true, force: true })
+  }
+}
+
 process.exit(failed ? 1 : 0)

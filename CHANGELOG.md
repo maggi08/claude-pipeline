@@ -7,6 +7,31 @@ Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
 ## 0.18.0 — 2026-10-20
 
+### Proof that checks ran, honest live checks, dismissals and decisions you can weigh (VT-1 stages 3–5, release R1)
+
+Built on 0.17.0 and on the VT-1 stage 2 hook fixes in the next part of this entry. The date gate of stage 3 is a real date: a force run dated 2026-10-20 or later gets its rules. Everything else follows the baseline snapshot (see "On upgrade").
+
+**Stage 3: stage receipts.**
+- **A force commit needs the stage's checker reports.** git-guard denies a force commit when no `pro-review` report was written since the previous force commit, and when the diff changes UI with neither a `devtools-verify` report nor a legitimate skip reason (a browser, MCP, login or stand reason). Everything else is not a block: it goes to the digest.
+- **"Completed" needs fresh final reviews.** A force run is closed "completed" only when the whole-branch `pro-review` and `task-converge` reports are newer than the last commit that changed the tree.
+- **The full digest has a new section, "Stages without runtime check".** The short view shows its count.
+- Applies to Force blocks dated 2026-10-20 or later (`RECEIPTS_SINCE` in `scripts/receipts.mjs`); older runs keep the old behaviour. Receipts live in `<plugin data>/receipts/`.
+
+**Stage 4: login and honest live checks.**
+- **Login is asked up front.** The force interview (Step 0) runs an auth probe when some criterion is behind a login and puts "log in in the managed Chrome window at `<route>`" into the opening batch. A session that expires mid-run is a deferral, not a pause.
+- **`[live: user-side]` must say why.** The honest form is `[live: user-side — <prerequisite>; <route> → <observed>]`; a bare tag on a new line or in a new report is rejected. The plan no longer pre-tags criteria `[live: user-side]`.
+- **`scripts/verify-doctor.mjs`** answers whether the dev server on the port is this worktree's app (baseline routes, an app marker, the listener's `cwd`) with one `doctor:` line. devtools-verify runs it before its first navigation, and frames-guard blocks a navigation that came first. Optional config keys `verify_routes:` and `app_marker:` in "Dev server". New devtools-verify reports carry `doctor:` and `auth:` lines.
+- **`/pipeline-doctor` offers an opt-in persistent Chrome profile** per repo through `claude mcp add --scope local chrome-devtools …`. It lives in `~/.claude.json` and is never committed.
+- **The Chrome DevTools MCP has run with `--isolated` since `ed3688d` (2026-10-06), a change this file never listed.** Every session gets a throwaway profile, so sessions in several repos no longer fight over one profile, and a login does not survive the session. The opt-in profile above is how to keep one.
+
+**Stage 5: the dismissal trail and evidence for decisions taken alone.**
+- **The full digest lists every dismissal.** A new section "Dismissed as false" quotes, verbatim and with its checker, every `false` outcome on a critical, major or FAIL finding. The short view gives the count and how many are critical. A `false` written for a criterion that did not fail ("not a FAIL") is listed apart.
+- **A `false` needs a proof of its own kind.** In new reports the hook rejects: "the fix is impossible", "can't be fixed", "unfixable", "the kit / backend owns it" or "the kit has no such slot" without a `file:line` in the kit, the contract or the tool (a task-code `file:line` is enough for "impossible" / "forced" / "unavoidable" when the clause is not about the kit or the backend); "by design" without a source; "not reproduced" without two attempts and the route (`not reproduced (2 attempts, /root-cause)` passes); "demoted to minor" as the reason; "this stage did not change it" without a base sha, diff range or `git` command; "a later stage owns it" proved by a plan line; the same report, an acceptance criterion or a force assumption as the only basis; "false for the data" from a sample; "not related to the task" with no diff. The finding then stands: a fix, a blocker `B<n>` or a user decision.
+- **A dismissed critical goes through the fresh pass.** Its ledger line cites the fresh report written on `review_model` (`/stage-check`, Step 3.3), and the hook checks that the file exists and belongs to the same checker and stage (`pro-review-3.md` is confirmed by `pro-review-3-fresh*.md`).
+- **Awaiting lines and assumptions carry evidence.** A new line in "Awaiting user confirmation" or under `Assumptions:` of a Force block (the bullets, or the text on the `Assumptions:` line itself) needs `Rollback: <cost>` and `Basis: <path:line | node-id | URL | a ticket quote | D<n> / A<n> / AC-<n> | guess>` (the Russian task has its own two words, see `references/language.md`). journal-gate rejects a line without them, and the digest lists the rows by rollback cost, expensive first.
+
+**On upgrade.** Nothing to rewrite. The snapshot of each task migrates once: the "Awaiting" and assumption lines already there, and the reports already there, are old and raise nothing. The stage 5 rules judge only what is written after.
+
 ### The hooks stop firing on reads, gates can be skipped on the record, post-close commits are seen (VT-1 stage 2)
 
 Four defects of the 2026-10-16 audit, fixed at the root. On 2026-10-19 the first of them reproduced live: a read-only `ls .claude/tasks/EN-1/checks` from another task's session returned EN-1's force-close demands.
