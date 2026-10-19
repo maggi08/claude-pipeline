@@ -35,7 +35,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/ci-gates.mjs",
-      "line": "^\\s*(?:ru: \\{ green|\\? `«\\$\\{gate\\.name\\}»)",
+      "line": "^\\s*(?:ru: \\{ green|const RED_CODE|\\? `«\\$\\{gate\\.name\\}»)",
       "reason": "gate description in the run digest of a ru task"
     },
     {

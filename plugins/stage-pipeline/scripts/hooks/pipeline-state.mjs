@@ -100,34 +100,36 @@ function foreignTasks(ownTaskDir, root, branch) {
  * The plugin data directory: Claude Code gives it to hooks in CLAUDE_PLUGIN_DATA (`stage-pipeline-<marketplace>`; `stage-pipeline-inline`
  * for a `--plugin-dir` session). A script run from Bash has no such variable and used to fall back to a bare `stage-pipeline`
  * directory — a different one, so the snapshots and the gate runs of the two never met. Now the name comes from where the script itself lies:
- * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it gives
+ * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it (or a cached older version of that install) gives
  * `stage-pipeline-<marketplace>`; else the `installLocation` / `source.path` of a marketplace in `known_marketplaces.json` that contains it (a marketplace connected as a directory) gives `stage-pipeline-<marketplace>`; a script outside both (a `--plugin-dir` run) gives `stage-pipeline-inline`, as the hooks of that session do.
  */
-export function pluginDataDir() {
+export function pluginDataDir(here = dirname(fileURLToPath(import.meta.url))) {
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA
   const root = join(homedir(), '.claude/plugins/data')
-  const here = dirname(fileURLToPath(import.meta.url))
-  try {
-    const { plugins } = JSON.parse(readFileSync(join(homedir(), '.claude/plugins/installed_plugins.json'), 'utf8'))
-    for (const [key, entries] of Object.entries(plugins ?? {})) {
-      const match = key.match(/^stage-pipeline@(.+)$/)
-      const inside = (entries ?? []).some(({ installPath }) => typeof installPath === 'string' && (here === installPath || here.startsWith(installPath + sep)))
-      if (match && inside) return join(root, `stage-pipeline-${match[1].replace(/[^\w.-]/g, '-')}`)
+  const under = (dir) => typeof dir === 'string' && dir !== '' && (here === dir || here.startsWith(dir.replace(/[/\\]+$/, '') + sep))
+  const named = (marketplace) => join(root, `stage-pipeline-${marketplace.replace(/[^\w.-]/g, '-')}`)
+  const readJson = (name) => {
+    try {
+      return JSON.parse(readFileSync(join(homedir(), '.claude/plugins', name), 'utf8'))
+    } catch {
+      return null
     }
-  } catch {
-    // no registry — treated as a script outside every install
   }
+  const installed = Object.entries(readJson('installed_plugins.json')?.plugins ?? {}).flatMap(([key, entries]) => {
+    const match = key.match(/^stage-pipeline@(.+)$/)
+    return match ? [{ marketplace: match[1], paths: (entries ?? []).map(({ installPath }) => installPath) }] : []
+  })
+  // The current install, then any cached version of it: a session that started before an update still runs `cache/<marketplace>/stage-pipeline/<old version>`,
+  // and its hooks get the same `stage-pipeline-<marketplace>`.
+  for (const { marketplace, paths } of installed) if (paths.some(under)) return named(marketplace)
+  const cached = here.match(/[/\\]plugins[/\\]cache[/\\]([^/\\]+)[/\\]stage-pipeline[/\\]/)
+  if (cached && installed.some(({ marketplace }) => marketplace === cached[1])) return named(cached[1])
   // A marketplace connected as a directory runs the plugin from its working tree while `installPath` points into the cache:
   // the script lies in the marketplace's source directory, and that marketplace's name is the hooks' one.
-  try {
-    const known = JSON.parse(readFileSync(join(homedir(), '.claude/plugins/known_marketplaces.json'), 'utf8'))
-    for (const [name, entry] of Object.entries(known ?? {})) {
-      const inside = [entry?.installLocation, entry?.source?.path].some((dir) => typeof dir === 'string' && dir && (here === dir || here.startsWith(dir.replace(/[\\/]+$/, '') + sep)))
-      if (inside) return join(root, `stage-pipeline-${name.replace(/[^\w.-]/g, '-')}`)
-    }
-  } catch {
-    // no list of marketplaces
+  for (const [name, entry] of Object.entries(readJson('known_marketplaces.json') ?? {})) {
+    if ([entry?.installLocation, entry?.source?.path].some(under)) return named(name)
   }
+  // A script outside every install and marketplace (a `--plugin-dir` run, a worktree): the hooks of that session get `-inline`.
   return join(root, 'stage-pipeline-inline')
 }
 
@@ -258,6 +260,8 @@ export function unjournaledCommits(state, task, limit = 50) {
     if (base.ahead && !(merged && merged >= Number(git(cwd, 'log', '-1', '--format=%ct', ref) ?? Infinity))) add('branch', `${base.ref}..${ref}`)
   }
 
+  const titled = new Set()
+  let ownCommits = []
   const closed = closedForceDate(task.stages)
   const me = git(cwd, 'config', 'user.email')
   const known = journalCommits(cwd, journal)
@@ -272,6 +276,7 @@ export function unjournaledCommits(state, task, limit = 50) {
         return { sha, time: Number(time) * 1000, subject: subject.join(' ') }
       })
     const own = info.some(({ subject }) => ticket.test(subject)) ? info.filter(({ subject }) => ticket.test(subject)) : info
+    ownCommits = own
     const files = [...new Set((git(cwd, 'show', '--name-only', '--format=', ...own.map(({ sha }) => sha)) ?? '').split('\n').filter(Boolean))]
     const before = new Set(candidates.keys())
     // After the close — after the last commit of the run, not from the start of the day: a morning hotfix before the run is not follow-up work.
@@ -282,13 +287,21 @@ export function unjournaledCommits(state, task, limit = 50) {
     for (const ref of bases.size ? bases : [nearest('HEAD').ref]) {
       if (files.length) add(ref, `--since=${iso(since)}`, `--until=${iso(until)}`, `--author=${escapeRegExp(me)}`, ref, '--', ...files.slice(0, 400))
     }
-    // The task's own squash into dev ("Feat(KC-1): …") is not work bypassing the journal; a revert of someone else's commit is not task follow-up either.
-    for (const [sha, commit] of candidates) if (!before.has(sha) && (ticket.test(commit.subject) || /^Revert\s/.test(commit.subject))) candidates.delete(sha)
+    // A revert of someone else's commit is not task follow-up. A commit that names the ticket stays: the squash of the task's PR carries "(#17)" and was dropped above,
+    // anything else with the ticket in its title that lands after the close is exactly the work that bypassed the journal; only its SHA or its patch-id can clear it.
+    for (const [sha, commit] of candidates) {
+      if (before.has(sha)) continue
+      if (/^Revert\s/.test(commit.subject) || (ticket.test(commit.subject) && closed < TITLED_SINCE)) candidates.delete(sha)
+      else if (ticket.test(commit.subject)) titled.add(sha)
+    }
   }
 
-  const left = [...candidates.values()].filter(({ sha, subject }) => !journal.includes(sha.slice(0, 7)) && !(subject.length >= 12 && journal.includes(subject)))
+  const left = [...candidates.values()].filter(({ sha, subject }) => !journal.includes(sha.slice(0, 7)) && (titled.has(sha) || !(subject.length >= 12 && journal.includes(subject))))
   if (!left.length) return []
   const journaled = new Set(patchIds(cwd, known).values())
+  // A squash of the stage commits without "(#N)" (GitLab: "Feat(KC-1): …") has the patch of their combined diff.
+  const combined = combinedPatchId(cwd, ownCommits)
+  if (combined) journaled.add(combined)
   const ids = patchIds(cwd, left.map(({ sha }) => sha))
   return left.filter(({ sha }) => !journaled.has(ids.get(sha)))
 }
@@ -308,6 +321,18 @@ function journalCommits(cwd, journal) {
   if (!words.length) return []
   const out = gitInput(cwd, words.map((word) => `${word}^{commit}`).join('\n'), 'cat-file', '--batch-check=%(objectname) %(objecttype)')
   return [...new Set(out.split('\n').filter((line) => / commit$/.test(line)).map((line) => line.split(' ')[0]))]
+}
+
+// The patch-id of the combined diff of the task's own commits: from the parent of the oldest to the newest one.
+function combinedPatchId(cwd, own) {
+  if (!own?.length) return null
+  const sorted = [...own].sort((a, b) => a.time - b.time)
+  const first = sorted[0].sha
+  const last = sorted[sorted.length - 1].sha
+  if (!isCommit(cwd, `${first}^`)) return null
+  const diff = gitInput(cwd, '', 'diff', '--no-color', '--no-ext-diff', `${first}^`, last)
+  if (!diff) return null
+  return gitInput(cwd, diff, 'patch-id', '--stable').split(' ')[0] || null
 }
 
 function patchIds(cwd, shas) {
@@ -408,6 +433,8 @@ export function forceActive(stages) {
 const DAY = 24 * 60 * 60 * 1000
 export const STALE_DAYS = 21
 export const AFTER_CLOSE_DAYS = 14
+/** A ticket-titled commit after the close counts as unjournaled only for Force blocks closed on or after this date (earlier runs were closed under the old rule). */
+const TITLED_SINCE = '2026-10-20'
 
 /**
  * The repo root with the pipeline config. In a worktree `.claude/` may be uncommitted

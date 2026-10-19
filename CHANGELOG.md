@@ -5,6 +5,19 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.18.0 — 2026-10-20
+
+### The hooks stop firing on reads, gates can be skipped on the record, post-close commits are seen (VT-1 stage 2)
+
+Four defects of the 2026-10-16 audit, fixed at the root. On 2026-10-19 the first of them reproduced live: a read-only `ls .claude/tasks/EN-1/checks` from another task's session returned EN-1's force-close demands.
+
+- **journal-gate judges a Bash call by what it changed, not by what its text says.** It used to fire on any command that mentioned `STAGES` or `checks/`, reads included — about 37% of 156 firings in the audit. A PreToolUse run of the same hook now stamps the mtime and size of every task's STAGES.md and `checks/*.md`, and the PostToolUse run acts only on the tasks where one of them changed during the call. `cat`, `ls`, `grep`, `sed -n` and `node run-digest.mjs` are silent; a command that rewrites the journal or a report gets the same demands as an edit. No stamp (a hook that did not run) — silent.
+- **A CI gate can be skipped on the record.** `skip: <reason> <date>` in the gate's row of the "CI gates" table (or after an `- e2e:` / `- smoke:` line in Commands), or `skip: <gate> — <reason> <date>` in the run's Force block. A skip in the Force block speaks only for the gate named in its own clause (`smoke failed, e2e skip: …` skips e2e alone); a dash before a bare date (`skip: no staging — 2026-10-20`) is read as reason and date. The gate is listed once as skipped (`ci-gates.mjs`, the run digest) and the force close accepts it; before, a gate that cannot run on the machine produced the same blocker message again and again (PLI-3474: 56–65 repeats). The reason and the date are both required; an unmarked gate blocks as before, and a green run beats a skip.
+- **A ticket-titled commit after a force close is no longer taken for the task's own squash.** session-start dropped every commit with the ticket in its title from the "bypassed the journal" list. Now only its SHA or patch-id in the journal clears it; a PR squash with `(#17)` is still skipped. The rule applies only to force runs closed on or after 2026-10-20; runs closed earlier keep the old behaviour (every ticket-titled commit is skipped).
+- **One data directory for the hooks and for scripts run from Bash.** A script run from Bash finds the hooks' `stage-pipeline-<marketplace>` also when it is a cached older version of the install (a session that started before an update); the source tree of a directory marketplace is found since 0.16.2. A worktree or a `--plugin-dir` copy still gets `stage-pipeline-inline`, as that session's hooks do. Nothing is migrated: both directories are read, one is written.
+
+Nothing to do on upgrade. Skips apply only to marks you write after it.
+
 ## 0.17.0 — 2026-10-19
 
 ### Text for people: human-text, `/feature-doc`, and a PR description written by the same rules

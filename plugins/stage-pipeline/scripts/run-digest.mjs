@@ -41,7 +41,7 @@ import {
   openBlockers,
   SUMMARY_LINE,
 } from './journal-check.mjs'
-import { describe, gateStatus } from './ci-gates.mjs'
+import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
 import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceHeadings, headingDate } from './markers.mjs'
 import { pluginDataDir, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
 
@@ -52,7 +52,7 @@ const TEXT = {
   ru: {
     blockers: (n) => `### Блокеры — нужен твой ответ (${n})`,
     none: '- нет',
-    gates: (green, all) => `### Гейты CI на HEAD (${green} из ${all} зелёные)`,
+    gates: (green, all, skipped = 0) => `### Гейты CI на HEAD (${green} из ${all} зелёные${skipped ? `, пропущено ${skipped}` : ''})`,
     noOutcome: (n) => `### Находки без итога (${n}) — исправить или вынести блокером`,
     notVerified: (n) => `### Не проверено (${n})`,
     minor: (n) => `### Minor без итога (${n})`,
@@ -85,7 +85,7 @@ const TEXT = {
   en: {
     blockers: (n) => `### Blockers — your answer needed (${n})`,
     none: '- none',
-    gates: (green, all) => `### CI gates on HEAD (${green} of ${all} green)`,
+    gates: (green, all, skipped = 0) => `### CI gates on HEAD (${green} of ${all} green${skipped ? `, ${skipped} skipped` : ''})`,
     noOutcome: (n) => `### Findings without outcome (${n}) — fix or raise as a blocker`,
     notVerified: (n) => `### Not verified (${n})`,
     minor: (n) => `### Minor without outcome (${n})`,
@@ -156,7 +156,7 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   const reports = newReports(taskDir, scope.since).map((name) => ({ name, text: readFileSync(join(taskDir, 'checks', name), 'utf8') }))
 
   const blockers = (block ? openBlockers(block.body) : []).map((line) => `- ${bullet(line)}`)
-  const gates = (repo ? gateStatus(dataDir, repo.worktree, repo.config) : []).map((gate) => ({ ok: gate.status === 'green', line: `- ${gate.status === 'green' ? '✅' : '✗'} ${describe(gate, language)}` }))
+  const gates = (repo ? gateStatus(dataDir, repo.worktree, repo.config, forceSkips(taskDir)) : []).map((gate) => ({ ok: gateAccepted(gate), skipped: gate.status === 'skipped', lastRed: Boolean(gate.lastRed), line: `- ${gate.status === 'green' ? '✅' : gate.status === 'skipped' ? '⏭' : '✗'} ${describe(gate, language)}` }))
   const noOutcome = reports.flatMap(({ name, text }) => ledgerViolations(text, name, { complete: true }).map((violation) => `- ${TEXT[language].ledger(violation)}`))
 
   const unverifiedReports = []
@@ -207,8 +207,8 @@ function renderFull(d) {
   const { text } = d
   const out = [text.blockers(d.blockers.length), ...(d.blockers.length ? d.blockers : [text.none])]
   if (d.gates.length) {
-    const green = d.gates.filter(({ ok }) => ok).length
-    out.push('', text.gates(green, d.gates.length), ...d.gates.map(({ line }) => line))
+    const skipped = d.gates.filter((gate) => gate.skipped).length
+    out.push('', text.gates(d.gates.filter(({ ok }) => ok).length - skipped, d.gates.length, skipped), ...d.gates.map(({ line }) => line))
   }
   if (d.noOutcome.length) out.push('', text.noOutcome(d.noOutcome.length), ...d.noOutcome)
   const unverified = d.unverifiedJournal.length + d.unverifiedReports.length
@@ -232,7 +232,9 @@ function renderShort(d, path, unwritten = null) {
   if (d.notReady.length) out.push(text.notReady(d.notReady))
   if (d.gates.length) {
     const red = d.gates.filter(({ ok }) => !ok)
-    out.push(text.gates(d.gates.length - red.length, d.gates.length), ...red.map(({ line }) => line))
+    const skipped = d.gates.filter((gate) => gate.skipped).length
+    // A skipped gate whose last recorded run is red is listed too: the skip does not hide it.
+    out.push(text.gates(d.gates.length - red.length - skipped, d.gates.length, skipped), ...d.gates.filter((gate) => !gate.ok || gate.lastRed).map(({ line }) => line))
   }
   const empty = []
   if (d.noOutcome.length) out.push(text.noOutcome(d.noOutcome.length), ...d.noOutcome)

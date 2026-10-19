@@ -10,7 +10,7 @@
  * supported task language (Russian). The English twins next to them must give the same results.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,7 +22,7 @@ process.env.CLAUDE_PLUGIN_DATA = DATA
 const { commitScope, gitInvocations } = await import(join(PLUGIN, 'hooks/git-command.mjs'))
 const { taskDirFromConfig, taskBranches, isCurrentTask, forceActive, openForceBlock, reviewModel } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
 const { planArchive } = await import(join(PLUGIN, 'archive-stages.mjs'))
-const { closedForceDate, taskLanguage, readPipelineState } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+const { closedForceDate, taskLanguage, readPipelineState, unjournaledCommits: unjournaled } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
 const markers = await import(join(PLUGIN, 'markers.mjs'))
 const { acViolation, skipViolation, barePasses } = await import(join(PLUGIN, 'journal-check.mjs'))
 
@@ -338,6 +338,14 @@ const runHook = (name, input) => {
     text: out.hookSpecificOutput?.permissionDecisionReason ?? out.reason ?? out.systemMessage ?? out.hookSpecificOutput?.additionalContext ?? '',
   }
 }
+// A Bash call as the hooks see it: the PreToolUse run stamps the journal files, `effect` is what the command does, the PostToolUse run judges.
+let bashCalls = 0
+const bashGate = (cwd, command, effect = () => {}) => {
+  const base = { cwd, tool_name: 'Bash', tool_use_id: `toolu_test_${bashCalls++}`, tool_input: { command } }
+  runHook('journal-gate.mjs', { ...base, hook_event_name: 'PreToolUse' })
+  effect()
+  return runHook('journal-gate.mjs', { ...base, hook_event_name: 'PostToolUse' })
+}
 const repoAt = (path, branch) => {
   mkdirSync(path, { recursive: true })
   git(path, 'init', '-q', '-b', branch)
@@ -363,14 +371,28 @@ check('journal: an old violation is in the snapshot, the hook is silent', gate('
 write(app, { '.claude/tasks/T-7/STAGES.md': journal('- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ✅ pro-review по коду\n') })
 const caught = gate('Edit', { file_path: stagesPath })
 check('journal: a new "✅ pro-review по коду" on a devtools criterion — returned to the agent', caught.decision === 'block' && /AC-2\.1/.test(caught.text) && !/AC-1\.1/.test(caught.text), caught.text)
-check('journal: an edit via Bash with the STAGES.md path — too', gate('Bash', { command: `python3 fix.py ${stagesPath}` }).decision === 'block')
-check('journal: code and commands without the journal — silent', gate('Edit', { file_path: join(app, 'src/a.ts') }).decision === 'allow' && gate('Bash', { command: 'git status' }).decision === 'allow')
+// AC-2.1: a Bash call is judged by what it changed in the journal, not by what its text names. The violation is already in STAGES.md here.
+const BAD_LINE = '- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ✅ pro-review по коду\n'
+const readsOnly = ['cat', 'ls', 'grep -n AC', 'sed -n 1,20p', 'head -5']
+for (const reader of readsOnly) {
+  check(`journal: a read-only \`${reader}\` of STAGES.md with the violation in it — silent`, bashGate(app, `${reader} ${stagesPath}`).decision === 'allow')
+}
+check('journal: a read-only `ls` of checks/ — silent', bashGate(app, `ls ${join(app, '.claude/tasks/T-7/checks')}/`).decision === 'allow')
+check('journal: `node run-digest.mjs` over the task — silent', bashGate(app, `node ${join(PLUGIN, 'run-digest.mjs')} ${join(app, '.claude/tasks/T-7')} --no-write # STAGES.md`).decision === 'allow')
+check('journal: an edit via Bash that rewrites STAGES.md — returned to the agent', bashGate(app, `python3 fix.py ${stagesPath}`, () => write(app, { '.claude/tasks/T-7/STAGES.md': `${journal(BAD_LINE)}\n` })).decision === 'block')
+check('journal: a Bash call without the pre-hook stamp has nothing to compare — silent', runHook('journal-gate.mjs', { cwd: app, tool_name: 'Bash', tool_use_id: 'toolu_never_stamped', hook_event_name: 'PostToolUse', tool_input: { command: `python3 fix.py ${stagesPath}` } }).decision === 'allow')
+check('journal: code and commands without the journal — silent', gate('Edit', { file_path: join(app, 'src/a.ts') }).decision === 'allow' && bashGate(app, 'git status').decision === 'allow')
 write(app, { '.claude/tasks/T-7/STAGES.md': journal('- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ⏳ devtools-verify\n') })
 check('journal: fixed to ⏳ — silent', gate('Edit', { file_path: stagesPath }).decision === 'allow')
 const report = join(app, '.claude/tasks/T-7/checks/pro-review-2.md')
 write(app, { '.claude/tasks/T-7/checks/pro-review-2.md': '## AC\n2.1 PASS · 2.2 PASS · 2.3 PASS (`a.ts:3`, a=1)\n' })
 const bare = gate('Write', { file_path: report })
 check('report: bare PASS returned to the agent, PASS with a measurement not', bare.decision === 'block' && /AC-2\.1, AC-2\.2/.test(bare.text) && !/AC-2\.3/.test(bare.text), bare.text)
+// A Bash call that WRITES a new report is judged like a Write (the `changed ∩ checks` branch), and a valid one passes.
+const bashBad = bashGate(app, 'python3 write_report.py pro-review-3', () => write(app, { '.claude/tasks/T-7/checks/pro-review-3.md': '## AC\n2.1 PASS · 2.2 PASS\n' }))
+check('report via Bash: a new report with a bare PASS — returned to the agent', bashBad.decision === 'block' && /AC-2\.1, AC-2\.2/.test(bashBad.text) && /pro-review-3|T-7/.test(bashBad.text), bashBad.text)
+const bashOk = bashGate(app, 'python3 write_report.py pro-review-4', () => write(app, { '.claude/tasks/T-7/checks/pro-review-4.md': '# pro-review\nFindings: critical 0 · major 0 · minor 0\n## AC\n2.1 PASS (`a.ts:3`, a=1) · 2.2 PASS (`a.ts:9`, b=2)\n' }))
+check('report via Bash: a new report with measured PASS — passes', bashOk.decision === 'allow', bashOk.text)
 
 const agentHook = (subagent_type, prompt, model) =>
   runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type, prompt, ...(model ? { model } : {}) } }).decision
@@ -864,6 +886,70 @@ const kGate = () => runHook('journal-gate.mjs', { cwd: kApp, tool_name: 'Edit', 
 write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
 const redGate = kGate()
 check('closing "завершён" without a CI gate run — returned', redGate.decision === 'block' && /Смоук/.test(redGate.text) && /never ran/.test(redGate.text), redGate.text)
+// AC-2.1, the live repro: a read-only Bash call whose text the OLD gate matched (`/STAGES|checks[/\\]/`: `checks/` with a slash, `STAGES.md`) returned the CURRENT task's
+// (T-12) force-close demands, whichever task the call read. Reads stay silent, the same demands come to a call that edits the journal.
+const otherTask = join(kApp, '.claude/tasks/T-99')
+mkdirSync(join(otherTask, 'checks'), { recursive: true })
+writeFileSync(join(otherTask, 'STAGES.md'), '# T-99: other task\nBranch: `T-99/feat/other`\n\n## Status: stage 1\n')
+for (const read of [`ls ${join(kTask, 'checks')}/`, `ls ${join(otherTask, 'checks')}/`, `cat ${join(otherTask, 'STAGES.md')}`, `cat ${join(kTask, 'STAGES.md')}`, `grep -n Force ${join(kTask, 'STAGES.md')}`, `sed -n 1,30p ${join(kTask, 'STAGES.md')}`, `node ${join(PLUGIN, 'run-digest.mjs')} ${kTask} --no-write # STAGES.md checks/`]) {
+  check(`journal-gate: a read-only \`${read.split(' ')[0]}\` (text names STAGES.md / checks/) with the current task's closing demands unmet — silent`, bashGate(kApp, read).decision === 'allow', read)
+}
+// M-1: a concurrent session's edit of an unrelated task during a Bash call is not this call's doing; a task named by path is.
+check('journal-gate: an unrelated command while another task\'s journal changes (not current, not named) — silent', bashGate(kApp, 'echo see STAGES.md', () => appendFileSync(join(otherTask, 'STAGES.md'), '\n- [ ] x\n')).decision === 'allow')
+rmSync(otherTask, { recursive: true, force: true })
+check('journal-gate: a Bash call that rewrites the journal of that task gets the closing demands', /Смоук/.test(bashGate(kApp, `sed -i s/a/a/ ${join(kTask, 'STAGES.md')}`, () => appendFileSync(join(kTask, 'STAGES.md'), '\n')).text))
+// AC-2.2: a gate that cannot run here is skipped on the record — `skip: <reason> <date>` in its table row or in the run's Force block. An unmarked gate still blocks.
+{
+  const closing = `## Force-прогон ${today} — завершён ${today}`
+  const closeWith = (skipLine = '') =>
+    write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: closing }).replace('\nПодтверждено:', `\n${skipLine}\nПодтверждено:`) })
+  const cfgBase = readFileSync(join(kApp, '.claude/pipeline.config.md'), 'utf8')
+  const withRow = (cell) => cfgBase.replace(`| Смоук | ${KIT_GATE} |`, `| Смоук | ${KIT_GATE} | ${cell} |`)
+  const violations = (config = cfgBase) => gates.gateCloseViolations(DATA, kApp, config, kTask)
+  closeWith()
+  check('ci-gates skip: an unmarked gate (PLI-3474: e2e/smoke line without a mark) still blocks the close', violations().length === 1 && /Смоук/.test(violations()[0].message))
+  check('ci-gates skip: `skip:` without a date is not a skip — still blocks', violations(withRow('skip: нужен стейджинг')).length === 1 && violations(withRow('skip: 2026-10-19')).length === 1)
+  check('ci-gates skip: `skip: <reason> <date>` in the table row — accepted at close, listed once as skipped', violations(withRow('skip: нужен стейджинг 2026-10-19')).length === 0 && gates.gateStatus(DATA, kApp, withRow('skip: нужен стейджинг 2026-10-19'))[0]?.status === 'skipped')
+  const listed = gates.gateStatus(DATA, kApp, withRow('skip: needs staging 2026-10-19')).map((gate) => gates.describe(gate))
+  check('ci-gates skip: the description carries the reason and the date, once', listed.length === 1 && /skipped: needs staging, 2026-10-19/.test(listed[0]), listed.join('|'))
+  closeWith('skip: Смоук — нужен стейджинг 2026-10-19')
+  check('ci-gates skip: a Force-block line naming the gate — accepted at close', violations().length === 0)
+  closeWith('skip: E2E — нужен стейджинг 2026-10-19')
+  check('ci-gates skip: a Force-block line about another gate does not skip this one', violations().length === 1)
+  const two = `${cfgBase}| e2e | \`node -e "process.exit(3)"\` |\n`
+  closeWith('skip: Смоук — нужен стейджинг 2026-10-19')
+  check('ci-gates skip: with two gates only the unmarked `e2e` still blocks', violations(two).length === 1 && /e2e/.test(violations(two)[0].message) && !/Смоук/.test(violations(two)[0].message))
+  // pro-review-2 #1: a line mentioning two gates skips only the one in the clause that holds `skip:`.
+  closeWith('- Смоук failed, e2e skip: no staging 2026-10-20')
+  const mixed = violations(two)
+  check('ci-gates skip: a line naming two gates skips only the one before skip: — the other still blocks', mixed.length === 1 && /Смоук/.test(mixed[0].message) && !/e2e/.test(mixed[0].message), JSON.stringify(mixed.map((v) => v.message)))
+  closeWith('- skip: e2e — no staging 2026-10-20')
+  check('ci-gates skip: skip: <gate> — <reason> skips that gate, the other still blocks', violations(two).length === 1 && /Смоук/.test(violations(two)[0].message))
+  closeWith('skip: Смоук — нужен стейджинг 2026-10-19')
+  check('ci-gates skip: the single-gate form still passes (one-gate config)', violations().length === 0)
+  // pro-review-2 #3: a dash before a bare date leaves the reason in front of it.
+  closeWith('- Смоук skip: no staging — 2026-10-20')
+  check('ci-gates skip: `<gate> skip: <reason> — <date>` is a skip', violations().length === 0)
+  const lineConfig = `- task_path: .claude/tasks/\n- e2e: \`npm run e2e\`   # skip: нужен стейджинг 2026-10-19\n- smoke: \`npm run smoke\`\n`
+  check('ci-gates skip: a mark on an `- e2e:` Commands line skips that line only', same(gates.gateCommands(lineConfig).map((gate) => [gate.name, Boolean(gate.skip)]), [['e2e', true], ['smoke', false]]))
+  // m-4: a Force-block skip line names a gate as a whole word — `ci` / `build` are not found in "special" / "rebuild".
+  const wordConfig = `- task_path: .claude/tasks/\n\n## CI gates\n| Gate | Command |\n|---|---|\n| ci | \`node -e "1"\` |\n| build | \`node -e "2"\` |\n`
+  const skippedOf = (before) => gates.gateStatus(DATA, kApp, wordConfig, [{ reason: 'staging', date: '2026-10-19', before }]).map((gate) => `${gate.name}:${gate.status === 'skipped'}`)
+  check('ci-gates skip: a line about "special" / "rebuild" skips neither `ci` nor `build`', same(skippedOf('a special rebuild of the stack '), ['ci:false', 'build:false']), skippedOf('a special rebuild of the stack ').join())
+  check('ci-gates skip: a line naming `ci` as a word skips `ci` only', same(skippedOf('ci, '), ['ci:true', 'build:false']) && same(skippedOf('the build gate '), ['ci:false', 'build:true']))
+  // m-3 + D-1: a skip is accepted, but a gate whose last recorded run is red reads "skipped — last run red"; the digest counts skipped apart from green.
+  gates.recordGate(DATA, kApp, 'node -e "process.exit(0)"', 1, 'deadbeef')
+  closeWith('skip: Смоук — нужен стейджинг 2026-10-19')
+  const redSkipped = gates.gateStatus(DATA, kApp, cfgBase, gates.forceSkips(kTask))[0]
+  check('ci-gates skip: a skipped gate with a red last run is still accepted at close', redSkipped?.status === 'skipped' && redSkipped.lastRed === true && violations().length === 0, JSON.stringify(redSkipped))
+  check('ci-gates skip: the listing says "skipped — last run red" (en and ru)', /skipped — last run red/.test(gates.describe(redSkipped)) && /пропущен — последний запуск красный/.test(gates.describe(redSkipped, 'ru')), gates.describe(redSkipped))
+  const { runDigest: kDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+  const kRepo = readPipelineState(kApp)
+  const shortView = kDigest(kTask, DATA, kRepo, 'short')
+  const fullView = kDigest(kTask, DATA, kRepo, 'full')
+  check('digest: skipped gates are counted apart from green — short and full view', /\(0 из 1 зелёные, пропущено 1\)/.test(shortView) && /\(0 из 1 зелёные, пропущено 1\)/.test(fullView), shortView)
+  check('digest: a skipped gate with a red last run is listed in the short view', /пропущен — последний запуск красный/.test(shortView), shortView)
+}
 const kConfig = readFileSync(join(kApp, '.claude/pipeline.config.md'), 'utf8')
 write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён с блокерами ${today}`, blockers: '\n- B1 — Смоук: нужен стейджинг, локально не поднимается' }) })
 check('"с блокерами": a non-green gate named as a blocker is not a violation', gates.gateCloseViolations(DATA, kApp, kConfig, kTask).length === 0)
@@ -888,6 +974,72 @@ execFileSync('git', ['commit', '-qam', 'Fix(T-99): карточка обреза
 const elsewhere = runHook('session-start.mjs', { cwd: kApp }).text
 check('session-start on main: a task-file fix under another ticket after closing — named', /T-12 \(closed /.test(elsewhere) && /Fix\(T-99\)/.test(elsewhere), elsewhere)
 check('session-start: the same line is not repeated a second time', !/T-12 \(закрыта/.test(runHook('session-start.mjs', { cwd: kApp }).text))
+// AC-2.3: a commit that names the ticket in its title, landing after the close, is not "the task's own squash": only its SHA or patch-id in the journal clears it.
+{
+  // The titled rule applies to blocks closed on or after 2026-10-20: the run here is closed on that day at the earliest, its commits land after it.
+  const closedFix = today >= '2026-10-20' ? today : '2026-10-20'
+  const stagesFile = join(kTask, 'STAGES.md')
+  writeFileSync(stagesFile, readFileSync(stagesFile, 'utf8').replaceAll(today, closedFix))
+  const baseTs = Math.max(Date.now(), Date.parse(`${closedFix}T12:00:00Z`))
+  const commitAt = (message, seconds, content) => {
+    write(kApp, { 'src/Card.tsx': content })
+    const at = new Date(baseTs + seconds * 1000).toISOString()
+    execFileSync('git', ['commit', '-qam', message], { cwd: kApp, env: { ...process.env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } })
+    return git(kApp, 'rev-parse', 'HEAD').trim()
+  }
+  const titled = commitAt('Fix(T-12): карточка снова обрезалась', 240, 'export const Card = () => 1\n')
+  const incident = runHook('session-start.mjs', { cwd: kApp }).text
+  check('session-start: a ticket-titled commit after the force close, not in the journal — named', /T-12 \(closed /.test(incident) && /Fix\(T-12\): карточка снова обрезалась/.test(incident), incident)
+  const stagesNow = readFileSync(join(kTask, 'STAGES.md'), 'utf8')
+  write(kApp, { '.claude/tasks/T-12/STAGES.md': `${stagesNow}\n- догон: \`${titled.slice(0, 8)}\` Fix(T-12): карточка снова обрезалась, pro-review Approve\n` })
+  check('session-start: the same commit recorded in the journal by SHA — not named', !/Fix\(T-12\)/.test(runHook('session-start.mjs', { cwd: kApp }).text))
+  commitAt('Fix(T-12): ещё одна правка карточки (#15)', 360, 'export const Card = () => 2\n')
+  check('session-start: the ticket-titled squash of a merged PR "(#15)" — not named', !/Fix\(T-12\): ещё одна правка/.test(runHook('session-start.mjs', { cwd: kApp }).text))
+}
+// M-2: the titled rule and the squash without "(#N)", on a repo with fixed commit dates (independent of today's date).
+{
+  const sqApp = join(kRoot, 'sq')
+  repoAt(sqApp, 'main')
+  const at = (iso, ...args) => execFileSync('git', args, { cwd: sqApp, env: { ...process.env, GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso }, encoding: 'utf8' }).trim()
+  const edit = (n) => write(sqApp, { 'src/Sq.tsx': `export const s = ${n}\n` })
+  edit(0)
+  at('2026-10-01T10:00:00Z', 'add', '-A')
+  at('2026-10-01T10:00:00Z', 'commit', '-qm', 'base sq')
+  edit(1)
+  at('2026-10-11T10:00:00Z', 'commit', '-qam', 'T-31: шаг A')
+  const shaA = at('2026-10-11T10:00:00Z', 'rev-parse', 'HEAD')
+  edit(2)
+  at('2026-10-11T10:01:00Z', 'commit', '-qam', 'T-31: шаг B')
+  const shaB = at('2026-10-11T10:01:00Z', 'rev-parse', 'HEAD')
+  const patch = at('2026-10-11T10:01:00Z', 'diff', `${shaA}^`, shaB)
+  const stagesSq = (closedOn) =>
+    `# T-31: задача\nВетка: \`T-31/feat/s\`\n\n## Статус: этап 1\n\n## Force-прогон ${closedOn} — завершён ${closedOn}\nПодтверждено: ${closedOn} — «да»\nБлокеры:\n\n## Этапы\n\n### Этап 1: шаг  [status: done]\n` +
+    `- [x] commit: \`${shaA.slice(0, 8)}\` T-31: шаг A\n- [x] commit: \`${shaB.slice(0, 8)}\` T-31: шаг B\n`
+  const namedAfter = (closedOn) => {
+    write(sqApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-31/STAGES.md': stagesSq(closedOn) })
+    const state = readPipelineState(sqApp)
+    return unjournaled(state, state.tasks.find((task) => task.ticket === 'T-31')).map(({ subject }) => subject)
+  }
+  const followUp = (iso) => {
+    edit(3)
+    at(iso, 'commit', '-qam', 'Fix(T-31): правка после закрытия')
+  }
+  followUp('2026-10-12T11:00:00Z')
+  check('unjournaled: a ticket-titled follow-up on a block closed BEFORE the gate (2026-10-20) — silent', !namedAfter('2026-10-10').some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-10').join('|'))
+  at('2026-10-12T12:00:00Z', 'reset', '-q', '--hard', shaB)
+  followUp('2026-10-26T11:00:00Z')
+  check('unjournaled: the same ticket-titled follow-up after a post-gate close — named', namedAfter('2026-10-25').some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-25').join('|'))
+  // The squash of the stage commits without "(#N)" (GitLab): the same combined patch on top of the base.
+  at('2026-10-26T12:00:00Z', 'reset', '-q', '--hard', `${shaA}^`)
+  writeFileSync(join(sqApp, 'sq.patch'), `${patch}\n`)
+  at('2026-10-26T12:00:00Z', 'apply', 'sq.patch')
+  rmSync(join(sqApp, 'sq.patch'))
+  at('2026-10-26T12:01:00Z', 'commit', '-qam', 'Feat(T-31): шаг A и B')
+  check('unjournaled: a ticket-titled squash without "(#N)" equal to the combined stage patch — silent', !namedAfter('2026-10-25').some((subject) => /Feat\(T-31\)/.test(subject)), namedAfter('2026-10-25').join('|'))
+  edit(9)
+  at('2026-10-26T12:02:00Z', 'commit', '-qam', 'Feat(T-31): другой патч')
+  check('unjournaled: a ticket-titled commit with a different patch after the close — named', namedAfter('2026-10-25').some((subject) => /Feat\(T-31\): другой патч/.test(subject)))
+}
 rmSync(kRoot, { recursive: true, force: true })
 
 // ── English twin of the force run with gates, parity and the visual reference ────
@@ -1353,7 +1505,7 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
     const home = mkdtempSync(join(tmpdir(), 'digest-home-'))
     const root = join(home, '.claude/plugins/data')
     // The name comes from where the script lies: `installPath` in installed_plugins.json that contains it; none — `-inline`.
-    const dataFor = (installed, known = null) => {
+    const dataFor = (installed, known = null, { copyTo } = {}) => {
       const own = mkdtempSync(join(tmpdir(), 'digest-home-'))
       mkdirSync(join(own, '.claude/plugins/data/stage-pipeline'), { recursive: true })
       if (installed) {
@@ -1364,9 +1516,15 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
         mkdirSync(join(own, '.claude/plugins'), { recursive: true })
         writeFileSync(join(own, '.claude/plugins/known_marketplaces.json'), JSON.stringify(known))
       }
+      // The script as a session of another version runs it: a copy under the home's plugin cache.
+      let scripts = PLUGIN
+      if (copyTo) {
+        scripts = join(own, '.claude/plugins/cache', copyTo, 'scripts')
+        cpSync(PLUGIN, scripts, { recursive: true })
+      }
       const env = { ...process.env, HOME: own }
       delete env.CLAUDE_PLUGIN_DATA
-      return spawnSync(process.execPath, ['--input-type=module', '-e', `import { pluginDataDir } from ${JSON.stringify(join(PLUGIN, 'hooks/pipeline-state.mjs'))}; console.log(pluginDataDir())`], { env, encoding: 'utf8' }).stdout.trim()
+      return spawnSync(process.execPath, ['--input-type=module', '-e', `import { pluginDataDir } from ${JSON.stringify(join(scripts, 'hooks/pipeline-state.mjs'))}; console.log(pluginDataDir())`], { env, encoding: 'utf8' }).stdout.trim()
     }
     const pluginRoot = dirname(PLUGIN)
     check('data dir: no registry — the --plugin-dir one (-inline), as the hooks of that session', dataFor(null).endsWith('/.claude/plugins/data/stage-pipeline-inline'))
@@ -1377,6 +1535,11 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
     check('data dir: a marketplace connected as a directory, the install in the cache elsewhere — the marketplace\'s directory (source.path)', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/cache/magzhan/stage-pipeline/0.16.0' }] }, { magzhan: { source: { source: 'directory', path: marketplaceDir }, installLocation: '/elsewhere/magzhan' } }).endsWith('/stage-pipeline-magzhan'))
     check('data dir: the same through installLocation, with a trailing slash', dataFor(null, { magzhan: { installLocation: `${marketplaceDir}/` } }).endsWith('/stage-pipeline-magzhan'))
     check('data dir: a marketplace directory that is only a name prefix of the script path does not match', dataFor(null, { magzhan: { source: { path: `${marketplaceDir}-ht1` } } }).endsWith('/stage-pipeline-inline'))
+    // AC-2.4: a script of an older cached version, or of the marketplace's source tree, from Bash resolves to the directory of the hooks of that install.
+    check('data dir: a script of an older cached version (the install moved on) — the hooks\' directory, not -inline', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/cache/magzhan/stage-pipeline/0.16.0' }] }, null, { copyTo: 'magzhan/stage-pipeline/0.15.1' }).endsWith('/stage-pipeline-magzhan'))
+    check('data dir: a cached copy of a marketplace that is not installed — -inline', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/x' }] }, null, { copyTo: 'other/stage-pipeline/0.15.1' }).endsWith('/stage-pipeline-inline'))
+    check('data dir: the source tree of a directory marketplace — the hooks\' directory of its install', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/stage-pipeline/0.16.0' }] }, { magzhan: { installLocation: marketplaceDir } }).endsWith('/stage-pipeline-magzhan'))
+    check('data dir: a worktree of that repo (a --plugin-dir run, not the install\'s tree) — -inline', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/stage-pipeline/0.16.0' }] }, { magzhan: { installLocation: `${marketplaceDir}-other` } }).endsWith('/stage-pipeline-inline'))
     check('data dir: the legacy directory is the bare one beside a marketplace one, and none beside the bare one', legacyDataDir(join(root, 'stage-pipeline-magzhan')) === join(root, 'stage-pipeline') && legacyDataDir(join(root, 'stage-pipeline')) === null)
     // A snapshot and a gate run written to the bare directory earlier are still read through the hooks' directory.
     const { task } = fixture('ru')
@@ -1484,8 +1647,8 @@ const lgReplace = (report) => {
   return runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Edit', tool_input: { file_path: lgOld2 } })
 }
 check('journal-gate: old EN report in a RU task, replaced via rename (new inode) — no language return', lgReplace(EN_REPORT + '\n## Итог находок\n').decision === 'allow')
-appendFileSync(lgOld2, '\n- M-2\n')
-check('journal-gate: old EN report in a RU task, appended via Bash path (fresh mtime) — no language return', runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Bash', tool_input: { command: 'cat >> report' } }).decision === 'allow')
+const lgAppend = bashGate(lgApp, 'cat >> report', () => appendFileSync(lgOld2, '\n'))
+check('journal-gate: old EN report in a RU task, appended via Bash (changed during the call) — no language return', lgAppend.decision === 'allow', lgAppend.text)
 write(lgApp, { '.claude/tasks/T-32/checks/pro-review-1.md': EN_REPORT })
 const lgNewRun = runHook('journal-gate.mjs', { cwd: lgApp, tool_name: 'Write', tool_input: { file_path: join(lgApp, '.claude/tasks/T-32/checks/pro-review-1.md') } })
 check('journal-gate: new EN report (created after the snapshot) in a RU task — returned', lgNewRun.decision === 'block' && /task language/.test(lgNewRun.text), lgNewRun.text)

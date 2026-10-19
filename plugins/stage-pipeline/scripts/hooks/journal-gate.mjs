@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve, sep } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
 import { gateCloseViolations } from '../ci-gates.mjs'
 import { CLOSED_WORD } from '../markers.mjs'
@@ -23,6 +23,11 @@ import { pluginDataDir, readDataFiles, readHookInput, readPipelineState } from '
  * 0.15 — the project's CI gates (smoke, e2e from the config): "completed" only when each one is green on the current HEAD,
  * "completed with blockers" — each non-green one is named as a blocker. In one task smoke failed only at the PR.
  *
+ * 0.16.3 — Bash is judged by what the call did, not by what its text says. A `ls .claude/tasks/EN-1/checks` or a `cat STAGES.md` from another task's
+ * session used to return EN-1's force-close demands (about a third of the firings in the 2026-10-16 audit were reads). A PreToolUse run of this hook
+ * stamps the mtime and size of STAGES.md and `checks/*.md` of the current tasks and of the tasks the command names by path; the PostToolUse run acts only on the tasks where one of them changed
+ * during the call. No stamp (the pre-hook did not run) — nothing to compare, so the hook stays silent.
+ *
  * Only what is new: journal lines that were not in the snapshot, and reports written after it
  * (the snapshot is in the plugin data directory, session-start makes it). Old stages and closed tasks
  * do not have to be rewritten. A new violation reminds about itself until it is fixed.
@@ -30,8 +35,8 @@ import { pluginDataDir, readDataFiles, readHookInput, readPipelineState } from '
 const input = await readHookInput()
 const tool = input.tool_name ?? ''
 const toolInput = input.tool_input ?? {}
-const target = tool === 'Bash' ? (toolInput.command ?? '') : (toolInput.file_path ?? '')
-if (!/STAGES|checks[/\\]/.test(target)) process.exit(0)
+const target = tool === 'Bash' ? '' : (toolInput.file_path ?? '')
+if (tool !== 'Bash' && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
 
 const cwd = input.cwd ?? process.cwd()
 const state = readPipelineState(cwd)
@@ -47,24 +52,72 @@ const real = (path) => {
 }
 const inside = (dir, path) => path === dir || path.startsWith(dir + sep)
 const filePath = tool === 'Bash' ? null : real(resolve(cwd, target))
+
+// What a Bash call can change in the journal: STAGES.md and the reports of every task, by mtime and size.
+const stampPath = join(pluginDataDir(), 'bash-start', `${String(input.tool_use_id ?? input.session_id ?? 'call').replace(/[^\w.-]/g, '_')}.json`)
+const stampOf = (dir) => {
+  const stamp = {}
+  const add = (path) => {
+    try {
+      const { mtimeMs, size } = statSync(path)
+      stamp[path] = `${mtimeMs}:${size}`
+    } catch {
+      // gone or unreadable — not a change we can attribute
+    }
+  }
+  add(join(dir, 'STAGES.md'))
+  for (const name of reportNames(dir)) add(join(dir, 'checks', name))
+  return stamp
+}
+// Only the tasks this call can be blamed for: the current ones of this worktree's branch (foreign current ones included), and any task whose
+// directory or `/<TICKET>/` segment the command text names (a session may write another task's journal by path). A concurrent session's edit of
+// an unrelated task is not this call's doing.
+const command = String(toolInput.command ?? '')
+const named = (task) => command.includes(task.dir) || command.includes(real(task.dir)) || command.includes(`/${task.ticket}/`)
+const stampAll = () => Object.assign({}, ...state.tasks.filter((task) => task.current || named(task)).map((task) => stampOf(real(task.dir))))
+let changed = null
+if (tool === 'Bash') {
+  if (input.hook_event_name === 'PreToolUse') {
+    try {
+      mkdirSync(dirname(stampPath), { recursive: true })
+      writeFileSync(stampPath, JSON.stringify(stampAll()))
+      // stamps of calls that never came back (an interrupted call) do not pile up
+      for (const name of readdirSync(dirname(stampPath))) {
+        const old = join(dirname(stampPath), name)
+        if (Date.now() - statSync(old).mtimeMs > 86_400_000) rmSync(old, { force: true })
+      }
+    } catch {
+      // not stamped — the post-hook of this call stays silent
+    }
+    process.exit(0)
+  }
+  let before
+  try {
+    before = JSON.parse(readFileSync(stampPath, 'utf8'))
+    rmSync(stampPath, { force: true })
+  } catch {
+    process.exit(0)
+  }
+  const after = stampAll()
+  changed = new Set(Object.keys(after).filter((path) => before[path] !== after[path]))
+  if (!changed.size) process.exit(0)
+}
 const tasks = state.tasks
   .map((task) => ({ ...task, dir: real(task.dir) }))
-  .filter((task) => (filePath ? inside(task.dir, filePath) : task.current || target.includes(task.dir) || target.includes(`/${task.ticket}/`)))
+  .filter((task) => (filePath ? inside(task.dir, filePath) : [...changed].some((path) => inside(task.dir, path))))
 if (!tasks.length) process.exit(0)
 
 const messages = []
 const context = []
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
-  // The report is the one written by this edit: for Write/Edit its path, for Bash the reports changed just now.
+  // The report is the one written by this edit: for Write/Edit its path, for Bash the reports that changed during the call.
   const checks = join(task.dir, 'checks')
   const written = filePath
     ? inside(checks, filePath) && filePath.endsWith('.md')
       ? [filePath]
       : []
-    : reportNames(task.dir)
-        .map((name) => join(checks, name))
-        .filter((path) => Date.now() - statSync(path).mtimeMs < 60_000)
+    : [...changed].filter((path) => inside(checks, path))
   // The language is checked only for a report that did not exist when the task was first seen: an old report is not rewritten, however it is edited.
   const { reports: known } = baselineInfo(pluginDataDir(), task.dir)
   const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language))
