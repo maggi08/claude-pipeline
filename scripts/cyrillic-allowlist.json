@@ -55,13 +55,18 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady): ",
+      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|noRuntime|noRuntimeLine): ",
       "reason": "run digest headings written for a ru task, byte for byte as before"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
       "line": "^\\s*(?:'ledger-(?:parked|unproven|unknown)': |`checks/\\$\\{name\\}: \\$\\{what\\}, а итогов|`\\(\\$\\{LEDGER_DOC\\}\\)\\. Находку)",
       "reason": "the lines of the \"findings without outcome\" section of a ru task's run digest, byte for byte as the base hook messages"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/receipts.mjs",
+      "line": "^\\s*(?:const WHOLE_BRANCH|const blocks|const status|const commitOpen|const RUNTIME_SKIP_REASON|const NOT_RUN_RU|\\s*\\/\\\\bnot\\\\s\\+\\(\\?:been)",
+      "reason": "RU alternatives of the whole-branch, commit-line, runtime-skip-reason and blocker not-run regexes (RU|EN pairs)"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",

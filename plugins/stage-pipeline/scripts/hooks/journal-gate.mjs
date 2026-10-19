@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync,
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
 import { gateCloseViolations } from '../ci-gates.mjs'
+import { finalReviewViolations } from '../receipts.mjs'
 import { CLOSED_WORD } from '../markers.mjs'
 import { publishDigest, taskRepo } from '../run-digest.mjs'
 import { pluginDataDir, readDataFiles, readHookInput, readPipelineState } from './pipeline-state.mjs'
@@ -27,6 +28,9 @@ import { pluginDataDir, readDataFiles, readHookInput, readPipelineState } from '
  * session used to return EN-1's force-close demands (about a third of the firings in the 2026-10-16 audit were reads). A PreToolUse run of this hook
  * stamps the mtime and size of STAGES.md and `checks/*.md` of the current tasks and of the tasks the command names by path; the PostToolUse run acts only on the tasks where one of them changed
  * during the call. No stamp (the pre-hook did not run) — nothing to compare, so the hook stays silent.
+ *
+ * Stage 3 of VT-1 — "completed" also needs the whole-branch pro-review and task-converge reports newer than the last commit that changed the tree
+ * (receipts.mjs); the force commit itself is judged by git-guard against the stage's checker reports.
  *
  * Only what is new: journal lines that were not in the snapshot, and reports written after it
  * (the snapshot is in the plugin data directory, session-start makes it). Old stages and closed tasks
@@ -121,7 +125,7 @@ for (const task of tasks) {
   // The language is checked only for a report that did not exist when the task was first seen: an old report is not rewritten, however it is edited.
   const { reports: known } = baselineInfo(pluginDataDir(), task.dir)
   const reports = written.flatMap((path) => reportViolations(path, known.has(basename(path)) ? null : task.language))
-  const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir)]
+  const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   if (!closing.length) {
     const digest = closedDigest(task)

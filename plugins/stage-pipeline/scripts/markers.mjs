@@ -14,6 +14,22 @@ const re = (source, flags = '') => new RegExp(source, flags)
 
 /** `### Stage A0 …` heading (or its Russian form) — group 1 is the heading level, group 2 the number. */
 export const STAGE_HEADING = /^(#{2,3}) (?:Этап|Stage) ([\w.]+)/
+/**
+ * Stage blocks: `### Stage 3 …` / `## Stage A0 …` (or the Russian form) up to the next heading of the same or a higher level.
+ * If the file has stage headings with `[status: …]`, only they count as stages — otherwise
+ * journal subheadings "### Stage 6 — progress" would count as a second stage 6.
+ */
+export function stageBlocksOf(text) {
+  const lines = text.split('\n')
+  const headings = lines.map((line, index) => ({ index, match: line.match(STAGE_HEADING) })).filter(({ match }) => match)
+  const withStatus = headings.filter(({ index }) => /\[status:/i.test(lines[index]))
+  return (withStatus.length ? withStatus : headings).map(({ index, match }) => {
+    let end = index + 1
+    while (end < lines.length && !(lines[end].match(/^(#{1,6}) /)?.[1].length <= match[1].length)) end++
+    return { number: match[2], block: lines.slice(index, end).join('\n'), start: index, end }
+  })
+}
+
 /** The same heading, but with the number from `number` (a string, not a regexp). */
 export const stageHeadingOf = (number) => re(`^###\\s+(?:Этап|Stage)\\s+${number}(?![\\w.])[^\\n]*$`, 'm')
 /** "stage 3" (or its Russian form) in a journal or commit line — group 1 is the number. */

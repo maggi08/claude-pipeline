@@ -91,17 +91,22 @@ export function acViolation(line, reports = null) {
 }
 
 const BROWSER_REASON = /браузер|browser|chrome|\bmcp\b|devtools|токен|token|staging|стенд|\bstand\b(?!-)|\blive\b|dev-?сервер|dev[- ]?server|занят|\bbusy\b|логин|login|sign-?in|\bauth/i
-const LEGIT_REASON =
+export const LEGIT_REASON =
   /logic-only|нет\s+(дизайн|макет|figma|прототип)|дизайн-источник|источник|без визуал|визуал не меня|макет[а-яё]*\s+нет|figma\s+нет|\bno\s+(?:design|mockup|figma|prototype)|design\s+source|no\s+visual|visuals?\s+(?:are\s+)?unchanged/i
 
 // A design checker skipped for a browser reason: live forms are `[skip: …]`, `(skip — …)`, `— skip (…)`, `skip: …`,
 // including one shared by two checkers: "proto-compare and devtools-verify — skip: MCP-Chrome busy". After " · " the skip is someone else's.
+/** The reason of a skip written after a checker name that ends at `from` in the line, or null when no skip stands there. */
+export function skipReasonAfter(line, from) {
+  const near = line.slice(from, from + 200)
+  const skip = near.match(/^((?:(?!\s·\s)[^.;(\n]){0,50}?)[[(]?\s*skip(?:ped)?\b(?!=)\s*[:—–-]?\s*\(?\s*([^\])·;\n]*)/i)
+  return skip ? skip[2].trim() : null
+}
+
 export function skipViolation(line) {
   for (const match of line.matchAll(/(figma-compare|proto-compare)/g)) {
-    const near = line.slice(match.index + match[0].length, match.index + match[0].length + 200)
-    const skip = near.match(/^((?:(?!\s·\s)[^.;(\n]){0,50}?)[[(]?\s*skip(?:ped)?\b(?!=)\s*[:—–-]?\s*\(?\s*([^\])·;\n]*)/i)
-    if (!skip) continue
-    const reason = skip[2].trim()
+    const reason = skipReasonAfter(line, match.index + match[0].length)
+    if (reason === null) continue
     if (BROWSER_REASON.test(reason) && !LEGIT_REASON.test(reason)) {
       return {
         rule: 'design-skip',

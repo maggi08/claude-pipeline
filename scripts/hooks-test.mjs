@@ -2285,4 +2285,281 @@ rmSync(retroRoot, { recursive: true, force: true })
 
 }
 
+// ── stage receipts (VT-1 stage 3): the force commit needs the stage's checkers, the close needs fresh final reviews ──
+// Each rule: the live incident form that must be denied and the live legitimate form that must pass. Force blocks are dated after RECEIPTS_SINCE;
+// report times and receipt times are set by hand (the real clock is before the date gate).
+{
+  const rc = await import(join(PLUGIN, 'receipts.mjs'))
+  const rRoot = mkdtempSync(join(tmpdir(), 'receipts-test-'))
+  const T0 = Date.parse('2026-10-22T09:00:00')
+  const at = (hours) => (T0 + hours * 3600_000) / 1000
+  let rCalls = 0
+  const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n`
+  const fixture = (name, { force = '## Force run 2026-10-22', stages = '', ru = false } = {}) => {
+    const dir = join(rRoot, name)
+    const ticket = `T-4${rCalls++}`
+    repoAt(dir, 'main')
+    const heading = ru ? '### Этап 1: карточка  [status: in-progress]' : '### Stage 1: card  [status: in-progress]'
+    write(dir, {
+      '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/r\`\n\n## Status: stage 1\n\n${force}\nConfirmed: 22.10.2026\n\n## Stages\n\n${heading}\n${stages}\n`,
+    })
+    git(dir, 'checkout', '-qb', `${ticket}/feat/r`)
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    return {
+      dir,
+      ticket,
+      tdir,
+      report: (file, checker, hours) => {
+        write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: REPORT(checker) })
+        utimesSync(join(tdir, 'checks', file), at(hours), at(hours))
+      },
+      journal: (stagesText) => write(dir, { [`.claude/tasks/${ticket}/STAGES.md`]: stagesText }),
+      // Judge the commit with the pre-hook; if it passes, make it and let the post-hook write the receipt (time set by hand).
+      commit: (files, hours, message = 'x') => {
+        write(dir, files)
+        const id = `toolu_rc_${rCalls++}`
+        const call = { cwd: dir, tool_name: 'Bash', tool_use_id: id, tool_input: { command: `git add -A && git commit -m ${message}` } }
+        const pre = runHook('git-guard.mjs', { ...call, hook_event_name: 'PreToolUse' })
+        if (pre.decision === 'deny') return pre
+        git(dir, 'add', '-A')
+        git(dir, 'commit', '-qm', message)
+        runHook('git-guard.mjs', { ...call, hook_event_name: 'PostToolUse' })
+        const path = join(DATA, 'receipts', `${ticket}.jsonl`)
+        if (existsSync(path)) {
+          const lines = readFileSync(path, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+          lines.at(-1).at = new Date(at(hours) * 1000).toISOString()
+          writeFileSync(path, lines.map((line) => JSON.stringify(line)).join('\n') + '\n')
+        }
+        return pre
+      },
+      receipts: () => rc.readReceipts(DATA, ticket),
+    }
+  }
+
+  // The incident: announcement-details — 17 UI stages, zero devtools-verify; every commit has a pro-review and a design report.
+  const ann = fixture('announcement-details', { stages: '- [ ] figma-compare\n- [ ] devtools-verify (skip: MCP-Chrome busy)\n' })
+  const denials = []
+  for (let n = 1; n <= 17; n++) {
+    ann.report(`pro-review-${n}.md`, 'pro-review', n * 2)
+    ann.report(`figma-compare-${n}.md`, 'figma-compare', n * 2)
+    denials.push(ann.commit({ [`src/Card${n}.vue`]: `<template>${n}</template>\n` }, n * 2 + 1))
+  }
+  check('receipts AC-3.2: 17 UI stages with zero devtools-verify — every commit denied, naming devtools-verify', denials.every((d) => d.decision === 'deny' && /devtools-verify/.test(d.text) && /legitimate skip/.test(d.text)), denials.find((d) => d.decision !== 'deny')?.text)
+  check('receipts AC-3.2: a browser-reason skip line ("MCP-Chrome busy") is not a legitimate skip', /MCP busy/.test(denials[0].text) && ann.receipts().length === 0)
+  // The legitimate forms: a devtools-verify report; a skip line with a legitimate reason (the receipt keeps the skip).
+  ann.report('devtools-verify-1.md', 'devtools-verify', 40)
+  check('receipts AC-3.2: devtools-verify report in the window — the UI commit passes', ann.commit({ 'src/Card1.vue': '<template>ok</template>\n' }, 41).decision === 'allow')
+  check('receipts: the receipt keeps sha, tree, reports and counts', (() => {
+    const [r] = ann.receipts()
+    return r?.sha === git(ann.dir, 'rev-parse', 'HEAD').trim() && r.tree === git(ann.dir, 'rev-parse', 'HEAD^{tree}').trim() && r.reports.some((n) => n.startsWith('devtools-verify')) && r.counts.major >= 1 && r.ui === true && r.runtime === true
+  })())
+  const skipped = fixture('skip-legit', { stages: '- [ ] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: logic-only — nothing visible changes)\n' })
+  skipped.report('pro-review-1.md', 'pro-review', 2)
+  check('receipts AC-3.2: legitimate skip lines (no design source / logic-only) — the UI commit passes', skipped.commit({ 'src/Card.css': '.a { color: red }\n' }, 3).decision === 'allow')
+  check('receipts AC-3.2: the skip is in the receipt, the UI stage is listed as without runtime check', (() => {
+    const [r] = skipped.receipts()
+    return r?.skips.some((s) => s.checker === 'devtools-verify' && s.legit && /logic-only/.test(s.reason)) && r.runtime === false
+  })())
+  // Digest: the full view lists the stage, the short view shows the count.
+  const digestFull = rc.stagesWithoutRuntime(DATA, skipped.tdir, 0)
+  const { runDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+  const full = runDigest(skipped.tdir, DATA, null, 'full')
+  const short = runDigest(skipped.tdir, DATA, null, 'short')
+  check('receipts AC-3.5: full digest lists "Stages without runtime check" with the skip', digestFull.length === 1 && /### Stages without runtime check \(1\)/.test(full) && /Card\.css/.test(full) && /logic-only/.test(full), full)
+  check('receipts AC-3.5: the short view shows the count, not the lines', /### Stages without runtime check \(1\)/.test(short) && !/Card\.css/.test(short), short)
+
+  // pro-review in the window.
+  const pr = fixture('no-pro-review', { stages: '' })
+  pr.report('dead-code-1.md', 'dead-code', 2)
+  const noPro = pr.commit({ 'src/b.ts': 'export const b = 1\n' }, 3)
+  check('receipts AC-3.1: a window without pro-review — denied, names pro-review stage mode', noPro.decision === 'deny' && /pro-review/.test(noPro.text) && /stage mode/.test(noPro.text), noPro.text)
+  pr.report('pro-review-1.md', 'pro-review', 4)
+  check('receipts AC-3.1: with a pro-review report in the window — passes (logic file, no UI rules)', pr.commit({ 'src/b.ts': 'export const b = 1\n' }, 5).decision === 'allow')
+  // The window moves with the previous force commit: the old report does not carry the next stage.
+  pr.journal(`# ${pr.ticket}: task\nBranch: \`${pr.ticket}/feat/r\`\n\n## Status: stage 2\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 2: next  [status: in-progress]\n`)
+  check('receipts AC-3.1: the next stage commit does not reuse the previous stage report — denied', pr.commit({ 'src/c.ts': 'export const c = 1\n' }, 6).decision === 'deny')
+
+  // Second force commit inside one stage (fix commit) and the final catch-up.
+  const fx = fixture('fix-commit', { stages: '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: logic-only)\n' })
+  fx.report('pro-review-1.md', 'pro-review', 2)
+  fx.commit({ 'src/Panel.vue': '<template>1</template>\n', 'src/x.ts': 'export const x = 1\n' }, 3)
+  const fixSame = fx.commit({ 'src/Panel.vue': '<template>2</template>\n' }, 4, 'fix')
+  check('receipts: a fix commit right after the stage commit (same files, no new reports) — continuation, passes', fixSame.decision === 'allow' && fx.receipts().length === 2 && fx.receipts()[1].continuation === true)
+  const fixNew = fx.commit({ 'src/Other.vue': '<template>new</template>\n' }, 5, 'more')
+  check('receipts: a commit that brings a new file after the stage commit is a stage of its own — denied', fixNew.decision === 'deny' && /pro-review/.test(fixNew.text), fixNew.text)
+  fx.report('pro-review-branch.md', 'pro-review', 6)
+  check('receipts: the final catch-up commit with a whole-branch pro-review report in the window — passes', fx.commit({ 'src/Other.vue': '<template>new</template>\n' }, 7, 'catch-up').decision === 'allow')
+
+  // logic-only stage with UI files needs no design report.
+  const lo = fixture('logic-only')
+  lo.journal(`# ${lo.ticket}: task\nBranch: \`${lo.ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: tooling  [status: in-progress]  logic-only\n- [x] devtools-verify (skip: logic-only)\n`)
+  lo.report('pro-review-1.md', 'pro-review', 2)
+  check('receipts: a logic-only stage needs no design report even when an .html file changes', lo.commit({ 'docs/deck.html': '<p>x</p>\n' }, 3).decision === 'allow')
+
+  // Russian twin: the same incident in a Russian journal.
+  const ru = fixture('ru', { ru: true, force: '## Force-прогон 2026-10-22', stages: '- [ ] figma-compare\n- [ ] devtools-verify (skip: браузер занят)\n' })
+  ru.report('pro-review-1.md', 'pro-review', 2)
+  ru.report('figma-compare-1.md', 'figma-compare', 2)
+  const ruDenied = ru.commit({ 'src/Card.tsx': 'export const Card = () => null\n' }, 3)
+  check('receipts RU: UI stage with no devtools-verify and a browser-reason skip — denied', ruDenied.decision === 'deny' && /devtools-verify/.test(ruDenied.text), ruDenied.text)
+
+  // The date gate: a Force block before the release, and a task of another branch, are left alone.
+  const old = fixture('old-block', { force: '## Force run 2026-10-19' })
+  check('receipts: a Force block dated before the release — no new deny (UI commit, no reports)', old.commit({ 'src/Old.vue': '<template>o</template>\n' }, 3).decision === 'allow' && old.receipts().length === 0)
+  const other = fixture('other-branch')
+  git(other.dir, 'checkout', '-qb', 'unrelated/branch')
+  check('receipts: a task that is not the current branch\'s is left alone', runHook('git-guard.mjs', { cwd: other.dir, tool_input: { command: 'git commit --allow-empty -m x' } }).decision === 'allow')
+
+  // Close as completed: whole-branch pro-review and task-converge newer than the last code commit.
+  const close = fixture('close', { stages: '' })
+  close.report('pro-review-1.md', 'pro-review', 2)
+  close.commit({ 'src/z.ts': 'export const z = 1\n' }, 3)
+  const closed = (suffix = 'completed', body = '') => `# ${close.ticket}: task\nBranch: \`${close.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — ${suffix}\nConfirmed: 22.10.2026\n${body}\n## Stages\n\n### Stage 1: card  [status: done]\n`
+  const closeGate = () => runHook('journal-gate.mjs', { cwd: close.dir, tool_name: 'Write', tool_input: { file_path: join(close.tdir, 'STAGES.md') } })
+  const REAL_STALE = Date.parse('2026-10-18T09:00:00') / 1000
+  close.journal(closed())
+  const noFinal = closeGate()
+  check('receipts AC-3.3: completed with no whole-branch pro-review and no task-converge — rejected, both named', noFinal.decision === 'block' && /pro-review: no whole-task report/.test(noFinal.text) && /task-converge: no whole-task report/.test(noFinal.text), noFinal.text)
+  close.report('pro-review-branch.md', 'pro-review', 8)
+  close.report('task-converge.md', 'task-converge', 8)
+  utimesSync(join(close.tdir, 'checks/task-converge.md'), REAL_STALE, REAL_STALE)
+  const stale = closeGate()
+  check('receipts AC-3.3: a task-converge report older than the last code commit — rejected', stale.decision === 'block' && /task-converge: no whole-task report/.test(stale.text) && !/pro-review: no whole-task/.test(stale.text), stale.text)
+  close.journal(closed('completed with blockers', 'Blockers: B1 — task-converge did not run: no capacity\n'))
+  const named = closeGate()
+  check('receipts AC-3.3: completed with blockers naming the missing report — accepted', named.decision !== 'block', named.text)
+  close.journal(closed('completed with blockers', 'Blockers: B1 — something unrelated\n'))
+  check('receipts AC-3.3: completed with blockers that does not name the missing report — rejected', /task-converge: no whole-task report/.test(closeGate().text))
+  close.report('task-converge.md', 'task-converge', 9)
+  close.journal(closed())
+  check('receipts AC-3.3: both reports fresh — the close is accepted', closeGate().decision !== 'block', closeGate().text)
+  const oldClose = fixture('old-close', { force: '## Force run 2026-10-19 — completed' })
+  check('receipts: a close of a pre-release Force block is not checked', runHook('journal-gate.mjs', { cwd: oldClose.dir, tool_name: 'Write', tool_input: { file_path: join(oldClose.tdir, 'STAGES.md') } }).decision !== 'block')
+
+  // ── fix round 1 of stage 3 (pro-review-3) ──
+  const stagesOf = (fx, body, heading = '### Stage 1: card  [status: in-progress]') =>
+    `# ${fx.ticket}: task\nBranch: \`${fx.ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n${heading}\n${body}\n`
+  const gitAt = (dir, hours, ...args) => execFileSync('git', args, { cwd: dir, env: { ...process.env, GIT_COMMITTER_DATE: new Date(at(hours) * 1000).toISOString() }, stdio: 'ignore' })
+
+  // M-1: the space form `[status: in progress]` is a live form; the stage keeps its skip lines.
+  const sp = fixture('status-space')
+  sp.journal(stagesOf(sp, '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: logic-only — no visual change)\n', '### Stage 1: card  [status: in progress]'))
+  sp.report('pro-review-1.md', 'pro-review', 2)
+  check('receipts M-1: `[status: in progress]` (space form) — the stage skip lines are read, a .css commit passes', sp.commit({ 'src/Card.css': '.a { color: red }\n' }, 3).decision === 'allow')
+
+  // m-1: a continuation inherits runtime (and skips) from the receipt it continues.
+  const ct = fixture('continuation-runtime', { stages: '- [x] figma-compare (skip: no design source)\n' })
+  ct.report('pro-review-1.md', 'pro-review', 2)
+  ct.report('devtools-verify-1.md', 'devtools-verify', 2)
+  ct.commit({ 'src/Panel.vue': '<template>1</template>\n' }, 3)
+  ct.commit({ 'src/Panel.vue': '<template>2</template>\n' }, 4, 'fix')
+  check('receipts m-1: a fix commit after a stage with devtools-verify keeps runtime:true, no "without runtime check" item', ct.receipts().length === 2 && ct.receipts()[1].continuation === true && ct.receipts()[1].runtime === true && rc.stagesWithoutRuntime(DATA, ct.tdir, 0).length === 0)
+  const ctSkip = fixture('continuation-skips', { stages: '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: logic-only)\n' })
+  ctSkip.report('pro-review-1.md', 'pro-review', 2)
+  ctSkip.commit({ 'src/Panel.css': '.a{}\n' }, 3)
+  ctSkip.journal(stagesOf(ctSkip, '- [ ] commit\n'))
+  ctSkip.commit({ 'src/Panel.css': '.a{color:red}\n' }, 4, 'fix')
+  check('receipts m-1: a continuation inherits the skips of the receipt it continues', ctSkip.receipts()[1]?.continuation === true && ctSkip.receipts()[1].skips.some((x) => x.checker === 'devtools-verify' && x.legit))
+
+  // m-2: an amend and a rebase rewrite the sha — the continuation is found by tree / patch-id.
+  const am = fixture('amend', { stages: '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: logic-only)\n' })
+  am.report('pro-review-1.md', 'pro-review', 2)
+  am.commit({ 'src/Panel.vue': '<template>1</template>\n' }, 3)
+  git(am.dir, 'commit', '--amend', '-qm', 'reworded')
+  check('receipts m-2: after an amend (new sha, same tree) a fix commit of the same file is a continuation', am.commit({ 'src/Panel.vue': '<template>2</template>\n' }, 4, 'fix').decision === 'allow' && am.receipts().at(-1).continuation === true)
+  const rb = fixture('rebase', { stages: '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: logic-only)\n' })
+  rb.report('pro-review-1.md', 'pro-review', 2)
+  rb.commit({ 'src/Panel.vue': '<template>1</template>\n' }, 3)
+  git(rb.dir, 'checkout', '-q', 'main')
+  write(rb.dir, { 'base.txt': 'moved base\n' })
+  git(rb.dir, 'add', '-A')
+  git(rb.dir, 'commit', '-qm', 'base moved')
+  git(rb.dir, 'checkout', '-q', `${rb.ticket}/feat/r`)
+  git(rb.dir, 'rebase', '-q', 'main')
+  check('receipts m-2: after a rebase (new sha, new tree, same patch) a fix commit is a continuation', rb.commit({ 'src/Panel.vue': '<template>2</template>\n' }, 4, 'fix').decision === 'allow' && rb.receipts().at(-1).continuation === true)
+
+  // m-3: freshness of the final reports is measured from when HEAD's tree appeared.
+  const fr = fixture('fresh', { stages: '' })
+  fr.report('pro-review-1.md', 'pro-review', 2)
+  fr.commit({ 'src/z.ts': 'export const z = 1\n' }, 3)
+  fr.report('pro-review-branch.md', 'pro-review', 8)
+  fr.report('task-converge.md', 'task-converge', 8)
+  const frClosed = `# ${fr.ticket}: task\nBranch: \`${fr.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`
+  fr.journal(frClosed)
+  const frGate = () => runHook('journal-gate.mjs', { cwd: fr.dir, tool_name: 'Write', tool_input: { file_path: join(fr.tdir, 'STAGES.md') } })
+  gitAt(fr.dir, 20, 'commit', '--amend', '--no-edit', '-q')
+  check('receipts m-3: an amend that keeps HEAD\'s tree (committed after the reports) does not make them stale', frGate().decision !== 'block', frGate().text)
+  write(fr.dir, { 'src/z.ts': 'export const z = 2\n' })
+  const dirty = frGate()
+  check('receipts m-3: an uncommitted edit of a tracked file outside the task dir makes the reports stale', dirty.decision === 'block' && /uncommitted/.test(dirty.text), dirty.text)
+  git(fr.dir, 'checkout', '--', 'src/z.ts')
+  write(fr.dir, { 'README.md': 'docs\n' })
+  git(fr.dir, 'add', '-A')
+  gitAt(fr.dir, 9, 'commit', '-qm', 'docs only')
+  const docs = frGate()
+  check('receipts m-3: a docs-only commit after the reports still counts as a change — rejected', docs.decision === 'block' && /no whole-task report/.test(docs.text), docs.text)
+
+  // m-4: the blocker must name the report and say it was not run / missing / stale.
+  const bl = fixture('blocker-words', { stages: '' })
+  bl.report('pro-review-1.md', 'pro-review', 2)
+  bl.commit({ 'src/z.ts': 'export const z = 1\n' }, 3)
+  bl.report('task-converge.md', 'task-converge', 8)
+  const blClosed = (blockers) => `# ${bl.ticket}: task\nBranch: \`${bl.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed with blockers\nConfirmed: 22.10.2026\n${blockers}\n## Stages\n\n### Stage 1: card  [status: done]\n`
+  const blGate = () => runHook('journal-gate.mjs', { cwd: bl.dir, tool_name: 'Write', tool_input: { file_path: join(bl.tdir, 'STAGES.md') } })
+  bl.journal(blClosed('Blockers: B1 — pro-review of stage 2 needs a backend answer\n'))
+  check('receipts m-4: a blocker that only mentions pro-review in passing does not cover the missing whole-branch review', /pro-review: no whole-task report/.test(blGate().text), blGate().text)
+  bl.journal(blClosed('Blockers: B1 — whole-branch pro-review was not run: no capacity\n'))
+  check('receipts m-4: a blocker naming pro-review and "was not run" covers it', blGate().decision !== 'block', blGate().text)
+  bl.journal(blClosed('Blockers: B1 — whole-branch pro-review не запускался: нет места\n'))
+  check('receipts m-4 RU: a blocker naming pro-review with the Russian "not run" form covers it', blGate().decision !== 'block', blGate().text)
+
+  // m-5: a devtools-verify skip reason is a runtime reason, not a design-checker one.
+  const ds = fixture('devtools-design-reason', { stages: '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: no design source)\n' })
+  ds.report('pro-review-1.md', 'pro-review', 2)
+  const dsDenied = ds.commit({ 'src/Card.css': '.a { color: red }\n' }, 3)
+  check('receipts m-5: `devtools-verify (skip: no design source)` is denied', dsDenied.decision === 'deny' && /devtools-verify/.test(dsDenied.text), dsDenied.text)
+  ds.journal(stagesOf(ds, '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: visuals unchanged)\n'))
+  check('receipts m-5: `devtools-verify (skip: visuals unchanged)` passes', ds.commit({ 'src/Card.css': '.a { color: red }\n' }, 3).decision === 'allow')
+
+  // m-6: a skip line under a later Journal heading is not the last stage's skip.
+  const jl = fixture('journal-skip', { stages: '' })
+  jl.report('pro-review-1.md', 'pro-review', 2)
+  jl.journal(stagesOf(jl, '- [ ] devtools-verify\n') + '\n## Journal\n\n### 2026-10-22 check\n- [x] devtools-verify (skip: logic-only)\n- [x] figma-compare (skip: no design source)\n')
+  check('receipts m-6: openStages ends the stage block at `## Journal`', rc.openStages(readFileSync(join(jl.tdir, 'STAGES.md'), 'utf8')).every((stage) => stage.skips.length === 0))
+  check('receipts m-6: a skip line under the Journal does not let a .css commit through', jl.commit({ 'src/Card.css': '.a { color: red }\n' }, 3).decision === 'deny')
+
+  // pro-review round 3 (M-1): the phrase is bound to the report; a bare "missing"/"not fixed" next to the checker name excuses nothing.
+  bl.journal(blClosed('Blockers: B1 — pro-review: missing null check in cart; not fixed\n'))
+  check('receipts r3 M-1: a blocker that names pro-review but only says "missing"/"not fixed" about a defect does not cover the review', /pro-review: no whole-task report/.test(blGate().text), blGate().text)
+  bl.journal(blClosed('Blockers: B2 — whole-branch pro-review was not run (no capacity)\n'))
+  check('receipts r3 M-1: "whole-branch pro-review was not run (…)" covers it', blGate().decision !== 'block', blGate().text)
+  bl.journal(blClosed('Blockers: B1 — pro-review: отсутствует проверка null в корзине; не исправлено\n'))
+  check('receipts r3 M-1 RU: a defect blocker with the bare Russian word for "missing" does not cover the review', /pro-review: no whole-task report/.test(blGate().text), blGate().text)
+  bl.journal(blClosed('Blockers: B2 — whole-branch pro-review не запускался (нет места)\n'))
+  check('receipts r3 M-1 RU: the Russian "did not run" next to the checker name covers it', blGate().decision !== 'block', blGate().text)
+
+  // pro-review round 3 (m-1): a manual commit (no receipt) that is amended later: the reports made after the first commit stay fresh.
+  const am2 = fixture('amend-manual', { stages: '' })
+  write(am2.dir, { 'src/m.ts': 'export const m = 1\n' })
+  git(am2.dir, 'add', '-A')
+  gitAt(am2.dir, 3, 'commit', '-qm', 'manual')
+  am2.report('pro-review-branch.md', 'pro-review', 8)
+  am2.report('task-converge.md', 'task-converge', 8)
+  am2.journal(`# ${am2.ticket}: task\nBranch: \`${am2.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`)
+  const am2Gate = () => runHook('journal-gate.mjs', { cwd: am2.dir, tool_name: 'Write', tool_input: { file_path: join(am2.tdir, 'STAGES.md') } })
+  gitAt(am2.dir, 20, 'commit', '--amend', '-qm', 'manual reworded')
+  check('receipts r3 m-1: an amend of a manual commit (no receipt) that keeps the tree does not make the reports stale', am2Gate().decision !== 'block', am2Gate().text)
+  am2.report('task-converge.md', 'task-converge', 1)
+  check('receipts r3 m-1: a report older than the first appearance of the tree is still stale (the reflog does not make everything fresh)', /task-converge: no whole-task report/.test(am2Gate().text), am2Gate().text)
+
+  // pro-review round 3 (m-2): "logic-only" counts only as the tag after the status bracket, not inside the title.
+  const lt = fixture('logic-title')
+  lt.journal(`# ${lt.ticket}: task\nBranch: \`${lt.ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: logic-only helpers and the card  [status: in-progress]\n- [x] devtools-verify (skip: logic-only)\n`)
+  lt.report('pro-review-1.md', 'pro-review', 2)
+  check('receipts r3 m-2: a title that mentions "logic-only" does not waive the design report (.html commit denied)', lt.commit({ 'docs/deck.html': '<p>x</p>\n' }, 3).decision === 'deny')
+  check('receipts r3 m-2: the tag after the status bracket is read as logic-only; the same word in the title is not', rc.openStages(`### Stage 1: a  [status: in-progress]  logic-only\n`)[0].logicOnly === true && rc.openStages(`### Stage 1: logic-only a  [status: in-progress]\n`)[0].logicOnly === false)
+}
+
 process.exit(failed ? 1 : 0)

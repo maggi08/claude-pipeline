@@ -68,8 +68,7 @@ function readTasks(taskDir, branch) {
         // A task untouched for longer than STALE_DAYS guards nothing: an abandoned status must not
         // block a branch forever, and a task that returns to work updates STAGES.md at its first kickoff/check.
         current: Date.now() - mtimeMs < STALE_DAYS * DAY && isCurrentTask(ticket, branches, branch),
-        // Live formats: `[status: in-progress]`, `[status: in-progress — waiting for user-review]`, `[status: in progress; …]`.
-        open: /\[status:\s*(todo|in[-\s]progress)\b/i.test(stages),
+        open: OPEN_STATUS.test(stages),
         forceActive: forceActive(stages),
       }
     })
@@ -335,7 +334,7 @@ function combinedPatchId(cwd, own) {
   return gitInput(cwd, diff, 'patch-id', '--stable').split(' ')[0] || null
 }
 
-function patchIds(cwd, shas) {
+export function patchIds(cwd, shas) {
   if (!shas.length) return new Map()
   const diff = gitInput(cwd, '', 'log', '--no-walk=unsorted', '-p', '--no-color', '--no-ext-diff', '--format=commit %H', ...shas)
   if (!diff) return new Map()
@@ -430,6 +429,8 @@ export function forceActive(stages) {
   return forceHeadings(stages).some(([heading]) => !CLOSED_WORD.test(heading))
 }
 
+/** A stage heading that is not finished. Live forms: `[status: in-progress]`, `[status: in-progress — waiting for user-review]`, `[status: in progress; …]`; group 1 is `todo` or `in-progress` / `in progress`. */
+export const OPEN_STATUS = /\[status:\s*(todo|in[-\s]progress)\b/i
 const DAY = 24 * 60 * 60 * 1000
 export const STALE_DAYS = 21
 export const AFTER_CLOSE_DAYS = 14

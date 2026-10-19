@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { journalText, openLedgers, reportNames } from '../journal-check.mjs'
 import { scanOverrides, summarize } from '../kit-override-scan.mjs'
 import { PARITY_TABLE } from '../markers.mjs'
+import { commitVerdict, finishPending, savePending } from '../receipts.mjs'
 import { commitScope, gitInvocations } from './git-command.mjs'
 import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
@@ -41,6 +42,17 @@ if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(
 
 const cwd = input.cwd ?? process.cwd()
 const invocations = gitInvocations(command, cwd)
+const callId = input.tool_use_id ?? input.session_id ?? 'call'
+
+// PostToolUse: a force commit that went through leaves its receipt (the pre-hook below saved the verdict).
+if (input.hook_event_name === 'PostToolUse') {
+  for (const { subcommand, dir } of invocations) {
+    if (subcommand !== 'commit') continue
+    const worktree = toplevel(dir)
+    if (worktree) finishPending(pluginDataDir(), callId, worktree)
+  }
+  process.exit(0)
+}
 for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
@@ -74,6 +86,23 @@ for (const { subcommand, dir, args } of invocations) {
 
   const paths = commitPaths(invocations, state.worktree)
   if (paths?.length === 0) continue
+
+  // Stage receipts (VT-1 stage 3): the window of this commit holds the stage's checkers — Force blocks dated on or after receipts.mjs RECEIPTS_SINCE only.
+  const verdict = commitVerdict({
+    dataDir: pluginDataDir(),
+    taskDir: task.dir,
+    ticket: task.ticket,
+    branch: state.branch,
+    worktree: state.worktree,
+    changed: changedFiles(state.worktree, paths),
+  })
+  if (verdict?.missing.length) {
+    deny(
+      `stage-pipeline: the stage commit has no proof that its checkers ran — rejected.\n${verdict.missing.map((line) => `- ${line}`).join('\n')}\n` +
+        'The window is the checker reports written after the previous force commit on this branch (and after the Force block date); a fix commit that touches only the files of the previous force commit needs no new reports.',
+    )
+  }
+  if (verdict) savePending(pluginDataDir(), callId, { ...verdict, ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim() })
 
   const journal = journalText(task.dir)
   const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
@@ -150,6 +179,13 @@ function commitPaths(calls, worktree) {
   for (const name of names('diff', '--cached', '--name-only', '--no-renames', '-z')) paths.add(name)
   if (scope.tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
   return [...paths]
+}
+
+/** The files this commit changes: tracked changes against HEAD plus untracked files, inside the commit's pathspecs (`null` — the whole tree). */
+function changedFiles(worktree, paths) {
+  const spec = paths ? ['--', ...paths] : []
+  const list = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean)
+  return [...new Set([...list('diff', '--name-only', '--no-renames', '-z', 'HEAD', ...spec), ...list('ls-files', '-o', '--exclude-standard', '-z', ...spec)])]
 }
 
 /**

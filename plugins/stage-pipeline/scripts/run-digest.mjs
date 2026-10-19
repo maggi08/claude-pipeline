@@ -41,6 +41,7 @@ import {
   openBlockers,
   SUMMARY_LINE,
 } from './journal-check.mjs'
+import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
 import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceHeadings, headingDate } from './markers.mjs'
 import { pluginDataDir, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
@@ -57,8 +58,10 @@ const TEXT = {
     notVerified: (n) => `### Не проверено (${n})`,
     minor: (n) => `### Minor без итога (${n})`,
     accepted: (n) => `### Принято само — проверь, дорогие откаты первыми (${n})`,
+    noRuntime: (n) => `### Этапы без проверки в рантайме (${n})`,
+    noRuntimeLine: ({ stage, sha, ui, skip }) => `- ${stage ?? sha}: изменены UI-файлы (${ui}), отчёта devtools-verify нет${skip ? ` — пропуск: ${skip}` : ''}`,
     // The short view and the file. The category names are the same words as in the headings above.
-    labels: { noOutcome: 'находок без итога', notVerified: 'непроверенного', minor: 'minor', accepted: 'принятого само' },
+    labels: { noOutcome: 'находок без итога', notVerified: 'непроверенного', minor: 'minor', accepted: 'принятого само', noRuntime: 'этапов без проверки в рантайме' },
     noneOf: (names) => `Нет: ${names.join(', ')}.`,
     notReady: (names) => `Не готово к PR — critical/major или FAIL без итога в отчётах: ${names.join(', ')}.`,
     verifiedJournal: (n, byStage) => `- критерии журнала (${n}): ${byStage}`,
@@ -90,7 +93,9 @@ const TEXT = {
     notVerified: (n) => `### Not verified (${n})`,
     minor: (n) => `### Minor without outcome (${n})`,
     accepted: (n) => `### Accepted on my own — check, expensive rollbacks first (${n})`,
-    labels: { noOutcome: 'findings without an outcome', notVerified: 'unverified items', minor: 'minor', accepted: 'items accepted on my own' },
+    noRuntime: (n) => `### Stages without runtime check (${n})`,
+    noRuntimeLine: ({ stage, sha, ui, skip }) => `- ${stage ?? sha}: UI files changed (${ui}), no devtools-verify report${skip ? ` — skipped: ${skip}` : ''}`,
+    labels: { noOutcome: 'findings without an outcome', notVerified: 'unverified items', minor: 'minor', accepted: 'items accepted on my own', noRuntime: 'stages without runtime check' },
     noneOf: (names) => `None: ${names.join(', ')}.`,
     notReady: (names) => `Not ready for PR — critical/major or FAIL without an outcome in: ${names.join(', ')}.`,
     verifiedJournal: (n, byStage) => `- journal criteria (${n}): ${byStage}`,
@@ -199,7 +204,14 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   const notReady = reports
     .filter(({ name, text }) => ledgerViolations(text, name, { complete: true }).some((violation) => violation.rule === 'ledger-missing'))
     .map(({ name }) => name)
-  return { language, text: TEXT[language], notReady, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers }
+  // Stage receipts (VT-1 stage 3): force commits of this run that changed UI and have no devtools-verify report. `receipted` — the run has receipts at all (the old runs have none, and their digest stays as it was).
+  const receipted = hasReceipts(dataDir, taskDir, scope.since)
+  const noRuntime = stagesWithoutRuntime(dataDir, taskDir, scope.since).map((receipt) => {
+    const skip = (receipt.skips ?? []).find((item) => item.checker === 'devtools-verify')
+    const ui = uiFiles(receipt.files ?? [])
+    return `${TEXT[language].noRuntimeLine({ stage: receipt.stage, sha: String(receipt.sha).slice(0, 7), ui: `${ui.slice(0, 3).join(', ')}${ui.length > 3 ? ` +${ui.length - 3}` : ''}`, skip: skip?.reason })}`
+  })
+  return { language, text: TEXT[language], receipted, noRuntime, notReady, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers }
 }
 
 /** The full view: every line of every category (as the digest was before it had two views, plus the early-run note). */
@@ -217,6 +229,7 @@ function renderFull(d) {
     out.push('', text.minor(d.minors.reduce((sum, { left }) => sum + left, 0)), `- ${d.minors.map(({ name, left }) => `${name}: ${left}`).join(' · ')}`)
   }
   out.push('', text.accepted(d.accepted.length), ...(d.accepted.length ? d.accepted : [text.none]))
+  if (d.noRuntime.length) out.push('', text.noRuntime(d.noRuntime.length), ...d.noRuntime)
   if (d.scope.sameDay) out.push('', text.sameDay(d.scope.sameDay, d.scope.date))
   return out.join('\n')
 }
@@ -254,6 +267,8 @@ function renderShort(d, path, unwritten = null) {
   else empty.push(text.labels.minor)
   if (d.accepted.length) out.push(text.accepted(d.accepted.length), ...d.accepted.slice(0, 3))
   else empty.push(text.labels.accepted)
+  if (d.noRuntime.length) out.push(text.noRuntime(d.noRuntime.length))
+  else if (d.receipted) empty.push(text.labels.noRuntime)
   if (empty.length) out.push(text.noneOf(empty))
   if (d.scope.sameDay) out.push(text.sameDay(d.scope.sameDay, d.scope.date))
   if (path) out.push(text.file(path))
