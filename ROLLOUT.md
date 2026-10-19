@@ -120,6 +120,27 @@ The team: `claude plugin update stage-pipeline` + restart. What changed and what
 
 `main` is a moving branch: the team gets everything that lands in it. If a review gate is needed, a tag goes into the catalog entry instead of `"ref": "main"` (`"ref": "stage-pipeline--v0.7.0"`), and then every update becomes an MR in GitLab with a one-line edit. It is simpler to start with `main`; you can switch at any moment.
 
+## human-text and feature-doc
+
+- **Who installs human-text without the pipeline.** Anyone who writes status updates, handoffs or docs for people and does not run the staged workflow. That is the personal channel, with no tag pin: `claude plugin marketplace add maggi08/claude-pipeline`, then `claude plugin install human-text@magzhan`; for the team, add `human-text` to the catalog (next bullet) and install `human-text@mycar-frontend`; the skill is `/human-text:human-text <to whom> <about what>`. It needs no config, MCP or permission profile. Whoever has `stage-pipeline` already has the same skill as `/stage-pipeline:human-text` and needs nothing extra; installing both is harmless, the two commands are separate.
+- **The catalog entry for the team.** Next to `stage-pipeline` in the `plugins` array of the GitLab catalog (the catalog itself is not edited here), the pin is a tag of the human-text repo:
+
+  ```json
+  {
+    "name": "human-text",
+    "description": "Rules for writing work text people actually read (status updates, handoffs, docs) and a closed-question check of a draft in a clean context",
+    "category": "writing",
+    "source": {
+      "source": "github",
+      "repo": "maggi08/human-text",
+      "ref": "v0.1.0"
+    }
+  }
+  ```
+  The tag does not exist yet: tag the human-text repo (`v0.1.0` matches its `plugin.json`) before the entry is added.
+- **`feature-docs@mycar` (the mycar-frontend catalog).** If a developer has it installed, leave it: `/stage-pipeline:feature-doc` does the same job (a doc on a finished feature in `docs/features/`) and does not replace it. Both are called only by hand, and neither runs on its own, so they do not collide; pick one per repository so the docs do not get two writers.
+- **The source of human-text** is the repo `maggi08/human-text`; `stage-pipeline` carries a pinned copy (`human-text.lock.json`). A change in the rules reaches the team in two steps: the human-text repo, then a `stage-pipeline` release with a fresh sync.
+
 ## Hooks
 
 The plugin installs six hooks. They work only in a repository with `.claude/pipeline.config.md` and stay silent elsewhere.
@@ -155,3 +176,4 @@ The agent's commits on a task branch are rejected at any stage status — this i
 - [ ] The pilot repository has `.claude/pipeline.config.md` from `/pipeline-init`
 - [ ] One developer went through the onboarding of Step 3 from scratch, `/pipeline-doctor` is green
 - [ ] The README of the plugin, this file and CHANGELOG are sent to the team
+- [ ] Whoever writes for people without the pipeline knows about `human-text@magzhan`; whoever has `feature-docs@mycar` knows `/stage-pipeline:feature-doc` is the same job, by hand

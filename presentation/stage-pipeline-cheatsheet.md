@@ -1,6 +1,6 @@
 # Stage Pipeline · cheatsheet
 
-A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.16.2 — 20 skills, 13 agents.
+A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.17.0 — 20 skills, 13 agents.
 
 ---
 
@@ -70,7 +70,8 @@ If you do not need a broad Bash allowlist, `--minimal` allows only skills and MC
 /task-converge     the code on HEAD against the intent of the task: what was promised
                    and not done, and what was done but not asked for. Findings → a "Catch-up"
                    block in STAGES.md, run until it converges
-/task-wrapup       → PR.md: what and why, how to verify, blind spots, open questions
+/task-wrapup       → PR.md: what and why, how to verify, blind spots, open questions;
+                   written by the human-text rules, the draft checked by human-text-check
                    (manual only — never starts on its own, even in force)
 ```
 
@@ -94,11 +95,13 @@ If you do not need a broad Bash allowlist, `--minimal` allows only skills and MC
 | `/dead-code`, `/i18n-sweep`, `/deps-audit` | narrow passes: junk from the task, i18n, dependencies |
 | `/ds-parity` | parity with the design system before a PR |
 | `/task-converge` | the code on HEAD against the intent of the whole task: an uncovered criterion, a silently widened scope |
-| `/task-wrapup` | an MR description from the task journal → `PR.md`; manual only |
+| `/task-wrapup` | an MR description from the task journal → `PR.md`, by the human-text rules; manual only |
+| `/human-text` | text about a project for people (team, manager, newcomer, client): fact card, draft by the rules, closed-question check; manual only. Also installs alone: `human-text@magzhan` |
+| `/feature-doc` | a doc on a finished feature in `docs/features/` for someone who has not seen it; manual only, outside the pipeline |
 
 ## Agents
 
-The orchestrator launches them itself; each works in its own clean context, and the checkers write a report to `checks/`.
+The orchestrator and the skills launch them; each works in its own clean context, and the checkers write a report to `checks/`.
 
 | Agent | What it does | When |
 |---|---|---|
@@ -113,6 +116,7 @@ The orchestrator launches them itself; each works in its own clean context, and 
 | `dead-code` | what the diff orphaned: symbols, files, locale keys, assets | something was removed |
 | `i18n-sweep` | hardcoded text, incomplete locales, concatenated keys, formatting without a locale | text appeared |
 | `deps-audit` | new dependencies and assets: justification, an equivalent in the repo, weight | the manifest was touched |
+| `human-text-check` | a draft against 14 closed questions, only the violations come back | text for people is written |
 | `task-converge` | the only one that does not look into the diff: `missing` / `partial` / `contradicts` / `unrequested` | before a PR |
 
 No trigger → `[skip: no trigger]`, no subagent is spent.

@@ -5,6 +5,22 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.17.0 — 2026-10-19
+
+### Text for people: human-text, `/feature-doc`, and a PR description written by the same rules
+
+AI-written text for people (a PR description, a status note, a doc on a feature) reads like AI text: even, over-explained, every point given the same weight. The rules against this now live in one place, and the pipeline uses them.
+
+- **`/stage-pipeline:human-text` — a manual skill for text about a project.** A post to the team, an update for a manager, an intro for a newcomer: it collects the facts from the repo into a card, writes the draft by the rules, and sends the draft to the `human-text-check` agent (14 closed questions, a clean context, only the violations come back). The model never calls it by itself.
+- **The source of human-text is its own repo, `maggi08/human-text`; stage-pipeline carries a pinned copy.** The copy (`skills/human-text/`, `agents/human-text-check.md`) is brought in by `node scripts/sync-human-text.mjs`, which records the source commit and the sha256 of every file in `plugins/stage-pipeline/human-text.lock.json`. `validate.mjs` fails when a vendored file differs from the lock, so a hand edit of the copy is caught.
+- **`human-text` is also installable on its own**, without the pipeline: `claude plugin install human-text@magzhan` (a new entry in the marketplace).
+- **`/stage-pipeline:feature-doc` — a manual doc on a finished feature.** It writes `docs/features/<feature>.md` for someone who has not seen the feature: why it exists, what it promises the user, how it works, where the code is. It reads the artifacts of stage-pipeline or OpenSpec (and the branch diff when there are none), writes by the human-text rules and checks the text with the same agent. It is not part of the pipeline: no stage, hook or force run calls it.
+- **`/task-wrapup` writes `PR.md` by the human-text rules** and runs the draft through `human-text-check` before it hands it over; a finding that is fixed is fixed in the text; a rejected finding is listed with the reason, and a draft that was checked by hand is marked as such.
+- **The force run summary uses the same rules** for the three lines the model writes itself: the heading, `Not done:` and `Next:`. The short view and `RUN-DIGEST.md` from 0.16.2 are unchanged.
+- **For whoever edits the plugin:** a change to the human-text skill, rules or agent goes into the human-text repo first, then `node scripts/sync-human-text.mjs` brings it here. Editing the vendored copy by hand fails `validate.mjs`.
+
+Nothing to do on upgrade. If `feature-docs@mycar` is installed, it keeps working; `/stage-pipeline:feature-doc` does the same job and both are called only by hand, so pick one per repository.
+
 ## 0.16.2 — 2026-10-19
 
 ### The run summary is short; the full list goes to a file

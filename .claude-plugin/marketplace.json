@@ -17,7 +17,7 @@
     },
     {
       "name": "human-text",
-      "description": "Rules for writing work text people actually read (status updates, PR descriptions, handoffs) and a closed-question check of a draft in a clean context",
+      "description": "Rules for writing work text people actually read (status updates, handoffs, docs) and a closed-question check of a draft in a clean context",
       "category": "writing",
       "author": {
         "name": "Magzhan Mussaiyn"
