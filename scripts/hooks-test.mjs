@@ -2484,9 +2484,13 @@ rmSync(retroRoot, { recursive: true, force: true })
   utimesSync(join(close.tdir, 'checks/task-converge.md'), REAL_STALE, REAL_STALE)
   const stale = closeGate()
   check('receipts AC-3.3: a task-converge report older than the last code commit — rejected', stale.decision === 'block' && /task-converge: no whole-task report/.test(stale.text) && !/pro-review: no whole-task/.test(stale.text), stale.text)
-  close.journal(closed('completed with blockers', 'Blockers: B1 — task-converge did not run: no capacity\n'))
+  check('receipts 5d AC-5d.1: the message shows the marker for a stale report', /`\[final: task-converge — stale\]`/.test(stale.text), stale.text)
+  close.journal(closed('completed with blockers', 'Blockers: B1 — [final: task-converge — stale] no capacity after the catch-up commit\n'))
   const named = closeGate()
-  check('receipts AC-3.3: completed with blockers naming the missing report — accepted', named.decision !== 'block', named.text)
+  check('receipts AC-3.3: completed with blockers naming the missing report by its marker — accepted', named.decision !== 'block', named.text)
+  close.journal(closed('completed with blockers', 'Blockers: B1 — task-converge did not run: no capacity\n'))
+  const prose = closeGate()
+  check('receipts 5d AC-5d.1: an honest prose blocker does not count — rejected, the message quotes the line and shows the marker to add', prose.decision === 'block' && /names task-converge in prose/.test(prose.text) && /add `\[final: task-converge — stale\]`/.test(prose.text), prose.text)
   close.journal(closed('completed with blockers', 'Blockers: B1 — something unrelated\n'))
   check('receipts AC-3.3: completed with blockers that does not name the missing report — rejected', /task-converge: no whole-task report/.test(closeGate().text))
   close.report('task-converge.md', 'task-converge', 9)
@@ -2558,19 +2562,77 @@ rmSync(retroRoot, { recursive: true, force: true })
   const docs = frGate()
   check('receipts m-3: a docs-only commit after the reports still counts as a change — rejected', docs.decision === 'block' && /no whole-task report/.test(docs.text), docs.text)
 
-  // m-4: the blocker must name the report and say it was not run / missing / stale.
+  // m-4, then 5d AC-5d.1 (B1): a missing final report is named by its marker `[final: <report> — not run | stale]`, never by prose.
   const bl = fixture('blocker-words', { stages: '' })
   bl.report('pro-review-1.md', 'pro-review', 2)
   bl.commit({ 'src/z.ts': 'export const z = 1\n' }, 3)
   bl.report('task-converge.md', 'task-converge', 8)
   const blClosed = (blockers) => `# ${bl.ticket}: task\nBranch: \`${bl.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed with blockers\nConfirmed: 22.10.2026\n${blockers}\n## Stages\n\n### Stage 1: card  [status: done]\n`
   const blGate = () => runHook('journal-gate.mjs', { cwd: bl.dir, tool_name: 'Write', tool_input: { file_path: join(bl.tdir, 'STAGES.md') } })
-  bl.journal(blClosed('Blockers: B1 — pro-review of stage 2 needs a backend answer\n'))
-  check('receipts m-4: a blocker that only mentions pro-review in passing does not cover the missing whole-branch review', /pro-review: no whole-task report/.test(blGate().text), blGate().text)
+  const rejected = (blockers) => {
+    bl.journal(blClosed(blockers))
+    const result = blGate()
+    return result.decision === 'block' && /pro-review: no whole-task report/.test(result.text) && !/task-converge: no whole-task/.test(result.text)
+  }
+  const accepted = (blockers) => {
+    bl.journal(blClosed(blockers))
+    return blGate().decision !== 'block'
+  }
+  check('receipts m-4: a blocker that only mentions pro-review in passing does not cover the missing whole-branch review', rejected('Blockers: B1 — pro-review of stage 2 needs a backend answer\n'))
+  // fresh-2 M-1: a finding blocker with a not-run phrase near the checker name (the required B6 probe and its kin) does not count.
+  check('receipts 5d AC-5d.1: B6 "pro-review found a critical, fix-loop exhausted; report missing a recheck" does not count', rejected('Blockers: B6 — pro-review found a critical, fix-loop exhausted; report missing a recheck\n'))
+  check('receipts 5d AC-5d.1: "pro-review M-2: the migration was not run on staging" does not count', rejected('Blockers: B4 — pro-review M-2: the migration was not run on staging; needs the user\n'))
+  check('receipts 5d AC-5d.1 RU: the Russian twin of B6 does not count', rejected('Blockers: B6 — pro-review нашёл critical, fix-loop исчерпан; в отчёте нет перепроверки\n'))
+  check('receipts 5d AC-5d.1 RU: the Russian twin of B4 (the migration was not run on staging) does not count', rejected('Blockers: B4 — pro-review M-2: миграция не запускалась на стейдже; решение пользователя\n'))
+  // fresh-2 M-2: an honest prose line does not count either; the message quotes it and shows the marker to add.
   bl.journal(blClosed('Blockers: B1 — whole-branch pro-review was not run: no capacity\n'))
-  check('receipts m-4: a blocker naming pro-review and "was not run" covers it', blGate().decision !== 'block', blGate().text)
-  bl.journal(blClosed('Blockers: B1 — whole-branch pro-review не запускался: нет места\n'))
-  check('receipts m-4 RU: a blocker naming pro-review with the Russian "not run" form covers it', blGate().decision !== 'block', blGate().text)
+  const honest = blGate()
+  check('receipts 5d AC-5d.1: an honest prose blocker ("whole-branch pro-review was not run") is rejected, the message shows `[final: pro-review — not run]`', honest.decision === 'block' && /The blocker "B1 — whole-branch pro-review was not run: no capacity" names pro-review in prose/.test(honest.text) && /add `\[final: pro-review — not run\]` to it/.test(honest.text), honest.text)
+  check('receipts 5d AC-5d.1 RU: the honest Russian prose (whole-branch pro-review was not run) is rejected too', rejected('Blockers: B2 — pro-review по всей ветке не был запущен\n'))
+  check('receipts 5d AC-5d.1: the marker line is accepted', accepted('Blockers: B1 — [final: pro-review — not run] no capacity after stage 5\n'))
+  check('receipts 5d AC-5d.1: the marker in backticks is accepted', accepted('Blockers: B1 — `[final: pro-review — not run]` token limit\n'))
+  check('receipts 5d AC-5d.1: either state names the report (`stale` for a review that never ran)', accepted('Blockers: B1 — [final: pro-review — stale] token limit\n'))
+  check('receipts 5d AC-5d.1: the Russian marker counts in an English task (the hooks read both languages)', accepted('Blockers: B1 — [final: pro-review — не запускался] нет места\n'))
+  check('receipts 5d AC-5d.1: a marker for the other report does not count', rejected('Blockers: B1 — [final: task-converge — not run] no capacity\n'))
+  check('receipts 5d AC-5d.1: a lifted blocker with the marker does not count', rejected('Blockers: B1 — [final: pro-review — not run] no capacity — lifted by the user 2026-10-22\n'))
+  check('receipts 5d AC-5d.1: the marker on the Blockers field line after another item counts', accepted('Blockers: B1 — backend contract; B2 — [final: pro-review — not run] token limit\n'))
+  // The Russian task: the message shows the Russian marker, and the Russian marker line passes.
+  const blRu = fixture('blocker-words-ru', { stages: '', ru: true })
+  blRu.report('pro-review-1.md', 'pro-review', 2)
+  blRu.commit({ 'src/z.ts': 'export const z = 1\n' }, 3)
+  blRu.report('task-converge.md', 'task-converge', 8)
+  const blRuClosed = (blockers) => `# ${blRu.ticket}: задача\nВетка: \`${blRu.ticket}/feat/r\`\n\n## Статус: готово\n\n## Force-прогон 2026-10-22 — завершён с блокерами\nПодтверждено: 22.10.2026\n${blockers}\n## Этапы\n\n### Этап 1: карточка  [status: done]\n`
+  const blRuGate = () => runHook('journal-gate.mjs', { cwd: blRu.dir, tool_name: 'Write', tool_input: { file_path: join(blRu.tdir, 'STAGES.md') } })
+  blRu.journal(blRuClosed('Блокеры: B1 — pro-review по всей ветке не запускался: нет места\n'))
+  const ruProse = blRuGate()
+  check('receipts 5d AC-5d.1 RU: in a Russian task the prose line is rejected and the message shows the Russian marker', ruProse.decision === 'block' && /add `\[final: pro-review — не запускался\]` to it/.test(ruProse.text), ruProse.text)
+  blRu.journal(blRuClosed('Блокеры: B1 — [final: pro-review — не запускался] нет места\n'))
+  check('receipts 5d AC-5d.1 RU: the Russian marker line is accepted', blRuGate().decision !== 'block', blRuGate().text)
+  blRu.journal(blRuClosed('Блокеры: B1 — [final: task-converge — устарел] нет места\n'))
+  check('receipts 5d AC-5d.1 RU: the Russian marker for the other report does not count', /pro-review: no whole-task report/.test(blRuGate().text), blRuGate().text)
+  // pro-review r1 m-2: an honest marker blocker whose reason holds a lift word reads as lifted; the message says so instead of asking for the marker it has.
+  const liftedMsg = (gate, journal, blockers, shown) => {
+    journal(blockers)
+    const result = gate()
+    return result.decision === 'block' && /pro-review: no whole-task report/.test(result.text) && /has a marker but reads as lifted/.test(result.text) && /drop the lift word/.test(result.text) && shown.test(result.text)
+  }
+  check('receipts 5d AC-5d.1 m-2: "[final: pro-review — not run] skipped per user decision 2026-10-20" reads as lifted — the message says so', liftedMsg(blGate, (b) => bl.journal(blClosed(b)), 'Blockers: B1 — [final: pro-review — not run] skipped per user decision 2026-10-20 no capacity\n', /skipped per user decision/))
+  check('receipts 5d AC-5d.1 m-2: "… closed by the token limit" reads as lifted — the message says so', liftedMsg(blGate, (b) => bl.journal(blClosed(b)), 'Blockers: B1 — [final: pro-review — not run] closed by the token limit\n', /closed by the token limit/))
+  check('receipts 5d AC-5d.1 m-2 RU: a reason with "after the stage was closed" reads as lifted — the message says so', liftedMsg(blRuGate, (b) => blRu.journal(blRuClosed(b)), 'Блокеры: B1 — [final: pro-review — не запускался] нет места после закрытия этапа 5\n', /после закрытия этапа 5/))
+  check('receipts 5d AC-5d.1 m-2 RU: a reason with "the limit was not lifted" reads as lifted — the message says so', liftedMsg(blRuGate, (b) => blRu.journal(blRuClosed(b)), 'Блокеры: B1 — [final: pro-review — не запускался] лимит снят не был, нет места\n', /лимит снят не был/))
+  // The same close rule for the negated lift words: an open blocker stays open ("not closed by anyone"), the lifted one is lifted.
+  const lifted = (line) => markers.BLOCKER_LIFTED.test(line)
+  check('markers r1: Russian negated lift words stay open (not closed, was not closed, not lifted, unclosed, not resolved)', ['B1 — вопрос не закрыт', 'B1 — этап не был закрыт', 'B1 — лимит не снят', 'B1 — незакрытый вопрос', 'B1 — вопрос не решён'].every((line) => !lifted(line)))
+  check('markers r1: Russian lift words lift (lifted by the user with a date, closed, resolved)', ['B1 — лимит снят пользователем 2026-10-20', 'B1 — вопрос закрыт', 'B1 — вопрос решён', 'B1 — вопрос о цене снят', 'B1 — баг на экране закрыт', 'B1 — вопрос в дизайне закрыт', 'B1 — вопрос о цене снят пользователем 2026-10-22'].every(lifted))
+  check('markers r1: English negated lift words stay open, the plain ones lift', ['B1 — not lifted by the user', 'B1 — never closed by anyone', "B1 — isn't resolved by the team", 'B1 — un-closed by default', 'B2 — wasn’t closed by the user', 'B3 — isn’t resolved by the team'].every((line) => !lifted(line)) && ['B1 — lifted by the user 2026-10-20', 'B1 — resolved by the team', 'B1 — resolved: yes'].every(lifted))
+  check('markers r1: openBlockers keeps a Russian "not closed" blocker open (so a "completed" close is stopped by it) and drops one lifted by the user with a date', jc.openBlockers('Blockers: B1 — вопрос не закрыт; B2 — лимит снят пользователем 2026-10-20\n').length === 1 && jc.openBlockers('B1 — вопрос не закрыт\nB2 — not closed by anyone\nB3 — closed by the user 2026-10-20\n').length === 2)
+  check(
+    'markers: finalMarkerReports reads both reports and both languages, finalMarker writes the task-language form',
+    same([...markers.finalMarkerReports('B1 — [final: pro-review — not run]; B2 — [final: task-converge — устарел]')], ['pro-review', 'task-converge']) &&
+      markers.finalMarker('task-converge', 'stale', 'ru') === '[final: task-converge — устарел]' &&
+      markers.finalMarker('pro-review', 'missing', null) === '[final: pro-review — not run]' &&
+      markers.finalMarkerReports('B1 — final: pro-review — not run').size === 0,
+  )
 
   // m-5: a devtools-verify skip reason is a runtime reason, not a design-checker one.
   const ds = fixture('devtools-design-reason', { stages: '- [x] figma-compare (skip: no design source)\n- [x] devtools-verify (skip: no design source)\n' })
@@ -2587,15 +2649,9 @@ rmSync(retroRoot, { recursive: true, force: true })
   check('receipts m-6: openStages ends the stage block at `## Journal`', rc.openStages(readFileSync(join(jl.tdir, 'STAGES.md'), 'utf8')).every((stage) => stage.skips.length === 0))
   check('receipts m-6: a skip line under the Journal does not let a .css commit through', jl.commit({ 'src/Card.css': '.a { color: red }\n' }, 3).decision === 'deny')
 
-  // pro-review round 3 (M-1): the phrase is bound to the report; a bare "missing"/"not fixed" next to the checker name excuses nothing.
-  bl.journal(blClosed('Blockers: B1 — pro-review: missing null check in cart; not fixed\n'))
-  check('receipts r3 M-1: a blocker that names pro-review but only says "missing"/"not fixed" about a defect does not cover the review', /pro-review: no whole-task report/.test(blGate().text), blGate().text)
-  bl.journal(blClosed('Blockers: B2 — whole-branch pro-review was not run (no capacity)\n'))
-  check('receipts r3 M-1: "whole-branch pro-review was not run (…)" covers it', blGate().decision !== 'block', blGate().text)
-  bl.journal(blClosed('Blockers: B1 — pro-review: отсутствует проверка null в корзине; не исправлено\n'))
-  check('receipts r3 M-1 RU: a defect blocker with the bare Russian word for "missing" does not cover the review', /pro-review: no whole-task report/.test(blGate().text), blGate().text)
-  bl.journal(blClosed('Blockers: B2 — whole-branch pro-review не запускался (нет места)\n'))
-  check('receipts r3 M-1 RU: the Russian "did not run" next to the checker name covers it', blGate().decision !== 'block', blGate().text)
+  // pro-review round 3 (M-1): a defect blocker that names the checker excuses nothing.
+  check('receipts r3 M-1: a blocker that names pro-review but only says "missing"/"not fixed" about a defect does not cover the review', rejected('Blockers: B1 — pro-review: missing null check in cart; not fixed\n'))
+  check('receipts r3 M-1 RU: a defect blocker with the bare Russian word for "missing" does not cover the review', rejected('Blockers: B1 — pro-review: отсутствует проверка null в корзине; не исправлено\n'))
 
   // pro-review round 3 (m-1): a manual commit (no receipt) that is amended later: the reports made after the first commit stay fresh.
   const am2 = fixture('amend-manual', { stages: '' })
@@ -2617,6 +2673,141 @@ rmSync(retroRoot, { recursive: true, force: true })
   lt.report('pro-review-1.md', 'pro-review', 2)
   check('receipts r3 m-2: a title that mentions "logic-only" does not waive the design report (.html commit denied)', lt.commit({ 'docs/deck.html': '<p>x</p>\n' }, 3).decision === 'deny')
   check('receipts r3 m-2: the tag after the status bracket is read as logic-only; the same word in the title is not', rc.openStages(`### Stage 1: a  [status: in-progress]  logic-only\n`)[0].logicOnly === true && rc.openStages(`### Stage 1: logic-only a  [status: in-progress]\n`)[0].logicOnly === false)
+
+  // 5d AC-5d.4 (fresh-2 m-4): the live forms of the tag, taken verbatim from the STAGES.md headings on the author's machine; a title word or a negated tag is not one.
+  const LOGIC_ONLY_LIVE = [
+    '### Этап 1: каркас слоя  [logic-only]  [status: todo]',
+    '### Этап 2: кит 0.4.x — то же в `AirbnbPhoneField`  `logic-only`  [status: done]',
+    '### Этап 1: Город в профиле обновляется после одобрения заявки — logic-only  [status: done]',
+    '### Этап 5: C2C-модалка в общие компоненты (B4)  logic-only  [status: done]',
+    '### Этап 13 (догон, logic-only): Один словарь и одно вычисление тона цены  [status: done]',
+    '### Этап 3: Фундамент — `useRefetchAt` в shared/lib — logic-only, рефакторинг  [status: done]',
+    '### Этап 5: ИИН-валидатор в mycar-webview [logic-only] [репо: ../mycar-webview] [status: вынесен в отдельную задачу — решение пользователя 2026-08-18; ветку делать от webview dev]',
+    '### Этап 27: ошибка «trim is not a function» — logic-only  [status: done — `c134337981`; AC-27.3 — `[live: user-side]`]',
+    '### Этап 2: обычная деталка на общий composable  `logic-only` `refactor`  [status: done]',
+    '### Этап 1: примитив скролла к якорю + аудит [status: done] [logic-only] — коммиты `9489a7e9`, упрощение `daf89fb0`',
+    '### Этап 3: иконки — снять 13 MB из билда  [status: код влит в `dev` 2026-09-17, ждёт релиза пакета]  `logic-only`  ⚠ кросс-репо',
+    '### Этап 38: Проверить, закрыто ли мерцание  [status: blocked — нужен логин] logic-only  `[live: user-side]`',
+    '### Stage 1: past-review analysis — what human reviewers caught and the checkers did not  [status: done]  logic-only',
+    '### Этап 1: базовая линия и гигиена зависимостей  [status: done]  `logic-only`',
+  ]
+  const LOGIC_ONLY_PROSE = [
+    '### Stage 1: logic-only helpers and the card  [status: in-progress]',
+    '### Stage 3: logic-only tests for the cart — then the card  [status: todo]',
+    '### Stage 1: card  [status: in-progress] — not logic-only, the card changes',
+    '### Stage 1: card — not `logic-only`  [status: todo]',
+    '### Этап 1: карточка  [status: in-progress] — не logic-only, меняется карточка',
+    "### Stage 3: the card isn't logic-only  [status: todo]",
+    '### Stage 3: the card is no longer logic-only  [status: todo]',
+    '### Stage 3: card — never logic-only  [status: todo]',
+    '### Stage 3: card — logic-only, then the visual layer  [status: todo]',
+    '### Этап 3: карточка — без logic-only  [status: todo]',
+    '### Stage 3: the card isn’t logic-only  [status: todo]',
+    '### Stage 3: card non-logic-only  [status: todo]',
+    '### Stage 3: card — not-logic-only  [status: todo]',
+  ]
+  const misread = [...LOGIC_ONLY_LIVE.filter((heading) => !markers.logicOnlyTag(heading)), ...LOGIC_ONLY_PROSE.filter((heading) => markers.logicOnlyTag(heading))]
+  check('receipts 5d AC-5d.4: every live form of the tag is read, before the status bracket too; title words and "not logic-only" are not', misread.length === 0, misread.join(' | '))
+  // pro-review 5d fresh m-2: the tail check is bounded by the span up to the status bracket, so a long dash-led heading does not go quadratic.
+  const adversarial = `### Stage 1: ${'a — logic-only, '.repeat(20000)}x  [status: todo]`
+  const t0 = performance.now()
+  markers.logicOnlyTag(adversarial)
+  const spent = performance.now() - t0
+  check('receipts 5d fresh m-2: a 300 KB heading of repeated "— logic-only," is read in under 100 ms', spent < 100, `${Math.round(spent)} ms`)
+  const lb = fixture('logic-before-bracket')
+  lb.journal(`# ${lb.ticket}: task\nBranch: \`${lb.ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: layer skeleton  [logic-only]  [status: in-progress]\n- [x] devtools-verify (skip: logic-only)\n`)
+  lb.report('pro-review-1.md', 'pro-review', 2)
+  check('receipts 5d AC-5d.4: a stage tagged `[logic-only]` before the status bracket needs no design report (.html commit passes)', lb.commit({ 'docs/deck.html': '<p>x</p>\n' }, 3).decision === 'allow')
+  const ln = fixture('logic-negated')
+  ln.journal(`# ${ln.ticket}: task\nBranch: \`${ln.ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: in-progress] — not logic-only, the card changes\n- [x] devtools-verify (skip: logic-only)\n`)
+  ln.report('pro-review-1.md', 'pro-review', 2)
+  check('receipts 5d AC-5d.4: "[status: in-progress] — not logic-only" still needs the design report (.html commit denied)', ln.commit({ 'docs/deck.html': '<p>x</p>\n' }, 3).decision === 'deny')
+
+  // 5d AC-5d.2 (fresh-2 m-1, m-2): freshness follows the branch's reflog. Manual commits A (h2) and B (h3) have no receipt; both reports are from h8.
+  const gitWith = (dir, hours, env, ...args) => execFileSync('git', args, { cwd: dir, env: { ...process.env, GIT_COMMITTER_DATE: new Date(at(hours) * 1000).toISOString(), ...env }, stdio: 'ignore' })
+  const editor = join(rRoot, 'todo-editor.mjs')
+  writeFileSync(
+    editor,
+    "import { readFileSync, writeFileSync } from 'node:fs'\nconst [mode, file] = process.argv.slice(2)\nconst text = readFileSync(file, 'utf8')\n" +
+      "writeFileSync(file, mode === 'message' ? 'A reworded\\n' : mode === 'reword' ? text.replace(/^pick/m, 'reword') : text.replace(/^(pick .*\\n)pick/m, '$1fixup'))\n",
+  )
+  const todo = (mode) => ({ GIT_SEQUENCE_EDITOR: `node ${JSON.stringify(editor)} ${mode}`, GIT_EDITOR: `node ${JSON.stringify(editor)} message` })
+  const manualClose = (name, { fix = false } = {}) => {
+    const fx = fixture(name, { stages: '' })
+    const files = [['src/m.ts', 2, 'A'], ['src/n.ts', 3, 'B'], ...(fix ? [['src/fix.ts', 5, 'fix']] : [])]
+    for (const [file, hours, message] of files) {
+      write(fx.dir, { [file]: `export const x = ${hours}\n` })
+      git(fx.dir, 'add', '-A')
+      gitAt(fx.dir, hours, 'commit', '-qm', message)
+    }
+    fx.report('pro-review-branch.md', 'pro-review', 8)
+    fx.report('task-converge.md', 'task-converge', 8)
+    fx.journal(`# ${fx.ticket}: task\nBranch: \`${fx.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`)
+    return { ...fx, gate: () => runHook('journal-gate.mjs', { cwd: fx.dir, tool_name: 'Write', tool_input: { file_path: join(fx.tdir, 'STAGES.md') } }) }
+  }
+  const treeOf = (dir) => git(dir, 'rev-parse', 'HEAD^{tree}').trim()
+  const rbm = manualClose('rebase-manual')
+  const keptTree = treeOf(rbm.dir)
+  check('receipts 5d AC-5d.2: the manual-commit close with reports from h8 is accepted', rbm.gate().decision !== 'block', rbm.gate().text)
+  gitWith(rbm.dir, 20, {}, 'rebase', '-q', '--force-rebase', 'main')
+  check('receipts 5d AC-5d.2: `rebase --force-rebase` of manual commits that keeps the tree — the reports stay fresh', treeOf(rbm.dir) === keptTree && rbm.gate().decision !== 'block', rbm.gate().text)
+  gitWith(rbm.dir, 21, todo('reword'), 'rebase', '-q', '-i', 'HEAD~2')
+  check('receipts 5d AC-5d.2: `rebase -i` rewording A — the reports stay fresh', treeOf(rbm.dir) === keptTree && /A reworded/.test(git(rbm.dir, 'log', '--format=%s')) && rbm.gate().decision !== 'block', rbm.gate().text)
+  gitWith(rbm.dir, 22, todo('fixup'), 'rebase', '-q', '-i', 'HEAD~2')
+  check('receipts 5d AC-5d.2: `rebase -i` with B as a fixup of A — one commit, the same tree, the reports stay fresh', treeOf(rbm.dir) === keptTree && git(rbm.dir, 'rev-list', '--count', 'main..HEAD').trim() === '1' && rbm.gate().decision !== 'block', rbm.gate().text)
+  git(rbm.dir, 'checkout', '-q', 'main')
+  write(rbm.dir, { 'base.txt': 'moved base\n' })
+  git(rbm.dir, 'add', '-A')
+  gitAt(rbm.dir, 23, 'commit', '-qm', 'base moved')
+  git(rbm.dir, 'checkout', '-q', `${rbm.ticket}/feat/r`)
+  check('receipts 5d AC-5d.2: a checkout away and back leaves the reports fresh (the branch reflog has no entry for it)', rbm.gate().decision !== 'block', rbm.gate().text)
+  gitWith(rbm.dir, 24, {}, 'rebase', '-q', 'main')
+  check('receipts 5d AC-5d.2: a rebase onto a moved base changes the tree — the reports are stale', /pro-review: no whole-task report/.test(rbm.gate().text) && /task-converge: no whole-task report/.test(rbm.gate().text), rbm.gate().text)
+
+  const ff = manualClose('ff-merge')
+  git(ff.dir, 'checkout', '-qb', 'colleague')
+  write(ff.dir, { 'src/colleague.ts': 'export const c = 1\n' })
+  git(ff.dir, 'add', '-A')
+  gitAt(ff.dir, 5, 'commit', '-qm', 'colleague')
+  git(ff.dir, 'checkout', '-q', `${ff.ticket}/feat/r`)
+  gitWith(ff.dir, 20, {}, 'merge', '-q', '--ff-only', 'colleague')
+  check('receipts 5d AC-5d.2: a fast-forward at h20 onto a commit dated h5 — the reports from h8 are stale', /pro-review: no whole-task report/.test(ff.gate().text) && /task-converge: no whole-task report/.test(ff.gate().text), ff.gate().text)
+
+  const rs = manualClose('reset', { fix: true })
+  check('receipts 5d AC-5d.2: before the reset the close is accepted (the reports reviewed the fix)', rs.gate().decision !== 'block', rs.gate().text)
+  gitWith(rs.dir, 20, {}, 'reset', '-q', '--hard', 'HEAD~1')
+  check('receipts 5d AC-5d.2: `reset --hard HEAD~1` at h20 drops the fix — the reports from h8 are stale', /pro-review: no whole-task report/.test(rs.gate().text), rs.gate().text)
+
+  // pro-review r1 m-1: B (h3) is a force commit with a receipt, a manual fix at h5, reports at h8; `reset --hard` onto B at h20 drops the reviewed fix. The receipt of B
+  // (h3) must not win the minimum over the reflog's h20.
+  const rr = manualClose('reset-receipt', { fix: true })
+  mkdirSync(join(DATA, 'receipts'), { recursive: true })
+  appendFileSync(join(DATA, 'receipts', `${rr.ticket}.jsonl`), `${JSON.stringify({ sha: git(rr.dir, 'rev-parse', 'HEAD~1').trim(), tree: git(rr.dir, 'rev-parse', 'HEAD~1^{tree}').trim(), at: new Date(at(3) * 1000).toISOString(), branch: `${rr.ticket}/feat/r` })}\n`)
+  check('receipts 5d AC-5d.2 m-1: with a receipt on B and the fix reviewed at h8, the close is accepted', rr.gate().decision !== 'block', rr.gate().text)
+  gitWith(rr.dir, 20, {}, 'reset', '-q', '--hard', 'HEAD~1')
+  check('receipts 5d AC-5d.2 m-1: `reset --hard` onto B (it has a receipt from h3) at h20 drops the fix — the reports from h8 are stale', /pro-review: no whole-task report/.test(rr.gate().text) && /task-converge: no whole-task report/.test(rr.gate().text), rr.gate().text)
+
+  const nr = manualClose('no-reflog')
+  git(nr.dir, 'config', 'core.logAllRefUpdates', 'false')
+  rmSync(join(nr.dir, '.git', 'logs'), { recursive: true, force: true })
+  check('receipts 5d AC-5d.2: with no reflog the committer dates stand in — unchanged, accepted', nr.gate().decision !== 'block', nr.gate().text)
+  gitAt(nr.dir, 20, 'commit', '--amend', '-qm', 'B amended')
+  check('receipts 5d AC-5d.2: with no reflog an amend at h20 makes the reports stale (the previous behaviour)', /no whole-task report/.test(nr.gate().text), nr.gate().text)
+
+  // 5d AC-5d.3 (fresh-2 m-3): a repo that tracks its task dir. The porcelain status is read with `-z`, untrimmed: ` M .claude/…/STAGES.md` is the task's own file.
+  const tt = manualClose('tracked-task-dir')
+  tt.journal(stagesOf(tt, ''))
+  write(tt.dir, { '.gitignore': 'msg.txt\n', [`.claude/tasks/${tt.ticket}/notes.md`]: 'notes\n' })
+  git(tt.dir, 'add', '-A', '.gitignore', `.claude/tasks/${tt.ticket}/STAGES.md`, `.claude/tasks/${tt.ticket}/notes.md`, '.claude/pipeline.config.md')
+  gitAt(tt.dir, 4, 'commit', '-qm', 'track the task dir')
+  tt.journal(`# ${tt.ticket}: task\nBranch: \`${tt.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`)
+  const ttStatus = git(tt.dir, 'status', '--porcelain', '--untracked-files=no')
+  check('receipts 5d AC-5d.3: only the tracked journal is modified (unstaged, first status line)', ttStatus.startsWith(` M .claude/tasks/${tt.ticket}/STAGES.md`), JSON.stringify(ttStatus))
+  check('receipts 5d AC-5d.3: an unstaged edit of the tracked journal is not a code edit — the close is accepted', tt.gate().decision !== 'block', tt.gate().text)
+  git(tt.dir, 'mv', `.claude/tasks/${tt.ticket}/notes.md`, `.claude/tasks/${tt.ticket}/notes-old.md`)
+  check('receipts 5d AC-5d.3: a staged rename inside the task dir is not a code edit (the source path of a rename is skipped)', tt.gate().decision !== 'block', tt.gate().text)
+  git(tt.dir, 'mv', 'src/m.ts', 'src/moved.ts')
+  check('receipts 5d AC-5d.3: a staged rename outside the task dir is named by its new path', /uncommitted edits \(src\/moved\.ts\)/.test(tt.gate().text), tt.gate().text)
 }
 
 // ── Stage 4 of VT-1: honest live form, verify-doctor, frames-guard before the first navigation ──────────────

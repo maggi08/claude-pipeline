@@ -17,7 +17,7 @@
  *    in the window counts, the whole-branch one too: the report name does not say which diff it covered, the window says when it was written;
  *  - closing a Force block as "completed" needs the whole-branch pro-review and task-converge reports newer than when HEAD's tree appeared
  *    (an amend or rebase that keeps the tree does not move it) and no uncommitted edits of tracked files; "completed with blockers" needs
- *    each missing one named in an open blocker that says it was not run / is missing / is stale.
+ *    each missing one named in an open blocker by the fixed marker `[final: <report> — not run | stale]` (markers.mjs), not by prose.
  *
  * The rules apply only to the current branch's task and to a Force block opened after this version first saw the task: the day and the Force headings
  * recorded in the task snapshot at the 0.18 migration (`releaseGate`, `ruleAppliesToBlock`; D7: a run in progress keeps the rules it started with, whenever 0.18
@@ -26,9 +26,9 @@
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
-import { LEGIT_REASON, baselineInfo, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, patchIds, readDataFiles } from './hooks/pipeline-state.mjs'
-import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, headingDate, ruleAppliesToBlock, stageBlocksOf } from './markers.mjs'
+import { LEGIT_REASON, baselineInfo, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
+import { OPEN_STATUS, patchIds, readDataFiles, taskLanguage } from './hooks/pipeline-state.mjs'
+import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, stageBlocksOf } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
 const NOT_UI = /\.(?:test|spec|stories|story)\.\w+$|(?:^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//
@@ -38,8 +38,8 @@ const DESIGN = ['figma-compare', 'proto-compare']
 const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
 
 /**
- * The Force block of the task when the rules apply to it: `{ date, start, block }` (start — midnight of the run date, ms; with no readable date, of the day
- * the snapshot recorded), else null.
+ * The Force block of the task when the rules apply to it: `{ date, start, block, stages }` (start — midnight of the run date, ms; with no readable date, of the day
+ * the snapshot recorded; stages — the STAGES.md text), else null.
  */
 function receiptRun(dataDir, taskDir) {
   const stages = readTaskFile(taskDir, 'STAGES.md')
@@ -51,7 +51,7 @@ function receiptRun(dataDir, taskDir) {
   if (!ruleAppliesToBlock(gate, block.heading, confirmed)) return null
   const date = headingDate(block.heading) ?? confirmed ?? gate.since ?? null
   const start = date ? new Date(`${date}T00:00:00`).getTime() : NaN
-  return { date, start: Number.isFinite(start) ? start : 0, block }
+  return { date, start: Number.isFinite(start) ? start : 0, block, stages }
 }
 
 const receiptsName = (ticket) => join('receipts', `${String(ticket).replace(/[^\w.-]/g, '_')}.jsonl`)
@@ -94,8 +94,8 @@ export function openStages(stagesText) {
       heading: heading.replace(/^#+\s+/, '').trim(),
       active: /^in/i.test(OPEN_STATUS.exec(heading)?.[1] ?? ''),
       done: /\[status:\s*(?:done|ready)\b/i.test(heading),
-      // the tag stands after the status bracket; a title that merely mentions "logic-only" does not waive the design report
-      logicOnly: /\[status:[^\]]*\][^\n]*logic-only/i.test(heading),
+      // a tag in one of the live forms; a title that merely mentions "logic-only" does not waive the design report
+      logicOnly: logicOnlyTag(heading),
       skips,
       commitOpen,
     }
@@ -110,13 +110,15 @@ const legitSkip = (skip) => (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_R
 
 const skipDeclared = (stages, checkers) => stages.flatMap((stage) => stage.skips).filter((skip) => checkers.includes(skip.checker))
 
-const git = (cwd, ...args) => {
+/** git output as is: `status --porcelain` starts with a significant space. */
+const gitRaw = (cwd, ...args) => {
   try {
-    return execFileSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 }).trim()
+    return execFileSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
   } catch {
     return ''
   }
 }
+const git = (cwd, ...args) => gitRaw(cwd, ...args).trim()
 
 /** HEAD is the commit the receipt was written for, or its rewrite (amend, rebase, cherry-pick): the same sha, the same tree or the same patch-id. */
 function isSameCommit(worktree, receipt, head) {
@@ -235,29 +237,33 @@ export function finishPending(dataDir, id, worktree) {
 }
 
 /**
- * When HEAD's tree appeared: the oldest commit of the run of commits that carry this very tree (an amend or a rebase that keeps the tree
- * does not start a new run), or the oldest receipt of the branch for it when the commit that got it has been rewritten away.
- * Any tree change counts, a docs-only commit too: in this plugin docs are the product.
+ * When HEAD's tree appeared on the branch. The branch's own reflog comes first: the run of its newest entries that carry this very tree.
+ * An amend that keeps the tree is an entry with the same tree; a rebase sequence (`--force-rebase`, `-i` reword or fixup) is a single
+ * `rebase (finish)` entry there, its `start` and `pick` steps go to HEAD's reflog only, so the walk compares the entry before it; a checkout away and back
+ * leaves no entry. A fast-forward or a reset is an entry of its own, stamped when the branch moved: the committer date of an older commit (`%ct`) does not
+ * make fresh reports look older than the tree. Only when the reflog gives nothing for this tree (no reflog) do the committer dates of the same-tree run
+ * of commits and the branch's receipts for this tree stand in; with a reflog the receipts are not read: a receipt of an older commit (a `reset --hard`
+ * onto it) would win the minimum over the reflog's later stamp. Any tree change counts, a docs-only commit too: in this plugin docs are the product.
  */
 function treeSince(dataDir, worktree, ticket, branch) {
   const tree = git(worktree, 'rev-parse', 'HEAD^{tree}')
   if (!tree) return 0
   const times = []
-  for (const line of git(worktree, 'log', '-n', '300', '--format=%ct %T').split('\n').filter(Boolean)) {
-    const [time, commitTree] = line.split(' ')
-    if (commitTree !== tree) break
-    times.push(Number(time) * 1000)
-  }
-  // A manual commit that was amended or rebased has no receipt: the HEAD reflog remembers when this tree first became HEAD's (fail-safe: no reflog, no change).
-  const reflog = git(worktree, 'log', '-g', '-n', '300', '--date=unix', '--format=%gd %T', 'HEAD').split('\n').filter(Boolean)
-  for (const line of reflog) {
-    const [selector, reflogTree] = line.split(' ')
-    if (reflogTree !== tree) break
-    const stamp = Number(/@\{(\d+)\}/.exec(selector)?.[1])
+  for (const line of git(worktree, 'log', '-g', '-n', '300', '--date=unix', '--format=%gd %T', `refs/heads/${branch}`).split('\n').filter(Boolean)) {
+    const [selector, entryTree] = line.split(' ')
+    if (entryTree !== tree) break
+    const stamp = Number(/@\{(\d+)\}$/.exec(selector)?.[1])
     if (stamp) times.push(stamp * 1000)
   }
-  const receipts = readReceipts(dataDir, ticket).filter((receipt) => receipt.branch === branch)
-  for (let index = receipts.length - 1; index >= 0 && receipts[index].tree === tree; index--) times.push(Date.parse(receipts[index].at) || Infinity)
+  if (!times.length) {
+    for (const line of git(worktree, 'log', '-n', '300', '--format=%ct %T').split('\n').filter(Boolean)) {
+      const [time, commitTree] = line.split(' ')
+      if (commitTree !== tree) break
+      times.push(Number(time) * 1000)
+    }
+    const receipts = readReceipts(dataDir, ticket).filter((receipt) => receipt.branch === branch)
+    for (let index = receipts.length - 1; index >= 0 && receipts[index].tree === tree; index--) times.push(Date.parse(receipts[index].at) || Infinity)
+  }
   return times.length ? Math.min(...times) : 0
 }
 
@@ -269,24 +275,22 @@ function dirtyTracked(worktree, taskDir) {
   } catch {
     // task directory outside the repo: nothing to exclude
   }
-  return git(worktree, 'status', '--porcelain', '--untracked-files=no')
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => line.slice(3).split(' -> ').at(-1).replace(/^"|"$/g, ''))
-    .filter((file) => !taskRel || !(file === taskRel || file.startsWith(`${taskRel}/`)))
+  // `-z`: `XY path`, NUL-terminated, unquoted; a rename or a copy is followed by its source path as a field of its own.
+  const fields = gitRaw(worktree, 'status', '--porcelain', '-z', '--untracked-files=no').split('\0')
+  const files = []
+  for (let index = 0; index < fields.length; index++) {
+    if (fields[index].length < 4) continue
+    files.push(fields[index].slice(3))
+    if (/[RC]/.test(fields[index].slice(0, 2))) index++
+  }
+  return files.filter((file) => !taskRel || !(file === taskRel || file.startsWith(`${taskRel}/`)))
 }
-
-// An open blocker counts for a missing review only when the phrase is bound to the report: the checker name followed within ~40 characters
-// by "not run" / "report missing" / "stale report" (English and Russian). A bare "missing" or "not fixed" elsewhere in the line does not count.
-const NOT_RUN_EN = "(?:(?:was|has|had)\\s+not\\s+(?:been\\s+)?run|not\\s+(?:been\\s+)?run|did\\s*n[o']t\\s+run|was(?:n't)\\s+run|never\\s+ran|report\\s+(?:is\\s+)?(?:missing|stale|outdated|absent)|(?:missing|stale|outdated)\\s+report|no\\s+report|"
-const NOT_RUN_RU = 'не\\s+(?:запускал|запущ|прогонял|прогнан|проводил)[а-яё]*|не\\s+выполн[а-яё]*|отчёт[а-яё]*\\s+(?:отсутств|устарел|нет)[а-яё]*|нет\\s+отчёта|отсутству[а-яё]*\\s+отчёт|устарев[а-яё]*\\s+отчёт|отчёт\\s+не\\s+свеж[а-яё]*'
-const NOT_RUN_PHRASE = `${NOT_RUN_EN}${NOT_RUN_RU})`
-const notRunFor = (line, checker) => new RegExp(`${checker}[^\\n]{0,40}?${NOT_RUN_PHRASE}`, 'i').test(line)
 
 /**
  * Closing a Force block as "completed": the whole-branch pro-review and task-converge reports must be newer than when HEAD's tree appeared
- * and the tracked files must have no uncommitted edits; "completed with blockers" — each missing one named in an open blocker together with
- * "not run" / "missing" / "stale". Only for a closing written after the snapshot, a block of the new rules' dates, the current task.
+ * and the tracked files must have no uncommitted edits; "completed with blockers" — each missing one named in an open blocker by its marker
+ * (`[final: pro-review — not run]`, markers.mjs). A blocker that names the checker in prose does not count: it gets the marker to add.
+ * Only for a closing written after the snapshot, a block of the new rules' dates, the current task.
  */
 export function finalReviewViolations(dataDir, worktree, taskDir) {
   const run = receiptRun(dataDir, taskDir)
@@ -296,25 +300,33 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const since = treeSince(dataDir, worktree, basename(taskDir), branch)
   if (!since) return []
   const dirty = dirtyTracked(worktree, taskDir)
-  const fresh = (match) => !dirty.length && newReports(taskDir, since).some(match)
   const wanted = [
-    { checker: 'pro-review', ok: fresh((name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name)), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
-    { checker: 'task-converge', ok: fresh((name) => reportChecker(name) === 'task-converge'), how: 'the `task-converge` agent, `checks/task-converge.md`' },
-  ].filter((item) => !item.ok)
-  const blockers = openBlockers(run.block.body).map((line) => line.toLowerCase())
+    { checker: 'pro-review', match: (name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
+    { checker: 'task-converge', match: (name) => reportChecker(name) === 'task-converge', how: 'the `task-converge` agent, `checks/task-converge.md`' },
+  ].filter((item) => dirty.length || !newReports(taskDir, since).some(item.match))
+  const blockers = openBlockers(run.block.body)
   const withBlockers = WITH_BLOCKERS.test(run.block.heading)
+  const language = taskLanguage(run.stages)
   const reason = dirty.length
     ? `tracked files have uncommitted edits (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''})`
     : `newer than the code last changed (the tree of HEAD appeared ${new Date(since).toISOString()}; a rewrite that keeps the tree does not count)`
   return wanted
-    .filter((item) => !withBlockers || !blockers.some((line) => notRunFor(line, item.checker)))
-    .map((item) => ({
-      rule: 'final-review',
-      id: item.checker,
-      message:
-        `${item.checker}: no whole-task report ${reason} — "completed" needs it fresh. Run ${item.how} after the last fix; ` +
-        `or close as "completed with blockers" and write an open blocker B<n> that names ${item.checker} and says it was not run / is missing / is stale.`,
-    }))
+    .filter((item) => !withBlockers || !blockers.some((line) => finalMarkerReports(line).has(item.checker)))
+    .map((item) => {
+      const marker = finalMarker(item.checker, newReports(taskDir, 0).some(item.match) ? 'stale' : 'missing', language)
+      const prose = withBlockers ? blockers.find((line) => line.toLowerCase().includes(item.checker)) : undefined
+      // The marker is there, but a lift word in the reason ("skipped per user decision 2026-10-20", "closed by the token limit") makes the line read as lifted.
+      const lifted = withBlockers ? blockerLines(run.block.body).find((line) => !blockers.includes(line) && finalMarkerReports(line).has(item.checker)) : undefined
+      return {
+        rule: 'final-review',
+        id: item.checker,
+        message:
+          `${item.checker}: no whole-task report ${reason} — "completed" needs it fresh. Run ${item.how} after the last fix; ` +
+          `or close as "completed with blockers" with an open blocker that carries the marker \`${marker}\`, for example \`B<n> — ${marker} <why>\`.` +
+          (lifted ? ` The blocker "${lifted.slice(0, 100)}" has a marker but reads as lifted (a word such as "closed", "lifted", "resolved", "user decision <date>" in its reason): if it is still open, drop the lift word from the reason.` : '') +
+          (prose ? ` The blocker "${prose.slice(0, 100)}" names ${item.checker} in prose, and prose is not read: if it is about this report, add \`${marker}\` to it.` : ''),
+      }
+    })
 }
 
 /** For the run digest: the force commits of the run that changed UI and have no devtools-verify report. */

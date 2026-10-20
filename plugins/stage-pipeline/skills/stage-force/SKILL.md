@@ -156,6 +156,8 @@ Force does not write the PR/MR description: `/task-wrapup` is started only by th
 
 After the final (including the catch-up) rename the block heading to `## Force run <date> — completed <date>`, and with open blockers — to `— completed with blockers <date>`. An open block is read by the hook as a permission, and the next catch-up or a new stage on this branch in the regular mode would go with an autocommit.
 
+A whole-branch `pro-review` or a `task-converge` report that is missing or older than the last tree change, and stays so, is a blocker that carries the fixed marker of that report: `B<n> — [final: pro-review — not run] <why>`, `B<n> — [final: task-converge — stale] <why>` (in a ru task the state takes its Russian form from the marker table in `references/language.md`). The hook reads only the marker: a blocker that names the checker in prose ("pro-review found a critical; the report lacks a recheck", "whole-branch pro-review was not run") does not cover the missing report, and the close is rejected with the marker to add.
+
 ```
 <TICKET> — force run completed: stages N of M, commits K
 Stages: 1 ✅ 2 ✅ 3 ⛔ B1 …

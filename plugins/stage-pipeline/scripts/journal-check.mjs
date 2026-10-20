@@ -906,7 +906,8 @@ const fieldLifted = (field) => {
   const last = field.slice(0, end).split(/[.;](?=\s)|[—–]/).pop().trim()
   return FIELD_CLOSING.test(last)
 }
-export const openBlockers = (body) =>
+/** Every blocker line of a block body, whether lifted or open (a field the whole of which is lifted is left out). */
+export const blockerLines = (body) =>
   body
     .split('\n')
     .flatMap((line) => {
@@ -914,8 +915,9 @@ export const openBlockers = (body) =>
       if (field && fieldLifted(field[1])) return []
       return field ? field[1].replace(/([.;])\s+(?=B\d+\s*[—–:-])/g, '$1\n').split('\n') : [line]
     })
-    .filter((line) => BLOCKER_LINE.test(line) && !BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' ')))
+    .filter((line) => BLOCKER_LINE.test(line))
     .map((line) => line.trim())
+export const openBlockers = (body) => blockerLines(body).filter((line) => !BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' ')))
 
 /**
  * Closing a force run as "completed" (without "with blockers") with open blockers or reports without an outcome.

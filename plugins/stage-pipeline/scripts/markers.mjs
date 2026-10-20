@@ -34,6 +34,45 @@ export function stageBlocksOf(text) {
   })
 }
 
+// The `logic-only` tag of a stage heading, in the forms live journals write (none is rewritten, D7). A tag: in brackets or backticks anywhere
+// (`[logic-only]`, `` `logic-only` ``); a parenthesised qualifier (`(logic-only)`, `(catch-up, logic-only)`); a bare word right after the status
+// bracket, as the last word before it, or after a dash with only a comma list behind it (`— logic-only  [status: …]`, `— logic-only, refactor  [status: …]`).
+// A title word ("logic-only helpers and the card") is not a tag, and neither is a negated one ("not logic-only" and the Russian form).
+const LOGIC_ONLY_NEGATED = /(?:^|[^\wа-яё'’-])(?:not|non|never|(?:is|are|was|were)n['’]t|no\s+longer|не|без)(?:\s+(?:a|an|the|really|just|only|yet))?[\s`[(-]*$/i
+// What may follow the comma of "— logic-only, …" before the status bracket: a short tag list ("refactor"), not a clause ("then the visual layer").
+const LOGIC_ONLY_TAIL = /^\s*(?:,\s*(?!(?:then|and|but|so|which|while|потом|затем|и|но|а)(?![\wа-яё]))[\wа-яё.-]+(?:\s+[\wа-яё.-]+)?\s*)+$/i
+const logicOnlyWrapped = (before, after) => (/\[$/.test(before) && /^\]/.test(after)) || (/`$/.test(before) && /^`/.test(after)) || (/(?:\(|,\s*)$/.test(before) && /^\)/.test(after))
+
+/** Where the `[status: …]` bracket of a heading starts and ends (brackets nested in it, such as a quoted `[live: …]`, are skipped): `{ start, end }` or null. */
+function statusBracket(heading) {
+  const start = heading.search(/\[status:/i)
+  if (start === -1) return null
+  let depth = 0
+  for (let at = start; at < heading.length; at++) {
+    if (heading[at] === '[') depth++
+    else if (heading[at] === ']' && --depth === 0) return { start, end: at + 1 }
+  }
+  return { start, end: heading.length }
+}
+
+/** Whether a stage heading carries the `logic-only` tag (the forms above). */
+export function logicOnlyTag(heading) {
+  const status = statusBracket(heading)
+  for (const found of heading.matchAll(/logic-only/gi)) {
+    const end = found.index + found[0].length
+    if (status && found.index >= status.start && found.index < status.end) continue
+    const before = heading.slice(Math.max(0, found.index - 28), found.index)
+    const after = heading.slice(end, end + 16)
+    if (LOGIC_ONLY_NEGATED.test(before)) continue
+    if (logicOnlyWrapped(before, after)) return true
+    if (!status) continue
+    if (found.index >= status.end && /^\s*(?:[—–-]\s*)?$/.test(heading.slice(status.end, found.index))) return true
+    if (found.index < status.start && /^[\s,;.:]*$/.test(heading.slice(end, status.start))) return true
+    if (found.index < status.start && /(?:^|\s)[—–-]\s*$/.test(before) && status.start - end <= 80 && LOGIC_ONLY_TAIL.test(heading.slice(end, status.start))) return true
+  }
+  return false
+}
+
 /** The same heading, but with the number from `number` (a string, not a regexp). */
 export const stageHeadingOf = (number) => re(`^###\\s+(?:Этап|Stage)\\s+${number}(?![\\w.])[^\\n]*$`, 'm')
 /** "stage 3" (or its Russian form) in a journal or commit line — group 1 is the number. */
@@ -197,7 +236,9 @@ const REQUEST_WORDS =
 const USER_REQUEST = `\\b${REQUEST_WORDS}\\s+(?:an?\\s+|the\\s+)?user\\s+(?:answer|decision)\\b`
 const NO_REQUEST_AFTER = `(?![^\\n]{0,200}${USER_REQUEST})`
 const NO_REQUEST_BEFORE = `(?<!${USER_REQUEST}[^\\n]{0,200})`
-const NOT_BEFORE = '(?<!\\bnot\\s)'
+const NOT_BEFORE = "(?<!\\b(?:not|never)\\s)(?<!n['’]t\\s)(?<!\\bun-)"
+// The Russian negation before a lift word ("not lifted", "was not closed", "unclosed" as one word); bounded: a few spaces, a short "was" form.
+const NOT_RU = '(?<!не)(?<!(?<![а-яё])не\\s{1,3})(?<!(?<![а-яё])не\\s{1,3}был[аио]?\\s{1,3})'
 const DATE_OR_QUOTE = '(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})'
 // A quote followed by a second option ("v1" or "v2", and the Russian form) lists what is asked, it is not the answer.
 const NOT_OPTIONS = '(?![^»"”\\n]{0,80}[»"”]\\s*(?:или|or|vs\\.?|/)\\s*[«"“])'
@@ -208,9 +249,9 @@ const ANSWER_RU = `(?:\\s*(?:от|в\\s+чате|\\())?\\s*(?:[:—–-]\\s*)?${
 /** A blocker is lifted: `lifted by`, `resolved by`, `user decision` … and their Russian forms. */
 export const BLOCKER_LIFTED = new RegExp(
   [
-    'снят|закрыт|отвечен',
+    `${NOT_RU}(?:снят|закрыт|отвечен)`,
     // The Russian "resolved" (masculine, neuter, feminine) as a word of its own, without a negation before it: the noun "decision" and "not resolved" do not lift.
-    '(?<![а-яё])(?<!не\\s)реш[её]н[оа]?(?![а-яё])',
+    `(?<![а-яё])${NOT_RU}реш[её]н[оа]?(?![а-яё])`,
     // "Needs the user's decision/answer …" is a request, not a lift: the answer (ANSWER_*) must follow the words, and a request word must not stand before them (the Russian forms too).
     `(?<!${REQUEST_WORDS}\\s+)(?:ответ|решение)\\s+пользователя${ANSWER_RU}`,
     `${NO_REQUEST_BEFORE}${NOT_BEFORE}\\b(?:lifted|closed|answered)\\s+by${NO_REQUEST_AFTER}|${NO_REQUEST_BEFORE}${NOT_BEFORE}\\bresolved\\s+by${NO_REQUEST_AFTER}|(?<![\\w-])${NOT_BEFORE}resolved:`,
@@ -219,6 +260,16 @@ export const BLOCKER_LIFTED = new RegExp(
   ].join('|'),
   'i',
 )
+
+// The marker an open blocker carries when a final whole-task report is missing or stale and the run closes "completed with blockers" (VT-1 B1):
+// `[final: pro-review — not run]`, `[final: task-converge — stale]`, the Russian state words in a ru task. The brackets, `final:`, the report name and the dash
+// are the same in both languages. Prose is not read: "pro-review found a critical; report missing a recheck" names a finding, not a review that did not run.
+const FINAL_MARKER = /\[final:\s*(pro-review|task-converge)\s*[—–-]\s*(?:not\s+run|stale|не\s+запускался|устарел)\s*\]/gi
+const FINAL_STATE = { en: { missing: 'not run', stale: 'stale' }, ru: { missing: 'не запускался', stale: 'устарел' } }
+/** The final reports a line names by the marker: a Set of `pro-review` / `task-converge`. */
+export const finalMarkerReports = (line) => new Set([...line.matchAll(FINAL_MARKER)].map((found) => found[1].toLowerCase()))
+/** The marker to write: `state` is `missing` or `stale`, `language` is `en` or `ru` (anything else — `en`). */
+export const finalMarker = (report, state, language) => `[final: ${report} — ${(FINAL_STATE[language] ?? FINAL_STATE.en)[state]}]`
 
 // --- checks/ reports ---
 
