@@ -10,7 +10,7 @@
  * supported task language (Russian). The English twins next to them must give the same results.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -679,7 +679,15 @@ const closedEarly = lGate('STAGES.md')
 check('"завершён" with an open blocker — returned', closedEarly.decision === 'block' && /completed with blockers/.test(closedEarly.text), closedEarly.text)
 write(lApp, { '.claude/tasks/T-11/STAGES.md': lStages('- `AC-1.2` WHEN бар THEN статус — ⏳ devtools-verify (подставить нечем)\n', forceBlock('## Force-прогон 2026-10-04 — завершён с блокерами 2026-10-04', '\n- B1 — гонка M-2 — нужен ответ бэкенда — рекомендую очередь')) })
 const closed = runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } })
-check('"завершён с блокерами" — the run summary in the context', closed.decision === 'message' && /Блокеры — нужен твой ответ \(1\)/.test(closed.text) && /AC-1\.2/.test(closed.text), `${closed.decision}: ${closed.text.slice(0, 200)}`)
+const digestFile = join(lTask, 'RUN-DIGEST.md')
+check(
+  'closing a run with blockers — the short summary in the context: the blocker in full, the unverified as a number by stage, the path to the file',
+  closed.decision === 'message' && /Блокеры — нужен твой ответ \(1\)/.test(closed.text) && /этап 1 — 1/.test(closed.text) && closed.text.includes(digestFile) && !/AC-1\.2/.test(closed.text),
+  `${closed.decision}: ${closed.text.slice(0, 400)}`,
+)
+check('closing a run with blockers — the full digest is written to RUN-DIGEST.md (the criterion line is there)', existsSync(digestFile) && /AC-1\.2/.test(readFileSync(digestFile, 'utf8')) && /^# Дайджест прогона/m.test(readFileSync(digestFile, 'utf8')))
+check('RUN-DIGEST.md is not a checker report: reportNames does not list it', !jc.reportNames(lTask).includes('RUN-DIGEST.md'))
+check('writing RUN-DIGEST.md is not a journal event: the hook stays silent', runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Write', tool_input: { file_path: digestFile } }).decision === 'allow')
 check('the run summary — once per closing', runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', tool_input: { file_path: join(lTask, 'STAGES.md') } }).decision === 'allow')
 
 // English twins of the blockers and of the Force block closing in journal-gate.
@@ -821,12 +829,13 @@ spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', kRe
       kits.summarize([{ kind: 'new kind', token: 'x', line: 1 }], 'ru') === 'new kind (`x`)',
   )
 }
-const soon = Date.now() / 1000 + 5
-utimesSync(kReport, soon, soon)
+// Read at the moment of use: a time fixed once goes stale on a slow run, and the report falls before the task snapshot.
+const touchAhead = (path) => utimesSync(path, Date.now() / 1000 + 5, Date.now() / 1000 + 5)
+touchAhead(kReport)
 const noKitLedger = kCommit('git add -A && git commit -m "T-12: карточка"')
 check('force commit: a kit-overrides report exists, no outcome — denied', noKitLedger.decision === 'deny' && /stage-1-kit-overrides\.md/.test(noKitLedger.text), noKitLedger.text)
 writeFileSync(kReport, `${readFileSync(kReport, 'utf8')}\n## Итог находок\n- K-1 — ложная: эталон src/Other.tsx:1 — тот же font-bold\n`)
-utimesSync(kReport, soon, soon)
+touchAhead(kReport)
 const kitOk = kCommit('git add -A && git commit -m "T-12: карточка"')
 check('force commit: the outcome is proven by the reference — passes', kitOk.decision === 'allow', kitOk.text)
 git(kApp, 'add', '-A')
@@ -918,11 +927,11 @@ spawnSync(process.execPath, [join(PLUGIN, 'kit-override-scan.mjs'), '--out', eRe
   check('EN kit-overrides report: read back (summary, language, "Could not verify" counted by the digest)', jc.findingCounts(enReport, 'stage-1-kit-overrides.md').major === 1 && jc.languageViolation(enReport, 'stage-1-kit-overrides.md', 'en') === null)
   check('EN kit-overrides report: a rerun keeps the "Findings outcome" of the previous run', /## Findings outcome\n- K-1 — fixed/.test(kits.renderReport([], { language: 'en', previous: '# old\n## Findings outcome\n- K-1 — fixed: src/Card.tsx:1\n' })))
 }
-utimesSync(eReport, soon, soon)
+touchAhead(eReport)
 const noKitLedgerEn = eCommit('git add -A && git commit -m "T-13: card"')
 check('EN force commit: report without an outcome — denied', noKitLedgerEn.decision === 'deny' && /stage-1-kit-overrides\.md/.test(noKitLedgerEn.text), noKitLedgerEn.text)
 writeFileSync(eReport, `${readFileSync(eReport, 'utf8')}\n## Findings outcome\n- K-1 — false positive: reference src/Other.tsx:1 — the same font-bold\n`)
-utimesSync(eReport, soon, soon)
+touchAhead(eReport)
 check('EN force commit: outcome proven by the reference — passes', eCommit('git add -A && git commit -m "T-13: card"').decision === 'allow')
 git(eApp, 'add', '-A')
 git(eApp, 'commit', '-qm', 'T-13: card')
@@ -1106,6 +1115,291 @@ const digestFor = (items) => {
 const DIGEST_EMPTY = [['none'], ['None.'], ['nothing'], ['no items'], ['all verified'], ['All checked.'], ['everything is verified'], ['нет'], ['ничего'], ['everything verified (of what was passed in)'], ['Everything that was passed in is verified.'], ['Nothing left — everything verified.'], ['nothing left']]
 for (const items of DIGEST_EMPTY) check(`digest: «Could not verify» "${items[0]}" — nothing unverified`, digestFor(items) === '0', String(digestFor(items)))
 for (const item of ['none of the states could be opened', 'AC-3.2 — no data on the stand', 'nothing was captured for dark', 'everything verified except the dark theme', 'all verified, but 1024 is not checked']) check(`digest: a real item "${item.slice(0, 36)}" is counted`, digestFor([item]) === '1', String(digestFor([item])))
+
+// HT-1: the freshest run, the run's scope, the short and the full view, the data directory.
+{
+  const { freshestForceHeading, headingDate } = markers
+  const pick = (text) => freshestForceHeading(text)?.[0]
+  const H = (date, tail = '') => `## Force-прогон ${date}${tail}\nПодтверждено: ${date}\n\n`
+  check('freshest block: blocks appended downwards — the last one', pick(`${H('2026-10-10')}${H('2026-10-12')}${H('2026-10-13')}`).includes('2026-10-13'))
+  check('freshest block: new blocks on top (KC-600) — the first one, not the last in the file', pick(`${H('2026-10-13')}${H('2026-10-12')}${H('2026-10-12', ' — второй прогон')}`).includes('2026-10-13'))
+  check('freshest block: equal dates, the file writes new blocks on top — the first of them', pick(`${H('2026-10-13', ' — b')}${H('2026-10-13', ' — a')}${H('2026-10-12')}`).includes('— b'))
+  check('freshest block: equal dates, the file writes blocks downwards — the last of them', pick(`${H('2026-10-12')}${H('2026-10-13', ' — a')}${H('2026-10-13', ' — b')}`).includes('— b'))
+  check('freshest block: all dates equal, no direction — the last one, as before', pick(`${H('2026-10-13', ' — a')}${H('2026-10-13', ' — b')}`).includes('— b'))
+  check('freshest block: dd.mm.yyyy dates are compared as dates (13.10 over 04.11 of the year before)', pick(`## Force-прогон 04.11.2025\n\n## Force-прогон 13.10.2026\n\n## Force-прогон 02.01.2026\n`).includes('13.10.2026'))
+  check('freshest block: a heading without a date — the last in the file, as before', pick(`${H('2026-10-13')}## Force run\n\n`) === '## Force run')
+  check('freshest block: Force run headings in English', pick('## Force run 2026-10-13\n\n## Force run 2026-10-12\n').includes('2026-10-13'))
+  const KC600 = `${H('2026-10-12', ' — второй прогон — завершён 2026-10-12')}${H('2026-10-12', ' — завершён с блокерами 2026-10-12')}`
+  check('freshest block: equal dates, no direction visible (KC-600) — the "second run", not the last in the file', pick(KC600).includes('второй прогон'), pick(KC600))
+  check('freshest block: equal dates — the ordinal wins over the position, in both orders', pick(`${H('2026-10-12', ' — first')}${H('2026-10-12', ' — second run')}`).includes('second run') && pick(`${H('2026-10-12', ' — second run')}${H('2026-10-12', ' — first')}`).includes('second run'))
+  check('freshest block: "(2)" and a letter after the date are ordinals', pick(`${H('2026-10-12', ' (2)')}${H('2026-10-12')}`).includes('(2)') && pick(`${H('2026-10-12b')}${H('2026-10-12a')}`).includes('12b'))
+  check('freshest block: equal dates and equal ordinals — the direction, then the last', pick(`${H('2026-10-13', ' — b')}${H('2026-10-13', ' — a')}${H('2026-10-12')}`).includes('— b'))
+  check('closedForceDate: a journal with new blocks on top — the date of the freshest run', closedForceDate('## Force-прогон 2026-10-13 — завершён 2026-10-13\n\n## Force-прогон 2026-10-12 — завершён с блокерами 2026-10-12\n') === '2026-10-13')
+  check('headingDate: the first date of the heading', headingDate('## Force-прогон 2026-10-12 — завершён 2026-10-14') === '2026-10-12')
+  const top = `## Force-прогон 2026-10-13 — ребейз — завершён с блокерами 2026-10-13\nПодтверждено: 2026-10-13\nБлокеры: B1 — контракт — без изменений. B7 — чистка — отдельной задачей.\n\n## Force-прогон 2026-10-12 — завершён с блокерами 2026-10-12\nБлокеры: B4 — перенос\n- B5 — дубли\n\n## Этапы\n`
+  check('lastForceBlock: the 2026-10-13 block when it stands on top', jc.lastForceBlock(top).heading.includes('2026-10-13'))
+  check('openBlockers: the blockers of the `Blockers:` field line are items of their own', same(jc.openBlockers(jc.lastForceBlock(top).body).map((line) => line.slice(0, 2)), ['B1', 'B7']), JSON.stringify(jc.openBlockers(jc.lastForceBlock(top).body)))
+  check('openBlockers: a lifted item on the field line does not count, the other does', jc.openBlockers('Blockers: B1 — contract — resolved by backend 2026-10-04. B2 — queue — needs a user decision').length === 1)
+  check('openBlockers (ru): a common mark "both lifted" in Russian lifts every item of the line', jc.openBlockers('Блокеры: B1 — контракт; B2 — гонка — оба сняты ответом пользователя 2026-10-14.').length === 0)
+  check('openBlockers (en): a common mark "both lifted" lifts every item of the line', jc.openBlockers('Blockers: B1 — contract; B2 — race — both lifted by the user 2026-10-14.').length === 0)
+  check('openBlockers: a mark before the items (Russian and English forms) lifts them', jc.openBlockers('Блокеры: сняты 2026-10-14 ответами интервью. B1 — a; B2 — b; B3 — c.').length === 0 && jc.openBlockers('Blockers: all lifted by the user. B1 — a; B2 — b').length === 0)
+  check('openBlockers: a singular mark lifts only its own item', jc.openBlockers('Блокеры: B1 — a — снят; B2 — b').length === 1 && jc.openBlockers('Blockers: B1 — a — lifted by the user; B2 — b').length === 1)
+  // M3: a lift mark counts in the head of the field or as its closing phrase; "not all closed" in an item is not a lift.
+  for (const line of ['Blockers: B1 — staging is down; not all closed yet', 'Блокеры: B1 — PR-ы ещё не все закрыты', 'Блокеры: B2 — тикеты закрыты не все, e2e красный', 'Blockers: B1 — CI red, all closed issues reopened', 'Blockers: not all lifted. B1 — a', 'Блокеры: не все сняты. B1 — a'])
+    check(`openBlockers: "${line.slice(0, 50)}" keeps the blocker open`, jc.openBlockers(line).length === 1, line)
+  check('openBlockers: the closing phrase "both lifted <date>" and the head mark still lift (ru, en)', jc.openBlockers('Блокеры: B1 — a; B2 — b — оба сняты 2026-10-14.').length === 0 && jc.openBlockers('Blockers: B1 — a; B2 — b. Both lifted by the user 2026-10-14.').length === 0)
+  // The closing mark takes the tail of the user-answer markers: a date in both formats, "by the user", "in chat", "user decision <date>", a quote.
+  for (const line of [
+    'Блокеры: B1 — контракт; B2 — гонка — оба сняты 14.10.2026.',
+    'Блокеры: B1 — контракт; B2 — гонка — оба сняты пользователем 14.10.2026.',
+    'Blockers: B1 — contract; B2 — race — both lifted by the user in chat.',
+    'Blockers: B1 — contract; B2 — race — both lifted, user decision 2026-10-17.',
+    'Блокеры: B1 — контракт; B2 — гонка — оба сняты ответом пользователя «делать v2».',
+    'Блокеры: B1 — контракт; B2 — гонка — все сняты в чате 2026-10-14.',
+    'Блокеры: B1 — контракт; B2 — гонка. Оба сняты, решение пользователя 17.10.2026.',
+  ]) check(`openBlockers: closing mark with a date/answer tail lifts the field: ${line.slice(-40)}`, jc.openBlockers(line).length === 0, JSON.stringify(jc.openBlockers(line)))
+  check('openBlockers: a closing mark without the quantifier or with a foreign tail lifts nothing', jc.openBlockers('Блокеры: B1 — a; B2 — b — сняты 14.10.2026.').some((b) => b.startsWith('B1')) && jc.openBlockers('Blockers: B1 — a; B2 — b — both lifted next week maybe.').length === 2)
+  // A mark in the head followed by item numbers lifts only those items, not the whole field.
+  for (const [line, open] of [
+    ['Блокеры: сняты B1 и B3 (ответ пользователя 2026-10-14). B2 — нужен токен staging.', 'B2'],
+    ['Blockers: lifted B1, B3; B2 — no staging access', 'B2'],
+    ['Блокеры: сняты частично. B1 — a; B2 — b', 'B1'],
+    ['Blockers: partially lifted. B1 — a; B2 — b', 'B1'],
+    ['Blockers: lifted: B1, B3. B2 — no staging access', 'B2'],
+  ]) check(`openBlockers: a head mark with listed numbers keeps the rest open: ${line.slice(0, 45)}`, jc.openBlockers(line).some((b) => b.startsWith(open)), JSON.stringify(jc.openBlockers(line)))
+  check('openBlockers: a head mark as a finished phrase still lifts the field (ru, en)', jc.openBlockers('Блокеры: все сняты 14.10.2026. B1 — a; B2 — b').length === 0 && jc.openBlockers('Blockers: all lifted by the user. B1 — a; B2 — b').length === 0)
+  {
+    const pathological = ['B1 — x; not all closed ', 'B1 — ', 'Blockers: lifted ', '; '].map((unit) => `Blockers: ${unit}${' '.repeat(50_000)};${'—'.repeat(50_000)}${'. '.repeat(25_000)}`)
+    const t0 = performance.now()
+    for (const line of pathological) jc.openBlockers(line)
+    check('openBlockers: the field-lift regexes on 50 000 characters of pathological input < 100 ms', performance.now() - t0 < 100, `${(performance.now() - t0).toFixed(0)} ms`)
+  }
+  check('openBlockers (ru): a single "closed" in one item does not lift the other blockers of the line', jc.openBlockers('Блокеры: B1 — e2e не гоняются: порты закрыты в CI. B2 — нет доступа к staging, нужен токен').some((item) => item.startsWith('B2')))
+  check('openBlockers (ru): "resolved partly" in one item lifts no one', jc.openBlockers('Блокеры: B1 — нужен доступ к staging. B2 — вопросы по контракту решены частично, ждём ответ бэка').length === 2)
+  check('openBlockers: an empty `Blockers:` field and "none" give nothing', jc.openBlockers('Блокеры: \n').length === 0 && jc.openBlockers('Blockers: none').length === 0)
+}
+
+{
+  const { collectDigest, runScope, publishDigest, taskRepo } = await import(join(PLUGIN, 'run-digest.mjs'))
+  const { pluginDataDir, legacyDataDir } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  const fixture = (language, extra = '') => {
+    const ru = language === 'ru'
+    const dir = mkdtempSync(join(tmpdir(), `digest-run-${language}-`))
+    const task = join(dir, 'T-40')
+    mkdirSync(join(task, 'checks'), { recursive: true })
+    const fresh = ru
+      ? '## Force-прогон 2026-10-13 — ребейз — завершён с блокерами 2026-10-13\nПодтверждено: 2026-10-13 — да\nБлокеры: B1 — контракт — без изменений. B7 — чистка — отдельной задачей.\n\n'
+      : '## Force run 2026-10-13 — rebase — completed with blockers 2026-10-13\nConfirmed: 2026-10-13 — yes\nBlockers: B1 — contract — unchanged. B7 — cleanup — a separate task.\n\n'
+    const old = ru
+      ? '## Force-прогон 2026-10-12 — завершён с блокерами 2026-10-12\nПодтверждено: 2026-10-12 — да\nБлокеры: B4 — перенос — нужен ответ пользователя\n- B5 — дубли\n- B6 — гонка\nНезакрытое: `AC-9.9` — ⏳ user-review\n\n'
+      : '## Force run 2026-10-12 — completed with blockers 2026-10-12\nConfirmed: 2026-10-12 — yes\nBlockers: B4 — move — needs a user decision\n- B5 — duplicates\n- B6 — race\nUnfinished: `AC-9.9` — ⏳ user-review\n\n'
+    const awaiting = ru ? '## ⚠ Ожидают подтверждения пользователя\n' : '## ⚠ Awaiting user confirmation\n'
+    const items = ['первое', 'второе', 'третье', 'четвёртое', 'пятое'].map((word, i) => `- допущение ${i + 1} — ${word}`).join('\n')
+    // The first look of the plugin makes the snapshot of the journal: it is taken of an empty journal, the lines below are new.
+    const data = mkdtempSync(join(tmpdir(), 'digest-run-data-'))
+    writeFileSync(join(task, 'STAGES.md'), `# T-40: task\n${ru ? 'Язык: ru' : 'Language: en'}\n`)
+    jc.baselineInfo(data, task)
+    writeFileSync(
+      join(task, 'STAGES.md'),
+      `# T-40: task\n${ru ? 'Язык: ru' : 'Language: en'}\n\n## ${ru ? 'Статус' : 'Status'}: stage 3\n\n${fresh}${old}## ${ru ? 'Этапы' : 'Stages'}\n\n### ${ru ? 'Этап' : 'Stage'} 1: a  [status: done]\n- \`AC-1.1\` WHEN a THEN b — ⏳ user-review\n### ${ru ? 'Этап' : 'Stage'} 3: c\n- \`AC-3.1\` WHEN a THEN b — [live: user-side]\n- \`AC-3.2\` WHEN a THEN b — [blocked: B1]\n\n${awaiting}${items}\n${extra}`,
+    )
+    const unverified = ru ? '## Не удалось проверить' : '## Could not verify'
+    const report = (name, body) => {
+      writeFileSync(join(task, 'checks', name), body)
+      const later = new Date(Date.now() + 60_000)
+      utimesSync(join(task, 'checks', name), later, later)
+    }
+    report('devtools-verify-1.md', `# devtools-verify\nFindings: critical 0 · major 0 · minor 0\n\n${unverified}\n- 1280 and the dark theme\n- the real login\n`)
+    report('pro-review-2.md', `# pro-review\nFindings: critical 0 · major 0 · minor 2\n\n- m-1 minor\n- m-2 minor\n`)
+    return { dir, task, data }
+  }
+  const numbers = (view) => Object.fromEntries([...view.matchAll(/^### ([^(\n]+?)\s*\((\d+)\)/gm)].map(([, name, count]) => [name.replace(/ [—-] .*$/, ''), Number(count)]))
+  for (const language of ['ru', 'en']) {
+    const { task, data } = fixture(language)
+    const full = runDigest(task, data, null)
+    const short = runDigest(task, data, null, 'short')
+    const fullNumbers = numbers(full)
+    const shortNumbers = numbers(short)
+    const t = collectDigest(task, data, null).text
+    check(`digest ${language}: blockers come from the freshest run (13.10), the old block's B4–B6 do not show`, /B1 —/.test(full) && /B7 —/.test(full) && !/B4|B5|B6/.test(full), full.slice(0, 300))
+    check(`digest ${language}: a ⏳ line inside the earlier run's block is not in this run's digest`, !full.includes('AC-9.9') && !short.includes('AC-9.9'), full)
+    check(`digest ${language}: the short view gives the same blockers line by line`, same(full.split('\n').filter((line) => /^- B\d/.test(line)), short.split('\n').filter((line) => /^- B\d/.test(line))))
+    check(`digest ${language}: every category of the full view is in the short one with the same number`, Object.keys(fullNumbers).length >= 3 && Object.entries(fullNumbers).every(([name, count]) => shortNumbers[name] === count), `${JSON.stringify(fullNumbers)} vs ${JSON.stringify(shortNumbers)}`)
+    check(`digest ${language}: headings of both views are the strings of one table`, full.includes(t.notVerified(5)) && short.includes(t.notVerified(5)) && short.includes(t.minor(2)) && full.includes(t.minor(2)) && short.includes(t.accepted(5)) && full.includes(t.accepted(5)), short)
+    check(`digest ${language}: the short view counts the unverified by stage and the checkers' ones as a number`, short.includes(t.verifiedJournal(3, `${t.stage(1)} — 1 · ${t.stage(3)} — 2`)) && short.includes(t.verifiedReports(2)), short)
+    check(`digest ${language}: the short view has no "<checker>-N.md: …" lines, the full one has them`, !/\w-\d+\.md: /.test(short) && /devtools-verify-1\.md: /.test(full))
+    check(`digest ${language}: "accepted on my own" — the number and the first three`, short.includes('допущение 3') && !short.includes('допущение 4') && full.includes('допущение 5'))
+    check(`digest ${language}: an empty category is folded into one line, a non-empty one is never dropped`, short.includes(t.noneOf([t.labels.noOutcome])) && short.split('\n').length <= 15, short)
+    const published = publishDigest(task, data, null)
+    const file = readFileSync(published.path, 'utf8')
+    check(`digest ${language}: RUN-DIGEST.md has the run in the header, the full view and the checkers' verdicts; the short view ends with its path`, file.startsWith(t.title('T-40')) && file.includes(t.run(collectDigest(task, data, null).heading)) && file.includes(full) && file.includes(t.checkers(2)) && published.short.endsWith(t.file(published.path)))
+    check(`digest ${language}: the file lies outside checks/ and is not a report`, !published.path.includes(`${join('T-40', 'checks')}`) && !jc.reportNames(task).includes('RUN-DIGEST.md'))
+    writeFileSync(join(task, 'checks', 'dead-code-3.md'), `# dead-code\nFindings: critical 0 · major 0 · minor 1\n\n- m\n`)
+    utimesSync(join(task, 'checks', 'dead-code-3.md'), new Date(Date.now() + 90_000), new Date(Date.now() + 90_000))
+    check(`digest ${language}: the next run overwrites the file`, readFileSync(publishDigest(task, data, null).path, 'utf8').includes('dead-code-3.md'))
+    check(`digest ${language}: no file is written without the write flag`, (() => { rmSync(published.path); publishDigest(task, data, null, { write: false }); return !existsSync(published.path) })())
+    // M2: RUN-DIGEST.md as a symlink to a file outside the task is neither followed nor written; the short view says why.
+    {
+      const outside = join(mkdtempSync(join(tmpdir(), 'digest-outside-')), 'victim.txt')
+      writeFileSync(outside, 'user file')
+      rmSync(published.path, { force: true })
+      symlinkSync(outside, published.path)
+      const linked = publishDigest(task, data, null)
+      check(`digest ${language}: a RUN-DIGEST.md symlink is not written through`, readFileSync(outside, 'utf8') === 'user file' && linked.path === null && linked.short.includes(language === 'ru' ? 'Полный дайджест не записан: RUN-DIGEST.md — симлинк' : 'Full digest not written: RUN-DIGEST.md is a symlink'), linked.short.slice(-120))
+      rmSync(published.path, { force: true })
+      const taskLink = join(mkdtempSync(join(tmpdir(), 'digest-link-')), 'T-40')
+      symlinkSync(task, taskLink)
+      const viaLink = publishDigest(taskLink, data, null)
+      check(`digest ${language}: a task directory symlink is refused`, viaLink.path === null && !existsSync(published.path))
+      // The rule compares the task directory with the `task_path` directory of the config, not with the repo root.
+      const repoOf = (taskDir) => ({ worktree: mkdtempSync(join(tmpdir(), 'digest-repo-')), config: '', taskDir })
+      const elsewhere = publishDigest(task, data, repoOf(mkdtempSync(join(tmpdir(), 'digest-other-tasks-'))))
+      check(`digest ${language}: a task directory outside the task_path of the config is refused`, elsewhere.path === null && elsewhere.short.includes(language === 'ru' ? 'вне каталога задач из конфига' : 'outside the task directory of the config') && !existsSync(published.path))
+      const outsideRepo = publishDigest(task, data, repoOf(dirname(task)))
+      check(`digest ${language}: task_path outside the repo (the task lies in it) -> the file is written`, outsideRepo.path === published.path && existsSync(published.path), outsideRepo.short.slice(-120))
+      rmSync(published.path, { force: true })
+      const tasksLink = join(mkdtempSync(join(tmpdir(), 'digest-tasks-link-')), 'tasks')
+      symlinkSync(dirname(task), tasksLink)
+      const viaTasksLink = publishDigest(join(tasksLink, 'T-40'), data, repoOf(tasksLink))
+      check(`digest ${language}: .claude/tasks is a symlink to a directory outside the repo -> the file is written`, viaTasksLink.path === published.path && existsSync(published.path), viaTasksLink.short.slice(-120))
+      rmSync(published.path, { force: true })
+      symlinkSync(outside, published.path)
+      const fileLinkInRepo = publishDigest(join(tasksLink, 'T-40'), data, repoOf(tasksLink))
+      check(`digest ${language}: RUN-DIGEST.md is a symlink (task_path outside the repo) -> not written`, fileLinkInRepo.path === null && readFileSync(outside, 'utf8') === 'user file')
+      rmSync(published.path, { force: true })
+    }
+    rmSync(task, { recursive: true, force: true })
+  }
+  // The scope of the run: from the date of the run, a journal line dated before it belongs to an earlier run.
+  {
+    const { task, data } = fixture('ru')
+    runDigest(task, data, null) // the first look makes the snapshot of the journal
+    appendFileSync(join(task, 'STAGES.md'), '- `AC-4.1` WHEN a THEN b — ⏳ user-review 2026-10-12\n- `AC-4.2` WHEN a THEN b — ⏳ user-review 14.10.2026\n- `AC-4.3` WHEN a THEN b — ⏳ user-review\n')
+    const digest = runDigest(task, data, null)
+    const unverifiedPart = digest.split(/^### /m).find((part) => part.startsWith('Не проверено')) ?? ''
+    check('scope: a new journal line dated before the run is not in it, a later and an undated one are', !unverifiedPart.includes('AC-4.1') && unverifiedPart.includes('AC-4.2') && unverifiedPart.includes('AC-4.3'), digest)
+    check('scope: "awaiting confirmation" is an open list — the date of the run does not cut it', digest.split(/^### /m).find((part) => part.startsWith('Принято само'))?.includes('AC-4.1'), digest)
+    const stages = readFileSync(join(task, 'STAGES.md'), 'utf8')
+    const scope = runScope(stages, jc.lastForceBlock(stages), 0)
+    check('scope: reports are taken from the start of the run date', scope.date === '2026-10-13' && scope.since === new Date('2026-10-13T00:00:00').getTime() && scope.sameDay === 0)
+    check('scope: the later of the run date and the snapshot wins', runScope(stages, jc.lastForceBlock(stages), Date.now()).since >= Date.now() - 1000)
+    appendFileSync(join(task, 'STAGES.md'), '\n## Force-прогон 2026-10-13 — утренний\nПодтверждено: 2026-10-13\n')
+    const twoRuns = readFileSync(join(task, 'STAGES.md'), 'utf8')
+    check('scope: an earlier run of the same day inside the scope is named in a line of both views', runScope(twoRuns, jc.lastForceBlock(twoRuns), 0).sameDay >= 1 && /ранний прогон того же дня/.test(runDigest(task, data, null, 'short')) && /ранний прогон того же дня/.test(runDigest(task, data, null)))
+    rmSync(task, { recursive: true, force: true })
+  }
+  // The CI gates of the digest are the task's repo's, not the repo the script was started from.
+  {
+    const { task, data } = fixture('en')
+    const foreign = { tasks: [], worktree: '/elsewhere', config: '- e2e: `npm run e2e`\n' }
+    check('gates: a task outside the caller\'s repo and without a config of its own gets no gates', taskRepo(task, foreign) === null)
+    check('gates: the caller\'s state is taken only when it owns the task', taskRepo(task, { ...foreign, tasks: [{ dir: task, foreign: false }] }) !== null)
+    rmSync(task, { recursive: true, force: true })
+    void data
+  }
+  // A run closed before the plugin first looked at the task (a snapshot without the closed headings) is not checked after the fact.
+  {
+    const { dir, task, data } = fixture('ru')
+    const stages = readFileSync(join(task, 'STAGES.md'), 'utf8')
+    const closedTop = '## Force-прогон 2026-10-05 — завершён 2026-10-05\nБлокеры: B1 — открыт\n\n'
+    writeFileSync(join(task, 'STAGES.md'), stages.replace('## Этапы', `${closedTop}## Этапы`))
+    // the snapshot as the previous version wrote it: no closed headings
+    const snapDir = join(data, 'journal-baseline')
+    const snapFile = join(snapDir, readdirSync(snapDir)[0])
+    const snap = JSON.parse(readFileSync(snapFile, 'utf8'))
+    delete snap.closedSeen
+    writeFileSync(snapFile, JSON.stringify(snap))
+    check('migration: a long-closed run with an open blocker — the close is not checked after the update', jc.forceCloseViolations(data, task).length === 0, JSON.stringify(jc.forceCloseViolations(data, task)))
+    check('migration: the closed headings are recorded as old, the snapshot is marked', JSON.parse(readFileSync(snapFile, 'utf8')).closedSeen === true && jc.baselineInfo(data, task).lines.has(jc.fingerprint(closedTop.split('\n')[0])))
+    const rewritten = readFileSync(join(task, 'STAGES.md'), 'utf8').replace('## Force-прогон 2026-10-05 — завершён 2026-10-05', '## Force-прогон 2026-10-19 — завершён 2026-10-19')
+    writeFileSync(join(task, 'STAGES.md'), rewritten)
+    check('migration: a close written after the update is still checked', jc.forceCloseViolations(data, task).some((violation) => violation.rule === 'force-blockers'))
+    rmSync(dir, { recursive: true, force: true })
+  }
+  // A CLAUDE_PLUGIN_DATA with a trailing slash reads what was written.
+  {
+    const { dir, task } = fixture('ru')
+    const slash = `${mkdtempSync(join(tmpdir(), 'digest-slash-'))}/`
+    const gates = await import(join(PLUGIN, 'ci-gates.mjs'))
+    gates.recordGate(slash, '/wt-slash', 'npm run e2e', 0, 'tree1')
+    check('trailing slash: gate records written to the directory are read back', Object.keys(gates.gateRecords(slash, '/wt-slash')).includes('npm run e2e'))
+    const first = jc.baselineInfo(slash, task)
+    check('trailing slash: the snapshot is found on the second look (the same moment, one file)', jc.baselineInfo(slash, task).ledgerSince === first.ledgerSince && readdirSync(join(slash, 'journal-baseline')).length === 1)
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(slash, { recursive: true, force: true })
+  }
+  // "Awaiting confirmation": an item dated before the run still waits for the user. The short view names the reports that block "ready for PR".
+  for (const language of ['ru', 'en']) {
+    const { dir, task, data } = fixture(language, '- допущение 6 — старое, 2026-10-10 ждёт заказчика\n')
+    const view = runDigest(task, data, null, 'short')
+    const t = collectDigest(task, data, null).text
+    check(`digest ${language}: an awaiting item dated before the run is counted`, view.includes(t.accepted(6)), view)
+    check(`digest ${language}: no "not ready" line without a critical/major finding or a FAIL without an outcome`, !view.includes(t.notReady(['x']).slice(0, 12)), view)
+    writeFileSync(join(task, 'checks', 'pro-review-3.md'), '# pro-review\nFindings: critical 0 · major 1 · minor 0 · Вердикт: Request changes\n')
+    utimesSync(join(task, 'checks', 'pro-review-3.md'), new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+    writeFileSync(join(task, 'checks', 'i18n-sweep-1.md'), '# i18n-sweep\nFindings: critical 1 · major 0 · minor 0\n')
+    utimesSync(join(task, 'checks', 'i18n-sweep-1.md'), new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+    const after = runDigest(task, data, null, 'short')
+    check(`digest ${language}: one line names the reports with a critical/major finding or a FAIL without an outcome`, after.includes(t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])) && after.split('\n').filter((line) => line === t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])).length === 1, after)
+    check(`digest ${language}: the full view does not carry the line (the verdicts are in the checkers' section of the file)`, !runDigest(task, data, null).includes(t.notReady(['i18n-sweep-1.md', 'pro-review-3.md'])))
+    // M-3: the verdict in the head is the first round's; a major closed by an outcome line makes the report ready.
+    writeFileSync(join(task, 'checks', 'pro-review-4.md'), `# pro-review\nFindings: critical 0 · major 1 · minor 0 · ${language === 'ru' ? 'Вердикт' : 'Verdict'}: Request changes\n\n## ${language === 'ru' ? 'Итог находок' : 'Findings outcome'}\n- M-1 — ${language === 'ru' ? 'исправлено' : 'fixed'}: src/a.ts:1\n`)
+    utimesSync(join(task, 'checks', 'pro-review-4.md'), new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+    check(`digest ${language}: a major closed in "Findings outcome" does not make the report not ready`, !runDigest(task, data, null, 'short').includes('pro-review-4.md'))
+    rmSync(dir, { recursive: true, force: true })
+  }
+  // The data directory: a script run from Bash (no CLAUDE_PLUGIN_DATA) finds the hooks' directory and still reads the bare one.
+  {
+    const home = mkdtempSync(join(tmpdir(), 'digest-home-'))
+    const root = join(home, '.claude/plugins/data')
+    // The name comes from where the script lies: `installPath` in installed_plugins.json that contains it; none — `-inline`.
+    const dataFor = (installed, known = null) => {
+      const own = mkdtempSync(join(tmpdir(), 'digest-home-'))
+      mkdirSync(join(own, '.claude/plugins/data/stage-pipeline'), { recursive: true })
+      if (installed) {
+        mkdirSync(join(own, '.claude/plugins'), { recursive: true })
+        writeFileSync(join(own, '.claude/plugins/installed_plugins.json'), JSON.stringify({ version: 2, plugins: installed }))
+      }
+      if (known) {
+        mkdirSync(join(own, '.claude/plugins'), { recursive: true })
+        writeFileSync(join(own, '.claude/plugins/known_marketplaces.json'), JSON.stringify(known))
+      }
+      const env = { ...process.env, HOME: own }
+      delete env.CLAUDE_PLUGIN_DATA
+      return spawnSync(process.execPath, ['--input-type=module', '-e', `import { pluginDataDir } from ${JSON.stringify(join(PLUGIN, 'hooks/pipeline-state.mjs'))}; console.log(pluginDataDir())`], { env, encoding: 'utf8' }).stdout.trim()
+    }
+    const pluginRoot = dirname(PLUGIN)
+    check('data dir: no registry — the --plugin-dir one (-inline), as the hooks of that session', dataFor(null).endsWith('/.claude/plugins/data/stage-pipeline-inline'))
+    check('data dir: the script lies in the installPath of stage-pipeline@magzhan — the hooks\' directory', dataFor({ 'stage-pipeline@magzhan': [{ installPath: pluginRoot }] }).endsWith('/stage-pipeline-magzhan'))
+    check('data dir: two marketplaces — the one whose installPath holds the script', dataFor({ 'stage-pipeline@other': [{ installPath: '/elsewhere/stage-pipeline' }], 'stage-pipeline@magzhan': [{ installPath: pluginRoot }] }).endsWith('/stage-pipeline-magzhan'))
+    const marketplaceDir = dirname(dirname(pluginRoot))
+    check('data dir: an install elsewhere, no marketplace holds the script (a --plugin-dir copy) — -inline, not the install\'s directory', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/stage-pipeline/0.16.0' }] }).endsWith('/stage-pipeline-inline'))
+    check('data dir: a marketplace connected as a directory, the install in the cache elsewhere — the marketplace\'s directory (source.path)', dataFor({ 'stage-pipeline@magzhan': [{ installPath: '/elsewhere/cache/magzhan/stage-pipeline/0.16.0' }] }, { magzhan: { source: { source: 'directory', path: marketplaceDir }, installLocation: '/elsewhere/magzhan' } }).endsWith('/stage-pipeline-magzhan'))
+    check('data dir: the same through installLocation, with a trailing slash', dataFor(null, { magzhan: { installLocation: `${marketplaceDir}/` } }).endsWith('/stage-pipeline-magzhan'))
+    check('data dir: a marketplace directory that is only a name prefix of the script path does not match', dataFor(null, { magzhan: { source: { path: `${marketplaceDir}-ht1` } } }).endsWith('/stage-pipeline-inline'))
+    check('data dir: the legacy directory is the bare one beside a marketplace one, and none beside the bare one', legacyDataDir(join(root, 'stage-pipeline-magzhan')) === join(root, 'stage-pipeline') && legacyDataDir(join(root, 'stage-pipeline')) === null)
+    // A snapshot and a gate run written to the bare directory earlier are still read through the hooks' directory.
+    const { task } = fixture('ru')
+    const hooksData = join(root, 'stage-pipeline-magzhan')
+    const bare = join(root, 'stage-pipeline')
+    jc.baselineInfo(bare, task)
+    const before = readdirSync(join(bare, 'journal-baseline')).length
+    check('data dir: a snapshot from the bare directory is read, no second one is made in the hooks\' directory', jc.baselineInfo(hooksData, task).ledgerSince > 0 && !existsSync(join(hooksData, 'journal-baseline')) && before === 1)
+    const gates = await import(join(PLUGIN, 'ci-gates.mjs'))
+    gates.recordGate(bare, '/wt', 'npm run e2e', 0, 'tree1')
+    gates.recordGate(hooksData, '/wt', 'npm run smoke', 0, 'tree1')
+    check('data dir: gate runs of both directories are one set of records', same(Object.keys(gates.gateRecords(hooksData, '/wt')).sort(), ['npm run e2e', 'npm run smoke']))
+    // AC-1.5: the CLI from Bash and the hook's call give the same text.
+    mkdirSync(join(home, '.claude/plugins'), { recursive: true })
+    writeFileSync(join(home, '.claude/plugins/installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'stage-pipeline@magzhan': [{ installPath: dirname(PLUGIN) }] } }))
+    const env = { ...process.env, HOME: home }
+    delete env.CLAUDE_PLUGIN_DATA
+    const cli = spawnSync(process.execPath, [join(PLUGIN, 'run-digest.mjs'), task, '--no-write'], { env, cwd: home, encoding: 'utf8' }).stdout
+    check('run-digest from Bash and the hook\'s call on one task give one text', cli === `${publishDigest(task, hooksData, null, { write: false }).short}\n`, cli)
+    rmSync(home, { recursive: true, force: true })
+    rmSync(task, { recursive: true, force: true })
+  }
+}
 
 // Report language: prose in the task language; code, paths, ids, UI quotes and short reports do not count.
 const lines = (text, count) => Array.from({ length: count }, () => text).join('\n')

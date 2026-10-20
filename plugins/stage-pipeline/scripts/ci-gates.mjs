@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { baselineInfo, fingerprint, lastForceBlock, openBlockers } from './journal-check.mjs'
-import { pluginDataDir, readPipelineState } from './hooks/pipeline-state.mjs'
+import { pluginDataDir, readDataFiles, readPipelineState } from './hooks/pipeline-state.mjs'
 import { CI_GATES_HEADING, CLOSED_WORD, NO_GATE_COMMAND, WITH_BLOCKERS } from './markers.mjs'
 
 const RUN_CHECK = join(dirname(fileURLToPath(import.meta.url)), 'run-check.mjs')
@@ -70,22 +70,30 @@ export function treeState(cwd) {
   }
 }
 
-function recordsPath(dataDir, worktree) {
+/** The records file name relative to a data directory (not a slice of the full path: `CLAUDE_PLUGIN_DATA` may end with a slash). */
+function recordsName(worktree) {
   let real = worktree
   try {
     real = realpathSync(worktree)
   } catch {
     // the directory is gone — keyed by the original path
   }
-  return join(dataDir, 'gates', `${createHash('sha1').update(real).digest('hex').slice(0, 16)}.json`)
+  return join('gates', `${createHash('sha1').update(real).digest('hex').slice(0, 16)}.json`)
 }
 
+const recordsPath = (dataDir, worktree) => join(dataDir, recordsName(worktree))
+
 export function gateRecords(dataDir, worktree) {
-  try {
-    return JSON.parse(readFileSync(recordsPath(dataDir, worktree), 'utf8'))
-  } catch {
-    return {}
+  // The bare `stage-pipeline` directory is read first, the hooks' one over it: a run recorded earlier from Bash still counts.
+  const records = {}
+  for (const text of readDataFiles(dataDir, recordsName(worktree)).reverse()) {
+    try {
+      Object.assign(records, JSON.parse(text))
+    } catch {
+      // a broken file — skip it
+    }
   }
+  return records
 }
 
 export function recordGate(dataDir, worktree, command, code, tree) {

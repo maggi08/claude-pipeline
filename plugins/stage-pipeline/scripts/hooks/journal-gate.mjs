@@ -3,8 +3,8 @@ import { basename, join, resolve, sep } from 'node:path'
 import { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, reportNames, reportViolations } from '../journal-check.mjs'
 import { gateCloseViolations } from '../ci-gates.mjs'
 import { CLOSED_WORD } from '../markers.mjs'
-import { runDigest } from '../run-digest.mjs'
-import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
+import { publishDigest, taskRepo } from '../run-digest.mjs'
+import { pluginDataDir, readDataFiles, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
  * /stage-check requires that a criterion's result names who checked it, a checker's PASS carries a measurement,
@@ -17,7 +17,7 @@ import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-stat
  * a proven false finding or a blocker, not by a line "leaving it" or "to Awaiting user confirmation": in three
  * reviewed tasks most of what the user later fixed by hand went away this way. A report is checked
  * when written (summary, forbidden outcomes, geometry for devtools-verify), the journal — when a checker is marked
- * and when a force run is closed. When a run closes, a summary of what was not verified goes into the context — it goes
+ * and when a force run is closed. When a run closes, the short summary goes into the context (the full one is written to RUN-DIGEST.md) — it goes
  * into the final message as a whole, not at the orchestrator's choice.
  *
  * 0.15 — the project's CI gates (smoke, e2e from the config): "completed" only when each one is green on the current HEAD,
@@ -105,15 +105,18 @@ function closedDigest(task) {
   const { lines } = baselineInfo(pluginDataDir(), task.dir)
   const shown = join(pluginDataDir(), 'digest-shown.json')
   let seen = {}
-  try {
-    seen = JSON.parse(readFileSync(shown, 'utf8'))
-  } catch {
-    // first showing
+  // The hooks' directory over the bare one, where earlier showings from Bash may lie.
+  for (const text of readDataFiles(pluginDataDir(), 'digest-shown.json').reverse()) {
+    try {
+      seen = { ...seen, ...JSON.parse(text) }
+    } catch {
+      // first showing
+    }
   }
   const key = `${real(task.dir)}::${block.heading}`
   // A block closed before the snapshot is an old run: its summary was already seen.
   if (seen[key] || lines.has(fingerprint(block.heading))) return null
-  const digest = runDigest(task.dir, pluginDataDir(), state)
+  const { short, path } = publishDigest(task.dir, pluginDataDir(), taskRepo(task.dir, state))
   try {
     mkdirSync(pluginDataDir(), { recursive: true })
     writeFileSync(shown, JSON.stringify({ ...seen, [key]: new Date().toISOString() }))
@@ -121,7 +124,8 @@ function closedDigest(task) {
     // not written — the summary will come once more, which is safe
   }
   return (
-    `stage-pipeline: force run ${task.ticket} is closed. Below is the summary from the journal and reports. Put it into the final message as a whole, ` +
-    `without retelling or picking: what to check first is the user's decision.\n\n${digest}`
+    `stage-pipeline: force run ${task.ticket} is closed. Below is the short summary, picked by the script from the journal and reports; ` +
+    `the full one is in ${path ?? 'RUN-DIGEST.md (could not be written)'}. Put the short one into the final message as a whole, without retelling or picking; ` +
+    `on "more" or "what about X" open that section from the file instead of repeating everything.\n\n${short}`
   )
 }

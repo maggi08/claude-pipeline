@@ -66,6 +66,65 @@ export const NO_BRANCH = /^(TBD|нет|none|n\/a|—)$/i
 
 /** `## Force run …` headings (or the Russian form). Each call is a fresh regexp (the g flag). */
 export const forceHeadings = (text) => [...text.matchAll(/^## (?:Force-прогон|Force run).*$/gm)]
+/** The date of a heading (or any line): ISO `2026-10-13` or `13.10.2026`, normalised to ISO; the first one found. */
+export function headingDate(heading) {
+  const iso = heading.match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) return iso[0]
+  const ru = heading.match(/(\d{2})\.(\d{2})\.(\d{4})/)
+  return ru ? `${ru[3]}-${ru[2]}-${ru[1]}` : null
+}
+
+const ORDINAL_WORDS = [
+  [2, /(?<![а-яёa-z])(?:второй|вторая|second|2nd)(?![а-яёa-z])/i],
+  [3, /(?<![а-яёa-z])(?:третий|третья|third|3rd)(?![а-яёa-z])/i],
+  [4, /(?<![а-яёa-z])(?:четв[её]ртый|четв[её]ртая|fourth|4th)(?![а-яёa-z])/i],
+  [5, /(?<![а-яёa-z])(?:пятый|пятая|fifth|5th)(?![а-яёa-z])/i],
+]
+/**
+ * The ordinal of a run in its heading: "(2)", a letter right after the date (`2026-09-30b`), "second run" in Russian or English.
+ * No sign — 1. Used only to tell apart blocks of the same date.
+ */
+export function runOrdinal(heading) {
+  const paren = heading.match(/\(\s*(\d{1,2})\s*\)/)
+  if (paren) return Number(paren[1])
+  const letter = heading.match(/(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4})([a-z])(?![a-z])/i)
+  if (letter) return letter[1].toLowerCase().charCodeAt(0) - 96
+  for (const [number, word] of ORDINAL_WORDS) if (word.test(heading)) return number
+  return 1
+}
+
+/**
+ * The freshest "Force run" heading: the latest date in the heading, not the last heading in the file — some journals
+ * keep new blocks on top. Equal dates go by the ordinal in the heading ("(2)", "second run"), then by the direction the file keeps its
+ * blocks in (more descending steps than ascending — the newest is the first of them, otherwise the last). A heading without a readable date
+ * makes the dates useless for choosing: the last heading of the file wins, as before.
+ */
+export function freshestForceHeading(stages) {
+  const all = forceHeadings(stages)
+  if (!all.length) return undefined
+  const dated = all.map((heading) => ({ heading, date: headingDate(heading[0]) }))
+  if (dated.some(({ date }) => !date)) return all.at(-1)
+  const top = dated.reduce((max, { date }) => (date > max ? date : max), '')
+  let ties = dated.filter(({ date }) => date === top)
+  const ordinals = ties.map(({ heading }) => runOrdinal(heading[0]))
+  const best = Math.max(...ordinals)
+  if (new Set(ordinals).size > 1) ties = ties.filter((_, index) => ordinals[index] === best)
+  let down = 0
+  let up = 0
+  for (let i = 1; i < dated.length; i++) {
+    if (dated[i].date < dated[i - 1].date) down++
+    else if (dated[i].date > dated[i - 1].date) up++
+  }
+  return (down > up ? ties[0] : ties.at(-1)).heading
+}
+
+/** The text of a Force block: from the end of its heading up to the next `## ` section. `heading` is a match of `forceHeadings`. */
+export function forceBlockBody(stages, heading) {
+  const rest = stages.slice(heading.index + heading[0].length)
+  const end = rest.search(/^## /m)
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
 export const FORCE_BLOCK_PRESENT = /^## (?:Force-прогон|Force run)/m
 /** "completed" or "complete" (or the Russian form) — the run is closed. "complete" is accepted on purpose: a heading that closes the run in
  * neither form would leave it both open (forceActive) and not checked on close (forceCloseViolations).

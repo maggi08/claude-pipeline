@@ -32,10 +32,12 @@ import {
   UNVERIFIED_HEADING,
   VISUAL_REFERENCE_FIELD,
   WITH_BLOCKERS,
+  forceBlockBody,
   forceHeadings,
+  freshestForceHeading,
   stageHeadingOf,
 } from './markers.mjs'
-import { taskLanguage } from './hooks/pipeline-state.mjs'
+import { readDataFiles, taskLanguage } from './hooks/pipeline-state.mjs'
 import { languageMismatch } from './report-language.mjs'
 
 const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
@@ -239,7 +241,7 @@ export const reportChecker = (name) => CHECKERS.find((checker) => name.includes(
 
 // The summary in live reports: "Findings: critical 0 · major 2 · minor 1", "0 critical / 2 major", "🔴0 · 🟠2",
 // "🔴 Critical: 1", "- Major: 0", "critical 0, major 0", "Request changes (2 major)", for dead-code — "1 remove".
-const SUMMARY_LINE = /вердикт|итог|сводка|находк|findings|verdict|severity|🔴|🟠|^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:critical|major)\**\s*:\s*\d|(?:critical|major|minor)[^\n]*(?:critical|major|minor)/i
+export const SUMMARY_LINE = /вердикт|итог|сводка|находк|findings|verdict|severity|🔴|🟠|^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:critical|major)\**\s*:\s*\d|(?:critical|major|minor)[^\n]*(?:critical|major|minor)/i
 const severityWord = (words) => words.map((word) => `(?<![\\w-])${word}(?![\\w-])`).join('|')
 const severityPatterns = (words) => [new RegExp(`(\\d+)\\s*\\**\\s*(?:${severityWord(words)})`, 'i'), new RegExp(`(?:${severityWord(words)})\\**\\s*:?\\s*(\\d+)`, 'i')]
 
@@ -578,24 +580,31 @@ export function journalText(taskDir) {
     .join('\n')
 }
 
-function baselinePath(dataDir, taskDir) {
+/** The snapshot file name relative to a data directory (not a slice of the full path: `CLAUDE_PLUGIN_DATA` may end with a slash). */
+function baselineName(taskDir) {
   let real = taskDir
   try {
     real = realpathSync(taskDir)
   } catch {
     // the task directory is gone — snapshot by the original path
   }
-  return join(dataDir, 'journal-baseline', `${createHash('sha1').update(real).digest('hex').slice(0, 16)}.json`)
+  return join('journal-baseline', `${createHash('sha1').update(real).digest('hex').slice(0, 16)}.json`)
 }
+
+const baselinePath = (dataDir, taskDir) => join(dataDir, baselineName(taskDir))
 
 const BASELINE_VERSION = 2
 
 function readBaseline(dataDir, taskDir) {
-  try {
-    return JSON.parse(readFileSync(baselinePath(dataDir, taskDir), 'utf8'))
-  } catch {
-    return null
+  // The main data directory first, then the bare `stage-pipeline` one (where scripts from Bash used to write).
+  for (const text of readDataFiles(dataDir, baselineName(taskDir))) {
+    try {
+      return JSON.parse(text)
+    } catch {
+      // a broken snapshot — try the next one
+    }
   }
+  return null
 }
 
 function writeBaseline(dataDir, taskDir, data) {
@@ -612,6 +621,12 @@ export function loadBaseline(dataDir, taskDir) {
   return data ? new Set(data.lines) : null
 }
 
+/** Fingerprints of the Force headings that are already closed: a run closed before the snapshot is an old one — its gates and its summary are not checked after the fact. */
+const closedForceFingerprints = (taskDir) =>
+  forceHeadings(journalText(taskDir))
+    .filter(([heading]) => CLOSED_WORD.test(heading))
+    .map(([heading]) => fingerprint(heading))
+
 /**
  * Snapshot v2 — all journal lines and the moment from which reports are checked for a findings outcome (`ledgerSince`).
  * Snapshot v1 (0.12–0.13) kept only lines with ✅ and skip: at the first look of a new version all current lines are
@@ -622,11 +637,16 @@ export function loadBaseline(dataDir, taskDir) {
 export function baselineInfo(dataDir, taskDir) {
   const data = readBaseline(dataDir, taskDir)
   if (data?.version === BASELINE_VERSION) {
-    if (Array.isArray(data.reports)) return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(data.reports) }
-    // snapshot v2 without report names: current reports are old (a lazy migration, the other fields do not change)
-    const migrated = { ...data, reports: reportNames(taskDir) }
+    if (Array.isArray(data.reports) && data.closedSeen) return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(data.reports) }
+    // snapshot v2 without report names or without the closed Force headings: what is there now is old (a lazy migration, the other fields do not change)
+    const migrated = {
+      ...data,
+      reports: Array.isArray(data.reports) ? data.reports : reportNames(taskDir),
+      closedSeen: true,
+      lines: [...new Set([...data.lines, ...closedForceFingerprints(taskDir)])],
+    }
     writeBaseline(dataDir, taskDir, migrated)
-    return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(migrated.reports) }
+    return { lines: new Set(migrated.lines), ledgerSince: data.ledgerSince, reports: new Set(migrated.reports) }
   }
   const now = Date.now()
   const current = journalCandidates(journalText(taskDir))
@@ -634,7 +654,15 @@ export function baselineInfo(dataDir, taskDir) {
   const lines = data
     ? [...old, ...current.filter((line) => old.has(fingerprint(line)) || !legacyViolation(line)).map(fingerprint)]
     : current.map(fingerprint)
-  const next = { taskDir, created: data?.created ?? new Date(now).toISOString(), version: BASELINE_VERSION, ledgerSince: now, lines: [...new Set(lines)], reports: reportNames(taskDir) }
+  const next = {
+    taskDir,
+    created: data?.created ?? new Date(now).toISOString(),
+    version: BASELINE_VERSION,
+    ledgerSince: now,
+    lines: [...new Set([...lines, ...closedForceFingerprints(taskDir)])],
+    reports: reportNames(taskDir),
+    closedSeen: true,
+  }
   writeBaseline(dataDir, taskDir, next)
   return { lines: new Set(next.lines), ledgerSince: now, reports: new Set(next.reports) }
 }
@@ -662,20 +690,55 @@ export function openLedgers(dataDir, taskDir) {
   )
 }
 
-/** The last "Force run" block: the heading and the text up to the next section. */
+/** The freshest "Force run" block (the latest date, not the last in the file — `freshestForceHeading`): the heading and the text up to the next section. */
 export function lastForceBlock(stages) {
-  const heading = forceHeadings(stages).at(-1)
+  const heading = freshestForceHeading(stages)
   if (!heading) return null
-  const rest = stages.slice(heading.index + heading[0].length)
-  const end = rest.search(/^## /m)
-  return { heading: heading[0], body: end === -1 ? rest : rest.slice(0, end) }
+  return { heading: heading[0], body: forceBlockBody(stages, heading) }
 }
 
-// A blocker `B<n> — …` without a mark that the user lifted it.
+// A blocker `B<n> — …` without a mark that the user lifted it. A blocker also stands on the `Blockers:` field line itself (the Russian field name too),
+// and several of them can follow each other there ("Blockers: B1 — … B7 — …"): each one is an item of its own, and the lift mark is looked for in its own text.
+const BLOCKERS_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Блокеры|Blockers)\**\s*:\s*(\S.*)$/i
+// One mark for the whole field: "both lifted", "all lifted" (the Russian plural forms too), or "lifted …". It counts only in the head of the field, before the first
+// `B<n>` ("Blockers: lifted on 2026-10-14. B1 — …"), or as the closing phrase of the line ("B1 — …; B2 — … — both lifted by the user 2026-10-14."). A mark in the middle of an item
+// ("B1 — CI red, all closed issues reopened") is that item's own words. A negation anywhere in the head ("not all", the Russian "not all" and "none of them") takes the mark back.
+const FIELD_LIFTED =
+  /(?<![а-яё])(?:(?:оба|обе|все)\s+)?(?:сняты|закрыты|решены)(?![а-яё])|\b(?:both|all)(?:\s+of\s+them)?\s+(?:are\s+|were\s+)?(?:lifted|closed|resolved|answered)\b|^(?:all\s+)?(?:lifted|closed|resolved)\b/i
+const FIELD_NEGATED =
+  /(?<![а-яё])(?:не|ни|частичн[а-яё]*)(?![а-яё])|\b(?:not|none|no|never|neither|partly|partially|in\s+part)\b/i
+const FIELD_ITEM = /(?<![\w*])\**B\d+/
+// The tail after the closing mark: the same words and answers as the user-answer markers of `markers.mjs` ("by the user", "in chat", "user decision <date>", a date
+// in both formats, a quote), each token behind its own separator, so it stays linear on long runs of spaces.
+const CLOSING_TAIL_WORD = '(?:by|on|in|the|user|users|answers?|decision|interview|chat|пользователем|пользователя|пользователю|ответом|ответами|решением|решение|интервью|в|по|от|чате)'
+const CLOSING_TAIL_TOKEN = `(?:${CLOSING_TAIL_WORD}(?![\\wа-яё])|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4}|«[^»\\n]{0,80}»|"[^"\\n]{0,80}"|“[^”\\n]{0,80}”)`
+const FIELD_CLOSING_MARK = '(?:оба|обе|все|both|all)(?:\\s+of\\s+them)?\\s+(?:are\\s+|were\\s+)?(?:сняты|закрыты|решены|lifted|closed|resolved|answered)(?![\\wа-яё])'
+const FIELD_CLOSING = new RegExp(`^${FIELD_CLOSING_MARK}(?:,?\\s+${CLOSING_TAIL_TOKEN})*$`, 'i')
+// "Not all closed", "closed not all": a lift word under a negation of the whole group lifts nothing, in the field head and in an item alike.
+const GROUP_NEGATION =
+  /(?:(?<![а-яё])не\s+(?:все|оба|обе)|(?:сняты|закрыты|решены)\s+не\s+все|(?<![а-яё])ни\s+один[а-яё]*|\bnot\s+(?:all|both)\b)(?![а-яё])(?:\s+(?:сняты|закрыты|решены|lifted|closed|resolved|answered)(?![а-яё\w]))?/gi
+const fieldLifted = (field) => {
+  const item = field.search(FIELD_ITEM)
+  const head = item < 0 ? field : field.slice(0, item)
+  // A mark in the head is one for the whole field only as a finished phrase ("lifted on 2026-10-14. B1 — …"): "lifted B1, B3; B2 — …" lists the lifted ones, it is not a mark for B2.
+  if (FIELD_LIFTED.test(head) && !FIELD_NEGATED.test(head) && (item < 0 || /[.;]$/.test(head.trimEnd()))) return true
+  if (item < 0) return false
+  // A loop, not `/[\s.;]+$/`: that one is quadratic on a long run of spaces in the middle of the line.
+  let end = field.length
+  while (end > 0 && /[\s.;]/.test(field[end - 1])) end--
+  // The last piece: after a dash or after a sentence end ("; ", ". "), not after the dots of a date ("14.10.2026").
+  const last = field.slice(0, end).split(/[.;](?=\s)|[—–]/).pop().trim()
+  return FIELD_CLOSING.test(last)
+}
 export const openBlockers = (body) =>
   body
     .split('\n')
-    .filter((line) => BLOCKER_LINE.test(line) && !BLOCKER_LIFTED.test(line))
+    .flatMap((line) => {
+      const field = line.match(BLOCKERS_FIELD)
+      if (field && fieldLifted(field[1])) return []
+      return field ? field[1].replace(/([.;])\s+(?=B\d+\s*[—–:-])/g, '$1\n').split('\n') : [line]
+    })
+    .filter((line) => BLOCKER_LINE.test(line) && !BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' ')))
     .map((line) => line.trim())
 
 /**
