@@ -17,8 +17,8 @@
  * look at the task: old tasks and closed stages do not have to be rewritten.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
@@ -43,8 +43,8 @@ import {
   stageHeadingOf,
   stripQuoted,
 } from './markers.mjs'
-import { TASK_FILE_MAX, pluginDataDir, readDataFiles, reportNames, taskLanguage } from './hooks/pipeline-state.mjs'
-import { NOT_A_FAIL, entryHead, entrySeverity, weakForm } from './dismissals.mjs'
+import { pluginDataDir, readDataFiles, readTaskFile, reportNames, taskFile, taskLanguage, unreadableMessage } from './hooks/pipeline-state.mjs'
+import { NOT_A_FAIL, entryHead, entrySeverity, findingRows, weakForm } from './dismissals.mjs'
 import { decisionViolations } from './decisions.mjs'
 import { languageMismatch } from './report-language.mjs'
 
@@ -52,25 +52,16 @@ const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
 const AC_ID = /AC-\d/
 
 /**
- * The text of a task file, or null: only a regular file (a symlink only when it resolves inside the task directory) of at most `TASK_FILE_MAX` bytes.
- * A committed `STAGES-ARCHIVE.md -> /dev/random` made every hook read until it was killed, and a symlink out of the task directory would put another file into the hook messages.
+ * Task files go through one bounded reader (pipeline-state `readBounded`): a regular file of at most `TASK_FILE_MAX` bytes whose real path lies inside the real task directory.
+ * A file that is there but refused (too large, a link out of the task, not a regular file) is not "empty": the rules that need it count it as open (`unreadableViolation`).
  */
-export function readTaskFile(taskDir, ...segments) {
-  const path = join(taskDir, ...segments)
-  try {
-    let target = path
-    if (lstatSync(path).isSymbolicLink()) {
-      target = realpathSync(path)
-      const base = realpathSync(taskDir)
-      if (!target.startsWith(base + sep)) return null
-    }
-    const stat = statSync(target)
-    if (!stat.isFile() || stat.size > TASK_FILE_MAX) return null
-    return readFileSync(target, 'utf8')
-  } catch {
-    return null
-  }
-}
+export { readTaskFile, taskFile }
+
+/** The violation of a task file that is there but cannot be read: the gates refuse with it (S-2 of the 5c review: a 4 MB log pasted into a report turned an open critical into an all-clear). */
+export const unreadableViolation = (file, read) => ({ rule: 'file-unreadable', id: file, problem: read.problem, message: unreadableMessage(file, read) })
+
+/** A report path as the task sees it: `<task>/checks/<name>` is read inside the task directory (a `checks/` directory linked out of it is refused), any other path inside its own directory. */
+const reportRead = (path) => (basename(dirname(path)) === 'checks' ? taskFile(dirname(dirname(path)), 'checks', basename(path)) : taskFile(dirname(path), basename(path)))
 
 export function requiredCheckers(line) {
   const tags = [...line.matchAll(/\[verify:\s*([^\]]+)\]/gi)].map((match) => match[1])
@@ -236,9 +227,10 @@ export function checkerLineViolation(line, taskDir) {
   if (!taskDir) return null
   const match = line.match(/\[x\]\s*\**([\w-]+)\**[^\n]*?checks\/([\w.-]+\.md)/i)
   if (!match || !reportChecker(match[2])) return null
-  const text = readTaskFile(taskDir, 'checks', match[2])
-  if (text === null) return null
-  const [violation] = ledgerViolations(text, match[2], { complete: true })
+  const read = taskFile(taskDir, 'checks', match[2])
+  if (read.problem === 'missing') return null
+  if (read.problem) return unreadableViolation(`checks/${match[2]}`, read)
+  const [violation] = ledgerViolations(read.text, match[2], { complete: true })
   return violation ?? null
 }
 
@@ -302,7 +294,14 @@ export const reportChecker = (name) => CHECKERS.find((checker) => name.includes(
 // "🔴 Critical: 1", "- Major: 0", "critical 0, major 0", "Request changes (2 major)", for dead-code — "1 remove".
 export const SUMMARY_LINE = /вердикт|итог|сводка|находк|findings|verdict|severity|🔴|🟠|^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:critical|major)\**\s*:\s*\d|(?:critical|major|minor)[^\n]*(?:critical|major|minor)/i
 const severityWord = (words) => words.map((word) => `(?<![\\w-])${word}(?![\\w-])`).join('|')
-const severityPatterns = (words) => [new RegExp(`(\\d+)\\s*\\**\\s*(?:${severityWord(words)})`, 'i'), new RegExp(`(?:${severityWord(words)})\\**\\s*:?\\s*(\\d+)`, 'i')]
+// A count starts where its digit run starts (`(?<!\d)`): from inside a long run the same match fails again, and every start in it made the scan quadratic.
+const severityPatterns = (words) => [new RegExp(`(?<!\\d)(\\d+)\\s*\\**\\s*(?:${severityWord(words)})`, 'i'), new RegExp(`(?:${severityWord(words)})\\**\\s*:?\\s*(\\d+)`, 'i')]
+const DEAD_CODE_COUNT = new RegExp(`(?<!\\d)${DEAD_CODE_REMOVE.source}`, DEAD_CODE_REMOVE.flags)
+// The count patterns put optional `\s*` and `\**` side by side, which backtracked polynomially on a long run: `| 🔴` + 250 spaces in a table row took 80 s,
+// past the timeout of every hook, and the force commit went through unchecked. So a line is read flat: a run of spaces and asterisks is one character
+// (`*` when it holds one), and only its first COUNT_LINE_MAX characters count. The summary forms read the same (checked on 1 182 live reports).
+const COUNT_LINE_MAX = 2000
+const countLine = (line) => line.replace(/[\s*]+/g, (run) => (run.includes('*') ? '*' : ' ')).slice(0, COUNT_LINE_MAX)
 
 /**
  * How many critical and major findings are in a report. First the summary from the first lines (standard or any live form),
@@ -314,11 +313,11 @@ export function findingCounts(text, name = '') {
   const lines = text.split('\n')
   const patterns = {
     critical: [/🔴\s*\**\s*(?:critical)?\s*\**\s*:?\s*(\d+)/i, ...severityPatterns(security ? ['critical', 'high'] : ['critical'])],
-    major: [/🟠\s*\**\s*(?:major)?\s*\**\s*:?\s*(\d+)/i, ...severityPatterns(security ? ['major', 'medium'] : ['major']), DEAD_CODE_REMOVE],
-    minor: [/🟡\s*\**\s*(?:minor)?\s*\**\s*:?\s*(\d+)/i, /(\d+)\s*\**\s*minor/i, /(?<![\w-])minor\**\s*:?\s*(\d+)/i, ...(security ? severityPatterns(['low']) : [])],
+    major: [/🟠\s*\**\s*(?:major)?\s*\**\s*:?\s*(\d+)/i, ...severityPatterns(security ? ['major', 'medium'] : ['major']), DEAD_CODE_COUNT],
+    minor: [/🟡\s*\**\s*(?:minor)?\s*\**\s*:?\s*(\d+)/i, /(?<!\d)(\d+)\s*\**\s*minor/i, /(?<![\w-])minor\**\s*:?\s*(\d+)/i, ...(security ? severityPatterns(['low']) : [])],
   }
   const summary = { critical: null, major: null, minor: null }
-  for (const line of lines.slice(0, 30)) {
+  for (const line of lines.slice(0, 30).map(countLine)) {
     if (!SUMMARY_LINE.test(line) || !/\d/.test(line)) continue
     for (const key of ['critical', 'major', 'minor']) {
       const found = patterns[key].map((pattern) => line.match(pattern)).find(Boolean)
@@ -328,7 +327,7 @@ export function findingCounts(text, name = '') {
   if (summary.critical !== null || summary.major !== null) return { critical: summary.critical ?? 0, major: summary.major ?? 0, minor: summary.minor ?? 0, summary: true }
   const cell = new RegExp(`\\|\\s*\\**(${security ? 'critical|high|major|medium' : 'critical|major'})\\**\\s*\\|`, 'i')
   const rows = { critical: 0, major: 0, minor: 0, summary: false }
-  for (const line of lines) {
+  for (const line of lines.map(countLine)) {
     const severity = line.match(cell)?.[1]
     if (severity) rows[/critical|high/i.test(severity) ? 'critical' : 'major']++
     if (/\|\s*\**minor\**\s*\|/i.test(line)) rows.minor++
@@ -342,7 +341,9 @@ export function findingCounts(text, name = '') {
 // Criteria with FAIL are findings too, even without a row in the table. "was FAIL" after a fix does not count.
 export function failedCriteria(text) {
   const ids = new Set()
-  for (const line of text.split('\n')) {
+  for (const raw of text.split('\n')) {
+    // A line with FAIL is read with its whitespace runs flat: `was(?:\s+previously)?\s*` is quadratic on a long run of spaces (1.3 s at 50 000).
+    const line = /\bFAIL\b/.test(raw) ? raw.replace(/\s+/g, ' ') : ''
     if (!/\bFAIL\b/.test(line) || /(?:было|was(?:\s+previously)?|до\s+фикса|before\s+(?:the\s+)?fix)\s*:?\s*FAIL/i.test(line)) continue
     for (const [id] of line.matchAll(/AC-\d+[a-z]?(?:\.\d+[a-z]?)*/g)) ids.add(id)
   }
@@ -426,8 +427,8 @@ const citedFresh = (entry) =>
     .map((word) => word.replace(/(?<!\.)\.+$/, ''))
     .find((word) => word.length <= 120 && word.endsWith('.md') && /fresh/i.test(word))
 /** Why a `false` line on a critical finding does not stand: no fresh report is cited, or the cited one is not in `checks/`. `null` — it stands (or the finding is not a critical). */
-function criticalWithoutFresh(entry, text, name, taskDir) {
-  if (entrySeverity(entry, text) !== 'critical') return null
+function criticalWithoutFresh(entry, severity, name, taskDir) {
+  if (severity !== 'critical') return null
   const cited = citedFresh(entry)
   // The fresh report belongs to the dismissed finding's checker and stage: `pro-review-3.md` is confirmed by `pro-review-3-fresh*.md`, not by any `*-fresh*.md` of the task.
   const checker = reportChecker(name)
@@ -450,33 +451,42 @@ export function collectDismissals(reports) {
   return reports.flatMap(({ name, text }) => {
     const checker = reportChecker(name)
     if (!checker) return []
+    const rows = findingRows(text)
     return (ledgerEntries(text) ?? []).flatMap((entry) => {
       if (disposition(entry) !== 'false') return []
-      const severity = entrySeverity(entry, text)
-      const fail = /^\**AC-\d/.test(entryHead(entry).trim()) || /\bFAIL\b/.test(entry)
+      const severity = entrySeverity(entry, rows)
+      const fail = onFail(entry)
       if (severity !== 'critical' && severity !== 'major' && !fail) return []
       return [{ name, checker, severity, fail, notFinding: fail && NOT_A_FAIL.test(entry), line: entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '') }]
     })
   })
 }
 
+/** A ledger line on a failed criterion: an `AC-*` id in its head or the word FAIL ("not a FAIL" is a criterion that passed). */
+const onFail = (entry) => /^\**AC-\d/.test(entryHead(entry).trim()) || /\bFAIL\b/.test(entry)
+
 /**
  * Violations of the findings outcome in a report: a forbidden outcome ("leaving it", "to Awaiting"), a "pre-existing" claim without proof
  * on the base, an unrecognised outcome; with `complete` also fewer outcomes than critical + major (or FAIL, if there are more).
+ * A violation of one line carries the `severity` of the finding it closes (`entrySeverity`, null when unknown) and `fail` (the line is on a failed criterion):
+ * the digest counts a report not ready for PR by them, not by the number of outcome lines — a fixed minor does not stand in for a dismissed critical.
  */
 export function ledgerViolations(text, name, { complete = false, strict = false, taskDir = null } = {}) {
   const entries = ledgerEntries(text) ?? []
   const shown = (entry) => entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').slice(0, 90)
+  let rows = null
+  const severityOf = (entry) => entrySeverity(entry, (rows ??= findingRows(text)))
+  const lineOf = (entry) => ({ shown: shown(entry), severity: severityOf(entry), fail: onFail(entry) && !NOT_A_FAIL.test(entry) })
   const found = []
   for (const entry of entries) {
     const kind = disposition(entry, { strict })
     if (strict && kind === 'false') {
-      const critical = criticalWithoutFresh(entry, text, name, taskDir)
+      const critical = criticalWithoutFresh(entry, severityOf(entry), name, taskDir)
       if (critical) {
         found.push({
           rule: 'ledger-critical-fresh',
           id: name,
-          shown: shown(entry),
+          ...lineOf(entry),
           message: critical,
         })
       }
@@ -487,28 +497,28 @@ export function ledgerViolations(text, name, { complete = false, strict = false,
         rule: 'ledger-weak',
         id: name,
         form,
-        shown: shown(entry),
+        ...lineOf(entry),
         message: `checks/${name}: "${shown(entry)}" — a dismissal without a proof (${form}). It needs ${need}. Otherwise the finding stands: fix it, raise it as a blocker B<n> or take a user decision (${LEDGER_DOC}).`,
       })
     } else if (kind === 'parked') {
       found.push({
         rule: 'ledger-parked',
         id: name,
-        shown: shown(entry),
+        ...lineOf(entry),
         message: `checks/${name}: "${shown(entry)}" — this is a decision not to fix, and the user makes it. The outcome is fixed, false (with proof) or blocker B<n> (${LEDGER_DOC}).`,
       })
     } else if (kind === 'unproven') {
       found.push({
         rule: 'ledger-unproven',
         id: name,
-        shown: shown(entry),
+        ...lineOf(entry),
         message: `checks/${name}: "${shown(entry)}" — "pre-existing" without proof on the base. Check on the base sha or on prod and write down the measurement, otherwise it is a finding of the task.`,
       })
     } else if (kind === 'unknown') {
       found.push({
         rule: 'ledger-unknown',
         id: name,
-        shown: shown(entry),
+        ...lineOf(entry),
         message: `checks/${name}: the outcome "${shown(entry)}" is not recognised — allowed are "fixed: …", "false: …", "B<n>", "user decision <date>" (${LEDGER_DOC}).`,
       })
     }
@@ -614,9 +624,11 @@ export function languageViolation(text, name, language) {
 
 /** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
 export function reportViolations(path, language = null, { fresh = false, strict = false } = {}) {
-  const text = readTaskFile(dirname(path), basename(path))
-  if (text === null) return []
+  const read = reportRead(path)
   const name = basename(path)
+  if (read.problem === 'missing') return []
+  if (read.problem) return [unreadableViolation(`checks/${name}`, read)]
+  const { text } = read
   // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
   const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
   return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh)].filter(Boolean)
@@ -685,7 +697,7 @@ export function barePasses(text) {
 
 export { reportNames }
 
-export function reportViolation(path, text = readTaskFile(dirname(path), basename(path))) {
+export function reportViolation(path, text = reportRead(path).text ?? null) {
   if (text === null) return null
   const ids = barePasses(text)
   if (!ids.length) return null
@@ -858,12 +870,18 @@ export function newReports(taskDir, since) {
   })
 }
 
+/** The ledger violations of a report in `checks/`; a report that is there but cannot be read gives its `file-unreadable` violation instead: nothing in it can be counted as closed. */
+export function reportLedgerViolations(taskDir, name, options = {}) {
+  const read = taskFile(taskDir, 'checks', name)
+  if (read.problem === 'missing') return []
+  if (read.problem) return [unreadableViolation(`checks/${name}`, read)]
+  return ledgerViolations(read.text, name, { ...options, taskDir })
+}
+
 /** New reports without a full findings outcome — what a force stage is not committed with and a run is not closed with. */
 export function openLedgers(dataDir, taskDir) {
   const { ledgerSince, ledgerOld } = baselineInfo(dataDir, taskDir)
-  return newReports(taskDir, ledgerSince).flatMap((name) =>
-    ledgerViolations(readTaskFile(taskDir, 'checks', name) ?? '', name, { complete: true, strict: !ledgerOld.has(name), taskDir }),
-  )
+  return newReports(taskDir, ledgerSince).flatMap((name) => reportLedgerViolations(taskDir, name, { complete: true, strict: !ledgerOld.has(name) }))
 }
 
 /** The freshest "Force run" block (the latest date, not the last in the file — `freshestForceHeading`): the heading and the text up to the next section. */
@@ -924,8 +942,11 @@ export const openBlockers = (body) => blockerLines(body).filter((line) => !BLOCK
  * Only when the heading was rewritten after the snapshot: old closed runs are not touched.
  */
 export function forceCloseViolations(dataDir, taskDir) {
-  const stages = readTaskFile(taskDir, 'STAGES.md')
-  if (stages === null) return []
+  const read = taskFile(taskDir, 'STAGES.md')
+  // A journal that is there but cannot be read: no closing, blocker or report rule can run — every edit of the task is told so, never waved through.
+  if (read.problem && read.problem !== 'missing') return [unreadableViolation('STAGES.md', read)]
+  const stages = read.text
+  if (stages === undefined) return []
   const block = lastForceBlock(stages)
   if (!block || !CLOSED_WORD.test(block.heading)) return []
   const { lines } = baselineInfo(dataDir, taskDir)
@@ -956,8 +977,9 @@ function main(args) {
   }
   const taskDir = resolve(target.endsWith('.md') ? join(target, '..') : target)
   const found = journalViolations(journalText(taskDir), reportNames(taskDir), taskDir)
-  const stages = readTaskFile(taskDir, 'STAGES.md')
-  const language = stages === null ? null : taskLanguage(stages)
+  const journal = taskFile(taskDir, 'STAGES.md')
+  if (journal.problem && journal.problem !== 'missing') found.push(unreadableViolation('STAGES.md', journal))
+  const language = journal.text === undefined ? null : taskLanguage(journal.text)
   // The stage 5 rules (weak dismissals, a critical needs a fresh report) apply to reports that were not there at the first look: the same `ledgerOld` as the hook reads.
   // Read-only (a manual run writes no snapshot); with no snapshot yet every report counts as new.
   const ledgerOld = new Set(readBaseline(pluginDataDir(), taskDir)?.ledgerOld ?? [])
@@ -967,7 +989,7 @@ function main(args) {
     // Summary and geometry are rules for new reports: old ones lack them by construction, without --ledger it is noise.
     const all = reportViolations(path, language, { strict }).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
     return args.includes('--ledger') && reportChecker(name)
-      ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...ledgerViolations(readTaskFile(taskDir, 'checks', name) ?? '', name, { complete: true, strict, taskDir })]
+      ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...reportLedgerViolations(taskDir, name, { complete: true, strict })]
       : all
   })
   const messages = [...new Set([...found, ...reports].map((violation) => violation.message))]

@@ -38,9 +38,11 @@ const archiveScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'archi
 const line = (task, mark) => {
   const mode = task.forceActive ? ' [force run]' : ''
   const path = task.foreign ? task.stagesPath : relative(state.root, task.stagesPath)
+  // A journal that cannot be read is named with why: the gates refuse on it, and a status line would hide the reason.
+  if (task.unreadable) return `- ${task.ticket}${mark}: ${task.unreadable.message} — ${path}`
   let size = ''
   if (mark && task.sizeKb > STAGES_BUDGET_KB) {
-    const { sourceBytes, resultBytes } = planArchive(readFileSync(task.stagesPath, 'utf8'))
+    const { sourceBytes, resultBytes } = planArchive(task.stages)
     if (sourceBytes - resultBytes > 5 * 1024) {
       size = ` — ${task.sizeKb} KB, fold the closed stages: node "${archiveScript}" ${path} --apply`
     }
@@ -107,7 +109,10 @@ if (afterClose.length) {
   }
 }
 
+// A config over the limit is read in part: the keys at its top still apply, and the rest does not — said once per session, with the path.
+const oversize = (state.oversize ?? []).map(({ path, size, max }) => `- ${relative(state.root, path)} is ${Math.round(size / 1024)} KB, over the ${Math.round(max / 1024)} KB limit — the hooks read only its first ${Math.round(max / 1024)} KB.`)
 const lines = [
+  ...oversize,
   ...current.flatMap((task) => [line(task, ` (branch ${state.branch})`), outside(task)].filter(Boolean)),
   ...others.map((task) => line(task, '')),
   ...afterClose,

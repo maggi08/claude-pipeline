@@ -35,7 +35,7 @@ const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
 if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(0)
 // The hook runs before and after every Bash call: the rule modules are loaded only for a command that can add or commit.
-const { journalText, openLedgers, reportNames } = await import('../journal-check.mjs')
+const { journalText, openLedgers, readTaskFile, reportNames } = await import('../journal-check.mjs')
 const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
 const { PARITY_TABLE } = await import('../markers.mjs')
 const { commitVerdict, finishPending, savePending } = await import('../receipts.mjs')
@@ -43,6 +43,7 @@ const { commitScope, gitInvocations } = await import('./git-command.mjs')
 const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
 
 const cwd = input.cwd ?? process.cwd()
+const archiveScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'archive-stages.mjs')
 const invocations = gitInvocations(command, cwd)
 const callId = input.tool_use_id ?? input.session_id ?? 'call'
 
@@ -59,6 +60,15 @@ for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
 
+  // A journal that cannot be read: neither mode can be told, and no rule can run — refused in both, with the file and the limit named (fail closed).
+  if (task?.unreadable) {
+    deny(
+      `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}, and its ${task.unreadable.message.replace(/^STAGES\.md/, task.stagesPath)} ` +
+        'Until it can be read, git add and git commit on this branch are rejected: the hook cannot tell the normal mode from a force run. ' +
+        'Do not repeat the command: show git status and the ready commit message and hand the commit to the user (their own terminal is not gated). ' +
+        (task.unreadable.file === 'STAGES.md' && task.unreadable.problem === 'too-large' ? `To fold the closed stages: node "${archiveScript}" ${task.stagesPath} --apply.` : ''),
+    )
+  }
   if (task && !task.forceActive) {
     deny(
       `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}${task.foreign ? ` (STAGES.md is in the task directory of another repo: ${task.stagesPath})` : ''}, ` +
@@ -117,9 +127,10 @@ for (const { subcommand, dir, args } of invocations) {
   }
 
   const overrides = safeScan(state.worktree, paths, state.config)
+  // Read bounded, as every task file: a kit report that cannot be read reports no file.
   const kitReports = reportNames(task.dir)
     .filter((name) => name.includes('kit-overrides'))
-    .map((name) => readFileSync(join(task.dir, 'checks', name), 'utf8'))
+    .map((name) => readTaskFile(task.dir, 'checks', name) ?? '')
     .join('\n')
   const unreported = overrides.filter(({ file }) => !kitReports.includes(file))
   if (unreported.length) {

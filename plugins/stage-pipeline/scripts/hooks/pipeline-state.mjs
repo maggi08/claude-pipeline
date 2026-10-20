@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,23 +44,28 @@ export function readPipelineState(cwd) {
   const tasks = readTasks(taskDir, branch)
   if (!tasks.some((task) => task.current)) tasks.push(...foreignTasks(taskDir, mainRoot(cwd) ?? root, branch))
 
-  return { root, worktree, branch, config, taskDir, tasks }
+  return { root, worktree, branch, config, taskDir, tasks, oversize: oversizeConfigs(root) }
 }
 
 function readTasks(taskDir, branch) {
   if (!isDir(taskDir)) return []
   return readdirSync(taskDir)
     .map((ticket) => ({ ticket, dir: join(taskDir, ticket), stagesPath: join(taskDir, ticket, 'STAGES.md') }))
-    .filter(({ dir, stagesPath }) => isDir(dir) && isFile(stagesPath) && statSync(stagesPath).size <= TASK_FILE_MAX)
-    .map(({ ticket, dir, stagesPath }) => {
-      const stages = readFileSync(stagesPath, 'utf8')
-      const { mtimeMs, size } = statSync(stagesPath)
+    .filter(({ dir }) => isDir(dir))
+    .flatMap(({ ticket, dir, stagesPath }) => {
+      // STAGES.md through the task file rule: a journal that is there but cannot be read (over the cap, a link out of the task, not a regular file)
+      // keeps its task — current by the ticket in the branch — with `unreadable`, so the gates refuse instead of finding no rules.
+      const read = taskFile(dir, 'STAGES.md')
+      if (read.problem === 'missing') return []
+      const stages = read.text ?? ''
+      const { mtimeMs, size } = statOf(stagesPath) ?? { mtimeMs: 0, size: read.size ?? 0 }
       const branches = taskBranches(stages)
-      return {
+      return [{
         ticket,
         dir,
         stagesPath,
         stages,
+        unreadable: read.problem ? { file: 'STAGES.md', ...read, message: unreadableMessage('STAGES.md', read) } : null,
         mtime: mtimeMs,
         sizeKb: Math.round(size / 1024),
         status: stages.match(STATUS_LINE)?.[1]?.trim() ?? null,
@@ -71,7 +76,7 @@ function readTasks(taskDir, branch) {
         current: Date.now() - mtimeMs < STALE_DAYS * DAY && isCurrentTask(ticket, branches, branch),
         open: OPEN_STATUS.test(stages),
         forceActive: forceActive(stages),
-      }
+      }]
     })
     .sort((a, b) => b.mtime - a.mtime)
 }
@@ -116,10 +121,17 @@ export function pluginDataDir() {
       return null
     }
   }
-  const installed = Object.entries(readJson('installed_plugins.json')?.plugins ?? {}).flatMap(([key, entries]) => {
-    const match = key.match(/^stage-pipeline@(.+)$/)
-    return match ? [{ marketplace: match[1], paths: (entries ?? []).map(({ installPath }) => installPath) }] : []
-  })
+  // An entry of another shape (a v1 file's object, a `null` in the list) is skipped, and a registry that cannot be read is none, as on 0.17.0: then the marketplaces, then `-inline`.
+  let installed = []
+  try {
+    installed = Object.entries(readJson('installed_plugins.json')?.plugins ?? {}).flatMap(([key, entries]) => {
+      const match = key.match(/^stage-pipeline@(.+)$/)
+      if (!match || !Array.isArray(entries) || !entries.every((entry) => entry !== null && typeof entry === 'object')) return []
+      return [{ marketplace: match[1], paths: entries.map(({ installPath }) => installPath) }]
+    })
+  } catch {
+    installed = []
+  }
   // The current install, then any cached version of it: a session that started before an update still runs `cache/<marketplace>/stage-pipeline/<old version>`,
   // and its hooks get the same `stage-pipeline-<marketplace>`.
   for (const { marketplace, paths } of installed) if (paths.some(under)) return named(marketplace)
@@ -127,8 +139,12 @@ export function pluginDataDir() {
   if (cached && installed.some(({ marketplace }) => marketplace === cached[1])) return named(cached[1])
   // A marketplace connected as a directory runs the plugin from its working tree while `installPath` points into the cache:
   // the script lies in the marketplace's source directory, and that marketplace's name is the hooks' one.
-  for (const [name, entry] of Object.entries(readJson('known_marketplaces.json') ?? {})) {
-    if ([entry?.installLocation, entry?.source?.path].some(under)) return named(name)
+  try {
+    for (const [name, entry] of Object.entries(readJson('known_marketplaces.json') ?? {})) {
+      if ([entry?.installLocation, entry?.source?.path].some(under)) return named(name)
+    }
+  } catch {
+    // no list of marketplaces of a shape we read
   }
   // A script outside every install and marketplace (a `--plugin-dir` run, a worktree): the hooks of that session get `-inline`.
   return join(root, 'stage-pipeline-inline')
@@ -231,10 +247,10 @@ export function unjournaledCommits(state, task, { limit = 50, gate = null } = {}
     integration
       .map((base) => ({ ref: base, ahead: Number(git(cwd, 'rev-list', '--count', `${base}..${ref}`) ?? Infinity) }))
       .sort((a, b) => a.ahead - b.ahead)[0]
+  // Through the task file rule: a journal file that cannot be read knows no commit, so its commits are named (a warning, never a stall).
   const journal = ['STAGES.md', 'STAGES-ARCHIVE.md', 'PR.md']
-    .map((name) => join(task.dir, name))
-    .filter(isFile)
-    .map((path) => readFileSync(path, 'utf8'))
+    .map((name) => readTaskFile(task.dir, name))
+    .filter((text) => text !== null)
     .join('\n')
 
   const candidates = new Map()
@@ -367,8 +383,39 @@ export function taskDirFromConfig(config, root) {
 export function readConfig(root) {
   const local = join(root, '.claude/pipeline.config.local.md')
   const shared = join(root, '.claude/pipeline.config.md')
-  // local goes over shared: a field missing in local is taken from the shared config.
-  return [local, shared].filter(isFile).map((path) => readFileSync(path, 'utf8')).join('\n')
+  // local goes over shared: a field missing in local is taken from the shared config. A config over CONFIG_FILE_MAX is read up to its first CONFIG_FILE_MAX bytes (every key the hooks read sits at the top).
+  return [local, shared].map((path) => readConfigPart(path).text ?? null).filter((text) => text !== null).join('\n')
+}
+
+/** The configs that are over CONFIG_FILE_MAX: `{ path, size, max }` each. They are read in part, and session-start says so. */
+export function oversizeConfigs(root) {
+  return ['.claude/pipeline.config.local.md', '.claude/pipeline.config.md'].map((name) => join(root, name)).flatMap((path) => {
+    const { size } = readConfigPart(path)
+    return size === undefined ? [] : [{ path, size, max: CONFIG_FILE_MAX }]
+  })
+}
+
+/** A pointer or a small file's text, or null: a regular file (a link to one is followed) of at most CONFIG_FILE_MAX bytes. */
+const readConfigFile = (path) => readBounded(path, { max: CONFIG_FILE_MAX }).text ?? null
+
+/**
+ * A config file: `{ text }` of a regular file (a link to one is followed); of one over CONFIG_FILE_MAX bytes the first CONFIG_FILE_MAX bytes with its `size`; `{}` for a file
+ * that is not there, not a regular file or cannot be opened. Presence is `isFile`, so a config is never silently empty: it is read in part, and the size is kept.
+ */
+function readConfigPart(path) {
+  const read = readBounded(path, { max: CONFIG_FILE_MAX })
+  if (read.problem !== 'too-large') return read
+  let fd
+  try {
+    fd = openSync(realpathSync(path), 'r')
+    const buffer = Buffer.alloc(CONFIG_FILE_MAX)
+    const got = readSync(fd, buffer, 0, CONFIG_FILE_MAX, 0)
+    return { text: buffer.toString('utf8', 0, got), size: read.size }
+  } catch {
+    return {}
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
 }
 
 /**
@@ -440,6 +487,61 @@ export const STALE_DAYS = 21
 export const AFTER_CLOSE_DAYS = 14
 /** Task files larger than this are not read: a STAGES.md or a report is kilobytes, a symlink to a device or a runaway file would stall every hook. */
 export const TASK_FILE_MAX = 4 * 1024 * 1024
+/** Config files (and the `.git` / `commondir` pointers) larger than this are not read: a config is a few kilobytes. */
+export const CONFIG_FILE_MAX = 256 * 1024
+
+/**
+ * The one bounded reader for files a hook takes from a repo: `{ text }`, or `{ problem, size?, max? }` and no text. Only a regular file (a link is followed to its target)
+ * of at most `max` bytes; with `within`, only when the real path of the file — every component resolved — lies inside the real `within` directory.
+ * `problem`: `missing` (nothing there, or a dangling link), `outside`, `not-file` (a directory, a device, a FIFO), `too-large`, `unreadable` (no permission).
+ * Precedents: a committed `STAGES-ARCHIVE.md -> /dev/random` made every hook read until it was killed; a link to a 963 MB system file cost 1.5–2 GB and an exit 1
+ * on every Bash call; a `checks/` directory linked to another project put that project's report into the run digest.
+ */
+export function readBounded(path, { max = TASK_FILE_MAX, within = null } = {}) {
+  let real
+  try {
+    real = realpathSync(path)
+  } catch (error) {
+    return { problem: error?.code === 'ENOENT' || error?.code === 'ENOTDIR' ? 'missing' : 'unreadable' }
+  }
+  if (within !== null) {
+    const base = realPath(within)
+    if (!base) return { problem: 'missing' }
+    if (!real.startsWith(base.endsWith(sep) ? base : base + sep)) return { problem: 'outside' }
+  }
+  let stat
+  try {
+    stat = statSync(real)
+  } catch {
+    return { problem: 'unreadable' }
+  }
+  if (!stat.isFile()) return { problem: 'not-file' }
+  if (stat.size > max) return { problem: 'too-large', size: stat.size, max }
+  try {
+    return { text: readFileSync(real, 'utf8') }
+  } catch {
+    return { problem: 'unreadable' }
+  }
+}
+
+/** A file of a task directory through `readBounded`: inside the real task directory, at most TASK_FILE_MAX bytes. The task directory itself may sit behind a symlink (`.claude/tasks` → `~/.claude/team-tasks`). */
+export const taskFile = (taskDir, ...segments) => readBounded(join(taskDir, ...segments), { within: taskDir })
+
+/** The text of a task file, or null (missing or refused: see `taskFile` for why). */
+export const readTaskFile = (taskDir, ...segments) => taskFile(taskDir, ...segments).text ?? null
+
+const megabytes = (bytes) => `${Number((bytes / 1024 / 1024).toFixed(2))} MB`
+/** What a refused task file says: the file, why it is refused (the size and the limit), and that its rules count it as open. `file` is as the message shows it (`STAGES.md`, `checks/x.md`). */
+export function unreadableMessage(file, { problem, size, max = TASK_FILE_MAX }) {
+  const why = {
+    'too-large': `it is ${megabytes(size)}, over the ${megabytes(max)} limit of a task file`,
+    outside: 'its real path is outside the task directory (a symlink in the path)',
+    'not-file': 'it is not a regular file',
+    unreadable: 'it cannot be opened',
+  }[problem]
+  const fix = file === 'STAGES.md' ? 'fold the closed stages (archive-stages.mjs) or move the pasted text out of it' : 'move the pasted log or dump out of it'
+  return `${file} cannot be read: ${why}. The rules cannot run on it, so it counts as open — ${problem === 'outside' ? 'put the file itself in the task directory' : fix}.`
+}
 
 /** The reports of a task: regular `.md` files in `checks/` (a symlink or a directory named `*.md` is not a report). Here, not in journal-check, so journal-gate stamps them without loading the rules. */
 export function reportNames(taskDir) {
@@ -480,13 +582,14 @@ export function hasPipelineConfig(cwd) {
     const dotGit = join(dir, '.git')
     if (isDir(dotGit)) return false
     if (isFile(dotGit)) {
-      try {
-        const gitDir = resolve(dir, readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() ?? '')
-        const common = resolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf8').trim())
-        return basename(common) === '.git' && isFile(join(dirname(common), '.claude/pipeline.config.md'))
-      } catch {
-        return false // a submodule or a broken link: no main tree to look at, as in configRoot
-      }
+      // Both are one-line pointers: read bounded, as a config is.
+      const pointer = readConfigFile(dotGit)
+      const gitDir = resolve(dir, pointer?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() ?? '')
+      const commondir = pointer === null ? null : readConfigFile(join(gitDir, 'commondir'))
+      // a submodule or a broken link: no main tree to look at, as in configRoot
+      if (commondir === null) return false
+      const common = resolve(gitDir, commondir.trim())
+      return basename(common) === '.git' && isFile(join(dirname(common), '.claude/pipeline.config.md'))
     }
     const up = dirname(dir)
     if (up === dir) return false
@@ -501,7 +604,7 @@ export function hasPipelineConfig(cwd) {
  */
 export function devServerConfig(root) {
   if (!root) return null
-  const texts = ['pipeline.config.md', 'pipeline.config.local.md'].map((name) => join(root, '.claude', name)).filter(isFile).map((path) => readFileSync(path, 'utf8'))
+  const texts = ['pipeline.config.md', 'pipeline.config.local.md'].map((name) => readConfigFile(join(root, '.claude', name))).filter((text) => text !== null)
   return texts.length ? parseDevServer(texts) : null
 }
 
@@ -575,6 +678,14 @@ function isDir(path) {
     return statSync(path).isDirectory()
   } catch {
     return false
+  }
+}
+
+function statOf(path) {
+  try {
+    return statSync(path)
+  } catch {
+    return null
   }
 }
 

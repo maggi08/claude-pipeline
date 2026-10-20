@@ -40,16 +40,20 @@ import {
   ledgerViolations,
   newReports,
   openBlockers,
-  readTaskFile,
   SUMMARY_LINE,
+  taskFile,
 } from './journal-check.mjs'
 import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
 import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceHeadings, headingDate } from './markers.mjs'
-import { pluginDataDir, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
-import { bulletText, rollbackRank } from './decisions.mjs'
+import { TASK_FILE_MAX, pluginDataDir, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
+import { bulletTexts, rollbackRank } from './decisions.mjs'
 
 const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
+// The ledger violations that keep a report from a PR: too few outcomes, a critical dismissed without its fresh report, and a line without an allowed outcome on a critical, a major or a FAIL.
+const LINE_RULES = new Set(['ledger-weak', 'ledger-parked', 'ledger-unproven', 'ledger-unknown'])
+const blocksPr = (violation) =>
+  violation.rule === 'ledger-missing' || violation.rule === 'ledger-critical-fresh' || (LINE_RULES.has(violation.rule) && (violation.severity === 'critical' || violation.severity === 'major' || violation.fail))
 
 // Digest headings and lines by task language. In a ru task they stay as they were, byte for byte.
 const TEXT = {
@@ -71,6 +75,7 @@ const TEXT = {
     labels: { noOutcome: 'находок без итога', notVerified: 'непроверенного', minor: 'minor', accepted: 'принятого само', noRuntime: 'этапов без проверки в рантайме' },
     noneOf: (names) => `Нет: ${names.join(', ')}.`,
     notReady: (names) => `Не готово к PR — critical/major или FAIL без итога в отчётах: ${names.join(', ')}.`,
+    unreadable: (items) => `Не готово к PR — файлы не читаются, их правила не применены: ${items.map(({ file, problem, size, max }) => `${file} (${{ 'too-large': `${megabytes(size)} МБ, больше лимита ${megabytes(max)} МБ`, outside: 'реальный путь вне каталога задачи', 'not-file': 'не обычный файл', unreadable: 'не открывается' }[problem]})`).join('; ')}.`,
     verifiedJournal: (n, byStage) => `- критерии журнала (${n}): ${byStage}`,
     verifiedReports: (n) => `- чекеры не смогли проверить (${n})`,
     stage: (n) => `этап ${n}`,
@@ -111,6 +116,7 @@ const TEXT = {
     labels: { noOutcome: 'findings without an outcome', notVerified: 'unverified items', minor: 'minor', accepted: 'items accepted on my own', noRuntime: 'stages without runtime check' },
     noneOf: (names) => `None: ${names.join(', ')}.`,
     notReady: (names) => `Not ready for PR — critical/major or FAIL without an outcome in: ${names.join(', ')}.`,
+    unreadable: (items) => `Not ready for PR — these files cannot be read, so their rules did not run: ${items.map(({ file, problem, size, max }) => `${file} (${{ 'too-large': `${megabytes(size)} MB, over the ${megabytes(max)} MB limit`, outside: 'its real path is outside the task directory', 'not-file': 'not a regular file', unreadable: 'cannot be opened' }[problem]})`).join('; ')}.`,
     verifiedJournal: (n, byStage) => `- journal criteria (${n}): ${byStage}`,
     verifiedReports: (n) => `- checkers could not verify (${n})`,
     stage: (n) => `stage ${n}`,
@@ -124,6 +130,8 @@ const TEXT = {
     ledger: ({ message }) => message,
   },
 }
+const megabytes = (bytes = TASK_FILE_MAX) => Number((bytes / 1024 / 1024).toFixed(2))
+
 /** "None", "nothing left", "all widths verified (by code)": the section lists nothing. The "all … verified" form is checked without backtracking: the tail is cut off by hand. */
 function nothingLeft(text) {
   const plain = text.trim().replace(/\.$/, '')
@@ -154,8 +162,10 @@ export function runScope(stages, block, ledgerSince) {
 /** The numbers and lines of the digest — one structure for both views, so that no category exists in one and not in the other. */
 export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   const { lines, ledgerSince, ledgerOld } = baselineInfo(dataDir, taskDir)
-  const stages = readTaskFile(taskDir, 'STAGES.md') ?? ''
-  const language = taskLanguage(stages) ?? 'ru'
+  const journal = taskFile(taskDir, 'STAGES.md')
+  const stages = journal.text ?? ''
+  // A STAGES.md that cannot be read has no `Language:` line to take: the config's `language:` says it, else English (not the Russian default of an unknown task).
+  const language = (journal.text === undefined ? (repo?.config?.match(/^[ \t]*-[ \t]*language:[ \t]*`?(en|ru)\b/im)?.[1]?.toLowerCase() ?? 'en') : taskLanguage(stages)) ?? 'ru'
   const block = lastForceBlock(stages)
   const scope = runScope(stages, block, ledgerSince)
   // The lines of the other Force blocks are theirs: an earlier run's "Unfinished: AC-… ⏳" is not this run's.
@@ -171,13 +181,21 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const dated = lineDate(line)
     return !(byDate && scope.date && dated && dated < scope.date)
   }
-  const reports = newReports(taskDir, scope.since).map((name) => ({ name, text: readTaskFile(taskDir, 'checks', name) ?? '' }))
+  // A report that is there but cannot be read (over the cap, a link out of the task) is not an empty one: it goes to `unreadable`, and no category counts it as clean.
+  const all = newReports(taskDir, scope.since).map((name) => ({ name, read: taskFile(taskDir, 'checks', name) }))
+  const reports = all.filter(({ read }) => read.text !== undefined).map(({ name, read }) => ({ name, text: read.text }))
+  const unreadable = [
+    ...(journal.problem && journal.problem !== 'missing' ? [{ file: 'STAGES.md', ...journal }] : []),
+    ...all.filter(({ read }) => read.problem && read.problem !== 'missing').map(({ name, read }) => ({ file: `checks/${name}`, ...read })),
+  ]
   // Stage 5 rules (weak dismissals, a critical needs a fresh report) apply to the reports that are not in the snapshot's `ledgerOld`.
   const strictFor = (name) => !ledgerOld.has(name)
+  // Read the way journal-gate reads a fresh report (strict + taskDir; `ledgerOld` is the old/new split).
+  const ledgers = reports.map(({ name, text }) => ({ name, violations: ledgerViolations(text, name, { complete: true, strict: strictFor(name), taskDir }) }))
 
   const blockers = (block ? openBlockers(block.body) : []).map((line) => `- ${bullet(line)}`)
   const gates = (repo ? gateStatus(dataDir, repo.worktree, repo.config, forceSkips(taskDir)) : []).map((gate) => ({ ok: gateAccepted(gate), skipped: gate.status === 'skipped', lastRed: Boolean(gate.lastRed), line: `- ${gate.status === 'green' ? '✅' : gate.status === 'skipped' ? '⏭' : '✗'} ${describe(gate, language)}` }))
-  const noOutcome = reports.flatMap(({ name, text }) => ledgerViolations(text, name, { complete: true, strict: strictFor(name), taskDir }).map((violation) => `- ${TEXT[language].ledger(violation)}`))
+  const noOutcome = ledgers.flatMap(({ violations }) => violations.map((violation) => `- ${TEXT[language].ledger(violation)}`))
 
   const unverifiedReports = []
   for (const { name, text } of reports) {
@@ -207,25 +225,27 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   // "Awaiting confirmation" is a live list: an item leaves it only when the user confirms it, so a date earlier than the run does not cut it.
   // Stage 5: the rows are sorted by what undoing the decision costs, expensive first (a stable sort: rows of the same cost keep the journal order).
   const awaiting = section(stages, AWAITING_SECTION)
+  // Only bullet rows are ranked, each on its text built in one pass (`bulletTexts`).
+  const texts = bulletTexts(awaiting)
   const accepted = awaiting
-    .map((line, index) => ({ line, rank: rollbackRank(bulletText(awaiting, index)), index }))
-    .filter(({ line }) => fresh(line, { byDate: false }))
+    .map((line, index) => ({ line, index }))
     .filter(({ line }) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line))
+    .filter(({ line }) => fresh(line, { byDate: false }))
+    .map((row) => ({ ...row, rank: rollbackRank(texts.get(row.index)) }))
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map(({ line }) => `- ${bullet(line).slice(0, 220)}`)
   // Stage 5: every dismissal of a critical, major or FAIL finding, verbatim with its checker (the short view gives the count).
   const dismissals = collectDismissals(reports)
 
-  const checkers = reports.map(({ name, text }) => {
+  const checkers = all.map(({ name, read }) => {
+    const text = read.text ?? ''
     const summary = text.split('\n').find((line) => SUMMARY_LINE.test(line) && /\d/.test(line))
     return summary ? `- ${name}: ${bullet(summary).slice(0, 200)}` : `- ${name}`
   })
-  // A report is not ready for PR while a critical or major finding has no allowed outcome in its "Findings outcome" (fixed / false with proof / blocker / user decision).
-  // The verdict in the head of the report is the first round's: a finding closed by an outcome line no longer counts.
-  const notReady = reports
-    // Read the way journal-gate reads a fresh report (strict + taskDir; `ledgerOld` is the old/new split), so a critical closed by a weak `false` makes the digest not ready, as the "without an outcome" list says.
-    .filter(({ name, text }) => ledgerViolations(text, name, { complete: true, strict: strictFor(name), taskDir }).some((violation) => violation.rule === 'ledger-missing' || violation.rule === 'ledger-critical-fresh'))
-    .map(({ name }) => name)
+  // A report is not ready for PR while a critical or major finding (or a FAIL) has no allowed outcome in its "Findings outcome" (fixed / false with proof / blocker / user decision).
+  // The verdict in the head of the report is the first round's: a finding closed by an outcome line no longer counts. Each line is judged by the severity of its own finding,
+  // not by how many outcome lines there are: a fixed minor does not stand in for a weak or parked critical.
+  const notReady = ledgers.filter(({ violations }) => violations.some(blocksPr)).map(({ name }) => name)
   // Stage receipts (VT-1 stage 3): force commits of this run that changed UI and have no devtools-verify report. `receipted` — the run has receipts at all (the old runs have none, and their digest stays as it was).
   const receipted = hasReceipts(dataDir, taskDir, scope.since)
   const noRuntime = stagesWithoutRuntime(dataDir, taskDir, scope.since).map((receipt) => {
@@ -233,13 +253,14 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const ui = uiFiles(receipt.files ?? [])
     return `${TEXT[language].noRuntimeLine({ stage: receipt.stage, sha: String(receipt.sha).slice(0, 7), ui: `${ui.slice(0, 3).join(', ')}${ui.length > 3 ? ` +${ui.length - 3}` : ''}`, skip: skip?.reason })}`
   })
-  return { language, text: TEXT[language], receipted, noRuntime, notReady, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals }
+  return { language, text: TEXT[language], receipted, noRuntime, notReady, unreadable, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals }
 }
 
 /** The full view: every line of every category (as the digest was before it had two views, plus the early-run note). */
 function renderFull(d) {
   const { text } = d
   const out = [text.blockers(d.blockers.length), ...(d.blockers.length ? d.blockers : [text.none])]
+  if (d.unreadable.length) out.push('', text.unreadable(d.unreadable))
   if (d.gates.length) {
     const skipped = d.gates.filter((gate) => gate.skipped).length
     out.push('', text.gates(d.gates.filter(({ ok }) => ok).length - skipped, d.gates.length, skipped), ...d.gates.map(({ line }) => line))
@@ -270,6 +291,7 @@ function renderFull(d) {
 function renderShort(d, path, unwritten = null) {
   const { text } = d
   const out = [text.blockers(d.blockers.length), ...(d.blockers.length ? d.blockers : [text.none])]
+  if (d.unreadable.length) out.push(text.unreadable(d.unreadable))
   if (d.notReady.length) out.push(text.notReady(d.notReady))
   if (d.gates.length) {
     const red = d.gates.filter(({ ok }) => !ok)

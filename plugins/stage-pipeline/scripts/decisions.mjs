@@ -126,9 +126,31 @@ export function rollbackRank(text) {
   return 1
 }
 
-/** A bullet line of a section and the lines under it up to the next bullet — the text its rollback cost is read from. */
-export function bulletText(lines, index) {
-  let end = index + 1
-  while (end < lines.length && !ITEM.test(lines[end])) end++
-  return lines.slice(index, end).join(' ')
+/**
+ * Each bullet of a section's lines with the lines under it up to the next bullet — the text its rollback cost is read from — as `Map(index → text)`, in one pass.
+ * A text stops growing at BULLET_TEXT_MAX characters: the cost sits in the bullet's first clauses, and a pasted log under one item made the old per-line join quadratic
+ * (5 000 lines: 7 s in journal-gate at the close).
+ */
+export function bulletTexts(lines) {
+  const texts = new Map()
+  let at = -1
+  let parts = []
+  let length = 0
+  const flush = () => {
+    if (at !== -1) texts.set(at, parts.join(' ').slice(0, BULLET_TEXT_MAX))
+  }
+  for (const [index, line] of lines.entries()) {
+    if (ITEM.test(line)) {
+      flush()
+      at = index
+      parts = [line]
+      length = line.length
+    } else if (at !== -1 && length < BULLET_TEXT_MAX) {
+      parts.push(line)
+      length += line.length + 1
+    }
+  }
+  flush()
+  return texts
 }
+const BULLET_TEXT_MAX = 2000

@@ -124,29 +124,62 @@ export function entryHead(entry) {
 const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /**
+ * The rows of a report prepared once for `entrySeverity`: the lines before "Findings outcome" and an index from the id-like tokens a line starts with to its line numbers.
+ * Without it every ledger line scanned the report for its row, which is quadratic on a long ledger. A row pattern can match a line only on one of its first two tokens
+ * (`#*[\w.-]+`, a token also stands with `#` and trailing dots trimmed and as its digit run), so the index holds every candidate and the pattern itself confirms it: the same row as the scan.
+ */
+export function findingRows(report) {
+  const before = report.slice(0, Math.max(0, report.search(/^#{2,3}\s*(?:Итог находок|Findings outcome)/im)) || report.length)
+  const lines = before.split('\n')
+  const index = new Map()
+  // The nearest group heading above each line (`-1` — none): the severity of a row without its own word.
+  const headingAbove = new Int32Array(lines.length)
+  let heading = -1
+  const add = (key, at) => {
+    if (!key) return
+    const list = index.get(key)
+    if (!list) index.set(key, [at])
+    else if (list.at(-1) !== at) list.push(at)
+  }
+  for (const [at, line] of lines.entries()) {
+    headingAbove[at] = heading
+    if (/^#{1,4}\s/.test(line)) heading = at
+    let taken = 0
+    // A token starts at the start of its `#` run and a trailing dot run is cut from its start: from inside a long run the same match fails again.
+    for (const [token] of line.matchAll(/(?<!#)#*[\w.-]+/g)) {
+      add(token, at)
+      add(token.replace(/^#+/, '').replace(/(?<!\.)\.+$/, ''), at)
+      add(token.match(/^#*(\d+)/)?.[1], at)
+      if (++taken === 2) break
+    }
+  }
+  return { lines, index, headingAbove }
+}
+
+/**
  * The severity of the finding a ledger line closes: a word in the head of the line ("minor 2 (…) — false: …"), else the row of the same report that starts with the id
  * (`K-1`, `M-2`, `F10`, `#4`, `| #4 |`) — the word on the row, or in the group heading above it. A bare number (`1`, `3`) matches only a row anchored as `1.`, `| 1 |`, `#1`.
+ * `report` is the report text, or its `findingRows` when many lines of one report are looked up.
  */
 export function entrySeverity(entry, report) {
   const head = entryHead(entry)
   const direct = severityOf(head)
   if (direct) return direct
-  const id = head.trim().match(/^\**((?:[A-Za-z]{1,3}-?\d+(?:\.\d+)*[a-z]?)|#\d+|\d{1,3})(?![\w.])/)?.[1]
-  if (!id) return null
-  const before = report.slice(0, Math.max(0, report.search(/^#{2,3}\s*(?:Итог находок|Findings outcome)/im)) || report.length)
-  const lines = before.split('\n')
+  const found = head.trim().match(/^\**((?:[A-Za-z]{1,3}-?\d+(?:\.\d+)*[a-z]?)|#\d+|\d{1,3})(?![\w.])/)?.[1]
+  if (!found) return null
+  // `#4` is a bare number written with its `#`: its row is `| 4 |`, `4.` or `#4` (bare pattern, digit-run index) or the row that starts with `#4` itself (`**#4 [major] …`, `### #4`).
+  const id = found.replace(/^#(?=\d+$)/, '')
+  const { lines, index, headingAbove } = typeof report === 'string' ? findingRows(report) : report
   // A bare number is anchored to the finding row: `1.`, `| 1 |`, `#1`, `### 1.` — a stray line starting with a digit is not the row.
   const row = /^\d+$/.test(id)
     ? new RegExp(`^\\s*(?:(?:[-*]\\s+|#{2,4}\\s+)?\\**${id}\\**\\.\\s|#${id}(?!\\d)|\\|\\s*\\**#?${id}\\**\\s*\\|)`)
     : new RegExp(`^\\s*(?:[-*]\\s+|\\d+\\.\\s+|#{2,4}\\s+|\\|\\s*)?\\**${escapeRe(id)}\\**(?![\\w.-])`)
-  const at = lines.findIndex((line) => row.test(line))
+  const hashRow = found === id ? null : new RegExp(`^\\s*(?:[-*]\\s+|\\d+\\.\\s+|#{2,4}\\s+|\\|\\s*)?\\**${escapeRe(found)}\\**(?![\\w.-])`)
+  const at = (index.get(id) ?? []).find((candidate) => row.test(lines[candidate]) || hashRow?.test(lines[candidate])) ?? -1
   if (at === -1) return null
   const own = severityOf(lines[at])
   if (own) return own
-  for (let i = at - 1; i >= 0; i--) {
-    if (/^#{1,4}\s/.test(lines[i])) return severityOf(lines[i])
-  }
-  return null
+  return headingAbove[at] === -1 ? null : severityOf(lines[headingAbove[at]])
 }
 
 /** "The criterion was not a FAIL" — a line that uses `false` for a passed criterion, not for a dismissed finding. */

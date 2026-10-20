@@ -136,7 +136,9 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
   if (!run) return null
   const last = readReceipts(dataDir, ticket).filter((receipt) => receipt.branch === branch).at(-1) ?? null
   const since = Math.max(run.start, last ? Date.parse(last.at) || 0 : 0)
-  const reports = newReports(taskDir, since + 1)
+  // A report that cannot be read (over the cap, a link out of the task) does not stand for its checker: journal-gate and the ledger rules name it.
+  const window = newReports(taskDir, since + 1).map((name) => ({ name, text: readTaskFile(taskDir, 'checks', name) })).filter(({ text }) => text !== null)
+  const reports = window.map(({ name }) => name)
   const has = (...checkers) => reports.some((name) => checkers.includes(reportChecker(name)))
   const stages = openStages(readTaskFile(taskDir, 'STAGES.md') ?? '')
   const ui = uiFiles(changed)
@@ -170,8 +172,8 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
     }
   }
   const counts = { critical: 0, major: 0, minor: 0 }
-  for (const name of reports) {
-    const found = findingCounts(readTaskFile(taskDir, 'checks', name) ?? '', name)
+  for (const { name, text } of window) {
+    const found = findingCounts(text, name)
     for (const key of Object.keys(counts)) counts[key] += found[key] ?? 0
   }
   return {
@@ -303,7 +305,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const wanted = [
     { checker: 'pro-review', match: (name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
     { checker: 'task-converge', match: (name) => reportChecker(name) === 'task-converge', how: 'the `task-converge` agent, `checks/task-converge.md`' },
-  ].filter((item) => dirty.length || !newReports(taskDir, since).some(item.match))
+  ].filter((item) => dirty.length || !newReports(taskDir, since).some((name) => item.match(name) && readTaskFile(taskDir, 'checks', name) !== null))
   const blockers = openBlockers(run.block.body)
   const withBlockers = WITH_BLOCKERS.test(run.block.heading)
   const language = taskLanguage(run.stages)

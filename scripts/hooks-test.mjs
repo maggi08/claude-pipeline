@@ -11,7 +11,7 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -3293,10 +3293,55 @@ rmSync(retroRoot, { recursive: true, force: true })
       writeFileSync(file, JSON.stringify({ ...snap, ledgerOld: [...(snap.ledgerOld ?? []), 'pro-review-1.md'] }))
     }
     const d = collectDigest(dTask, dData, null)
-    check(old ? '5c digest: an old report (in ledgerOld) with a critical closed by a weak false — behaviour unchanged, not "Not ready"' : '5c digest: a fresh report with a critical closed by a weak false is "Not ready for PR"', old ? !d.notReady.includes('pro-review-1.md') : d.notReady.includes('pro-review-1.md'), JSON.stringify(d.notReady))
+    check(
+      old
+        ? '5c digest: an old report (in ledgerOld) whose only outcome is a weak false on its critical reads it as accepted — not "Not ready", as before'
+        : '5c digest: a fresh report whose only outcome is a weak false on its critical has no accepted outcome (ledger-missing) — "Not ready for PR"',
+      old ? !d.notReady.includes('pro-review-1.md') : d.notReady.includes('pro-review-1.md'),
+      JSON.stringify(d.notReady),
+    )
     rmSync(dData, { recursive: true, force: true })
     rmSync(dTask, { recursive: true, force: true })
   }
+
+  // m-1 / m-2 (5c review): each outcome line is judged by the severity of its own finding, not by the number of outcome lines.
+  const notReadyOf = (report, extra = {}) => {
+    const dData = mkdtempSync(join(tmpdir(), 'nr-data-'))
+    const dTask = mkdtempSync(join(tmpdir(), 'nr-task-'))
+    mkdirSync(join(dTask, 'checks'), { recursive: true })
+    writeFileSync(join(dTask, 'STAGES.md'), '# T-63\nLanguage: en\n')
+    jcs.baselineInfo(dData, dTask)
+    const later = new Date(Date.now() + 60_000)
+    for (const [name, text] of Object.entries({ 'pro-review-1.md': report, ...extra })) {
+      writeFileSync(join(dTask, 'checks', name), text)
+      utimesSync(join(dTask, 'checks', name), later, later)
+    }
+    const { notReady } = collectDigest(dTask, dData, null)
+    rmSync(dData, { recursive: true, force: true })
+    rmSync(dTask, { recursive: true, force: true })
+    return notReady
+  }
+  const TWO = (head, critical, minor) => `# pro-review\nFindings: ${head}\n\n- C-1 critical: the token leaks into the URL\n- M-1 major: the token leaks into the URL\n- m-1 minor: a stray log\n\n## Findings outcome\n${critical}\n${minor}\n`
+  const weakCritical = notReadyOf(TWO('critical 1 · major 0 · minor 1', '- C-1 — false: the fix is impossible', '- m-1 — fixed: src/log.ts:3'))
+  check('m-1: a weak false on a critical next to a fixed minor is "Not ready for PR" (2 outcome lines no longer stand for 1 critical + 1 minor)', weakCritical.includes('pro-review-1.md'), JSON.stringify(weakCritical))
+  const weakMinor = notReadyOf(TWO('critical 1 · major 0 · minor 1', '- C-1 — fixed: src/log.ts:3', '- m-1 — false: the fix is impossible'))
+  check('m-1: a weak false on a minor next to a fixed critical is ready (a minor without an outcome is counted under "Minor", not here)', weakMinor.length === 0, JSON.stringify(weakMinor))
+  const parkedMajor = notReadyOf(TWO('critical 0 · major 1 · minor 1', '- m-1 — fixed: src/log.ts:3', '- M-1 — leaving it, accepted as a compromise'))
+  check('m-1: a parked major next to a fixed minor (the 0.17.0 masking) is "Not ready for PR"', parkedMajor.includes('pro-review-1.md'), JSON.stringify(parkedMajor))
+  const PROVEN = (cite = '') => `# pro-review\nFindings: critical 1 · major 0 · minor 0\n\n- C-1 critical: the token leaks\n\n## Findings outcome\n- C-1 — false: the token is never logged, src/log.ts:12 masks it${cite}\n`
+  const FRESH = '# pro-review fresh pass on opus\nFindings: critical 0 · major 0 · minor 0\n\nC-1 re-checked: src/log.ts:12 masks the token.\n'
+  const unconfirmed = notReadyOf(PROVEN())
+  check('m-2: a proof-backed false on a critical with no fresh report (ledger-critical-fresh) is "Not ready for PR"', unconfirmed.includes('pro-review-1.md'), JSON.stringify(unconfirmed))
+  const confirmed = notReadyOf(PROVEN(' — fresh report checks/pro-review-1-fresh.md'), { 'pro-review-1-fresh.md': FRESH })
+  check('m-2: the same false citing an existing checks/pro-review-1-fresh.md is ready', confirmed.length === 0, JSON.stringify(confirmed))
+  // m-4 (5c re-review): a `#N` id resolves to the row `| N |` of its own finding, so a parked major `#1` is not hidden by a fixed minor `#2`.
+  const HASH = (outcome1, outcome2) => `# pro-review\nFindings: critical 0 · major 1 · minor 1\n\n| # | file | problem | severity |\n|---|---|---|---|\n| 1 | src/a.vue:3 | the button overlaps | ${outcome1[0]} |\n| 2 | src/b.vue:4 | a stray log | ${outcome2[0]} |\n\n## Findings outcome\n- #1 — ${outcome1[1]}\n- #2 — ${outcome2[1]}\n`
+  const hashParked = notReadyOf(HASH(['major', 'leaving it, accepted as a compromise'], ['minor', 'fixed: src/b.vue:4']))
+  check('m-4: a parked major `#1` next to a fixed minor `#2` is "Not ready for PR"', hashParked.includes('pro-review-1.md'), JSON.stringify(hashParked))
+  const hashFalse = notReadyOf(HASH(['major', 'false: the fix is impossible'], ['minor', 'fixed: src/b.vue:4']))
+  check('m-4: a weak false on a major `#1` next to a fixed minor `#2` is "Not ready for PR"', hashFalse.includes('pro-review-1.md'), JSON.stringify(hashFalse))
+  const hashLegit = notReadyOf(HASH(['minor', 'leaving it, accepted as a compromise'], ['major', 'fixed: src/b.vue:4']))
+  check('m-4 legit: a parked minor `#1` next to a fixed major `#2` is ready', hashLegit.length === 0, JSON.stringify(hashLegit))
 }
 
 // ── VT-1 stage 5a: final-check catch-up — old reports stay editable, one per-task date gate, linear time on long tokens, safe reads ──
@@ -3512,7 +3557,12 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('S-4: an oversized archive (> 4 MB) is skipped', jc.journalText(sTask) === readFileSync(join(sTask, 'STAGES.md'), 'utf8'))
     symlinkSync('/dev/zero', join(sTask, 'checks', 'pro-review-9.md'))
     symlinkSync(join(outside, 'secret.md'), join(sTask, 'checks', 'pro-review-8.md'))
-    check('S-4: reportNames lists regular files only; a symlinked report reads as nothing', !jc.reportNames(sTask).includes('pro-review-9.md') && jc.reportViolations(join(sTask, 'checks', 'pro-review-8.md')).length === 0 && jc.readTaskFile(sTask, 'checks', 'pro-review-8.md') === null)
+    const linked = jc.reportViolations(join(sTask, 'checks', 'pro-review-8.md'))
+    check(
+      'S-4: reportNames lists regular files only; a report linked out of the task is not read — one violation that names it, none of its text',
+      !jc.reportNames(sTask).includes('pro-review-9.md') && linked.length === 1 && linked[0].rule === 'file-unreadable' && /checks\/pro-review-8\.md cannot be read: its real path is outside the task directory/.test(linked[0].message) && !JSON.stringify(linked).includes('SECRET') && jc.readTaskFile(sTask, 'checks', 'pro-review-8.md') === null,
+      JSON.stringify(linked),
+    )
     rmSync(sTask, { recursive: true, force: true })
     rmSync(outside, { recursive: true, force: true })
     // end to end: session-start on a repo whose current task commits that symlink finishes at once
@@ -3579,6 +3629,343 @@ rmSync(retroRoot, { recursive: true, force: true })
     rmSync(dirname(copy), { recursive: true, force: true })
     rmSync(plain, { recursive: true, force: true })
     rmSync(lRoot, { recursive: true, force: true })
+  }
+}
+
+// ── VT-1 stage 5c fix round 1: task files read bounded and fail closed, linear counts and ranking, the data dir on an old registry ──
+// Each rule: the incident form (fails before the fix) and the legitimate form (passes), D7.
+{
+  const ps = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  const { collectDigest, publishDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+  const { bulletTexts, rollbackRank } = await import(join(PLUGIN, 'decisions.mjs'))
+  const timed = (run) => {
+    const start = performance.now()
+    const value = run()
+    return { value, ms: performance.now() - start }
+  }
+  // A hook run with a timeout of its own: a regression must fail the check, not hang the suite.
+  const hookTimed = (name, input) => {
+    const start = performance.now()
+    const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8', timeout: 30_000 })
+    const ms = performance.now() - start
+    let out = {}
+    try {
+      out = run.stdout.trim() ? JSON.parse(run.stdout) : {}
+    } catch {
+      out = { raw: run.stdout }
+    }
+    const decision = out.hookSpecificOutput?.permissionDecision ?? out.decision ?? (run.stdout.trim() ? 'message' : 'allow')
+    const text = out.hookSpecificOutput?.permissionDecisionReason ?? out.reason ?? out.systemMessage ?? out.hookSpecificOutput?.additionalContext ?? run.stdout ?? ''
+    return { decision, text, ms, status: run.status, stdout: run.stdout, stderr: run.stderr }
+  }
+  const PAD = `\n<!-- a pasted console log -->\n${`${'x'.repeat(1023)}\n`.repeat(4 * 1024 + 8)}`
+  const OPEN_CRITICAL = (title = 'stage 1') => `# pro-review, ${title}\nFindings: critical 1 · major 0 · minor 0\n\n| ID | Severity | Where | What |\n|---|---|---|---|\n| K-1 | critical | src/a.ts:1 | the value is wrong |\n`
+  const FIXED = '\n## Findings outcome\n- K-1 — fixed: src/a.ts:1\n'
+  const ahead = (path, seconds = 5) => utimesSync(path, Date.now() / 1000 + seconds, Date.now() / 1000 + seconds)
+  const day = (() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  })()
+  let calls = 0
+  // A repo with one current task: `force` — an open Force block dated today.
+  const taskRepo = (ticket, { force = true, stagesText = null } = {}) => {
+    const root = mkdtempSync(join(tmpdir(), 'r1-'))
+    const app = join(root, 'app')
+    repoAt(app, 'main')
+    const text = stagesText ?? `# ${ticket}: task\nLanguage: en\nBranch: \`${ticket}/feat/x\`\n\n## Status: stage 1\n\n${force ? `## Force run ${day}\nConfirmed: ${day} — yes\nBlockers: none\n\n` : ''}## Stages\n\n### Stage 1: card  [status: in-progress]\n- [ ] pro-review\n`
+    write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', [`.claude/tasks/${ticket}/STAGES.md`]: text })
+    git(app, 'checkout', '-qb', `${ticket}/feat/x`)
+    const task = join(app, '.claude/tasks', ticket)
+    jc.baselineInfo(DATA, task)
+    return { root, app, task, ticket }
+  }
+  const commit = (r, command = `git commit -am "${r.ticket}: card"`) => hookTimed('git-guard.mjs', { cwd: r.app, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `toolu_r1_${calls++}`, tool_input: { command } })
+
+  // S-1: the count patterns backtracked polynomially on a long run of spaces or digits; a line is now read flat and capped.
+  {
+    const N = 50_000
+    const INPUTS = {
+      'a table row "| 🔴" + spaces': `# pro-review\nFindings\n| 🔴${' '.repeat(N)}| src/a.ts:1 | x |\n`,
+      'a 🟠 run + spaces then a digit': `Findings 🟠${' '.repeat(N)}x 1`,
+      'a 🟡 run + spaces then a digit': `Findings 🟡${' '.repeat(N)}x 1`,
+      'a summary + spaces': `Findings: 1${' '.repeat(N)}`,
+      'a 50 000-digit run': `Findings ${'1'.repeat(N)}`,
+      'a minor digit run': `Findings: minor ${'7'.repeat(N)}x`,
+      'a heading + spaces': `## 🔴 critical${' '.repeat(N)}`,
+      'spaces and asterisks': `Findings 🔴${' *'.repeat(N / 2)}x 1`,
+    }
+    let worst = { ms: 0, input: '' }
+    for (const [input, text] of Object.entries(INPUTS)) {
+      for (const name of ['pro-review-1.md', 'security-review-1.md', 'dead-code-1.md']) {
+        const { ms } = timed(() => jc.findingCounts(text, name))
+        if (ms > worst.ms) worst = { ms, input: `${input} (${name})` }
+      }
+    }
+    check('S-1: findingCounts on 50 000 characters of each count-pattern input < 100 ms ("| 🔴" + 250 spaces took 80 s, a 50 000-digit run 8 s)', worst.ms < 100, `${worst.ms.toFixed(0)} ms on ${worst.input}`)
+    const fails = timed(() => jc.failedCriteria(`- AC-1.1 was${' '.repeat(N)}x FAIL\n`))
+    check('S-1: failedCriteria on "was" + 50 000 spaces + FAIL < 100 ms (1.3 s before), the criterion still counts', fails.ms < 100 && same(fails.value, ['AC-1.1']), `${fails.ms.toFixed(0)} ms ${JSON.stringify(fails.value)}`)
+    // The live summary forms read as before; a bold count ("critical **2**") is now read too.
+    const FORMS = [
+      ['# pro-review\nFindings: critical 0 · major 2 · minor 1\n', 'pro-review-1.md', [0, 2, 1]],
+      ['# figma\nVerdict: 0 critical / 2 major\n', 'figma-compare-1.md', [0, 2, 0]],
+      ['# pro\nSummary: 🔴0 · 🟠2\n', 'pro-review-2.md', [0, 2, 0]],
+      ['# pro\nSummary: 🔴 **critical**: 3 · 🟠 **major**: 1 · 🟡 minor 4\n', 'pro-review-3.md', [3, 1, 4]],
+      ['# pro\nVerdict: Request changes (2 major)\n', 'pro-review-4.md', [0, 2, 0]],
+      ['# pro\n## Summary\n- **Critical**: 1\n- **Major**:   0\n', 'pro-review-5.md', [1, 0, 0]],
+      ['# pro\n**Findings:** critical **2** · major **0** · minor **1**\n', 'pro-review-6.md', [2, 0, 1]],
+      ['# dead\nFindings: 1 remove / 2 to check\n', 'dead-code-1.md', [0, 1, 0]],
+      ['# sec\nFindings: high 1 · medium 2 · low 3\n', 'security-review-1.md', [1, 2, 3]],
+      ['# pro\nFindings\n| ID | Severity |\n|---|---|\n| K-1 | **critical** |\n| K-2 |   major   |\n- 🔴 K-3 the price\n## 🟠 Major (2)\n', 'pro-review-7.md', [2, 1, 0]],
+      [`${OPEN_CRITICAL()}| 🔴${' '.repeat(300)}| src/a.ts:2 | padded |\n`, 'pro-review-8.md', [1, 0, 0]],
+    ]
+    const wrong = FORMS.filter(([text, name, want]) => {
+      const got = jc.findingCounts(text, name)
+      return !same([got.critical, got.major, got.minor], want)
+    })
+    check('S-1: the summary and row forms of live reports give their counts with the flat read (and a 300-space "| 🔴" row next to a summary)', wrong.length === 0, JSON.stringify(wrong.map(([, name]) => name)))
+    // end to end: a report with that padded row, written and committed in force — judged, and long before the 5 s / 15 s timeouts.
+    const r = taskRepo('T-81')
+    const report = join(r.task, 'checks/pro-review-1.md')
+    write(r.app, { '.claude/tasks/T-81/checks/pro-review-1.md': `${OPEN_CRITICAL()}| 🔴${' '.repeat(300)}| src/a.ts:1 | the price is ×100 |\n\n## Findings outcome\n- K-1 — leaving it as is\n`, 'src/a.ts': 'export const a = 2\n' })
+    ahead(report)
+    const written = hookTimed('journal-gate.mjs', { cwd: r.app, hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: report } })
+    check('S-1: journal-gate on a report with "| 🔴" + 300 spaces ends in < 1 s and still judges it (the parked outcome is returned)', written.ms < 1000 && written.decision === 'block' && /decision not to fix/.test(written.text), `${written.ms.toFixed(0)} ms ${written.decision}: ${written.text.slice(0, 120)}`)
+    const committed = commit(r)
+    check('S-1: git-guard on the force commit of that report ends in < 2 s and denies it (34.6 s at 250 spaces before, past the 15 s timeout)', committed.ms < 2000 && committed.decision === 'deny' && /decision not to fix/.test(committed.text), `${committed.ms.toFixed(0)} ms ${committed.decision}: ${committed.text.slice(0, 120)}`)
+    rmSync(r.root, { recursive: true, force: true })
+  }
+
+  // S-6: a v1-shaped or broken installed_plugins.json is no registry, as on 0.17.0 — the scripts run from Bash do not crash on it.
+  {
+    const home = mkdtempSync(join(tmpdir(), 'r1-home-'))
+    mkdirSync(join(home, '.claude/plugins'), { recursive: true })
+    const task = join(home, 'tasks/T-82')
+    mkdirSync(join(task, 'checks'), { recursive: true })
+    writeFileSync(join(task, 'STAGES.md'), '# T-82: task\nLanguage: en\n')
+    const env = { ...process.env, HOME: home }
+    delete env.CLAUDE_PLUGIN_DATA
+    for (const [label, registry] of [
+      ['a v1 file (an object per plugin)', { version: 1, plugins: { 'stage-pipeline@magzhan': { version: '0.16.0', installPath: '/x' } } }],
+      ['a null entry', { version: 2, plugins: { 'stage-pipeline@magzhan': [null] } }],
+    ]) {
+      writeFileSync(join(home, '.claude/plugins/installed_plugins.json'), JSON.stringify(registry))
+      const dir = spawnSync(process.execPath, ['--input-type=module', '-e', `import { pluginDataDir } from ${JSON.stringify(join(PLUGIN, 'hooks/pipeline-state.mjs'))}; console.log(pluginDataDir())`], { env, encoding: 'utf8' })
+      const digest = spawnSync(process.execPath, [join(PLUGIN, 'run-digest.mjs'), task, '--no-write'], { env, cwd: home, encoding: 'utf8' })
+      const journal = spawnSync(process.execPath, [join(PLUGIN, 'journal-check.mjs'), task], { env, cwd: home, encoding: 'utf8' })
+      check(
+        `S-6: ${label} in installed_plugins.json — the data dir is -inline (0.17.0's result), run-digest and journal-check exit 0`,
+        dir.status === 0 && dir.stdout.trim().endsWith('/stage-pipeline-inline') && digest.status === 0 && /Blockers/.test(digest.stdout) && journal.status === 0,
+        `${dir.stdout.trim()} ${dir.stderr.split('\n')[0]} | digest ${digest.status} ${digest.stderr.split('\n').find((line) => /Error/.test(line)) ?? ''} | journal ${journal.status}`,
+      )
+    }
+    rmSync(home, { recursive: true, force: true })
+  }
+
+  // S-2: a report or a STAGES.md over 4 MB is not "empty": the commit, the close and the digest refuse it, naming the file and the limit.
+  {
+    const r = taskRepo('T-83')
+    const report = join(r.task, 'checks/pro-review-1.md')
+    write(r.app, { '.claude/tasks/T-83/checks/pro-review-1.md': `${OPEN_CRITICAL()}${PAD}`, 'src/a.ts': 'export const a = 2\n' })
+    ahead(report)
+    const unreadable = jc.openLedgers(DATA, r.task)
+    check('S-2: openLedgers — a report over 4 MB with an open critical is one violation naming the file, its size and the limit', unreadable.length === 1 && /checks\/pro-review-1\.md cannot be read: it is 4\.01 MB, over the 4 MB limit/.test(unreadable[0].message), JSON.stringify(unreadable))
+    const denied = commit(r)
+    check('S-2: the force commit with that report is denied (it was allowed: the critical read as none)', denied.decision === 'deny' && /pro-review-1\.md cannot be read: it is 4\.01 MB, over the 4 MB limit/.test(denied.text), `${denied.decision}: ${denied.text.slice(0, 200)}`)
+    const d = collectDigest(r.task, DATA, null)
+    const short = publishDigest(r.task, DATA, null, { write: false }).short
+    check('S-2: the digest says "Not ready for PR" for that report, with its size (it was an all-clear)', d.unreadable.some(({ file }) => file === 'checks/pro-review-1.md') && short.includes('Not ready for PR — these files cannot be read, so their rules did not run: checks/pro-review-1.md (4.01 MB, over the 4 MB limit)'), short)
+    writeFileSync(report, `${OPEN_CRITICAL()}${FIXED}`)
+    ahead(report)
+    const fixed = commit(r)
+    check('S-2 legit: the same report under the cap with its critical fixed — no ledger violation, the commit passes', jc.openLedgers(DATA, r.task).length === 0 && fixed.decision === 'allow' && collectDigest(r.task, DATA, null).unreadable.length === 0, `${fixed.decision}: ${fixed.text.slice(0, 200)}`)
+    // the close: whole-branch reports over the cap with an open critical — "completed" is rejected
+    for (const name of ['pro-review-branch.md', 'task-converge.md']) {
+      write(r.app, { [`.claude/tasks/T-83/checks/${name}`]: `${OPEN_CRITICAL('branch')}${PAD}` })
+      ahead(join(r.task, 'checks', name), 10)
+    }
+    write(r.app, { '.claude/tasks/T-83/STAGES.md': readFileSync(join(r.task, 'STAGES.md'), 'utf8').replace(`## Force run ${day}`, `## Force run ${day} — completed`) })
+    const close = jc.forceCloseViolations(DATA, r.task)
+    const closed = hookTimed('journal-gate.mjs', { cwd: r.app, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: join(r.task, 'STAGES.md') } })
+    check(
+      'S-2: closing "completed" with the final reports over 4 MB is rejected, each named (it was accepted)',
+      ['pro-review-branch.md', 'task-converge.md'].every((name) => close.some(({ message }) => message.startsWith(`checks/${name} cannot be read`))) && closed.decision === 'block' && /checks\/task-converge\.md cannot be read: it is 4\.01 MB/.test(closed.text),
+      `${JSON.stringify(close.map(({ rule }) => rule))} ${closed.decision}: ${closed.text.slice(0, 200)}`,
+    )
+    for (const name of ['pro-review-branch.md', 'task-converge.md']) {
+      writeFileSync(join(r.task, 'checks', name), `${OPEN_CRITICAL('branch')}${FIXED}`)
+      ahead(join(r.task, 'checks', name), 10)
+    }
+    check('S-2 legit: the same final reports under the cap with the critical fixed — no unreadable or ledger violation at the close', !jc.forceCloseViolations(DATA, r.task).some(({ rule }) => rule === 'file-unreadable' || rule.startsWith('ledger-')))
+    rmSync(r.root, { recursive: true, force: true })
+
+    // STAGES.md over the cap: the task does not vanish (it did, and the branch's commits went through); its gates refuse, naming the file.
+    const s = taskRepo('T-84', { force: false })
+    const stagesPath = join(s.task, 'STAGES.md')
+    const small = readFileSync(stagesPath, 'utf8')
+    check('S-2 legit: a STAGES.md under the cap — the task is read, normal mode denies the agent\'s commit as before', commit(s, 'git commit -m x').decision === 'deny' && readPipelineState(s.app).tasks.some((task) => task.ticket === 'T-84' && task.unreadable === null && task.current))
+    writeFileSync(stagesPath, `${small}${PAD}`)
+    const state = readPipelineState(s.app)
+    const task = state.tasks.find((candidate) => candidate.ticket === 'T-84')
+    check('S-2: a STAGES.md over 4 MB keeps its task, current by the ticket in the branch, marked unreadable', Boolean(task?.current) && task.unreadable?.problem === 'too-large' && task.stages === '', JSON.stringify({ current: task?.current, unreadable: task?.unreadable?.problem }))
+    const refused = commit(s, 'git commit -m x')
+    check('S-2: a commit on that branch is denied with the journal named and the limit (it was allowed: the task vanished)', refused.decision === 'deny' && /STAGES\.md cannot be read: it is 4\.\d+ MB, over the 4 MB limit/.test(refused.text) && /archive-stages/.test(refused.text), `${refused.decision}: ${refused.text.slice(0, 200)}`)
+    const edited = hookTimed('journal-gate.mjs', { cwd: s.app, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: stagesPath } })
+    check('S-2: an edit of that STAGES.md gets the same message from journal-gate (it was silent)', edited.decision === 'block' && /STAGES\.md cannot be read: it is 4\.\d+ MB/.test(edited.text), `${edited.decision}: ${edited.text.slice(0, 160)}`)
+    const listed = hookTimed('session-start.mjs', { cwd: s.app })
+    check('S-2: session-start names the task and why its journal is not read', /T-84 \(branch T-84\/feat\/x\): STAGES\.md cannot be read: it is 4\.\d+ MB/.test(listed.stdout), listed.stdout.slice(0, 200))
+    const stagesDigest = publishDigest(s.task, DATA, null, { write: false }).short
+    check('S-2: the digest of that task says "Not ready for PR" for STAGES.md', /Not ready for PR — these files cannot be read, so their rules did not run: STAGES\.md \(4\.\d+ MB, over the 4 MB limit\)/.test(stagesDigest), stagesDigest.slice(0, 300))
+    // n-2: no journal to take `Language:` from — English unless the config says `language: ru`, never the Russian default of an unknown task.
+    const ruDigest = publishDigest(s.task, DATA, { worktree: s.app, config: '- language: ru\n' }, { write: false }).short
+    check('n-2: with the journal unreadable the digest is English; the config\'s `language: ru` makes it Russian', /^Not ready for PR|\nNot ready for PR/.test(stagesDigest) && !/Не готово к PR/.test(stagesDigest) && /Не готово к PR — файлы не читаются/.test(ruDigest), ruDigest.slice(0, 200))
+    // n-3: the deny keeps the hand-the-commit guidance and names archive-stages.mjs by its path.
+    check('n-3: the unreadable-journal deny hands the commit to the user and names archive-stages.mjs by its full path', /hand the commit to the user/.test(refused.text) && refused.text.includes(join(PLUGIN, 'archive-stages.mjs')), refused.text.slice(0, 400))
+    rmSync(s.root, { recursive: true, force: true })
+
+    // m-5 (5c re-review): a config over 256 KB is read for its first 256 KB, not as empty; session-start names it. The keys at its top (task_path) keep the task found and the commit denied.
+    const c = taskRepo('T-96', { force: false })
+    const moved = join(c.app, '.claude/work/tasks')
+    mkdirSync(dirname(moved), { recursive: true })
+    renameSync(join(c.app, '.claude/tasks'), moved)
+    const configPath = join(c.app, '.claude/pipeline.config.md')
+    const configHead = '- task_path: .claude/work/tasks/\n- main_branch: main\n'
+    writeFileSync(configPath, configHead)
+    const normalCommit = commit(c, 'git commit -m x')
+    const quiet = hookTimed('session-start.mjs', { cwd: c.app })
+    check('m-5 legit: a small config — task found, commit denied, no oversize line', normalCommit.decision === 'deny' && /T-96/.test(quiet.stdout) && !/over the .* limit/.test(quiet.stdout), `${normalCommit.decision}: ${quiet.stdout.slice(0, 200)}`)
+    writeFileSync(configPath, `${configHead}${'# padding line of a pasted dump\n'.repeat(Math.ceil((300 * 1024) / 32))}`)
+    const bigCommit = commit(c, 'git commit -m x')
+    const bigStart = hookTimed('session-start.mjs', { cwd: c.app })
+    const bigState = readPipelineState(c.app)
+    check(
+      'm-5: a 300 KB config keeps its task_path (the task is found and the normal-mode commit denied) and session-start names the oversize with path, size and limit (it read as empty: task invisible, commit allowed)',
+      bigState.tasks.some((task) => task.ticket === 'T-96' && task.current) && bigCommit.decision === 'deny' && /T-96/.test(bigStart.stdout) && /\.claude\/pipeline\.config\.md is 3\d\d KB, over the 256 KB limit/.test(bigStart.stdout),
+      `${bigCommit.decision}: ${bigStart.stdout.slice(0, 300)}`,
+    )
+    rmSync(c.root, { recursive: true, force: true })
+  }
+
+  // S-3: containment by the real path of every component; the task reader and the rule reader agree.
+  {
+    const r = taskRepo('T-85')
+    const outside = join(r.root, 'other-project/.claude/tasks/XYZ-9/checks')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'pro-review-9.md'), '# pro-review\nFindings: critical 0 · major 1 · minor 0\n\n| M-1 | major | api.ts:3 | token |\n\n## Findings outcome\n- M-1 major — false: the key sk_live_OUTSIDE_SECRET_123 in api.ts:3 is the staging key\n')
+    ahead(join(outside, 'pro-review-9.md'))
+    symlinkSync(outside, join(r.task, 'checks'))
+    const run = spawnSync(process.execPath, [join(PLUGIN, 'run-digest.mjs'), r.task], { cwd: r.app, encoding: 'utf8' })
+    const file = existsSync(join(r.task, 'RUN-DIGEST.md')) ? readFileSync(join(r.task, 'RUN-DIGEST.md'), 'utf8') : ''
+    check(
+      'S-3: a checks/ directory linked to another project — its report is not read into RUN-DIGEST.md, it is named as outside the task (the secret line was copied in)',
+      run.status === 0 && file !== '' && !file.includes('sk_live_OUTSIDE_SECRET_123') && file.includes('checks/pro-review-9.md (its real path is outside the task directory)') && jc.readTaskFile(r.task, 'checks', 'pro-review-9.md') === null,
+      `${run.status} ${file.slice(0, 300)}`,
+    )
+    rmSync(r.root, { recursive: true, force: true })
+
+    // STAGES.md linked out of the task directory (a journal shared between two checkouts): the task fails closed, not rule-free.
+    const s = taskRepo('T-86')
+    write(s.app, { 'src/a.ts': 'export const a = 2\n' })
+    const own = commit(s)
+    mkdirSync(join(s.app, '.claude/shared'), { recursive: true })
+    renameSync(join(s.task, 'STAGES.md'), join(s.app, '.claude/shared/T-86-STAGES.md'))
+    symlinkSync('../../shared/T-86-STAGES.md', join(s.task, 'STAGES.md'))
+    const linkedState = readPipelineState(s.app).tasks.find((task) => task.ticket === 'T-86')
+    const viaLink = commit(s)
+    check(
+      'S-3: a force commit with no pro-review report — denied with a regular STAGES.md, and denied (not allowed) with STAGES.md linked out of the task, naming why',
+      own.decision === 'deny' && /no pro-review report/.test(own.text) && linkedState?.unreadable?.problem === 'outside' && viaLink.decision === 'deny' && /STAGES\.md cannot be read: its real path is outside the task directory/.test(viaLink.text),
+      `${own.decision} / ${linkedState?.unreadable?.problem} / ${viaLink.decision}: ${viaLink.text.slice(0, 200)}`,
+    )
+    rmSync(s.root, { recursive: true, force: true })
+
+    // legit: the task root behind a symlink (`.claude/tasks` → a team directory outside the repo) reads as before, its rules apply.
+    const t = mkdtempSync(join(tmpdir(), 'r1-team-'))
+    const app = join(t, 'app')
+    repoAt(app, 'main')
+    const team = join(t, 'team-tasks')
+    mkdirSync(join(team, 'T-87'), { recursive: true })
+    writeFileSync(join(team, 'T-87/STAGES.md'), `# T-87: task\nLanguage: en\nBranch: \`T-87/feat/x\`\n\n## Status: stage 1\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n`)
+    writeFileSync(join(team, 'T-87/STAGES-ARCHIVE.md'), '- an archived line\n')
+    write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n' })
+    symlinkSync(team, join(app, '.claude/tasks'))
+    git(app, 'checkout', '-qb', 'T-87/feat/x')
+    const teamTask = readPipelineState(app).tasks.find((task) => task.ticket === 'T-87')
+    const normal = hookTimed('git-guard.mjs', { cwd: app, tool_input: { command: 'git commit -m x' } })
+    check(
+      'S-3 legit: .claude/tasks linked to a team directory outside the repo — STAGES.md and the archive are read, the normal-mode rule applies',
+      teamTask?.unreadable === null && teamTask.stages.includes('Stage 1: card') && jc.journalText(join(app, '.claude/tasks/T-87')).includes('an archived line') && normal.decision === 'deny' && /normal mode/.test(normal.text),
+      `${teamTask?.unreadable?.problem} ${normal.decision}`,
+    )
+    rmSync(t, { recursive: true, force: true })
+  }
+
+  // S-4: one bounded reader for the files a hook takes from a repo — a link to a huge file costs a stat, not a read.
+  {
+    const r = mkdtempSync(join(tmpdir(), 'r1-big-'))
+    const huge = join(r, 'huge.bin')
+    writeFileSync(huge, '')
+    truncateSync(huge, 64 * 1024 * 1024) // sparse: 64 MB on stat, no blocks on disk
+    symlinkSync(huge, join(r, 'link.md'))
+    symlinkSync('/dev/zero', join(r, 'zero.md'))
+    const big = timed(() => ps.readBounded(join(r, 'link.md')))
+    check('S-4: readBounded — a link to a 64 MB file is refused as too large by stat, in < 50 ms; a link to /dev/zero is not a regular file', big.value.problem === 'too-large' && big.value.size === 64 * 1024 * 1024 && big.ms < 50 && ps.readBounded(join(r, 'zero.md')).problem === 'not-file', `${JSON.stringify(big.value)} ${big.ms.toFixed(0)} ms`)
+    const app = join(r, 'app')
+    repoAt(app, 'main')
+    mkdirSync(join(app, '.claude'), { recursive: true })
+    symlinkSync(huge, join(app, '.claude/pipeline.config.md'))
+    const config = timed(() => ps.readConfig(app))
+    check('S-4: a config linked to a 64 MB file reads as its first 256 KB (the keys at the top apply) in < 50 ms, the dev server config as none; the repo is still a pipeline repo', config.value.length <= 256 * 1024 && config.ms < 50 && ps.devServerConfig(app) === null && ps.hasPipelineConfig(app) && readPipelineState(app) !== null, `${config.value.length} chars, ${config.ms.toFixed(0)} ms`)
+    const pre = hookTimed('journal-gate.mjs', { cwd: app, tool_name: 'Bash', tool_use_id: `toolu_r1_big_${calls++}`, hook_event_name: 'PreToolUse', tool_input: { command: 'ls' } })
+    check('S-4: journal-gate PreToolUse on `ls` in that repo exits 0 in < 2 s (exit 1 after 1.3 s and 1.5 GB on a 963 MB file before)', pre.status === 0 && pre.ms < 2000 && pre.stderr === '', `${pre.status} ${pre.ms.toFixed(0)} ms ${pre.stderr.split('\n')[0]}`)
+    rmSync(join(app, '.claude/pipeline.config.md'))
+    // a task whose STAGES-ARCHIVE.md is that file: session-start and the unjournaled-commits walk read the rest of the journal and go on
+    write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-88/STAGES.md': '# T-88: task\nBranch: `T-88/feat/x`\n\n## Force run 2026-10-01 — completed 2026-10-02\n\n## Stages\n' })
+    // 600 MB: past the longest string Node makes, so a full read throws (exit 1, no output) — as the 963 MB system file did
+    writeFileSync(join(app, '.claude/tasks/T-88/STAGES-ARCHIVE.md'), '')
+    truncateSync(join(app, '.claude/tasks/T-88/STAGES-ARCHIVE.md'), 600 * 1024 * 1024)
+    git(app, 'checkout', '-qb', 'T-88/feat/x')
+    write(app, { 'src/a.ts': 'export const a = 3\n' })
+    git(app, 'commit', '-qam', 'after the close')
+    const started = hookTimed('session-start.mjs', { cwd: app })
+    const walk = timed(() => ps.unjournaledCommits(readPipelineState(app), readPipelineState(app).tasks.find((task) => task.ticket === 'T-88')))
+    check(
+      'S-4: session-start with a 600 MB STAGES-ARCHIVE.md ends in < 3 s with the task line and names the commit the rest of the journal does not know',
+      started.status === 0 && started.ms < 3000 && /T-88/.test(started.stdout) && /after the close/.test(started.stdout) && walk.value.some(({ subject }) => subject === 'after the close') && walk.ms < 1000,
+      `${started.status} ${started.ms.toFixed(0)} ms ${started.stdout.slice(0, 200)} ${started.stderr.split('\n')[0]}`,
+    )
+    rmSync(r, { recursive: true, force: true })
+  }
+
+  // S-5: the digest ranks only bullet rows, each on its text built in one pass.
+  {
+    const lines = ['- default sort order — Rollback: expensive, a data migration — Basis: guess', ...Array.from({ length: 199_998 }, (_, index) => `  pasted log line ${index}`), '- the label text — Rollback: cheap, one constant — Basis: D2']
+    const ranked = timed(() => [...bulletTexts(lines)].map(([index, text]) => [index, rollbackRank(text)]))
+    check('S-5: 200 000 lines under one Awaiting bullet are ranked in < 100 ms, expensive first (0) and cheap (3)', ranked.ms < 100 && same(ranked.value, [[0, 0], [199_999, 3]]), `${ranked.ms.toFixed(0)} ms ${JSON.stringify(ranked.value)}`)
+    // the same ranks as the per-line join it replaces, on sections with nested bullets, blank lines and the cost on a continuation line
+    const joinOld = (section, index) => {
+      let end = index + 1
+      while (end < section.length && !/^\s*(?:[-*]|\d+\.)\s+\S/.test(section[end])) end++
+      return section.slice(index, end).join(' ')
+    }
+    const SECTIONS = [
+      ['- a', '  Rollback: moderate, three skill texts', '', '- b — Rollback: cheap', '  - nested — Rollback: expensive', '1. c — Basis: guess', '   Rollback: irreversible'],
+      ['intro line', '- x — Rollback: not expensive, one line — Basis: D1', '- y — Откат: дорого, миграция — Основание: догадка'],
+    ]
+    const differs = SECTIONS.filter((section) => {
+      const texts = bulletTexts(section)
+      return section.some((line, index) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line) && rollbackRank(texts.get(index)) !== rollbackRank(joinOld(section, index)))
+    })
+    check('S-5 legit: the one-pass texts give the ranks of the per-line join (nested bullets, blank lines, a cost on a continuation line, the Russian words)', differs.length === 0, JSON.stringify(differs))
+    // end to end: the close digest of a task with 20 000 lines under one Awaiting item (56 s before)
+    const dData = mkdtempSync(join(tmpdir(), 'r1-await-data-'))
+    const dTask = mkdtempSync(join(tmpdir(), 'r1-await-task-'))
+    writeFileSync(join(dTask, 'STAGES.md'), '# T-89\nLanguage: en\n\n## Stages\n')
+    jc.baselineInfo(dData, dTask)
+    writeFileSync(join(dTask, 'STAGES.md'), `# T-89\nLanguage: en\n\n## Force run ${day} — completed\nBlockers: none\n\n## ⚠ Awaiting user confirmation\n- default sort order — Rollback: expensive, a data migration — Basis: guess\n${Array.from({ length: 20_000 }, (_, index) => `  pasted log line ${index}`).join('\n')}\n- the label — Rollback: cheap, one constant — Basis: D2\n\n## Stages\n`)
+    const digest = timed(() => collectDigest(dTask, dData, null))
+    check('S-5: the digest of a journal with 20 000 lines under one Awaiting item is built in < 2 s, the rows in rollback order', digest.ms < 2000 && digest.value.accepted.length === 2 && digest.value.accepted[0].startsWith('- default sort order'), `${digest.ms.toFixed(0)} ms ${JSON.stringify(digest.value.accepted.map((line) => line.slice(0, 30)))}`)
+    rmSync(dData, { recursive: true, force: true })
+    rmSync(dTask, { recursive: true, force: true })
   }
 }
 
