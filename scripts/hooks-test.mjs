@@ -3272,6 +3272,33 @@ rmSync(retroRoot, { recursive: true, force: true })
   }
 }
 
+// ── VT-1 stage 5c: the digest's "Not ready for PR" reads a ledger the way journal-gate does ──
+{
+  const jcs = await import(join(PLUGIN, 'journal-check.mjs'))
+  const { collectDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+  const body = '# pro-review\nFindings: critical 1 · major 0 · minor 0\n\n- C-1 critical: the token leaks\n\n## Findings outcome\n- C-1 — false: impossible, the fix is impossible\n'
+  for (const old of [false, true]) {
+    const dData = mkdtempSync(join(tmpdir(), 'nr-data-'))
+    const dTask = mkdtempSync(join(tmpdir(), 'nr-task-'))
+    mkdirSync(join(dTask, 'checks'), { recursive: true })
+    writeFileSync(join(dTask, 'STAGES.md'), '# T-63\nLanguage: en\n')
+    jcs.baselineInfo(dData, dTask)
+    const dir = join(dData, 'journal-baseline')
+    const file = join(dir, readdirSync(dir)[0])
+    writeFileSync(join(dTask, 'checks', 'pro-review-1.md'), body)
+    const later = new Date(Date.now() + 60_000)
+    utimesSync(join(dTask, 'checks', 'pro-review-1.md'), later, later)
+    if (old) {
+      const snap = JSON.parse(readFileSync(file, 'utf8'))
+      writeFileSync(file, JSON.stringify({ ...snap, ledgerOld: [...(snap.ledgerOld ?? []), 'pro-review-1.md'] }))
+    }
+    const d = collectDigest(dTask, dData, null)
+    check(old ? '5c digest: an old report (in ledgerOld) with a critical closed by a weak false — behaviour unchanged, not "Not ready"' : '5c digest: a fresh report with a critical closed by a weak false is "Not ready for PR"', old ? !d.notReady.includes('pro-review-1.md') : d.notReady.includes('pro-review-1.md'), JSON.stringify(d.notReady))
+    rmSync(dData, { recursive: true, force: true })
+    rmSync(dTask, { recursive: true, force: true })
+  }
+}
+
 // ── VT-1 stage 5a: final-check catch-up — old reports stay editable, one per-task date gate, linear time on long tokens, safe reads ──
 {
   const { decisionViolations } = await import(join(PLUGIN, 'decisions.mjs'))

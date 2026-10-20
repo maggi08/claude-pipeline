@@ -223,7 +223,8 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   // A report is not ready for PR while a critical or major finding has no allowed outcome in its "Findings outcome" (fixed / false with proof / blocker / user decision).
   // The verdict in the head of the report is the first round's: a finding closed by an outcome line no longer counts.
   const notReady = reports
-    .filter(({ name, text }) => ledgerViolations(text, name, { complete: true }).some((violation) => violation.rule === 'ledger-missing'))
+    // Read the way journal-gate reads a fresh report (strict + taskDir; `ledgerOld` is the old/new split), so a critical closed by a weak `false` makes the digest not ready, as the "without an outcome" list says.
+    .filter(({ name, text }) => ledgerViolations(text, name, { complete: true, strict: strictFor(name), taskDir }).some((violation) => violation.rule === 'ledger-missing' || violation.rule === 'ledger-critical-fresh'))
     .map(({ name }) => name)
   // Stage receipts (VT-1 stage 3): force commits of this run that changed UI and have no devtools-verify report. `receipted` — the run has receipts at all (the old runs have none, and their digest stays as it was).
   const receipted = hasReceipts(dataDir, taskDir, scope.since)

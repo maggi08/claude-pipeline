@@ -264,7 +264,7 @@ export function unjournaledCommits(state, task, { limit = 50, gate = null } = {}
   const titled = new Set()
   let ownCommits = []
   const closed = closedForceDate(task.stages)
-  // The ticket-titled rule (0.16.3) is for runs opened after this plugin version first saw the task (`gate` — `releaseGate` of the task snapshot); without a gate it applies.
+  // The ticket-titled rule (0.18.0) is for runs opened after this plugin version first saw the task (`gate` — `releaseGate` of the task snapshot); without a gate it applies.
   const titledRule = closed && ruleAppliesToBlock(gate, freshestForceHeading(task.stages)?.[0] ?? '', closed)
   const me = git(cwd, 'config', 'user.email')
   const known = journalCommits(cwd, journal)

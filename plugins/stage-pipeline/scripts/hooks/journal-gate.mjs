@@ -19,7 +19,7 @@ import { readHookInput } from './hook-input.mjs'
  * 0.15 — the project's CI gates (smoke, e2e from the config): "completed" only when each one is green on the current HEAD,
  * "completed with blockers" — each non-green one is named as a blocker. In one task smoke failed only at the PR.
  *
- * 0.16.3 — Bash is judged by what the call did, not by what its text says. A `ls .claude/tasks/EN-1/checks` or a `cat STAGES.md` from another task's
+ * 0.18.0 — Bash is judged by what the call did, not by what its text says. A `ls .claude/tasks/EN-1/checks` or a `cat STAGES.md` from another task's
  * session used to return EN-1's force-close demands (about a third of the firings in the 2026-10-16 audit were reads). A PreToolUse run of this hook
  * stamps the mtime and size of STAGES.md and `checks/*.md` of the current tasks and of the tasks the command names by path; the PostToolUse run acts only on the tasks where one of them changed
  * during the call. No stamp (the pre-hook did not run) — nothing to compare, so the hook stays silent.
@@ -78,7 +78,7 @@ if (tool === 'Bash' && !pre) {
   } catch {
     process.exit(0)
   }
-  const files = before.files ?? before // a flat stamp of 0.16.3–0.18 before this change
+  const files = before.files ?? before // a flat stamp of 0.16–0.18 before this change
   if (!Object.entries({ ...files, ...(before.dirs ?? {}) }).some(([path, stamp]) => statOf(path) !== stamp)) process.exit(0)
   before = files
 }
