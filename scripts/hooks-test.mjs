@@ -10,7 +10,8 @@
  * supported task language (Russian). The English twins next to them must give the same results.
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -562,6 +563,14 @@ rmSync(fRoot, { recursive: true, force: true })
 // ── 0.14: findings outcome, unverified, frames ───────────────────────────────
 // Russian fixtures (the second supported task language).
 const jc = await import(join(PLUGIN, 'journal-check.mjs'))
+// The 0.18 rules keyed on a Force block apply from the day the task snapshot recorded at the migration (`releaseGate`, VT-1 5a m-2), not from a fixed date:
+// a fixture that needs them on a dated block records that day by hand (and which Force headings were already there), so it does not depend on today's date.
+const snapshotFile = (dataDir, taskDir) => join(dataDir, 'journal-baseline', `${createHash('sha1').update(realpathSync(taskDir)).digest('hex').slice(0, 16)}.json`)
+const setGate = (taskDir, since, seen = [], dataDir = DATA) => {
+  jc.baselineInfo(dataDir, taskDir)
+  const file = snapshotFile(dataDir, taskDir)
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since018: since, forceSeen: seen }))
+}
 const COUNTS = [
   ['# pro-review\nНаходки: critical 1 · major 2 · minor 3\n', 'pro-review-1.md', [1, 2, 3]],
   ['# figma\nВердикт: 3 расхождения (0 critical / 2 major / 1 minor-spec-note).\n', 'figma-compare-2.md', [0, 2, 1]],
@@ -668,8 +677,6 @@ utimesSync(join(lTask, 'checks/pro-review-0.md'), past, past)
 // Snapshot v1 (0.12–0.13): only ✅ lines — the new version appends the current lines to it instead of nitpicking at them.
 const v1 = join(DATA, 'journal-baseline')
 mkdirSync(v1, { recursive: true })
-const { createHash } = await import('node:crypto')
-const { realpathSync } = await import('node:fs')
 writeFileSync(join(v1, `${createHash('sha1').update(realpathSync(lTask)).digest('hex').slice(0, 16)}.json`), JSON.stringify({ taskDir: lTask, created: new Date(past * 1000).toISOString(), lines: [] }))
 git(lApp, 'checkout', '-qb', 'T-11/feat/l')
 const lGate = (file) => runHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Write', tool_input: { file_path: join(lTask, file) } })
@@ -827,6 +834,8 @@ write(kApp, {
 })
 git(kApp, 'checkout', '-qb', 'T-12/feat/k')
 runHook('session-start.mjs', { cwd: kApp })
+// The 0.15 rules alone: the run was already open when 0.18 first saw the task, so the 0.18 receipts and the fresh-final-review close stay out of these checks.
+setGate(kTask, today, [`## Force-прогон ${today}`])
 const kCommit = (command) => runHook('git-guard.mjs', { cwd: kApp, tool_input: { command } })
 const noKitReport = kCommit('git add -A && git commit -m "T-12: карточка"')
 check('force commit: kit overrides without a report — denied', noKitReport.decision === 'deny' && /src\/Card\.tsx/.test(noKitReport.text) && /kit-override-scan/.test(noKitReport.text), noKitReport.text)
@@ -937,11 +946,12 @@ check('journal-gate: a Bash call that rewrites the journal of that task gets the
   const skippedOf = (before) => gates.gateStatus(DATA, kApp, wordConfig, [{ reason: 'staging', date: '2026-10-19', before }]).map((gate) => `${gate.name}:${gate.status === 'skipped'}`)
   check('ci-gates skip: a line about "special" / "rebuild" skips neither `ci` nor `build`', same(skippedOf('a special rebuild of the stack '), ['ci:false', 'build:false']), skippedOf('a special rebuild of the stack ').join())
   check('ci-gates skip: a line naming `ci` as a word skips `ci` only', same(skippedOf('ci, '), ['ci:true', 'build:false']) && same(skippedOf('the build gate '), ['ci:false', 'build:true']))
-  // m-3 + D-1: a skip is accepted, but a gate whose last recorded run is red reads "skipped — last run red"; the digest counts skipped apart from green.
+  // m-3 + D-1: a skip of a gate that did not run on HEAD is accepted, but a gate whose last recorded run (on another tree) is red reads "skipped — last run red";
+  // the digest counts skipped apart from green.
   gates.recordGate(DATA, kApp, 'node -e "process.exit(0)"', 1, 'deadbeef')
   closeWith('skip: Смоук — нужен стейджинг 2026-10-19')
   const redSkipped = gates.gateStatus(DATA, kApp, cfgBase, gates.forceSkips(kTask))[0]
-  check('ci-gates skip: a skipped gate with a red last run is still accepted at close', redSkipped?.status === 'skipped' && redSkipped.lastRed === true && violations().length === 0, JSON.stringify(redSkipped))
+  check('ci-gates skip: a skipped gate whose last run was red on another tree (stale on HEAD) is still accepted at close', redSkipped?.status === 'skipped' && redSkipped.lastRed === true && violations().length === 0, JSON.stringify(redSkipped))
   check('ci-gates skip: the listing says "skipped — last run red" (en and ru)', /skipped — last run red/.test(gates.describe(redSkipped)) && /пропущен — последний запуск красный/.test(gates.describe(redSkipped, 'ru')), gates.describe(redSkipped))
   const { runDigest: kDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
   const kRepo = readPipelineState(kApp)
@@ -949,6 +959,20 @@ check('journal-gate: a Bash call that rewrites the journal of that task gets the
   const fullView = kDigest(kTask, DATA, kRepo, 'full')
   check('digest: skipped gates are counted apart from green — short and full view', /\(0 из 1 зелёные, пропущено 1\)/.test(shortView) && /\(0 из 1 зелёные, пропущено 1\)/.test(fullView), shortView)
   check('digest: a skipped gate with a red last run is listed in the short view', /пропущен — последний запуск красный/.test(shortView), shortView)
+  // VT-1 5a m-1: a run red on HEAD beats the Force block's own skip line — the skip stands only for a gate that cannot run here, the run that wrote it saw it fail.
+  // The user's mark in the config row still counts.
+  const headTree = git(kApp, 'rev-parse', 'HEAD^{tree}').trim()
+  gates.recordGate(DATA, kApp, 'node -e "process.exit(0)"', 1, headTree)
+  closeWith('skip: Смоук — нужен стейджинг 2026-10-19')
+  const redHead = violations()
+  check('ci-gates m-1: a gate red on HEAD with a Force-block skip still blocks "completed", and the message says the skip does not cover a red run', redHead.length === 1 && /— red, code 1/.test(redHead[0].message) && /does not cover it/.test(redHead[0].message), JSON.stringify(redHead.map(({ message }) => message)))
+  check('ci-gates m-1: the same red gate is listed red, not skipped', gates.gateStatus(DATA, kApp, cfgBase, gates.forceSkips(kTask))[0]?.status === 'red')
+  check('ci-gates m-1: the same red gate with the user\'s config-row skip — accepted', violations(withRow('skip: нужен стейджинг 2026-10-19')).length === 0)
+  // R2: a green run on HEAD beats a skip, in the row and in the Force block — listed green, not skipped.
+  gates.recordGate(DATA, kApp, 'node -e "process.exit(0)"', 0, headTree)
+  const greenOverSkip = gates.gateStatus(DATA, kApp, withRow('skip: нужен стейджинг 2026-10-19'), gates.forceSkips(kTask))[0]
+  check('ci-gates R2: a green run on HEAD beats a skip (row and Force block) — listed green, not skipped', greenOverSkip?.status === 'green' && !/skipped/.test(gates.describe(greenOverSkip)), JSON.stringify(greenOverSkip))
+  gates.recordGate(DATA, kApp, 'node -e "process.exit(0)"', 1, 'deadbeef') // back to "never ran on HEAD" for the checks below
 }
 const kConfig = readFileSync(join(kApp, '.claude/pipeline.config.md'), 'utf8')
 write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён с блокерами ${today}`, blockers: '\n- B1 — Смоук: нужен стейджинг, локально не поднимается' }) })
@@ -976,10 +1000,12 @@ check('session-start on main: a task-file fix under another ticket after closing
 check('session-start: the same line is not repeated a second time', !/T-12 \(закрыта/.test(runHook('session-start.mjs', { cwd: kApp }).text))
 // AC-2.3: a commit that names the ticket in its title, landing after the close, is not "the task's own squash": only its SHA or patch-id in the journal clears it.
 {
-  // The titled rule applies to blocks closed on or after 2026-10-20: the run here is closed on that day at the earliest, its commits land after it.
+  // The titled rule applies to runs opened on or after the day the task snapshot recorded at the 0.18 migration (set here to 2026-10-20, none seen then):
+  // the run here is dated that day at the earliest, its commits land after it.
   const closedFix = today >= '2026-10-20' ? today : '2026-10-20'
   const stagesFile = join(kTask, 'STAGES.md')
   writeFileSync(stagesFile, readFileSync(stagesFile, 'utf8').replaceAll(today, closedFix))
+  setGate(kTask, '2026-10-20')
   const baseTs = Math.max(Date.now(), Date.parse(`${closedFix}T12:00:00Z`))
   const commitAt = (message, seconds, content) => {
     write(kApp, { 'src/Card.tsx': content })
@@ -1015,20 +1041,25 @@ check('session-start: the same line is not repeated a second time', !/T-12 \(з�
   const stagesSq = (closedOn) =>
     `# T-31: задача\nВетка: \`T-31/feat/s\`\n\n## Статус: этап 1\n\n## Force-прогон ${closedOn} — завершён ${closedOn}\nПодтверждено: ${closedOn} — «да»\nБлокеры:\n\n## Этапы\n\n### Этап 1: шаг  [status: done]\n` +
     `- [x] commit: \`${shaA.slice(0, 8)}\` T-31: шаг A\n- [x] commit: \`${shaB.slice(0, 8)}\` T-31: шаг B\n`
-  const namedAfter = (closedOn) => {
+  // The per-task gate: the 0.18 migration recorded 2026-10-20 and no Force run then (VT-1 5a m-2).
+  const GATE = { since: '2026-10-20', seen: new Set() }
+  const namedAfter = (closedOn, gate = GATE) => {
     write(sqApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-31/STAGES.md': stagesSq(closedOn) })
     const state = readPipelineState(sqApp)
-    return unjournaled(state, state.tasks.find((task) => task.ticket === 'T-31')).map(({ subject }) => subject)
+    return unjournaled(state, state.tasks.find((task) => task.ticket === 'T-31'), { gate }).map(({ subject }) => subject)
   }
   const followUp = (iso) => {
     edit(3)
     at(iso, 'commit', '-qam', 'Fix(T-31): правка после закрытия')
   }
   followUp('2026-10-12T11:00:00Z')
-  check('unjournaled: a ticket-titled follow-up on a block closed BEFORE the gate (2026-10-20) — silent', !namedAfter('2026-10-10').some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-10').join('|'))
+  check('unjournaled: a ticket-titled follow-up on a block opened BEFORE the migration date of the snapshot (2026-10-20) — silent', !namedAfter('2026-10-10').some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-10').join('|'))
+  check('unjournaled m-2: the same block with no gate (no snapshot date) — named, the rule fails closed', namedAfter('2026-10-10', null).some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-10', null).join('|'))
   at('2026-10-12T12:00:00Z', 'reset', '-q', '--hard', shaB)
   followUp('2026-10-26T11:00:00Z')
-  check('unjournaled: the same ticket-titled follow-up after a post-gate close — named', namedAfter('2026-10-25').some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-25').join('|'))
+  check('unjournaled: the same ticket-titled follow-up on a block opened after the migration date — named', namedAfter('2026-10-25').some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-25').join('|'))
+  const seenGate = { since: '2026-10-20', seen: new Set(['## Force-прогон 2026-10-25']) }
+  check('unjournaled m-2: a block already there at the migration (its heading in the snapshot) keeps the old rule whatever its date — silent', !namedAfter('2026-10-25', seenGate).some((subject) => /Fix\(T-31\)/.test(subject)), namedAfter('2026-10-25', seenGate).join('|'))
   // The squash of the stage commits without "(#N)" (GitLab): the same combined patch on top of the base.
   at('2026-10-26T12:00:00Z', 'reset', '-q', '--hard', `${shaA}^`)
   writeFileSync(join(sqApp, 'sq.patch'), `${patch}\n`)
@@ -1039,6 +1070,10 @@ check('session-start: the same line is not repeated a second time', !/T-12 \(з�
   edit(9)
   at('2026-10-26T12:02:00Z', 'commit', '-qam', 'Feat(T-31): другой патч')
   check('unjournaled: a ticket-titled commit with a different patch after the close — named', namedAfter('2026-10-25').some((subject) => /Feat\(T-31\): другой патч/.test(subject)))
+  // R3: a `Revert "…"` after the close is not task follow-up work, even though it touches the task's files.
+  at('2026-10-26T12:03:00Z', 'revert', '--no-edit', 'HEAD')
+  const withRevert = namedAfter('2026-10-25')
+  check('unjournaled R3: a revert commit after the close is not named; the commit it reverts still is', !withRevert.some((subject) => /^Revert\s/.test(subject)) && withRevert.some((subject) => /Feat\(T-31\): другой патч/.test(subject)), withRevert.join('|'))
 }
 rmSync(kRoot, { recursive: true, force: true })
 
@@ -1059,6 +1094,7 @@ write(eApp, {
 })
 git(eApp, 'checkout', '-qb', 'T-13/feat/k')
 runHook('session-start.mjs', { cwd: eApp })
+setGate(eTask, today, [`## Force run ${today}`]) // as in the Russian twin: a run open when 0.18 first saw the task
 const eCommit = (command) => runHook('git-guard.mjs', { cwd: eApp, tool_input: { command } })
 write(eApp, { 'src/Card.tsx': 'export const Card = () => <h3 className="text-[13px] font-bold uppercase">x</h3>\n' })
 const noKitReportEn = eCommit('git add -A && git commit -m "T-13: card"')
@@ -2123,7 +2159,7 @@ rmSync(retroRoot, { recursive: true, force: true })
       check(`outcome "${entry.slice(0, 50)}" is fixed`, jc.disposition(`- M-1 — ${entry}`) === 'fixed', jc.disposition(`- M-1 — ${entry}`))
     for (const entry of ['fixed: a.ts:1; поправим тесты', 'fixed: a.ts:1; the rest later', 'исправлено: a.ts:1; остальное в findings', 'not yet fixed — a.ts:10', 'не исправлено: a.ts:10 — позже', 'leaving it as is — fixed elsewhere', 'will be fixed in a follow-up PR: a.ts:10', 'исправим позже: a.ts:10'])
       check(`outcome "${entry.slice(0, 50)}" is not fixed`, !['fixed', 'false', 'blocker', 'user'].includes(jc.disposition(`- M-1 — ${entry}`)), jc.disposition(`- M-1 — ${entry}`))
-    check('stripQuoted cuts backticks and the three kinds of quotes', jc.stripQuoted('a `b` "c" «d» “e” f').replace(/\s+/g, ' ') === 'a f')
+    check('stripQuoted cuts backticks and the three kinds of quotes', markers.stripQuoted('a `b` "c" «d» “e” f').replace(/\s+/g, ' ') === 'a f')
 
     // m-5: subject words and states of the interface are not a caveat.
     const AC5 = '- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify 1440/1280'
@@ -2286,8 +2322,8 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── stage receipts (VT-1 stage 3): the force commit needs the stage's checkers, the close needs fresh final reviews ──
-// Each rule: the live incident form that must be denied and the live legitimate form that must pass. Force blocks are dated after RECEIPTS_SINCE;
-// report times and receipt times are set by hand (the real clock is before the date gate).
+// Each rule: the live incident form that must be denied and the live legitimate form that must pass. The task snapshot records the 0.18 migration on
+// 2026-10-20 with no Force run seen then (`setGate`), and the Force blocks are dated after it; report times and receipt times are set by hand.
 {
   const rc = await import(join(PLUGIN, 'receipts.mjs'))
   const rRoot = mkdtempSync(join(tmpdir(), 'receipts-test-'))
@@ -2295,7 +2331,7 @@ rmSync(retroRoot, { recursive: true, force: true })
   const at = (hours) => (T0 + hours * 3600_000) / 1000
   let rCalls = 0
   const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n`
-  const fixture = (name, { force = '## Force run 2026-10-22', stages = '', ru = false } = {}) => {
+  const fixture = (name, { force = '## Force run 2026-10-22', stages = '', ru = false, gate = true } = {}) => {
     const dir = join(rRoot, name)
     const ticket = `T-4${rCalls++}`
     repoAt(dir, 'main')
@@ -2307,6 +2343,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     git(dir, 'checkout', '-qb', `${ticket}/feat/r`)
     runHook('session-start.mjs', { cwd: dir })
     const tdir = join(dir, '.claude/tasks', ticket)
+    if (gate) setGate(tdir, '2026-10-20')
     return {
       dir,
       ticket,
@@ -2408,6 +2445,26 @@ rmSync(retroRoot, { recursive: true, force: true })
   // The date gate: a Force block before the release, and a task of another branch, are left alone.
   const old = fixture('old-block', { force: '## Force run 2026-10-19' })
   check('receipts: a Force block dated before the release — no new deny (UI commit, no reports)', old.commit({ 'src/Old.vue': '<template>o</template>\n' }, 3).decision === 'allow' && old.receipts().length === 0)
+  // m-2 (VT-1 5a): the gate is the snapshot's migration day, not a guessed release date.
+  const onDay = fixture('opened-on-migration-day', { force: '## Force run 2026-10-20' })
+  check('receipts m-2: a block opened on the day the snapshot recorded — the rules apply (UI commit with no reports denied)', onDay.commit({ 'src/Day.vue': '<template>d</template>\n' }, 3).decision === 'deny')
+  const unread = fixture('unreadable-date', { force: '## Force run Oct 23' })
+  unread.journal(`# ${unread.ticket}: task\nBranch: \`${unread.ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run Oct 23\nConfirmed: Oct 23 — yes\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n`)
+  const unreadDenied = unread.commit({ 'src/Unread.vue': '<template>u</template>\n' }, 3)
+  check('receipts m-2: a new block whose heading and Confirmed dates do not parse ("Oct 23") — fails closed, the rules apply', unreadDenied.decision === 'deny' && /pro-review/.test(unreadDenied.text), unreadDenied.text)
+  setGate(unread.tdir, '2026-10-20', ['## Force run Oct 23'])
+  check('receipts m-2: the same block when it was already there at the migration — left alone', unread.commit({ 'src/Unread.vue': '<template>u2</template>\n' }, 4).decision === 'allow')
+  // B1 containment: a block open when the plugin first sees the task on 0.18 and dated before that day (VT-1's own `## Force run 2026-10-19`, every live run) keeps the old rules.
+  const natural = fixture('seen-at-migration', { force: '## Force run 2026-10-19', gate: false })
+  const naturalGate = jc.releaseGate(DATA, natural.tdir)
+  check('receipts m-2: the migration records its day and the open Force heading dated before it', /^\d{4}-\d{2}-\d{2}$/.test(naturalGate.since) && naturalGate.seen.has('## Force run 2026-10-19'), JSON.stringify({ since: naturalGate.since, seen: [...naturalGate.seen] }))
+  check('receipts m-2: that block stays pre-release — a UI commit with no reports passes, no receipt', natural.commit({ 'src/Live.vue': '<template>l</template>\n' }, 3).decision === 'allow' && natural.receipts().length === 0)
+  // M-1 (5a fix round 1): a block dated the migration day is not recorded as seen, even when it is in the text at the first look — it may be the very edit that opened it.
+  const today = new Date()
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  const sameDay = fixture('on-day-at-first-look', { force: `## Force run ${todayIso}`, gate: false })
+  const sameDayGate = jc.releaseGate(DATA, sameDay.tdir)
+  check('receipts M-1: a block dated the migration day, there at the first look — not seen, a UI commit with no reports is denied', sameDayGate.seen.size === 0 && sameDay.commit({ 'src/Day.vue': '<template>d</template>\n' }, 3).decision === 'deny', JSON.stringify({ since: sameDayGate.since, seen: [...sameDayGate.seen] }))
   const other = fixture('other-branch')
   git(other.dir, 'checkout', '-qb', 'unrelated/branch')
   check('receipts: a task that is not the current branch\'s is left alone', runHook('git-guard.mjs', { cwd: other.dir, tool_input: { command: 'git commit --allow-empty -m x' } }).decision === 'allow')
@@ -2652,8 +2709,45 @@ rmSync(retroRoot, { recursive: true, force: true })
   }
   const down = doctor(foreign.port)
   check('verify-doctor: nothing listens — "doctor: down", exit 1', /^doctor: down — /.test(down.stdout) && down.status === 1, down.stdout)
+  // M-2 (VT-1 5a): no config at all is not a static target — the doctor does not know the url and says so; frames-guard does not accept it.
+  const noConfig = spawnSync(process.execPath, [doctorScript, '--cwd', mine], { encoding: 'utf8' })
+  check('verify-doctor M-2: no pipeline config here or in a main tree — "doctor: no config", exit 1, not "no dev url"', /^doctor: no config — /.test(noConfig.stdout) && noConfig.status === 1 && !/no dev url/.test(noConfig.stdout), noConfig.stdout + noConfig.stderr)
+  write(mine, { '.claude/pipeline.config.md': '# C\n\n## Dev server\n- url: —   # a static deck\n' })
   const bare = spawnSync(process.execPath, [doctorScript, '--cwd', mine], { encoding: 'utf8' })
-  check('verify-doctor: no dev url (a static target) — a "doctor:" line with the reason, exit 0', /^doctor: no dev url — /.test(bare.stdout) && bare.status === 0, bare.stdout)
+  check('verify-doctor: a config with no dev url (a static target) — a "doctor: no dev url" line with the reason, exit 0', /^doctor: no dev url — /.test(bare.stdout) && bare.status === 0, bare.stdout)
+  // M-2: a linked worktree whose `.claude/` is excluded reads the main tree's config, as the hooks do — the incident printed "no dev url" there and frames-guard let every navigation through.
+  {
+    const mainRepo = mkdtempSync(join(tmpdir(), 'doctor-main-'))
+    repoAt(mainRepo, 'main')
+    write(mainRepo, { '.claude/pipeline.config.md': `# C\n- task_path: .claude/tasks/\n\n## Dev server\n- url: http://127.0.0.1:${foreign.port}\n` })
+    const linked = join(mkdtempSync(join(tmpdir(), 'doctor-linked-')), 'wt')
+    git(mainRepo, 'worktree', 'add', '-q', '-b', 'feat/x', linked)
+    const fromLinked = spawnSync(process.execPath, [doctorScript, '--cwd', linked], { encoding: 'utf8' })
+    check('verify-doctor M-2: from a linked worktree with `.claude/` excluded — the main tree\'s dev url is probed ("doctor: down", exit 1), not "no dev url"', /^doctor: down — http:\/\/127\.0\.0\.1:\d+\/ did not answer/.test(fromLinked.stdout) && fromLinked.status === 1, fromLinked.stdout + fromLinked.stderr)
+    const fromMain = spawnSync(process.execPath, [doctorScript, '--cwd', mainRepo], { encoding: 'utf8' })
+    check('verify-doctor M-2: the same from the main tree — the same verdict', /^doctor: down — /.test(fromMain.stdout) && fromMain.status === 1, fromMain.stdout)
+    rmSync(mainRepo, { recursive: true, force: true })
+    rmSync(dirname(linked), { recursive: true, force: true })
+  }
+  // S-3 (security): the doctor always ends with a `doctor:` line — a request it cannot make is `doctor: error`, a Location that does not parse is `doctor: down`.
+  // A failure is forced by a preload that breaks `http.get`: thrown at once (the promise path) and thrown later in a callback (the uncaught path).
+  const crashWith = (body) => spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(`import http from 'node:http'; http.get = () => { ${body} }`)}`, doctorScript, '--cwd', mine, '--url', 'http://127.0.0.1:9'], { encoding: 'utf8' })
+  const crashNow = crashWith("throw new Error('boom now')")
+  const crashLater = crashWith("setImmediate(() => { throw new Error('boom later') }); return { on() {} }")
+  check('verify-doctor S-3: a failure inside the doctor prints "doctor: error — …", exit 1, no stack', /^doctor: error — boom now/.test(crashNow.stdout) && crashNow.status === 1 && !/at .*\.mjs:\d+/.test(crashNow.stderr), crashNow.stdout + crashNow.stderr)
+  check('verify-doctor S-3: a failure thrown later in a callback — the same "doctor: error" line', /^doctor: error — boom later/.test(crashLater.stdout) && crashLater.status === 1, crashLater.stdout + crashLater.stderr)
+  {
+    const badRedirect = await new Promise((done) => {
+      const child = spawn(process.execPath, ['-e', `const s=require('http').createServer((q,r)=>{r.statusCode=302;r.setHeader('location','http://[');r.end()}).listen(0,'127.0.0.1',()=>console.log(s.address().port))`], { cwd: other, stdio: ['ignore', 'pipe', 'ignore'] })
+      child.stdout.once('data', (data) => done({ child, port: Number(String(data)) }))
+    })
+    try {
+      const redirected = doctor(badRedirect.port)
+      check('verify-doctor S-3: a redirect whose Location does not parse ("http://[") — "doctor: down", exit 1, not a crash with no verdict', /^doctor: down — .*does not parse/.test(redirected.stdout) && redirected.status === 1 && !redirected.stderr, redirected.stdout + redirected.stderr)
+    } finally {
+      badRedirect.child.kill()
+    }
+  }
   // review round 1: femo's «Dev server» line `- routes: <path to a file> — prose` is not a probe route; a url with a remark parses
   mkdirSync(join(mine, '.claude'), { recursive: true })
   const cfg = (lines) => writeFileSync(join(mine, '.claude', 'pipeline.config.md'), `# C\n\n## Dev server\n${lines}\n\n## Other\n`)
@@ -2738,6 +2832,19 @@ rmSync(retroRoot, { recursive: true, force: true })
   const refused = guard([[DOC], [answer('d1', 'doctor: wrong app — http://localhost:3000 is held by pid 1 with cwd /other')], [NAV]], 'refused')
   check('frames-guard: a navigation after "doctor: wrong app" — blocked', refused.decision === 'block' && /wrong app/.test(refused.text), refused.text)
   check('frames-guard: "doctor: no dev url" then a navigation to the static file — passes', guard([[DOC], [answer('d1', 'doctor: no dev url — static target')], [NAV]], 'static').decision === 'allow')
+  // R10: the incident form after `down` (the code blocked it, no fixture held it).
+  const afterDown = guard([[DOC], [answer('d1', 'doctor: down — http://localhost:3000/ did not answer: ECONNREFUSED')], [NAV]], 'down')
+  check('frames-guard R10: a navigation after "doctor: down" — blocked', afterDown.decision === 'block' && /wrong app` \/ `down/.test(afterDown.text), afterDown.text)
+  // M-2: "no config" is not a static target.
+  const afterNoConfig = guard([[DOC], [answer('d1', 'doctor: no config — no .claude/pipeline.config.md in /w or in its main tree')], [NAV]], 'no-config')
+  check('frames-guard M-2: a navigation after "doctor: no config" — blocked, the message asks for --url', afterNoConfig.decision === 'block' && /--url/.test(afterNoConfig.text), afterNoConfig.text)
+  check('frames-guard M-2: a navigation before "doctor: no config" stays blind (not cleared as a static target)', guard([[NAV], [DOC], [answer('d1', 'doctor: no config — x')]], 'no-config-late').decision === 'block')
+  // S-3: a doctor that gave no verdict (a crash with a stack, an `error` line) clears nothing; a record of an unexpected shape does not stop the checks.
+  const afterCrash = guard([[DOC], [answer('d1', 'file:///p/scripts/verify-doctor.mjs:137\nTypeError: Invalid URL')], [NAV]], 'crash')
+  check('frames-guard S-3: a navigation after a doctor run with no `doctor:` line (a crash) — blocked', afterCrash.decision === 'block' && /no verdict/.test(afterCrash.text), afterCrash.text)
+  check('frames-guard S-3: a navigation after "doctor: error — …" — blocked', guard([[DOC], [answer('d1', 'doctor: error — Request path contains unescaped characters')], [NAV]], 'error').decision === 'block')
+  const oddRecord = guard([[call('Read', { file_path: ['a.png'] }, 'r1')], [{ type: 'tool_use', id: 'r2', name: 'Read', input: { filePath: 12 } }], [NAV]], 'odd-record')
+  check('frames-guard S-3: a Read with a non-string file_path does not stop the hook — the blind navigation is still blocked', oddRecord.decision === 'block' && /before running verify-doctor/.test(oddRecord.text), oddRecord.text)
   check('frames-guard: no navigation at all (a skip, the playwright fallback) is not judged', guard([[call('Bash', { command: 'ls' }, 'x1')]], 'none').decision === 'allow')
   rmSync(gRoot, { recursive: true, force: true })
 }
@@ -2971,6 +3078,289 @@ rmSync(retroRoot, { recursive: true, force: true })
     check(`AC-5.4 digest ${language}: Awaiting rows come sorted by rollback cost, expensive first`, order(full).every((at, i, all) => at !== -1 && (i === 0 || at > all[i - 1])), order(full).join(','))
     rmSync(dData, { recursive: true, force: true })
     rmSync(dTask, { recursive: true, force: true })
+  }
+}
+
+// ── VT-1 stage 5a: final-check catch-up — old reports stay editable, one per-task date gate, linear time on long tokens, safe reads ──
+{
+  const { decisionViolations } = await import(join(PLUGIN, 'decisions.mjs'))
+  const { weakForm } = await import(join(PLUGIN, 'dismissals.mjs'))
+  const ps = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+
+  // m-2: one helper decides whether a rule keyed on a Force block applies; it fails closed.
+  const gate = { since: '2026-10-20', seen: new Set(['## Force run 2026-10-19']) }
+  const applies = (heading, fallback = null, g = gate) => markers.ruleAppliesToBlock(g, heading, fallback)
+  check('m-2 gate: a block opened before the recorded migration day — the rule does not apply', !applies('## Force run 2026-10-18'))
+  check('m-2 gate: a block opened on or after that day — it applies', applies('## Force run 2026-10-20') && applies('## Force-прогон 21.10.2026'))
+  check('m-2 gate: VT-1\'s own block, there at the migration, stays pre-release — also after its close', !applies('## Force run 2026-10-19') && !applies('## Force run 2026-10-19 — completed with blockers'))
+  check('m-2 gate: an unreadable heading date ("Oct 21", "21.10.26") fails closed; a readable Confirmed date decides', applies('## Force run Oct 21') && applies('## Force run 21.10.26') && !applies('## Force run Oct 21', '2026-10-18'))
+  check('m-2 gate: no gate at all, or an unreadable recorded day — the rule applies', applies('## Force run 2026-10-18', null, null) && applies('## Force run 2026-10-18', null, { since: 'garbage', seen: new Set() }))
+  check('m-2 gate: the key of a heading drops its closing tail', markers.forceKey('## Force-прогон 2026-10-04 — завершён 2026-10-05') === '## Force-прогон 2026-10-04' && markers.forceKey('## Force run 2026-10-22: completed') === '## Force run 2026-10-22')
+
+  // m-2 + D7: the migration records the day and the Force headings once; the earlier migrations are not run again (a new bare live line stays new).
+  {
+    const gData = mkdtempSync(join(tmpdir(), 'gate-mig-data-'))
+    const gTask = mkdtempSync(join(tmpdir(), 'gate-mig-task-'))
+    writeFileSync(join(gTask, 'STAGES.md'), '# T-71\nLanguage: en\n\n## Force run 2026-10-19\nConfirmed: 2026-10-19 — answers\n\n## Journal\n- 2026-10-19 start\n')
+    jc.baselineInfo(gData, gTask)
+    const file = snapshotFile(gData, gTask)
+    const snap = JSON.parse(readFileSync(file, 'utf8'))
+    delete snap.since018
+    delete snap.forceSeen
+    writeFileSync(file, JSON.stringify(snap))
+    appendFileSync(join(gTask, 'STAGES.md'), '- `AC-1.1` ⏳ [live: user-side]\n')
+    const migrated = jc.releaseGate(gData, gTask)
+    check('m-2 migration: a snapshot of 0.18 before 5a gets the day and the Force headings there', /^\d{4}-\d{2}-\d{2}$/.test(migrated.since) && migrated.seen.has('## Force run 2026-10-19'), JSON.stringify({ since: migrated.since, seen: [...migrated.seen] }))
+    check('m-2 migration: a bare live line written after the stage 4 migration stays new (that migration is not run again)', jc.newJournalViolations(gData, gTask).some(({ rule }) => rule === 'live-bare'))
+    rmSync(gData, { recursive: true, force: true })
+    rmSync(gTask, { recursive: true, force: true })
+  }
+
+  // M-1: the incident end to end through journal-gate.mjs — a v2 snapshot of 0.16 whose `reports` lacks a devtools-verify report written after the first look.
+  {
+    const mRoot = mkdtempSync(join(tmpdir(), 'm1-'))
+    const mApp = join(mRoot, 'app')
+    repoAt(mApp, 'main')
+    const tdir = join(mApp, '.claude/tasks/T-70')
+    write(mApp, {
+      '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+      '.claude/tasks/T-70/STAGES.md': '# T-70: task\nLanguage: en\nBranch: `T-70/feat/a`\n\n## Status: stage 2\n\n## Stages\n\n### Stage 2: card  [status: in-progress]\n',
+    })
+    git(mApp, 'checkout', '-qb', 'T-70/feat/a')
+    jc.baselineInfo(DATA, tdir)
+    const file = snapshotFile(DATA, tdir)
+    const old = JSON.parse(readFileSync(file, 'utf8'))
+    for (const key of ['liveSeen', 'dismissSeen', 'ledgerOld', 'since018', 'forceSeen']) delete old[key]
+    writeFileSync(file, JSON.stringify({ ...old, reports: [] })) // 0.16: the first look saw no report
+    const REPORT_016 = '# devtools-verify, stage 2\nFindings: critical 0 · major 1 · minor 0\n\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n\n### 🟠 M-1 src/Card.vue:12 — the badge overlaps the title at 1280\n\n## Could not verify\n- /orders — [live: user-side]\n'
+    write(mApp, { '.claude/tasks/T-70/checks/devtools-verify-2.md': REPORT_016 })
+    const reportGate = (name) => runHook('journal-gate.mjs', { cwd: mApp, tool_name: 'Write', tool_input: { file_path: join(tdir, 'checks', name) } })
+    // the mandated flow after the upgrade: the orchestrator appends the findings outcome to the old report
+    appendFileSync(join(tdir, 'checks/devtools-verify-2.md'), '\n## Findings outcome\n- M-1 — fixed: src/Card.vue:12\n')
+    const oldEdit = reportGate('devtools-verify-2.md')
+    check('M-1: an old report (written under 0.16 after the first look) edited after the upgrade — no live-bare, no doctor:/auth: demand', oldEdit.decision !== 'block', oldEdit.text)
+    check('M-1: the migration listed it in ledgerOld and recorded the day', (() => { const now = JSON.parse(readFileSync(file, 'utf8')); return now.ledgerOld.includes('devtools-verify-2.md') && /^\d{4}-\d{2}-\d{2}$/.test(now.since018) })())
+    write(mApp, { '.claude/tasks/T-70/checks/devtools-verify-3.md': REPORT_016.replace('stage 2', 'stage 3') + '\n## Findings outcome\n- M-1 — fixed: src/Card.vue:12\n' })
+    const newReport = reportGate('devtools-verify-3.md')
+    check('M-1: a report written after the migration — the live-bare and both no-doctor rules fire (fresh/strict wiring of journal-gate)', newReport.decision === 'block' && /without a reason/.test(newReport.text) && /no `doctor:` line/.test(newReport.text) && /no `auth:` line/.test(newReport.text), newReport.text)
+    // R8: the EN keys pass, end to end and on the report function.
+    write(mApp, { '.claude/tasks/T-70/checks/devtools-verify-3.md': REPORT_016.replace('stage 2', 'stage 3').replace('\ngeometry', '\ndoctor: ok — http://localhost:3000 answers on / 200\nauth: not logged in — /orders → redirected to /login\n\ngeometry').replace('[live: user-side]', '[live: user-side — the profile is not logged in; /orders → redirected to /login]') + '\n## Findings outcome\n- M-1 — fixed: src/Card.vue:12\n' })
+    const enKeys = reportGate('devtools-verify-3.md')
+    check('R8 EN: a fresh report with the English `doctor:` / `auth:` lines and the honest form passes journal-gate', enKeys.decision !== 'block', enKeys.text)
+    check('R8 EN: reportViolations with fresh — no no-doctor for the English keys', !jc.reportViolations(join(tdir, 'checks/devtools-verify-3.md'), null, { fresh: true }).some(({ rule }) => rule === 'no-doctor'))
+    rmSync(mRoot, { recursive: true, force: true })
+  }
+
+  // M-1 (5a fix round 1): the edit that writes `## Force run <today>` is the task's first look on 0.18 — a task planned under 0.16 (a v2 snapshot), the session on `main`,
+  // so session-start does not take the snapshot (the task is not current), then `git checkout -b` and a UI force commit with no reports. The block is a run of this
+  // version: the PreToolUse run of journal-gate takes the snapshot before the edit, and a heading dated the migration day is never recorded as seen (a write by Bash).
+  {
+    const now = new Date()
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    let looks = 0
+    // The PreToolUse run happens only where hooks.json wires it: the fixture runs it as Claude Code would.
+    const wiring = JSON.parse(readFileSync(join(PLUGIN, '../hooks/hooks.json'), 'utf8')).hooks
+    const wired = (event, tool, script) => (wiring[event] ?? []).some((entry) => new RegExp(`^(?:${entry.matcher})$`).test(tool) && entry.hooks.some(({ command }) => command.includes(script)))
+    check('M-1 first look: hooks.json runs journal-gate before an Edit, a Write and a MultiEdit', ['Edit', 'Write', 'MultiEdit'].every((tool) => wired('PreToolUse', tool, 'journal-gate.mjs')))
+    const preRuns = []
+    const firstLook = ({ snapshot = 'v2', pre = true, heading = `## Force run ${todayIso}`, confirmed = todayIso, extra = '' } = {}) => {
+      const fRoot = mkdtempSync(join(tmpdir(), 'firstlook-'))
+      const fApp = join(fRoot, 'app')
+      const ticket = `T-9${looks++}`
+      const tdir = join(fApp, '.claude/tasks', ticket)
+      const plan = `# ${ticket}: task\nLanguage: en\nBranch: \`${ticket}/feat/a\`\n\n## Status: stage 1\n\n## Stages\n\n### Stage 1: card  [status: todo]\n`
+      repoAt(fApp, 'main')
+      write(fApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', [`.claude/tasks/${ticket}/STAGES.md`]: plan })
+      if (snapshot === 'v2') {
+        jc.baselineInfo(DATA, tdir)
+        const file = snapshotFile(DATA, tdir)
+        const old = JSON.parse(readFileSync(file, 'utf8'))
+        for (const key of ['liveSeen', 'dismissSeen', 'ledgerOld', 'since018', 'forceSeen']) delete old[key]
+        writeFileSync(file, JSON.stringify(old))
+      }
+      runHook('session-start.mjs', { cwd: fApp })
+      // /stage-force Step 0: the Force block is written by Edit, journal-gate runs around it
+      const edit = { cwd: fApp, tool_name: 'Edit', tool_input: { file_path: join(tdir, 'STAGES.md') } }
+      if (pre && wired('PreToolUse', 'Edit', 'journal-gate.mjs')) preRuns.push(runHook('journal-gate.mjs', { ...edit, hook_event_name: 'PreToolUse' }))
+      write(fApp, { [`.claude/tasks/${ticket}/STAGES.md`]: plan.replace('## Stages', `${heading}\nMode: autonomous\nConfirmed: ${confirmed} — interview answers\n\n## Stages`).replace('[status: todo]', '[status: in-progress]') + extra })
+      const post = runHook('journal-gate.mjs', { ...edit, hook_event_name: 'PostToolUse' })
+      git(fApp, 'checkout', '-qb', `${ticket}/feat/a`)
+      const gate = jc.releaseGate(DATA, tdir)
+      write(fApp, { 'src/Card.vue': '<template>c</template>\n' })
+      const verdict = runHook('git-guard.mjs', { cwd: fApp, tool_name: 'Bash', hook_event_name: 'PreToolUse', tool_use_id: `toolu_firstlook_${looks}`, tool_input: { command: 'git add -A && git commit -m stage1' } })
+      rmSync(fRoot, { recursive: true, force: true })
+      return { gate, verdict, post, shown: JSON.stringify({ since: gate.since, seen: [...gate.seen], verdict: verdict.decision, post: post.decision }) }
+    }
+    const viaEdit = firstLook()
+    check('M-1 first look: the Edit that opens the Force run migrates a 0.16 snapshot before the edit — the block is not seen, the UI force commit with no reports is denied', viaEdit.gate.since === todayIso && viaEdit.gate.seen.size === 0 && viaEdit.verdict.decision === 'deny' && /pro-review/.test(viaEdit.verdict.text), viaEdit.shown)
+    const noPre = firstLook({ pre: false })
+    check('M-1 first look: the same write with no PreToolUse run (a write by Bash) — a heading dated the migration day is not seen, denied', noPre.gate.seen.size === 0 && noPre.verdict.decision === 'deny', noPre.shown)
+    const fresh = firstLook({ snapshot: 'none', pre: false })
+    check('M-1 first look: a task with no snapshot at all — the same, denied', fresh.gate.seen.size === 0 && fresh.verdict.decision === 'deny', fresh.shown)
+    const undated = firstLook({ pre: false, heading: '## Force run (catch-up)' })
+    check('M-1 first look: an undated heading is never seen — the Confirmed date decides, denied', undated.gate.seen.size === 0 && undated.verdict.decision === 'deny', undated.shown)
+    // The PreToolUse run on its own: what the first-look edit writes is new whatever its date — a block dated the day before is not recorded as seen, a bare live line in it is judged.
+    const back = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+    const yesterday = `${back.getFullYear()}-${String(back.getMonth() + 1).padStart(2, '0')}-${String(back.getDate()).padStart(2, '0')}`
+    const pastDated = firstLook({ heading: `## Force run ${yesterday}`, confirmed: yesterday, extra: '- `AC-1.1` ⏳ [live: user-side]\n' })
+    check('M-1 first look: the PreToolUse snapshot reads the journal before the edit — nothing the edit wrote is seen, its bare live line is returned', pastDated.gate.seen.size === 0 && pastDated.post.decision === 'block' && /\[live: user-side\]/.test(pastDated.post.text), `${pastDated.shown} ${pastDated.post.text.slice(0, 160)}`)
+    check('M-1 first look: the PreToolUse run before the edit says nothing (it only takes the snapshot)', preRuns.length === 2 && preRuns.every(({ decision, text }) => decision === 'allow' && text === ''), JSON.stringify(preRuns))
+    const pastNoPre = firstLook({ pre: false, heading: `## Force run ${yesterday}`, confirmed: yesterday })
+    check('M-1 first look: with no PreToolUse run a block dated before the migration day is taken for an old run (the date filter alone keeps it)', pastNoPre.gate.seen.has(`## Force run ${yesterday}`) && pastNoPre.verdict.decision === 'allow', pastNoPre.shown)
+  }
+
+  // m-3: the assumption lines Step 0 of /stage-force shows pass the decision-evidence rule; the short form it used to show does not.
+  {
+    const skill = readFileSync(join(PLUGIN, '../skills/stage-force/SKILL.md'), 'utf8')
+    const shown = skill.split('\n').filter((line) => /^\s*- (?:auth probe|login "not now")/.test(line)).map((line) => line.trim())
+    const block = (lines) => `# T-72\n\n## Force run 2026-10-22\nAssumptions:\n${lines.join('\n')}\nConfirmed: 2026-10-22 — answers\n`
+    check('m-3: Step 0 shows the three auth-probe assumption lines', shown.length === 3, shown.join(' | '))
+    check('m-3: each shown line passes decision-evidence (Rollback and Basis)', decisionViolations(block(shown)).length === 0, JSON.stringify(decisionViolations(block(shown)).map(({ message }) => message)))
+    check('m-3: the old short form ("auth probe: `/orders` opened without a redirect") is rejected', decisionViolations(block(['- auth probe: `/orders` opened without a redirect'])).length === 1)
+  }
+
+  // S-1, S-2, S-5 (security): 50 000 characters of the inputs that were cubic or quadratic — every pattern under 100 ms.
+  {
+    const N = 50_000
+    const rep = (unit) => unit.repeat(Math.ceil(N / unit.length)).slice(0, N)
+    const TOKENS = {
+      fresh: rep('fresh'), dotted: rep('a.'), 'dotted ext': rep('x.abcdefg'), alnum: rep('a'), spaces: ' '.repeat(N), 'spaces then x': `${' '.repeat(N)}x`,
+      'dots and spaces': rep('. '), 'separators then x': `${rep(' ,;:()—-')}x`, guillemets: rep('«'), 'node_modules': rep('node_modules/'), 'blank lines': '\n'.repeat(N), 'dots then x': `${'.'.repeat(N)}x`,
+    }
+    const WORDINGS = ['demoted to minor', 'the next stage owns it, see', 'by design', 'the kit owns it', 'not reproduced', 'this stage did not change it', 'false for the data', 'not related to the task', 'the report itself']
+    const CRIT = (line) => `# pro-review\nFindings: critical 1 · major 0 · minor 0\n\n- C-1 critical: src/a.ts:1 — x\n\n## Findings outcome\n- C-1 — false: src/a.ts:1 ${line}\n`
+    const SUBJECTS = {
+      'journal-check ledgerViolations (critical, fresh report)': (t) => jc.ledgerViolations(CRIT(t), 'pro-review-3.md', { strict: true, complete: true }),
+      'journal-check disposition strict (no length cap), each dismissal wording': WORDINGS.map((w) => (t) => jc.disposition(`- M-1 — false: ${w} ${t}`, { strict: true })),
+      'journal-check liveViolation': (t) => [jc.liveViolation(`- \`AC-1.1\` [live: user-side — profile; /a → ${t}]`), jc.liveViolation(`- [live: user-side — ${t}`)],
+      'journal-check likeViolation': (t) => jc.likeViolation(`- \`AC-1.1\` WHEN x THEN like the old ${t}`),
+      'dismissals weakForm, each dismissal wording': WORDINGS.map((w) => (t) => weakForm(`#1 — false: ${w} ${t}`)),
+      'decisions decisionViolations': (t) => decisionViolations(`# T\n\n## Force run 2026-10-22\nAssumptions:\n- x — Rollback: cheap — Basis: ${t}\n\n## ⚠ Awaiting user confirmation\n- y — Rollback: cheap — Basis: ${t}\n`),
+      'ci-gates parseSkip and gateCommands': (t) => [gates.parseSkip(`skip: a${t} 2026-10-19`), gates.gateCommands(`${t}\n- e2e: \`x\`\n`)],
+      'pipeline-state taskDirFromConfig, reviewModel, main_branch': (t) => [ps.taskDirFromConfig(`${t}\n- other: 1\n`, '/r'), ps.reviewModel(`${t}\n- other: 1\n`)],
+      'verify-doctor config (parseDevServer)': (t) => ps.parseDevServer([`# C\n\n## Dev server\n- url: http://localhost:3000${t}# comment\n- verify_routes: /${t}\n`]),
+      'markers forceKey and config lines': (t) => [markers.forceKey(`## Force run ${t}`), markers.KIT_OVERRIDES_OFF.test(t), markers.CI_GATES_HEADING.test(`##${t}`)],
+    }
+    for (const [name, subject] of Object.entries(SUBJECTS)) {
+      let worst = { ms: 0, input: '' }
+      for (const run of [].concat(subject)) {
+        for (const [input, text] of Object.entries(TOKENS)) {
+          const start = performance.now()
+          run(text)
+          const ms = performance.now() - start
+          if (ms > worst.ms) worst = { ms, input }
+        }
+      }
+      check(`S-1/S-2/S-5: 50 000 characters — ${name} < 100 ms`, worst.ms < 100, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
+    }
+    // still finds the fresh report the old pattern found
+    const cited = (cite) => jc.ledgerViolations(CRIT(`— fresh report ${cite}`), 'pro-review-3.md', { strict: true, taskDir: null }).some(({ rule }) => rule === 'ledger-critical-fresh')
+    check('S-1: the fresh report is still found in "checks/pro-review-3-fresh.md.", "(checks/pro-review-3-fresh-opus.md)" and "report:checks/pro-review-3-fresh.md"', !cited('checks/pro-review-3-fresh.md.') && !cited('(checks/pro-review-3-fresh-opus.md)') && !cited('report:checks/pro-review-3-fresh.md') && cited('checks/pro-review-4-fresh.md'))
+    // end to end: the report with a 10 KB fresh-token line, written through journal-gate, ends long before the 5 s timeout (36 s before)
+    const eRoot = mkdtempSync(join(tmpdir(), 's1-'))
+    const eApp = join(eRoot, 'app')
+    repoAt(eApp, 'main')
+    write(eApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n', '.claude/tasks/T-73/STAGES.md': '# T-73: task\nLanguage: en\nBranch: `T-73/feat/s`\n\n## Stages\n\n### Stage 1: a  [status: in-progress]\n' })
+    git(eApp, 'checkout', '-qb', 'T-73/feat/s')
+    jc.baselineInfo(DATA, join(eApp, '.claude/tasks/T-73'))
+    write(eApp, { '.claude/tasks/T-73/checks/pro-review-1.md': CRIT('fresh'.repeat(2000)) })
+    const start = performance.now()
+    const slow = runHook('journal-gate.mjs', { cwd: eApp, tool_name: 'Write', tool_input: { file_path: join(eApp, '.claude/tasks/T-73/checks/pro-review-1.md') } })
+    const ms = performance.now() - start
+    check('S-1: journal-gate on a report with a 10 KB fresh-token line on a critical ends in < 1 s and still demands the fresh report', ms < 1000 && /fresh pass on review_model/.test(slow.text), `${ms.toFixed(0)} ms: ${slow.text.slice(0, 120)}`)
+    rmSync(eRoot, { recursive: true, force: true })
+  }
+
+  // S-4: task files are read only as regular files of at most 4 MB (a symlink only inside the task directory).
+  {
+    const sTask = mkdtempSync(join(tmpdir(), 's4-task-'))
+    const outside = mkdtempSync(join(tmpdir(), 's4-out-'))
+    writeFileSync(join(outside, 'secret.md'), 'SECRET-LINE\n')
+    writeFileSync(join(sTask, 'STAGES.md'), '# T-74\nLanguage: en\n- own line\n')
+    mkdirSync(join(sTask, 'checks'), { recursive: true })
+    symlinkSync('/dev/zero', join(sTask, 'STAGES-ARCHIVE.md'))
+    const startDev = performance.now()
+    const text = jc.journalText(sTask)
+    check('S-4: STAGES-ARCHIVE.md -> /dev/zero is not read (no hang), STAGES.md still is', performance.now() - startDev < 1000 && text.includes('own line') && !text.includes('\0'))
+    rmSync(join(sTask, 'STAGES-ARCHIVE.md'))
+    symlinkSync(join(outside, 'secret.md'), join(sTask, 'STAGES-ARCHIVE.md'))
+    check('S-4: a symlink out of the task directory is not read', !jc.journalText(sTask).includes('SECRET-LINE'))
+    rmSync(join(sTask, 'STAGES-ARCHIVE.md'))
+    writeFileSync(join(sTask, 'notes.md'), 'INSIDE-LINE\n')
+    symlinkSync(join(sTask, 'notes.md'), join(sTask, 'STAGES-ARCHIVE.md'))
+    check('S-4: a symlink inside the task directory is read', jc.journalText(sTask).includes('INSIDE-LINE'))
+    rmSync(join(sTask, 'STAGES-ARCHIVE.md'))
+    writeFileSync(join(sTask, 'STAGES-ARCHIVE.md'), `${'a'.repeat(1023)}\n`.repeat(4 * 1024 + 8))
+    check('S-4: an oversized archive (> 4 MB) is skipped', jc.journalText(sTask) === readFileSync(join(sTask, 'STAGES.md'), 'utf8'))
+    symlinkSync('/dev/zero', join(sTask, 'checks', 'pro-review-9.md'))
+    symlinkSync(join(outside, 'secret.md'), join(sTask, 'checks', 'pro-review-8.md'))
+    check('S-4: reportNames lists regular files only; a symlinked report reads as nothing', !jc.reportNames(sTask).includes('pro-review-9.md') && jc.reportViolations(join(sTask, 'checks', 'pro-review-8.md')).length === 0 && jc.readTaskFile(sTask, 'checks', 'pro-review-8.md') === null)
+    rmSync(sTask, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+    // end to end: session-start on a repo whose current task commits that symlink finishes at once
+    const hRoot = mkdtempSync(join(tmpdir(), 's4-hook-'))
+    const hApp = join(hRoot, 'app')
+    repoAt(hApp, 'main')
+    write(hApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n', '.claude/tasks/T-75/STAGES.md': '# T-75: task\nBranch: `T-75/feat/s`\n\n## Stages\n' })
+    symlinkSync('/dev/zero', join(hApp, '.claude/tasks/T-75/STAGES-ARCHIVE.md'))
+    git(hApp, 'checkout', '-qb', 'T-75/feat/s')
+    const t0 = performance.now()
+    const started = spawnSync(process.execPath, [join(PLUGIN, 'hooks/session-start.mjs')], { input: JSON.stringify({ cwd: hApp }), encoding: 'utf8', timeout: 10_000 })
+    check('S-4: session-start with STAGES-ARCHIVE.md -> /dev/zero ends normally in < 3 s', started.status === 0 && performance.now() - t0 < 3000 && /T-75/.test(started.stdout), `${(performance.now() - t0).toFixed(0)} ms, status ${started.status}`)
+    rmSync(hRoot, { recursive: true, force: true })
+  }
+
+  // m-4: outside a pipeline repo the PreToolUse run of journal-gate leaves without stamping (no git, no task reads); a linked worktree with the config only in the main tree is a pipeline repo.
+  {
+    const plain = mkdtempSync(join(tmpdir(), 'plain-'))
+    const id = `toolu_plain_${Date.now()}`
+    runHook('journal-gate.mjs', { cwd: plain, tool_name: 'Bash', tool_use_id: id, hook_event_name: 'PreToolUse', tool_input: { command: 'ls' } })
+    check('m-4: journal-gate Pre in a directory without a pipeline config writes no stamp', !existsSync(join(DATA, 'bash-start', `${id}.json`)))
+    check('m-4: hasPipelineConfig — no in a plain dir', !ps.hasPipelineConfig(plain))
+    const mainTree = mkdtempSync(join(tmpdir(), 'has-config-'))
+    repoAt(mainTree, 'main')
+    write(mainTree, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n' })
+    const linked = join(mkdtempSync(join(tmpdir(), 'has-config-wt-')), 'wt')
+    git(mainTree, 'worktree', 'add', '-q', '-b', 'feat/y', linked)
+    mkdirSync(join(linked, 'src/deep'), { recursive: true })
+    check('m-4: hasPipelineConfig — yes in the main tree and in a linked worktree whose `.claude/` is excluded (from a subdirectory too)', ps.hasPipelineConfig(join(mainTree, 'src')) && ps.hasPipelineConfig(join(linked, 'src/deep')))
+    rmSync(plain, { recursive: true, force: true })
+    rmSync(mainTree, { recursive: true, force: true })
+    rmSync(dirname(linked), { recursive: true, force: true })
+  }
+
+  // m-4, the cheap paths themselves: on a copy of the scripts whose journal-check.mjs throws at import, a Bash call that cannot have touched the journal
+  // never loads the rules — journal-gate Pre outside a pipeline repo, journal-gate Post with an unchanged stamp in one, git-guard Pre / Post on `ls` exit 0, silent.
+  {
+    const copy = join(mkdtempSync(join(tmpdir(), 'lazy-scripts-')), 'scripts')
+    cpSync(PLUGIN, copy, { recursive: true })
+    writeFileSync(join(copy, 'journal-check.mjs'), "throw new Error('journal-check.mjs loaded on a cheap path')\n")
+    const lazyHook = (name, input) => spawnSync(process.execPath, [join(copy, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8' })
+    const quiet = (run) => run.status === 0 && run.stderr === '' && run.stdout === ''
+    const shown = (run) => `exit ${run.status}: ${(run.stderr || run.stdout).split('\n').find((line) => line.trim()) ?? ''}`
+    const plain = mkdtempSync(join(tmpdir(), 'lazy-plain-'))
+    const call = (cwd, id, event) => ({ cwd, tool_name: 'Bash', tool_use_id: id, hook_event_name: event, tool_input: { command: 'ls' } })
+    const plainPre = lazyHook('journal-gate.mjs', call(plain, `toolu_lazy_plain_${Date.now()}`, 'PreToolUse'))
+    check('m-4 lazy: journal-gate Pre in a plain dir does not load journal-check (exit 0, no stderr)', quiet(plainPre), shown(plainPre))
+    const lRoot = mkdtempSync(join(tmpdir(), 'lazy-repo-'))
+    const lApp = join(lRoot, 'app')
+    repoAt(lApp, 'main')
+    write(lApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n', '.claude/tasks/T-76/STAGES.md': '# T-76: task\nLanguage: en\nBranch: `T-76/feat/l`\n\n## Stages\n\n### Stage 1: a  [status: in-progress]\n', '.claude/tasks/T-76/checks/pro-review-1.md': '# pro-review\nFindings: critical 0 · major 0 · minor 0\n' })
+    git(lApp, 'checkout', '-qb', 'T-76/feat/l')
+    const id = `toolu_lazy_repo_${Date.now()}`
+    const repoPre = lazyHook('journal-gate.mjs', call(lApp, id, 'PreToolUse'))
+    const stamped = existsSync(join(DATA, 'bash-start', `${id}.json`))
+    const repoPost = lazyHook('journal-gate.mjs', call(lApp, id, 'PostToolUse'))
+    check('m-4 lazy: journal-gate Pre in a pipeline repo stamps the task without loading journal-check', quiet(repoPre) && stamped, `${shown(repoPre)}, stamp ${stamped}`)
+    check('m-4 lazy: journal-gate Post with an unchanged stamp does not load journal-check (exit 0, no stderr)', quiet(repoPost), shown(repoPost))
+    const guardPre = lazyHook('git-guard.mjs', call(lApp, `${id}_g`, 'PreToolUse'))
+    const guardPost = lazyHook('git-guard.mjs', call(lApp, `${id}_g`, 'PostToolUse'))
+    check('m-4 lazy: git-guard Pre and Post on `ls` do not load journal-check (exit 0, no stderr)', quiet(guardPre) && quiet(guardPost), `${shown(guardPre)} / ${shown(guardPost)}`)
+    const edit = lazyHook('journal-gate.mjs', { cwd: lApp, tool_name: 'Edit', hook_event_name: 'PostToolUse', tool_input: { file_path: join(lApp, '.claude/tasks/T-76/STAGES.md') } })
+    check('m-4 lazy: the copy is live — an edit of STAGES.md does load journal-check (the throwing module is reached)', edit.status !== 0 && /loaded on a cheap path/.test(edit.stderr), shown(edit))
+    rmSync(dirname(copy), { recursive: true, force: true })
+    rmSync(plain, { recursive: true, force: true })
+    rmSync(lRoot, { recursive: true, force: true })
   }
 }
 

@@ -18,7 +18,7 @@ Goal: the stage is implemented → run it through every applicable checker → f
 
 ## Step 0. Triage
 
-Read the stage in STAGES.md (nodes, acceptance criteria `AC-*` with verifier tags, the pipeline checklist) and the stage diff (`git diff` from the previous stage commit or the merge-base with `main_branch` from the config). Run only the relevant checkers: `pro-review` — on every stage (in a force run dated 2026-10-20 or later the commit hook rejects a stage without its report); a skip by a trigger exists only for design and narrow checkers.
+Read the stage in STAGES.md (nodes, acceptance criteria `AC-*` with verifier tags, the pipeline checklist) and the stage diff (`git diff` from the previous stage commit or the merge-base with `main_branch` from the config). Run only the relevant checkers: `pro-review` — on every stage (in a force run opened after 0.18 first saw the task the commit hook rejects a stage without its report); a skip by a trigger exists only for design and narrow checkers.
 
 **Logic-only stage** (refactoring, behavior, integrations — the visuals do not change): figma-compare and figma-spec are skipped by definition — mark them `[skip: logic-only]` in the checklist and do not ask again each time. pro-review is mandatory; devtools-verify — only with a runtime risk (SSR, stores, navigation).
 

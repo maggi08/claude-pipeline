@@ -130,7 +130,7 @@ Pipeline:
 - [ ] dead-code: what was orphaned across the whole task (`${CLAUDE_PLUGIN_ROOT}/skills/dead-code`)
 - [ ] i18n-sweep: copy and locale completeness across the whole branch (`${CLAUDE_PLUGIN_ROOT}/skills/i18n-sweep`)
 - [ ] deps-audit: what the task dragged into the manifest and assets (`${CLAUDE_PLUGIN_ROOT}/skills/deps-audit`)
-- [ ] coverage: the "Design source coverage" table has no rows without a stage; every `AC-*` has a verifier tag (`[verify: …]`); no criterion is pre-marked `[live: user-side]`
+- [ ] coverage: the "Design source coverage" table has no rows without a stage; every `AC-*` is closed by its verifier or deferred in the honest form `[live: user-side — <prerequisite>; <route> → <observed>]` decided at check time; no criterion is pre-marked `[live: user-side]` at plan time
 - [ ] task-converge: the code on HEAD against the intent of the whole task — `missing`/`partial`/`contradicts`/`unrequested` (`${CLAUDE_PLUGIN_ROOT}/skills/task-converge`); the only pass that sees an uncovered criterion and a silently widened scope, because it does not look at the diff. If there are findings → a "Catch-up" block and a rerun until it converges
 - [ ] test-plan: TEST-PLAN.md — assembled from the `AC-*` of all stages (ID → scenario → how to check) + recipes for simulating states (throttle/block/offline/crash) on all platforms
 - [ ] confirmations: the "Awaiting user confirmation" block is empty

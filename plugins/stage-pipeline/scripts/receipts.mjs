@@ -19,18 +19,16 @@
  *    (an amend or rebase that keeps the tree does not move it) and no uncommitted edits of tracked files; "completed with blockers" needs
  *    each missing one named in an open blocker that says it was not run / is missing / is stale.
  *
- * The rules apply only to Force blocks dated on or after RECEIPTS_SINCE and only to the current branch's task (D7: the plugin adapts to
- * existing projects). The receipt `{sha, tree, reports, counts, skips, ...}` goes to `<plugin data>/receipts/<TICKET>.jsonl`.
+ * The rules apply only to the current branch's task and to a Force block opened after this version first saw the task: the day and the Force headings
+ * recorded in the task snapshot at the 0.18 migration (`releaseGate`, `ruleAppliesToBlock`; D7: a run in progress keeps the rules it started with, whenever 0.18
+ * is installed). A block without a readable date fails closed. The receipt `{sha, tree, reports, counts, skips, ...}` goes to `<plugin data>/receipts/<TICKET>.jsonl`.
  */
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
-import { LEGIT_REASON, baselineInfo, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, reportChecker, skipReasonAfter } from './journal-check.mjs'
+import { LEGIT_REASON, baselineInfo, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
 import { OPEN_STATUS, patchIds, readDataFiles } from './hooks/pipeline-state.mjs'
-import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, headingDate, stageBlocksOf } from './markers.mjs'
-
-/** The rules apply to Force blocks dated on or after this day; every earlier block (and every live task of the machine) stays as it is. */
-export const RECEIPTS_SINCE = '2026-10-20'
+import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, headingDate, ruleAppliesToBlock, stageBlocksOf } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
 const NOT_UI = /\.(?:test|spec|stories|story)\.\w+$|(?:^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//
@@ -39,15 +37,21 @@ export const uiFiles = (files) => files.filter((file) => UI_FILE.test(file) && !
 const DESIGN = ['figma-compare', 'proto-compare']
 const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
 
-/** The Force block of the task when the rules apply to it: `{ date, start, block }` (start — midnight of the run date, ms), else null. */
-export function receiptRun(taskDir) {
-  const path = join(taskDir, 'STAGES.md')
-  if (!existsSync(path)) return null
-  const block = lastForceBlock(readFileSync(path, 'utf8'))
+/**
+ * The Force block of the task when the rules apply to it: `{ date, start, block }` (start — midnight of the run date, ms; with no readable date, of the day
+ * the snapshot recorded), else null.
+ */
+function receiptRun(dataDir, taskDir) {
+  const stages = readTaskFile(taskDir, 'STAGES.md')
+  if (stages === null) return null
+  const block = lastForceBlock(stages)
   if (!block) return null
-  const date = headingDate(block.heading) ?? headingDate(block.body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')
-  if (!date || date < RECEIPTS_SINCE) return null
-  return { date, start: new Date(`${date}T00:00:00`).getTime(), block }
+  const confirmed = headingDate(block.body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')
+  const gate = releaseGate(dataDir, taskDir)
+  if (!ruleAppliesToBlock(gate, block.heading, confirmed)) return null
+  const date = headingDate(block.heading) ?? confirmed ?? gate.since ?? null
+  const start = date ? new Date(`${date}T00:00:00`).getTime() : NaN
+  return { date, start: Number.isFinite(start) ? start : 0, block }
 }
 
 const receiptsName = (ticket) => join('receipts', `${String(ticket).replace(/[^\w.-]/g, '_')}.jsonl`)
@@ -65,7 +69,7 @@ export function readReceipts(dataDir, ticket) {
     })
 }
 
-export function appendReceipt(dataDir, ticket, receipt) {
+function appendReceipt(dataDir, ticket, receipt) {
   try {
     mkdirSync(join(dataDir, 'receipts'), { recursive: true })
     appendFileSync(join(dataDir, receiptsName(ticket)), `${JSON.stringify(receipt)}\n`)
@@ -126,13 +130,13 @@ function isSameCommit(worktree, receipt, head) {
  * `changed` — the files of the commit (paths from the worktree root). `null` — the rules do not apply to this task.
  */
 export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, changed }) {
-  const run = receiptRun(taskDir)
+  const run = receiptRun(dataDir, taskDir)
   if (!run) return null
   const last = readReceipts(dataDir, ticket).filter((receipt) => receipt.branch === branch).at(-1) ?? null
   const since = Math.max(run.start, last ? Date.parse(last.at) || 0 : 0)
   const reports = newReports(taskDir, since + 1)
   const has = (...checkers) => reports.some((name) => checkers.includes(reportChecker(name)))
-  const stages = openStages(readFileSync(join(taskDir, 'STAGES.md'), 'utf8'))
+  const stages = openStages(readTaskFile(taskDir, 'STAGES.md') ?? '')
   const ui = uiFiles(changed)
   const head = git(worktree, 'rev-parse', 'HEAD')
   const headFiles = last && isSameCommit(worktree, last, head) ? new Set(git(worktree, 'show', '--name-only', '--format=', '--no-renames', 'HEAD').split('\n').filter(Boolean)) : null
@@ -165,7 +169,7 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
   }
   const counts = { critical: 0, major: 0, minor: 0 }
   for (const name of reports) {
-    const found = findingCounts(readFileSync(join(taskDir, 'checks', name), 'utf8'), name)
+    const found = findingCounts(readTaskFile(taskDir, 'checks', name) ?? '', name)
     for (const key of Object.keys(counts)) counts[key] += found[key] ?? 0
   }
   return {
@@ -285,7 +289,7 @@ const notRunFor = (line, checker) => new RegExp(`${checker}[^\\n]{0,40}?${NOT_RU
  * "not run" / "missing" / "stale". Only for a closing written after the snapshot, a block of the new rules' dates, the current task.
  */
 export function finalReviewViolations(dataDir, worktree, taskDir) {
-  const run = receiptRun(taskDir)
+  const run = receiptRun(dataDir, taskDir)
   if (!run || !CLOSED_WORD.test(run.block.heading)) return []
   if (baselineInfo(dataDir, taskDir).lines.has(fingerprint(run.block.heading))) return []
   const branch = git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD')

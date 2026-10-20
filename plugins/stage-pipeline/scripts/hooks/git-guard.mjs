@@ -2,12 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { journalText, openLedgers, reportNames } from '../journal-check.mjs'
-import { scanOverrides, summarize } from '../kit-override-scan.mjs'
-import { PARITY_TABLE } from '../markers.mjs'
-import { commitVerdict, finishPending, savePending } from '../receipts.mjs'
-import { commitScope, gitInvocations } from './git-command.mjs'
-import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
+import { readHookInput } from './pipeline-state.mjs'
 
 /**
  * In the normal pipeline mode the index and the commit belong to the user: /stage-check
@@ -39,6 +34,13 @@ import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-stat
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
 if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(0)
+// The hook runs before and after every Bash call: the rule modules are loaded only for a command that can add or commit.
+const { journalText, openLedgers, reportNames } = await import('../journal-check.mjs')
+const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
+const { PARITY_TABLE } = await import('../markers.mjs')
+const { commitVerdict, finishPending, savePending } = await import('../receipts.mjs')
+const { commitScope, gitInvocations } = await import('./git-command.mjs')
+const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
 
 const cwd = input.cwd ?? process.cwd()
 const invocations = gitInvocations(command, cwd)
@@ -87,7 +89,7 @@ for (const { subcommand, dir, args } of invocations) {
   const paths = commitPaths(invocations, state.worktree)
   if (paths?.length === 0) continue
 
-  // Stage receipts (VT-1 stage 3): the window of this commit holds the stage's checkers — Force blocks dated on or after receipts.mjs RECEIPTS_SINCE only.
+  // Stage receipts (VT-1 stage 3): the window of this commit holds the stage's checkers — only for a Force block opened after this version first saw the task (receipts.mjs).
   const verdict = commitVerdict({
     dataDir: pluginDataDir(),
     taskDir: task.dir,

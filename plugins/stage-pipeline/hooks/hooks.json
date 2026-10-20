@@ -33,6 +33,16 @@
         ]
       },
       {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/journal-gate.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task",
         "hooks": [
           {

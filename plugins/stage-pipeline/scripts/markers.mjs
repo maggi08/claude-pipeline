@@ -10,6 +10,10 @@
 
 const re = (source, flags = '') => new RegExp(source, flags)
 
+/** Code in backticks and quoted text ("…", «…», “…”): identifiers or copy, not the wording of an outcome ("the untested import is removed"). */
+export const QUOTED = /`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^«»\n]{0,200}»|“[^“”\n]{0,200}”/g
+export const stripQuoted = (text) => text.replace(QUOTED, ' ')
+
 // --- STAGES.md: headings and fields ---
 
 /** `### Stage A0 …` heading (or its Russian form) — group 1 is the heading level, group 2 the number. */
@@ -134,6 +138,25 @@ export function freshestForceHeading(stages) {
   return (down > up ? ties[0] : ties.at(-1)).heading
 }
 
+/** A Force heading without its closing tail: `## Force run 2026-10-22 — completed with blockers` → `## Force run 2026-10-22`. The block is the same block before and after its close. */
+export function forceKey(heading) {
+  const at = heading.search(CLOSED_WORD)
+  return (at === -1 ? heading : heading.slice(0, at)).trimEnd().replace(/[—–:,;(-]+$/, '').trim()
+}
+
+/**
+ * Whether a rule released with a per-task date applies to a Force block (D7: the plugin adapts to existing projects). `gate` is what the task snapshot recorded
+ * when this plugin version first saw the task (`releaseGate` in journal-check): `since` — that day (ISO), `seen` — the keys (`forceKey`) of the Force headings already there
+ * and dated before that day. A block in `seen` is an old run. A new block counts from its date (`fallbackDate` when the heading has none, e.g. the `Confirmed:` line):
+ * opened on or after `since` — the rules apply. No readable date, no readable `since`, no gate at all — the rules apply too (fail closed, like CONFIRM_SINCE in agent-guard).
+ */
+export function ruleAppliesToBlock(gate, heading, fallbackDate = null) {
+  if (gate?.seen?.has(forceKey(heading))) return false
+  const date = headingDate(heading) ?? fallbackDate
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(gate?.since ?? '')) return true
+  return date >= gate.since
+}
+
 /** The text of a Force block: from the end of its heading up to the next `## ` section. `heading` is a match of `forceHeadings`. */
 export function forceBlockBody(stages, heading) {
   const rest = stages.slice(heading.index + heading[0].length)
@@ -216,8 +239,8 @@ export const SUMMARY_STANDARD = /(?:Находки|Findings):\s*critical\s*\d+\s
 // --- pipeline.config.md ---
 
 /** The heading of the CI gates table. */
-export const CI_GATES_HEADING = /^(#{2,4})\s*(?:Гейты\s+CI|CI\s+gates)\b.*$/im
+export const CI_GATES_HEADING = /^(#{2,4})[ \t]*(?:Гейты\s+CI|CI\s+gates)\b.*$/im
 /** A gate command meaning "none". */
 export const NO_GATE_COMMAND = /^(?:нет|—|-|none|no|n\/a)(?![а-яёa-z])/i
 /** `kit_overrides: off|false|no|disabled` (and the Russian "none"). */
-export const KIT_OVERRIDES_OFF = /^\s*-\s*kit_overrides\s*:\s*`?(?:off|false|no|нет|disabled)(?![\wа-яё])/im
+export const KIT_OVERRIDES_OFF = /^[ \t]*-[ \t]*kit_overrides[ \t]*:[ \t]*`?(?:off|false|no|нет|disabled)(?![\wа-яё])/im

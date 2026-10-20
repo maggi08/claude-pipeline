@@ -17,9 +17,10 @@
  * look at the task: old tasks and closed stages do not have to be rewritten.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
   AUTH_LINE,
   BLOCKER_LIFTED,
@@ -36,10 +37,13 @@ import {
   WITH_BLOCKERS,
   forceBlockBody,
   forceHeadings,
+  forceKey,
   freshestForceHeading,
+  headingDate,
   stageHeadingOf,
+  stripQuoted,
 } from './markers.mjs'
-import { pluginDataDir, readDataFiles, taskLanguage } from './hooks/pipeline-state.mjs'
+import { TASK_FILE_MAX, pluginDataDir, readDataFiles, reportNames, taskLanguage } from './hooks/pipeline-state.mjs'
 import { NOT_A_FAIL, entryHead, entrySeverity, weakForm } from './dismissals.mjs'
 import { decisionViolations } from './decisions.mjs'
 import { languageMismatch } from './report-language.mjs'
@@ -47,8 +51,26 @@ import { languageMismatch } from './report-language.mjs'
 const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
 const AC_ID = /AC-\d/
 
-/** Code in backticks and quoted text ("…", «…», “…”) are identifiers or copy, not the wording of an outcome ("the untested import is removed"). */
-export const stripQuoted = (text) => text.replace(/`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^»\n]{0,200}»|“[^”\n]{0,200}”/g, ' ')
+/**
+ * The text of a task file, or null: only a regular file (a symlink only when it resolves inside the task directory) of at most `TASK_FILE_MAX` bytes.
+ * A committed `STAGES-ARCHIVE.md -> /dev/random` made every hook read until it was killed, and a symlink out of the task directory would put another file into the hook messages.
+ */
+export function readTaskFile(taskDir, ...segments) {
+  const path = join(taskDir, ...segments)
+  try {
+    let target = path
+    if (lstatSync(path).isSymbolicLink()) {
+      target = realpathSync(path)
+      const base = realpathSync(taskDir)
+      if (!target.startsWith(base + sep)) return null
+    }
+    const stat = statSync(target)
+    if (!stat.isFile() || stat.size > TASK_FILE_MAX) return null
+    return readFileSync(target, 'utf8')
+  } catch {
+    return null
+  }
+}
 
 export function requiredCheckers(line) {
   const tags = [...line.matchAll(/\[verify:\s*([^\]]+)\]/gi)].map((match) => match[1])
@@ -179,7 +201,7 @@ export function noDataViolation(line) {
 // "Like X" without a path to X. "because in …" is a reason, not a reference; "as in the ticket" refers to the ticket itself.
 const LIKE =
   /(?<![а-яё])(?<!так\s+)как\s+(?:у|в|на|сейчас|раньше|было|прежде)(?![а-яё])|\b(?:same\s+as|like\s+in)\b|(?<![\w-])(?<!such\s)(?<!well\s)as\s+(?:in\s+the|on\s+the|before\b|it\s+was\b|it\s+is\s+now\b|now\b|currently\b)|(?<!\b(?:looks?|feels?|seems?|sounds?)\s)\blike\s+the\s+(?:old|expert|existing|current|original|previous|rest\s+of)\b|\b(?:as|like)\s+on\s+(?:prod|production|staging|dev)\b/i
-const REF = /[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|less|html?|md|py|go|rb|kt|swift|java|php|rs|cs)\b|https?:\/\/|node-?id|\b\d+[:-]\d+\b|`[^`\s]*\/[^`\s]*`/i
+const REF = /(?<![\w@./-])[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|less|html?|md|py|go|rb|kt|swift|java|php|rs|cs)\b|https?:\/\/|node-?id|\b\d+[:-]\d+\b|`[^`\s]*\/[^`\s]*`/i
 const DECISION = /^\s*(?:[-*]|\d+\.|\|)?\s*\**(?:D\d+\b|Решени[ея]|Решено|Решили|Decisions?\b|Decided\b|We\s+decided\b)/i
 
 /**
@@ -214,12 +236,8 @@ export function checkerLineViolation(line, taskDir) {
   if (!taskDir) return null
   const match = line.match(/\[x\]\s*\**([\w-]+)\**[^\n]*?checks\/([\w.-]+\.md)/i)
   if (!match || !reportChecker(match[2])) return null
-  let text
-  try {
-    text = readFileSync(join(taskDir, 'checks', match[2]), 'utf8')
-  } catch {
-    return null
-  }
+  const text = readTaskFile(taskDir, 'checks', match[2])
+  if (text === null) return null
   const [violation] = ledgerViolations(text, match[2], { complete: true })
   return violation ?? null
 }
@@ -232,12 +250,13 @@ export function checkerLineViolation(line, taskDir) {
  */
 const LIVE_PARTS = /^\[live:\s*user-side\s*[—–-]\s*([^;\]\n]*);([^→\]\n]*)→([^\]\n]*)\]/i
 const EMPTY_PART = /^(?:n\/?a|tbd|todo|none|nil|unknown|-+|—+|–+|\?+)$/i
-const hasContent = (part) => (/[\p{L}\p{N}]/u.test(part) || /^\s*\//.test(part)) && !EMPTY_PART.test(part.trim().replace(/[.\s]+$/, ''))
+// The trailing dots are cut by an anchored run (a bare `[.\s]+$` backtracks from every dot of a long part).
+const hasContent = (part) => (/[\p{L}\p{N}]/u.test(part) || /^\s*\//.test(part)) && !EMPTY_PART.test(part.trim().replace(/(?<![.\s])[.\s]+$/, ''))
 export function liveViolation(line) {
   const open = line.replace(/`[^`\n]*`/g, (quote) => ' '.repeat(quote.length))
   if (!LIVE_TAG.test(open)) return null
   const bare = [...open.matchAll(new RegExp(LIVE_TAG.source, 'gi'))].some((match) => {
-    const parts = open.slice(match.index).match(LIVE_PARTS)
+    const parts = open.slice(match.index, match.index + 2000).match(LIVE_PARTS)
     return !parts || !parts.slice(1).every(hasContent)
   })
   if (!bare) return null
@@ -390,18 +409,26 @@ export function ledgerEntries(text) {
   if (start === -1) return null
   const body = text.slice(start).split('\n').slice(1)
   const end = body.findIndex((line) => /^#{1,3}\s/.test(line))
-  return (end === -1 ? body : body.slice(0, end)).filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line)).map((line) => line.trim())
+  // An entry is a line of prose with its proof: past LEDGER_ENTRY_MAX characters the phrase heuristics are not run on the rest (a pasted blob cannot stall a hook).
+  return (end === -1 ? body : body.slice(0, end)).filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S/.test(line)).map((line) => line.trim().slice(0, LEDGER_ENTRY_MAX))
 }
+const LEDGER_ENTRY_MAX = 4000
 
 const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
 export const LEDGER_DOC = 'references/checker-report.md'
 
-// A critical dismissed as false goes through a fresh pass on `review_model` (stage-check Step 3.3), and its line cites that report.
-const FRESH_REPORT = /(?:checks\/)?([\w.-]*fresh[\w.-]*\.md)/i
+// A critical dismissed as false goes through a fresh pass on `review_model` (stage-check Step 3.3), and its line cites that report. The name is found among the
+// words of the line, not by a regexp over it: `[\w.-]*fresh[\w.-]*` backtracked cubically on a long token and stalled the hooks past their timeouts.
+// A word is a run of `[\w.-]` (`checks/pro-review-3-fresh.md.` gives `pro-review-3-fresh.md`), the alphabet the old capture group had.
+const citedFresh = (entry) =>
+  entry
+    .split(/[^\w.-]+/)
+    .map((word) => word.replace(/(?<!\.)\.+$/, ''))
+    .find((word) => word.length <= 120 && word.endsWith('.md') && /fresh/i.test(word))
 /** Why a `false` line on a critical finding does not stand: no fresh report is cited, or the cited one is not in `checks/`. `null` — it stands (or the finding is not a critical). */
 function criticalWithoutFresh(entry, text, name, taskDir) {
   if (entrySeverity(entry, text) !== 'critical') return null
-  const cited = entry.match(FRESH_REPORT)?.[1]
+  const cited = citedFresh(entry)
   // The fresh report belongs to the dismissed finding's checker and stage: `pro-review-3.md` is confirmed by `pro-review-3-fresh*.md`, not by any `*-fresh*.md` of the task.
   const checker = reportChecker(name)
   const token = checker ? name.slice(name.indexOf(checker) + checker.length).match(/^-([\w]+?)(?=[-.]|$)/)?.[1] : null
@@ -587,16 +614,12 @@ export function languageViolation(text, name, language) {
 
 /** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
 export function reportViolations(path, language = null, { fresh = false, strict = false } = {}) {
-  let text
-  try {
-    text = readFileSync(path, 'utf8')
-  } catch {
-    return []
-  }
+  const text = readTaskFile(dirname(path), basename(path))
+  if (text === null) return []
   const name = basename(path)
   // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
   const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
-  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh)].filter(Boolean)
+  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh)].filter(Boolean)
 }
 
 /** The "Visual reference" of the stage a report belongs to (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), or null. */
@@ -660,22 +683,10 @@ export function barePasses(text) {
   return [...passed].filter((id) => !evidence.has(id)).map((id) => `AC-${id}`)
 }
 
-export function reportNames(taskDir) {
-  const dir = join(taskDir, 'checks')
-  try {
-    return readdirSync(dir).filter((name) => name.endsWith('.md'))
-  } catch {
-    return []
-  }
-}
+export { reportNames }
 
-export function reportViolation(path) {
-  let text
-  try {
-    text = readFileSync(path, 'utf8')
-  } catch {
-    return null
-  }
+export function reportViolation(path, text = readTaskFile(dirname(path), basename(path))) {
+  if (text === null) return null
   const ids = barePasses(text)
   if (!ids.length) return null
   const shown = ids.length > 6 ? `${ids.slice(0, 6).join(', ')} and ${ids.length - 6} more` : ids.join(', ')
@@ -697,26 +708,12 @@ export const fingerprint = (line) => createHash('sha1').update(line.trim()).dige
 
 export function journalText(taskDir) {
   return ['STAGES.md', 'STAGES-ARCHIVE.md']
-    .map((name) => join(taskDir, name))
-    .filter(existsSync)
-    .map((path) => readFileSync(path, 'utf8'))
+    .map((name) => readTaskFile(taskDir, name))
+    .filter((text) => text !== null)
     .join('\n')
 }
 
-/** The snapshot file name relative to a data directory (not a slice of the full path: `CLAUDE_PLUGIN_DATA` may end with a slash). */
-function baselineName(taskDir) {
-  let real = taskDir
-  try {
-    real = realpathSync(taskDir)
-  } catch {
-    // the task directory is gone — snapshot by the original path
-  }
-  return join('journal-baseline', `${createHash('sha1').update(real).digest('hex').slice(0, 16)}.json`)
-}
-
 const baselinePath = (dataDir, taskDir) => join(dataDir, baselineName(taskDir))
-
-const BASELINE_VERSION = 2
 
 function readBaseline(dataDir, taskDir) {
   // The main data directory first, then the bare `stage-pipeline` one (where scripts from Bash used to write).
@@ -755,39 +752,57 @@ const closedForceFingerprints = (taskDir) =>
  * Snapshot v1 (0.12–0.13) kept only lines with ✅ and skip: at the first look of a new version all current lines are
  * added to it, except 0.12 violations that appeared after the snapshot — those keep reminding about themselves. `reports` are the names of reports caught at the first look: the language is checked only for reports outside this set
  * (the file path and creation time are unreliable: Edit replaces a file through rename). Reports written before that moment do not need an outcome: a task in progress
- * does not have to rewrite closed stages.
+ * does not have to rewrite closed stages. `ledgerOld` are the reports there at the 0.18 migration (the 0.18 report rules, stages 4 and 5 of VT-1), `since018` and `forceSeen` —
+ * the day of that migration and the Force headings there then, dated before that day (`releaseGate`).
  */
 export function baselineInfo(dataDir, taskDir) {
   const data = readBaseline(dataDir, taskDir)
+  const info = (snapshot) => ({
+    lines: new Set(snapshot.lines),
+    ledgerSince: snapshot.ledgerSince,
+    reports: new Set(snapshot.reports),
+    ledgerOld: new Set(snapshot.ledgerOld),
+    since: snapshot.since018,
+    forceSeen: new Set(snapshot.forceSeen),
+  })
   if (data?.version === BASELINE_VERSION) {
-    if (Array.isArray(data.reports) && data.closedSeen && data.liveSeen && data.dismissSeen && Array.isArray(data.ledgerOld)) {
-      return { lines: new Set(data.lines), ledgerSince: data.ledgerSince, reports: new Set(data.reports), ledgerOld: new Set(data.ledgerOld) }
+    if (snapshotCurrent(data)) {
+      return info(data)
     }
-    // snapshot v2 without report names or without the closed Force headings: what is there now is old (a lazy migration, the other fields do not change)
+    // A snapshot v2 from an earlier version: what is there now is old for each rule that came after it (a lazy migration, once per rule — a rule whose mark
+    // is already there keeps its set, so a line written after that earlier migration is not made old by this one).
+    const text = journalText(taskDir)
+    const since018 = typeof data.since018 === 'string' ? data.since018 : localDate()
     const migrated = {
       ...data,
       reports: Array.isArray(data.reports) ? data.reports : reportNames(taskDir),
       closedSeen: true,
       liveSeen: true,
-      // VT-1 stage 5 (D7): the Awaiting and assumption lines without a rollback cost or a basis that are already there are old, and so are the reports that are already there (`ledgerOld`):
-      // the weak-dismissal and critical-needs-a-fresh-report rules look only at reports written after this migration.
       dismissSeen: true,
+      // VT-1 0.18 (D7): the reports already there are old for the 0.18 report rules — the stage 4 ones (a bare `[live: user-side]`, the `doctor:` / `auth:` lines)
+      // and the stage 5 ones (weak dismissals, a critical needs a fresh report); only a report written after this migration is judged by them.
       ledgerOld: Array.isArray(data.ledgerOld) ? data.ledgerOld : reportNames(taskDir),
-      // bare `[live: user-side]` lines written under 0.16 before the live-bare rule are old (D7): only those, so any other line that is new still goes through all the rules
+      // The day of this migration and the Force runs already open or closed, dated before it: the receipts rules and the ticket-titled rule apply only to a run
+      // opened after them (`releaseGate`).
+      since018,
+      forceSeen: Array.isArray(data.forceSeen) ? data.forceSeen : forceKeysBefore(text, since018),
       lines: [
         ...new Set([
           ...data.lines,
-          ...closedForceFingerprints(taskDir),
-          ...journalCandidates(journalText(taskDir)).filter((line) => liveViolation(line)).map(fingerprint),
-          ...decisionViolations(journalText(taskDir)).map(({ line }) => fingerprint(line)),
+          ...(data.closedSeen ? [] : closedForceFingerprints(taskDir)),
+          // bare `[live: user-side]` lines written under 0.16 before the live-bare rule are old: only those, so any other new line still goes through all the rules
+          ...(data.liveSeen ? [] : journalCandidates(text).filter((line) => liveViolation(line)).map(fingerprint)),
+          // the Awaiting and assumption lines without a rollback cost or a basis that are already there are old
+          ...(data.dismissSeen ? [] : decisionViolations(text).map(({ line }) => fingerprint(line))),
         ]),
       ],
     }
     writeBaseline(dataDir, taskDir, migrated)
-    return { lines: new Set(migrated.lines), ledgerSince: data.ledgerSince, reports: new Set(migrated.reports), ledgerOld: new Set(migrated.ledgerOld) }
+    return info(migrated)
   }
   const now = Date.now()
-  const current = journalCandidates(journalText(taskDir))
+  const text = journalText(taskDir)
+  const current = journalCandidates(text)
   const old = new Set(data?.lines ?? [])
   const lines = data
     ? [...old, ...current.filter((line) => old.has(fingerprint(line)) || !legacyViolation(line)).map(fingerprint)]
@@ -803,9 +818,29 @@ export function baselineInfo(dataDir, taskDir) {
     liveSeen: true,
     dismissSeen: true,
     ledgerOld: reportNames(taskDir),
+    since018: localDate(new Date(now)),
+    forceSeen: forceKeysBefore(text, localDate(new Date(now))),
   }
   writeBaseline(dataDir, taskDir, next)
-  return { lines: new Set(next.lines), ledgerSince: now, reports: new Set(next.reports), ledgerOld: new Set(next.ledgerOld) }
+  return info(next)
+}
+
+/** The day in the local calendar (`2026-10-19`): Force headings carry local dates. */
+const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+/**
+ * The Force runs a first look records as already there: only the headings dated before that day. The look is lazy (the first hook that reads the task),
+ * so it can be the very edit that writes `## Force run <today>` — that block, an undated one and a second run opened on the migration day are new runs (fail closed).
+ */
+const forceKeysBefore = (text, day) => [...new Set(forceHeadings(text).map(([heading]) => forceKey(heading)))].filter((key) => (headingDate(key) ?? '9999') < day)
+
+/**
+ * The per-task release gate of the 0.18 rules that are keyed on a Force block (stage receipts, the close needing fresh final reviews, the ticket-titled commits after a close):
+ * `{ since, seen }` for `ruleAppliesToBlock` (markers.mjs) — the day this version first saw the task and the Force headings already there and dated before that day.
+ * A run that was open or closed then keeps the rules it started with (D7), whatever the release date; a run opened later, on that day or undated, gets them.
+ */
+export function releaseGate(dataDir, taskDir) {
+  const { since, forceSeen } = baselineInfo(dataDir, taskDir)
+  return { since, seen: forceSeen }
 }
 
 export function ensureBaseline(dataDir, taskDir) {
@@ -827,7 +862,7 @@ export function newReports(taskDir, since) {
 export function openLedgers(dataDir, taskDir) {
   const { ledgerSince, ledgerOld } = baselineInfo(dataDir, taskDir)
   return newReports(taskDir, ledgerSince).flatMap((name) =>
-    ledgerViolations(readFileSync(join(taskDir, 'checks', name), 'utf8'), name, { complete: true, strict: !ledgerOld.has(name), taskDir }),
+    ledgerViolations(readTaskFile(taskDir, 'checks', name) ?? '', name, { complete: true, strict: !ledgerOld.has(name), taskDir }),
   )
 }
 
@@ -887,9 +922,9 @@ export const openBlockers = (body) =>
  * Only when the heading was rewritten after the snapshot: old closed runs are not touched.
  */
 export function forceCloseViolations(dataDir, taskDir) {
-  const stagesPath = join(taskDir, 'STAGES.md')
-  if (!existsSync(stagesPath)) return []
-  const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
+  const stages = readTaskFile(taskDir, 'STAGES.md')
+  if (stages === null) return []
+  const block = lastForceBlock(stages)
   if (!block || !CLOSED_WORD.test(block.heading)) return []
   const { lines } = baselineInfo(dataDir, taskDir)
   if (lines.has(fingerprint(block.heading))) return []
@@ -919,8 +954,8 @@ function main(args) {
   }
   const taskDir = resolve(target.endsWith('.md') ? join(target, '..') : target)
   const found = journalViolations(journalText(taskDir), reportNames(taskDir), taskDir)
-  const stagesPath = join(taskDir, 'STAGES.md')
-  const language = existsSync(stagesPath) ? taskLanguage(readFileSync(stagesPath, 'utf8')) : null
+  const stages = readTaskFile(taskDir, 'STAGES.md')
+  const language = stages === null ? null : taskLanguage(stages)
   // The stage 5 rules (weak dismissals, a critical needs a fresh report) apply to reports that were not there at the first look: the same `ledgerOld` as the hook reads.
   // Read-only (a manual run writes no snapshot); with no snapshot yet every report counts as new.
   const ledgerOld = new Set(readBaseline(pluginDataDir(), taskDir)?.ledgerOld ?? [])
@@ -930,7 +965,7 @@ function main(args) {
     // Summary and geometry are rules for new reports: old ones lack them by construction, without --ledger it is noise.
     const all = reportViolations(path, language, { strict }).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
     return args.includes('--ledger') && reportChecker(name)
-      ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...ledgerViolations(readFileSync(path, 'utf8'), name, { complete: true, strict, taskDir })]
+      ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...ledgerViolations(readTaskFile(taskDir, 'checks', name) ?? '', name, { complete: true, strict, taskDir })]
       : all
   })
   const messages = [...new Set([...found, ...reports].map((violation) => violation.message))]

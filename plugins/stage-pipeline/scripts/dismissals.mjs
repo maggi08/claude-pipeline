@@ -15,19 +15,21 @@
  * The check is a phrase heuristic: it recognises the wording of the weak form and then asks for the proof the form lacks. Wording that is not in the list is not caught
  * (a `path:line` of the task's own code that only shows the current behaviour passes `not-ours`; a clause-by-clause reading of a mixed line is not attempted).
  * Applied to reports that did not exist when the plugin first saw the task on this version (D7: the baseline snapshot, `ledgerOld`).
+ *
+ * The token patterns start only at a token start (`(?<![\w@./-])`) and the free runs are bounded: a 50 KB unbroken token (a data blob, a JWT, a class list) in a
+ * dismissal line otherwise cost seconds per pattern and pushed the hooks past their timeouts.
  */
-
-const QUOTED = /`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^»\n]{0,200}»|“[^”\n]{0,200}”/g
+import { QUOTED, stripQuoted } from './markers.mjs'
 
 // A proof: `path/to/file.ext:12` or "file.ext line 12" — the line of a file, not just its name.
-const PATH_LINE = /[\w@./-]+\.[A-Za-z]{1,5}(?::\d+|\s+(?:строк[аи]?|line)\s+\d+)/
+const PATH_LINE = /(?<![\w@./-])[\w@./-]+\.[A-Za-z]{1,5}(?::\d+|\s+(?:строк[аи]?|line)\s+\d+)/
 // A code file named without a line (a spec that covers the case, a component).
-const CODE_FILE = /[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|py|go|rb|kt|swift|java|php|rs)\b/
+const CODE_FILE = /(?<![\w@./-])[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|py|go|rb|kt|swift|java|php|rs)\b/
 // Base proof: a sha, a diff range, a git command, a named base.
 const BASE_PROOF = /\b[0-9a-f]{7,40}\b|\bgit\s+(?:show|diff|log|grep|blame)\b|\borigin\/|\bна\s+баз[еы]|\bon\s+(?:the\s+)?base\b|\b(?:base|базов[\wа-яё]*)\s+(?:sha|ref|коммит|commit|branch|ветк)/i
 
 // Proof for "not ours": a line in the kit, the installed package or the backend contract — the task's own code showing the current behaviour is not.
-const KIT_PROOF = /(?:node_modules|\/dist\/|ui-lib|ui-kit|openapi|swagger|\bkit\/)[\w@./-]*[\w-]\.[A-Za-z]{1,5}(?::\d+)?/i
+const KIT_PROOF = /(?:node_modules|\/dist\/|ui-lib|ui-kit|openapi|swagger|\bkit\/)[\w@./-]{0,300}[\w-]\.[A-Za-z]{1,5}(?::\d+)?/i
 // Wording that says the fix is not ours. HARD forms (kit/backend ownership, "cannot be fixed") need a line in the kit, the contract or the tool. The OWN forms ("can't be done / avoided",
 // "no such prop") and the SOFT words below also occur in ordinary proofs about the task's own code ("impossible state — store.ts:40", "no such prop — Button.vue:12 declares only `size`"),
 // so a task-code `path:line` in a clause that is not about the kit or the backend settles them.
@@ -65,7 +67,7 @@ const HAS_QUOTE = new RegExp(QUOTED.source)
 const NOT_REPRODUCED = /не\s+воспроизв|воспроизвести\s+не\s+удалось|not\s+reproduc|(?:could\s*n(?:'|’)?t|cannot|can(?:'|’)t|unable\s+to|failed\s+to)\s+reproduce/i
 const COUNT_NOUN = '(?:attempts?|tries|runs?|loads?|times|reloads?|passes|попыт[\\wа-яё]*|прогон[\\wа-яё]*|загрузк[\\wа-яё]*|запуск[\\wа-яё]*|раз(?:а|ов)?|замер[\\wа-яё]*)'
 const ATTEMPTS = new RegExp(`(?<![\\w.])(?:[2-9]|[1-9]\\d+)\\s+(?:[\\wа-яё-]+\\s+){0,2}${COUNT_NOUN}|\\b(?:twice|thrice|two\\s+(?:attempts|runs|times)|дважды|трижды|два\\s+раза)\\b`, 'i')
-const ROUTE = /root-?cause|root\s+cause|https?:\/\/|[\w./-]+\.(?:spec|test)\.[cm]?[jt]sx?\b|(?:^|[\s(`'"])\/[a-z][\w./-]*/i
+const ROUTE = /root-?cause|root\s+cause|https?:\/\/|(?<![\w./-])[\w./-]+\.(?:spec|test)\.[cm]?[jt]sx?\b|(?:^|[\s(`'"])\/[a-z][\w./-]*/i
 const DOWNGRADE = /\bdemot(?:ed|ion)\b|\bdowngrad(?:ed|e)\b|понижен[\wа-яё]*|\breclassif[\wа-яё]*/i
 const UNTOUCHED = /не\s+меня(?:л|лся|лась|лось|ли)(?![а-яё])|(?:этап|stage|раунд|round)\s*\d*\s+(?:[а-яё]+\s+){0,2}не\s+(?:трогал|касал)|\b(?:this|the)\s+(?:stage|change|task|round|diff|PR)\s+(?:did\s+not|didn(?:'|’)t)\s+(?:change|touch|modify)|правило\s+до\s+этапа|\bbefore\s+(?:this|the)\s+stage\b|\bnot\s+introduced\s+by\s+(?:this|the)\s+(?:change|stage|task|diff|round|PR)|\b(?:not|never)\s+(?:changed|touched|modified)\s+(?:by|in)\s+(?:this|the)\s+(?:stage|task|round|diff|change|PR)|\b(?:unchanged|untouched)\s+(?:by|in)\s+(?:this|the)\s+(?:stage|task|round)/i
 const UNTOUCHED_CONTEXT = /change|этап|раунд|stage|round|задач|task|diff|диф/i
@@ -75,14 +77,12 @@ const USER_DECISION = /решени[\wа-яё]*\s+пользователя|user\
 const DATA_SEEN = /ни\s+разу|\bnever\s+(?:more|above|seen)|из\s+~?\d+\s*(?:раз|публикац)|of\s+~?\d+\s+(?:times|samples)|ложн[\wа-яё]*\s+для\s+(?:данных|выборки|стенда|окружения)|false\s+for\s+(?:the\s+)?(?:data|sample|environment)/i
 const UNRELATED = /ложн[\wа-яё]*\s+для\s+задачи|не\s+относится|не\s+связан[\wа-яё]*\s+с\s+(?:задачей|этапом|диф)|\bunrelated\s+to\b|\bnot\s+related\s+to\b|\boutside\s+the\s+task\b/i
 
-const strip = (text) => text.replace(QUOTED, ' ')
-
 /**
  * The weak form of a `false` outcome line, or null. `form` is the name above, `need` says what the line lacks (for the hook message).
  * Quoted text and code spans are identifiers and copy: the wording is looked for outside them, the proof — in the whole line.
  */
 export function weakForm(entry) {
-  const prose = strip(entry)
+  const prose = stripQuoted(entry)
   if (NOT_REPRODUCED.test(prose)) {
     if (!ATTEMPTS.test(entry) || !ROUTE.test(entry)) return { form: 'not-reproduced', need: 'two attempts and the route taken: "not reproduced (2 attempts, /root-cause)", "(3 cold loads on /orders)"' }
   }

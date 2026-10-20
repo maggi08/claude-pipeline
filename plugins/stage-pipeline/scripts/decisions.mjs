@@ -16,9 +16,9 @@ const EMPTY_ITEM = /^\s*(?:[-*]|\d+\.)\s+(?:\**(?:none|нет|n\/a|—|-)\**\.?\
 
 const COST = /\brollback\b|\breversible\s+(?:via|by|through)\b|\bundo\b|(?<![а-яё])откат|(?<![а-яё])обратим[\wа-яё]*\s+(?:через|по)\b/i
 const BASIS_LABEL = /(?:^|[\s(;.,])(?:basis|основани[ея])\s*:\s*([^\n]*)/i
-// path:line, a file with an extension, node-id, URL, a quote, a decision/criterion/blocker id, "guess"
+// path:line, a file with an extension, node-id, URL, a quote, a decision/criterion/blocker id, "guess". The path starts only at a token start: from every position of a long token it backtracked quadratically.
 const BASIS_VALUE =
-  /[\w@./-]+\.[A-Za-z]{1,5}(?::\d+)?(?![\w-])|\b\d+[:-]\d+\b|https?:\/\/|«[^»]{4,}»|“[^”]{4,}”|"[^"]{4,}"|(?<![\w-])(?:AC|[DABMFK])-?\d+[\w.]*|\bguess\b|(?<![а-яё])догадк|\binterview\s+answer|(?<![а-яё])ответ\s+интервью|\bticket\b|(?<![а-яё])тикет/i
+  /(?<![\w@./-])[\w@./-]+\.[A-Za-z]{1,5}(?::\d+)?(?![\w-])|\b\d+[:-]\d+\b|https?:\/\/|«[^«»\n]{4,300}»|“[^“”\n]{4,300}”|"[^"\n]{4,300}"|(?<![\w-])(?:AC|[DABMFK])-?\d+[\w.]*|\bguess\b|(?<![а-яё])догадк|\binterview\s+answer|(?<![а-яё])ответ\s+интервью|\bticket\b|(?<![а-яё])тикет/i
 
 /** Top-level items of a section's lines: a bullet and everything indented under it (a nested bullet is part of its parent). */
 function groupItems(lines) {

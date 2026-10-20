@@ -18,6 +18,7 @@ import {
   forceHeadings,
   freshestForceHeading,
   headingDate,
+  ruleAppliesToBlock,
 } from '../markers.mjs'
 
 /**
@@ -50,7 +51,7 @@ function readTasks(taskDir, branch) {
   if (!isDir(taskDir)) return []
   return readdirSync(taskDir)
     .map((ticket) => ({ ticket, dir: join(taskDir, ticket), stagesPath: join(taskDir, ticket, 'STAGES.md') }))
-    .filter(({ dir, stagesPath }) => isDir(dir) && isFile(stagesPath))
+    .filter(({ dir, stagesPath }) => isDir(dir) && isFile(stagesPath) && statSync(stagesPath).size <= TASK_FILE_MAX)
     .map(({ ticket, dir, stagesPath }) => {
       const stages = readFileSync(stagesPath, 'utf8')
       const { mtimeMs, size } = statSync(stagesPath)
@@ -102,8 +103,9 @@ function foreignTasks(ownTaskDir, root, branch) {
  * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it (or a cached older version of that install) gives
  * `stage-pipeline-<marketplace>`; else the `installLocation` / `source.path` of a marketplace in `known_marketplaces.json` that contains it (a marketplace connected as a directory) gives `stage-pipeline-<marketplace>`; a script outside both (a `--plugin-dir` run) gives `stage-pipeline-inline`, as the hooks of that session do.
  */
-export function pluginDataDir(here = dirname(fileURLToPath(import.meta.url))) {
+export function pluginDataDir() {
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA
+  const here = dirname(fileURLToPath(import.meta.url))
   const root = join(homedir(), '.claude/plugins/data')
   const under = (dir) => typeof dir === 'string' && dir !== '' && (here === dir || here.startsWith(dir.replace(/[/\\]+$/, '') + sep))
   const named = (marketplace) => join(root, `stage-pipeline-${marketplace.replace(/[^\w.-]/g, '-')}`)
@@ -178,7 +180,7 @@ export function registerTaskDir(dir) {
 
 /** `review_model` from the config: the model of the whole-branch review and of the fresh checker run (stage-check, Step 3.3). */
 export function reviewModel(config) {
-  const raw = config.match(/^\s*-\s*review_model:\s*[`*]*([\w.-]+)/m)?.[1]
+  const raw = config.match(/^[ \t]*-[ \t]*review_model:[ \t]*[`*]*([\w.-]+)/m)?.[1]
   return raw ? raw.toLowerCase() : 'opus'
 }
 
@@ -217,11 +219,11 @@ const UNREAD_DATE = new RegExp(
  *   files that do not name its ticket: a task fix under someone else's ticket straight in dev is the same work bypassing the journal.
  * A commit rebuilt without a signature is the same commit: the journal recognises it by subject or by patch-id.
  */
-export function unjournaledCommits(state, task, limit = 50) {
+export function unjournaledCommits(state, task, { limit = 50, gate = null } = {}) {
   const cwd = state.worktree
   // The base is the nearest of the integration branches, not only `main_branch`: in live configs it can be
   // `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
-  const configured = state.config.match(/^\s*-\s*main_branch:\s*[`*]*([\w./-]+)/m)?.[1]
+  const configured = state.config.match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
   const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
   const integration = names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
   if (!integration.length) return []
@@ -262,6 +264,8 @@ export function unjournaledCommits(state, task, limit = 50) {
   const titled = new Set()
   let ownCommits = []
   const closed = closedForceDate(task.stages)
+  // The ticket-titled rule (0.16.3) is for runs opened after this plugin version first saw the task (`gate` — `releaseGate` of the task snapshot); without a gate it applies.
+  const titledRule = closed && ruleAppliesToBlock(gate, freshestForceHeading(task.stages)?.[0] ?? '', closed)
   const me = git(cwd, 'config', 'user.email')
   const known = journalCommits(cwd, journal)
   if (closed && me && known.length) {
@@ -290,7 +294,7 @@ export function unjournaledCommits(state, task, limit = 50) {
     // anything else with the ticket in its title that lands after the close is exactly the work that bypassed the journal; only its SHA or its patch-id can clear it.
     for (const [sha, commit] of candidates) {
       if (before.has(sha)) continue
-      if (/^Revert\s/.test(commit.subject) || (ticket.test(commit.subject) && closed < TITLED_SINCE)) candidates.delete(sha)
+      if (/^Revert\s/.test(commit.subject) || (ticket.test(commit.subject) && !titledRule)) candidates.delete(sha)
       else if (ticket.test(commit.subject)) titled.add(sha)
     }
   }
@@ -350,7 +354,7 @@ const isCommit = (cwd, ref) => Boolean(git(cwd, 'rev-parse', '-q', '--verify', `
  * `pipeline.config.local.md` (the machine's layout) overrides the shared config.
  */
 export function taskDirFromConfig(config, root) {
-  const raw = config.match(/^\s*-\s*task_path:\s*(.+)$/m)?.[1]
+  const raw = config.match(/^[ \t]*-[ \t]*task_path:[ \t]*(.+)$/m)?.[1]
   if (!raw) return join(root, '.claude/tasks')
   let path = raw.trim().split(/\s+/)[0].replace(/^[`'"]+|[`'"]+$/g, '')
   path = path.split('<')[0]
@@ -434,14 +438,25 @@ export const OPEN_STATUS = /\[status:\s*(todo|in[-\s]progress)\b/i
 const DAY = 24 * 60 * 60 * 1000
 export const STALE_DAYS = 21
 export const AFTER_CLOSE_DAYS = 14
-/** A ticket-titled commit after the close counts as unjournaled only for Force blocks closed on or after this date (earlier runs were closed under the old rule). */
-const TITLED_SINCE = '2026-10-20'
+/** Task files larger than this are not read: a STAGES.md or a report is kilobytes, a symlink to a device or a runaway file would stall every hook. */
+export const TASK_FILE_MAX = 4 * 1024 * 1024
+
+/** The reports of a task: regular `.md` files in `checks/` (a symlink or a directory named `*.md` is not a report). Here, not in journal-check, so journal-gate stamps them without loading the rules. */
+export function reportNames(taskDir) {
+  try {
+    return readdirSync(join(taskDir, 'checks'), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+      .map((entry) => entry.name)
+  } catch {
+    return []
+  }
+}
 
 /**
  * The repo root with the pipeline config. In a worktree `.claude/` may be uncommitted
  * (excluded via .git/info/exclude) — then the config is looked for in the main working tree.
  */
-function configRoot(cwd, worktree) {
+export function configRoot(cwd, worktree) {
   if (isFile(join(worktree, '.claude/pipeline.config.md'))) return worktree
   const main = mainRoot(cwd)
   return main && main !== worktree && isFile(join(main, '.claude/pipeline.config.md')) ? main : null
@@ -451,6 +466,72 @@ function configRoot(cwd, worktree) {
 function mainRoot(cwd) {
   const common = git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
   return common && basename(common) === '.git' ? dirname(common) : null
+}
+
+/**
+ * Whether `readPipelineState` can find a config from here — from the file system alone, without spawning git: the hooks of every Bash call in every repo
+ * ask this first and leave at once outside the pipeline. Walks up to the repository root (the first `.git`) and, in a linked worktree, reads its `.git` file
+ * to check the main tree as `configRoot` does. A config above the repo root says "maybe" — `readPipelineState` decides; never "no" where it would find one.
+ */
+export function hasPipelineConfig(cwd) {
+  let dir = resolve(cwd)
+  for (;;) {
+    if (isFile(join(dir, '.claude/pipeline.config.md'))) return true
+    const dotGit = join(dir, '.git')
+    if (isDir(dotGit)) return false
+    if (isFile(dotGit)) {
+      try {
+        const gitDir = resolve(dir, readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() ?? '')
+        const common = resolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf8').trim())
+        return basename(common) === '.git' && isFile(join(dirname(common), '.claude/pipeline.config.md'))
+      } catch {
+        return false // a submodule or a broken link: no main tree to look at, as in configRoot
+      }
+    }
+    const up = dirname(dir)
+    if (up === dir) return false
+    dir = up
+  }
+}
+
+/**
+ * The "Dev server" section of the config: `url`, `verify_routes:` (comma separated, each `^/\S*$`) and `app_marker:` (one line); the local config overrides the shared one.
+ * The key names are specific on purpose: `routes:` / `marker:` already mean something else in live configs (a path to a routes file). Values that do not fit are ignored and noted.
+ * `null` — no config at `root`.
+ */
+export function devServerConfig(root) {
+  if (!root) return null
+  const texts = ['pipeline.config.md', 'pipeline.config.local.md'].map((name) => join(root, '.claude', name)).filter(isFile).map((path) => readFileSync(path, 'utf8'))
+  return texts.length ? parseDevServer(texts) : null
+}
+
+/** The fields of the "Dev server" sections of the config texts, the later text over the earlier one. Line by line: no regexp runs across lines or backtracks on a long one. */
+export function parseDevServer(texts) {
+  const found = { url: undefined, routes: [], marker: undefined, notes: [] }
+  for (const text of texts) {
+    let inSection = false
+    for (const line of text.split('\n')) {
+      if (/^##[ \t]/.test(line)) {
+        inSection = /^##[ \t]+Dev server/i.test(line)
+        continue
+      }
+      if (!inSection) continue
+      const field = line.match(/^[ \t]*-[ \t]*(url|verify_routes|app_marker)[ \t]*:(.*)$/i)
+      if (!field) continue
+      const key = field[1].toLowerCase()
+      const value = field[2].split(/\s#/)[0].trim().replace(/^`|`$/g, '').trim()
+      if (!value || value === '—') continue
+      if (key === 'url') found.url = value
+      else if (key === 'app_marker') found.marker = value
+      else {
+        const items = value.split(',').map((item) => item.trim().replace(/^`|`$/g, '')).filter(Boolean)
+        const good = items.filter((item) => /^\/\S*$/.test(item))
+        if (good.length !== items.length) found.notes.push(`verify_routes: ${items.length - good.length} value(s) are not a /path`)
+        if (good.length) found.routes = good
+      }
+    }
+  }
+  return found
 }
 
 function realPath(path) {
@@ -497,12 +578,4 @@ function isDir(path) {
   }
 }
 
-export async function readHookInput() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return {}
-  }
-}
+export { readHookInput } from './hook-input.mjs'

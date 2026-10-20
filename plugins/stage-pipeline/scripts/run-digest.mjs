@@ -24,7 +24,7 @@
  * The digest is a text for the user and belongs to the task's files, so its headings and lines are in the
  * task language (taskLanguage; unknown → ru, as before). Console messages are always English.
  */
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
@@ -40,6 +40,7 @@ import {
   ledgerViolations,
   newReports,
   openBlockers,
+  readTaskFile,
   SUMMARY_LINE,
 } from './journal-check.mjs'
 import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
@@ -153,7 +154,7 @@ export function runScope(stages, block, ledgerSince) {
 /** The numbers and lines of the digest — one structure for both views, so that no category exists in one and not in the other. */
 export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   const { lines, ledgerSince, ledgerOld } = baselineInfo(dataDir, taskDir)
-  const stages = existsSync(join(taskDir, 'STAGES.md')) ? readFileSync(join(taskDir, 'STAGES.md'), 'utf8') : ''
+  const stages = readTaskFile(taskDir, 'STAGES.md') ?? ''
   const language = taskLanguage(stages) ?? 'ru'
   const block = lastForceBlock(stages)
   const scope = runScope(stages, block, ledgerSince)
@@ -170,7 +171,7 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const dated = lineDate(line)
     return !(byDate && scope.date && dated && dated < scope.date)
   }
-  const reports = newReports(taskDir, scope.since).map((name) => ({ name, text: readFileSync(join(taskDir, 'checks', name), 'utf8') }))
+  const reports = newReports(taskDir, scope.since).map((name) => ({ name, text: readTaskFile(taskDir, 'checks', name) ?? '' }))
   // Stage 5 rules (weak dismissals, a critical needs a fresh report) apply to the reports that are not in the snapshot's `ledgerOld`.
   const strictFor = (name) => !ledgerOld.has(name)
 

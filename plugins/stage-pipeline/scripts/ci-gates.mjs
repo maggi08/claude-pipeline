@@ -19,14 +19,16 @@
  * A gate that cannot run on this machine (needs staging, no browser) is skipped on the record, not blocked on again and again:
  * `skip: <reason> <date>` in its row of the table (or after it on an `- e2e:` line), or a line in the run's Force block —
  * `skip: <gate name> — <reason> <date>`. A skipped gate is listed once as skipped and accepted when the run closes; the reason and the date are required,
- * a bare `skip:` does not count. A gate without the mark blocks as before.
+ * a bare `skip:` does not count. A gate without the mark blocks as before. A green run on HEAD beats any skip; a run that is red on HEAD beats a skip of
+ * the Force block (written by the run itself: it stands only for a gate that cannot run here, never for one that ran and failed) — the user's mark in the
+ * config row still counts.
  */
 import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { baselineInfo, fingerprint, lastForceBlock, openBlockers } from './journal-check.mjs'
+import { baselineInfo, fingerprint, lastForceBlock, openBlockers, readTaskFile } from './journal-check.mjs'
 import { pluginDataDir, readDataFiles, readPipelineState } from './hooks/pipeline-state.mjs'
 import { CI_GATES_HEADING, CLOSED_WORD, NO_GATE_COMMAND, WITH_BLOCKERS } from './markers.mjs'
 
@@ -40,7 +42,8 @@ const SKIP_DATE = /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})\b/
 export function parseSkip(text) {
   const raw = text.match(/\bskip(?:ped)?\s*:\s*([^|\n]+)/i)?.[1]?.replace(/[`*]/g, '').trim()
   if (!raw || !SKIP_DATE.test(raw)) return null
-  const reason = raw.replace(SKIP_DATE, '').replace(/[\s,;:()—–-]+$/g, '').replace(/^[\s,;:()—–-]+/g, '').trim()
+  // The trailing trim starts only at the start of the run: a bare `[…]+$` backtracks from every separator of a long reason.
+  const reason = raw.replace(SKIP_DATE, '').replace(/(?<![\s,;:()—–-])[\s,;:()—–-]+$/, '').replace(/^[\s,;:()—–-]+/, '').trim()
   return reason ? { reason, date: raw.match(SKIP_DATE)[0] } : null
 }
 
@@ -49,9 +52,9 @@ export function parseSkip(text) {
  * The gate is named before `skip:` or right after it (before the dash), so a line about gate A never skips gate B.
  */
 export function forceSkips(taskDir) {
-  const stagesPath = join(taskDir, 'STAGES.md')
-  if (!existsSync(stagesPath)) return []
-  const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
+  const stages = readTaskFile(taskDir, 'STAGES.md')
+  if (stages === null) return []
+  const block = lastForceBlock(stages)
   if (!block) return []
   return block.body.split('\n').flatMap((line) => {
     const at = line.search(/\bskip(?:ped)?\s*:/i)
@@ -75,7 +78,7 @@ export function gateCommands(config) {
   const table = gateTable(config)
   if (table.length) return table
   const gates = []
-  for (const [, key, raw] of config.matchAll(/^\s*-\s*\**(e2e|smoke)\**(?:\s*\([^)\n]*\))?\s*:\s*(.+)$/gim)) {
+  for (const [, key, raw] of config.matchAll(/^[ \t]*-[ \t]*\**(e2e|smoke)\**(?:[ \t]*\([^)\n]*\))?[ \t]*:[ \t]*(.+)$/gim)) {
     const command = raw.match(/`([^`]+)`/)?.[1] ?? raw.split(/\s+#|\s+\/\s+|\s+\(|\s+\|/)[0]
     if (!command || NO_GATE_COMMAND.test(command.trim())) continue
     gates.push({ name: key.toLowerCase(), command: normalize(command), ...skipOf(raw) })
@@ -176,8 +179,9 @@ export function gateStatus(dataDir, worktree, config, skips = []) {
     const runs = records.filter(([command]) => command === gate.command || command.startsWith(`${gate.command} `)).map(([, record]) => record)
     const here = runs.filter((record) => tree && record.tree === tree).sort((a, b) => (a.at < b.at ? 1 : -1))
     const status = here.length ? (here[0].code === 0 ? 'green' : 'red') : runs.length ? 'stale' : 'missing'
-    // A green run beats a skip: the mark only stands in for a run that cannot happen.
-    const skip = status === 'green' ? null : (gate.skip ?? mentioned(skips, gate))
+    // A green run beats a skip: the mark only stands in for a run that cannot happen. A run red on HEAD beats the Force block's own skip line: the run
+    // that wrote the skip saw the gate fail, and a failing gate is a fix-loop finding, not a gate that "cannot run here". The config-row mark is the user's and still counts.
+    const skip = status === 'green' ? null : (gate.skip ?? (status === 'red' ? null : mentioned(skips, gate)))
     // A skip still hides nothing: when the last recorded run of the gate (on any tree) is red, the listing says so.
     const last = [...runs].sort((a, b) => (a.at < b.at ? 1 : -1))[0]
     return skip ? { ...gate, skip, status: 'skipped', code: here[0]?.code ?? null, lastRed: Boolean(last) && last.code !== 0 } : { ...gate, status, code: here[0]?.code ?? null }
@@ -206,12 +210,13 @@ export const gateAccepted = (gate) => gate.status === 'green' || gate.status ===
  * staging, no browser). Only for a closing written after the task snapshot.
  */
 export function gateCloseViolations(dataDir, worktree, config, taskDir) {
-  const stagesPath = join(taskDir, 'STAGES.md')
-  if (!existsSync(stagesPath)) return []
-  const block = lastForceBlock(readFileSync(stagesPath, 'utf8'))
+  const stages = readTaskFile(taskDir, 'STAGES.md')
+  if (stages === null) return []
+  const block = lastForceBlock(stages)
   if (!block || !CLOSED_WORD.test(block.heading)) return []
   if (baselineInfo(dataDir, taskDir).lines.has(fingerprint(block.heading))) return []
-  const failing = gateStatus(dataDir, worktree, config, forceSkips(taskDir)).filter((gate) => !gateAccepted(gate))
+  const skips = forceSkips(taskDir)
+  const failing = gateStatus(dataDir, worktree, config, skips).filter((gate) => !gateAccepted(gate))
   if (!failing.length) return []
   const withBlockers = WITH_BLOCKERS.test(block.heading)
   const blockers = openBlockers(block.body).join('\n').toLowerCase()
@@ -221,8 +226,12 @@ export function gateCloseViolations(dataDir, worktree, config, taskDir) {
       rule: 'ci-gate',
       id: gate.name,
       message:
-        `CI gate ${describe(gate)} on the current HEAD. Run it before closing: \`node ${RUN_CHECK} -- ${gate.command}\` (or \`node ${fileURLToPath(import.meta.url)} --run\`). ` +
-        'A red gate is a fix-loop finding; if it cannot run locally — a blocker B<n> with the reason and closing as "completed with blockers".',
+        gate.status === 'red'
+          ? `CI gate ${describe(gate)} on the current HEAD. A red gate is a fix-loop finding: fix it and run it again (\`node ${RUN_CHECK} -- ${gate.command}\`). ` +
+            `${mentioned(skips, gate) ? 'The `skip:` line of the Force block does not cover it: a skip stands only for a gate that cannot run here, not for one that ran red. ' : ''}` +
+            'If the fix-loop cannot make it green — a blocker B<n> that names the gate, and closing as "completed with blockers".'
+          : `CI gate ${describe(gate)} on the current HEAD. Run it before closing: \`node ${RUN_CHECK} -- ${gate.command}\` (or \`node ${fileURLToPath(import.meta.url)} --run\`). ` +
+            'If it cannot run here — `skip: <gate> — <reason> <date>` in the Force block, or a blocker B<n> with the reason and closing as "completed with blockers".',
     }))
 }
 

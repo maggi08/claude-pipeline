@@ -75,7 +75,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/receipts.mjs",
-      "line": "^\\s*(?:const WHOLE_BRANCH|const blocks|const status|const commitOpen|const RUNTIME_SKIP_REASON|const NOT_RUN_RU|\\s*\\/\\\\bnot\\\\s\\+\\(\\?:been)",
+      "line": "^\\s*(?:const WHOLE_BRANCH|const commitOpen|const RUNTIME_SKIP_REASON|const NOT_RUN_RU)",
       "reason": "RU alternatives of the whole-branch, commit-line, runtime-skip-reason and blocker not-run regexes (RU|EN pairs)"
     },
     {

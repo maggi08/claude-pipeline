@@ -15,7 +15,8 @@ machine, and suggest a fix for what does not. The pipeline itself comes with the
    `figma` and `chrome-devtools`; Claude Code adds the prefix
    `plugin_stage-pipeline_` to the tools of plugin servers. Through ToolSearch check that
    `mcp__figma__get_metadata` and `mcp__plugin_stage-pipeline_chrome-devtools__list_pages`
-   are available (or `mcp__chrome-devtools__list_pages`, if the developer has their own server).
+   are available (and `mcp__stage-pipeline-chrome__list_pages` when the opt-in of item 4a is there). A project's own
+   `chrome-devtools` server (`mcp__chrome-devtools__*`, e.g. from a tracked `.mcp.json`) is not used by the checkers.
    - No Figma tools → (a) project servers are not approved — suggest `/mcp` →
      approve; (b) Figma desktop is not running or the MCP server is off
      (Figma → Preferences → **Enable Dev Mode MCP Server**). Port check:
@@ -45,7 +46,8 @@ machine, and suggest a fix for what does not. The pipeline itself comes with the
    Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-doctor.mjs` (read-only) and show its
    `doctor:` line: `wrong app` = another repo's or worktree's server holds the port (core, new-cor
    and mycar-webview all use `:3000`) — name the process, do not kill it; `down` = start the server
-   from `commands.dev`; `no dev url` = a static target, nothing to do. Optional keys of the config's
+   from `commands.dev`; `no dev url` = a static target, nothing to do; `no config` = no pipeline config here or in the main tree
+   (run `/pipeline-init`, or pass `--url`). The config is found as the hooks find it: a linked worktree with `.claude/` excluded reads the main tree's. Optional keys of the config's
    "Dev server" section that make the check exact: `- verify_routes: /, /login` (baseline routes, `/path` values only) and
    `- app_marker: <text that only this app's HTML contains>` (one line).
 
@@ -58,15 +60,22 @@ machine, and suggest a fix for what does not. The pipeline itself comes with the
    (or run it with their approval):
 
    ```bash
-   claude mcp add --scope local chrome-devtools -- npx -y chrome-devtools-mcp@1.6.0 --userDataDir ~/.cache/stage-pipeline/chrome/<slug>
+   claude mcp add --scope local stage-pipeline-chrome -- npx -y chrome-devtools-mcp@1.6.0 --userDataDir ~/.cache/stage-pipeline/chrome/<slug>
    ```
 
-   `<slug>` is `slug` from the config. `--scope local` keeps it private to this repo on this machine: never
+   `<slug>` is `slug` from the config; the version is the one the plugin's `.mcp.json` pins. `--scope local` keeps it private to this repo on this machine: never
    committed, teammates unaffected. Then the user logs in once in the managed window; the login survives
-   restarts. Two caveats to say out loud: (a) the project-local server and the plugin's one have the same
-   name — after adding it, the duplicate-name check in item 1 must not flag it, the local one is intended;
+   restarts. Say what to expect after the restart: `/mcp` lists both `stage-pipeline-chrome` (local) and
+   `plugin:stage-pipeline:chrome-devtools` — the plugin's server is not replaced; the session has
+   `mcp__stage-pipeline-chrome__*` next to `mcp__plugin_stage-pipeline_chrome-devtools__*`,
+   and devtools-verify and the `/stage-force` auth probe use `mcp__stage-pipeline-chrome__*` first, so the
+   login is made and read in the persistent profile (a devtools-verify report then says `auth: ok (stage-pipeline-chrome profile)`).
+   The name is the plugin's own on purpose: a repo may commit a `chrome-devtools` server of its own (core and new-cor track
+   `chrome-devtools-mcp@latest` with the shared default profile), and the checkers never drive that one.
+   Two caveats to say out loud: (a) `stage-pipeline-chrome` runs the same package as the plugin's server under another
+   name — the duplicate check in item 1 must not flag it, it is the intended opt-in;
    (b) the profile directory is held by one Chrome at a time, so a second concurrent session in the same repo
-   finds it busy and devtools-verify falls back to its playwright path instead of waiting. Undo: `claude mcp remove chrome-devtools -s local`.
+   finds it busy and devtools-verify falls back to its playwright path instead of waiting. Undo: `claude mcp remove stage-pipeline-chrome -s local`.
 
 5. **Baseline (optional, ~a minute).** `type_check` from the config → compare the
    error count with the baseline. It has drifted — suggest updating the baseline in the

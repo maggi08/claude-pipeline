@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { planArchive } from '../archive-stages.mjs'
-import { ensureBaseline } from '../journal-check.mjs'
+import { ensureBaseline, releaseGate } from '../journal-check.mjs'
 import { FORCE_BLOCK_PRESENT } from '../markers.mjs'
 import { AFTER_CLOSE_DAYS, closedForceDate, pluginDataDir, readHookInput, readPipelineState, registerTaskDir, STALE_DAYS, unjournaledCommits } from './pipeline-state.mjs'
 
@@ -57,7 +57,7 @@ const listed = (commits) =>
 // The journal lags behind the branch when the stages are over: in force each stage commit goes into the journal in the same turn.
 const outside = (task) => {
   if (task.forceActive || !FORCE_BLOCK_PRESENT.test(task.stages)) return null
-  const commits = unjournaledCommits(state, task)
+  const commits = unjournaledCommits(state, task, { gate: releaseGate(pluginDataDir(), task.dir) })
   if (!commits.length) return null
   const onBranch = commits.filter(({ where }) => where === 'branch')
   const merged = commits.filter(({ where }) => where !== 'branch')
@@ -87,7 +87,8 @@ const afterClose = state.tasks
   })
   .slice(0, 3)
   .flatMap((task) => {
-    const commits = unjournaledCommits(state, task).filter(({ where }) => where !== 'branch')
+    // The snapshot of a closed task of another branch is taken here if there is none: its runs keep the rules they were closed under (D7).
+    const commits = unjournaledCommits(state, task, { gate: releaseGate(pluginDataDir(), task.dir) }).filter(({ where }) => where !== 'branch')
     if (!commits.length) return []
     const key = createHash('sha1').update(commits.map(({ sha }) => sha).sort().join()).digest('hex').slice(0, 16)
     if (shownBefore[task.dir] === key) return []

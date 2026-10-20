@@ -77,6 +77,8 @@ const generated = () => {
       entries.push(`mcp__${server}`, `mcp__plugin_${manifest.name}_${server}`)
     }
   }
+  // the persistent-profile browser `/pipeline-doctor` proposes (item 4a) is a local-scope server under the plugin's own name, not in .mcp.json
+  entries.push('mcp__stage-pipeline-chrome')
 
   return entries
 }
