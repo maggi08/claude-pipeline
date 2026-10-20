@@ -119,7 +119,7 @@ Always forbidden: `git push`, creating and commenting on a PR/MR, deploy, publis
 - `floor-guard --base origin/<main_branch>` — the quality floor over the whole branch: silenced checkers, weakened tests, stubs.
 - security-review, metrics-guard (if the config has `bundle_size`), ds-parity, dead-code, i18n-sweep, deps-audit (per STAGES "Final checks").
 - **`/task-converge`** — the code on HEAD against the intent of the task. All other checkers look into the diff and answer "is what was done done right"; converge answers "was everything promised done, and was nothing extra done". A criterion that no stage took on does not appear in the diff — its absence is invisible by definition. Findings → a "Catch-up" block in STAGES.md (append-only, rewriting nothing) → a repeated run until it converges.
-- **`/task-wrapup`** → `PR.md` — a PR/MR description from the task journal: what and why, how to verify, what the reviewer should look at, blind spots, open questions. Manual only, when the description is needed: neither force nor the final checks call it. Pushing and creating a PR are also manual.
+- **`/task-wrapup`** → `PR.md` — a PR/MR description from the task journal, written by the human-text rules and checked by `human-text-check`: what and why, how to verify, what the reviewer should look at, blind spots, open questions. Manual only, when the description is needed: neither force nor the final checks call it. Pushing and creating a PR are also manual.
 - A legacy removal / cleanup is a separate final stage.
 
 ## Skills and agents
@@ -147,13 +147,16 @@ Always forbidden: `git push`, creating and commenting on a PR/MR, deploy, publis
 | `/root-cause` (skill) | debugging to the cause: a fix did not work, a symptom with no explanation, a white page |
 | `task-converge` (agent + skill) | the code on HEAD against the intent of the whole task: an uncovered criterion, a partial implementation, a contradiction, a silently widened scope |
 | `/stage-force` (skill) | an autonomous run of the whole task: questions in a batch at the start, then no stops |
-| `/task-wrapup` (skill, manual only) | a PR/MR description from the task journal → `PR.md` |
+| `/task-wrapup` (skill, manual only) | a PR/MR description from the task journal → `PR.md`, written by the human-text rules and checked by `human-text-check` |
+| `/human-text` (skill, manual only) | text about a project for people (team, manager, newcomer, client): a fact card, a draft by the rules, a closed-question check |
+| `human-text-check` (agent) | checks a draft against 14 closed questions in a clean context, returns only the violations; used by `/human-text`, `/task-wrapup` and `/feature-doc` |
+| `/feature-doc` (skill, manual only) | a doc on a finished feature in `docs/features/` for someone who has not seen it; outside the pipeline |
 
 **Models.** The orchestrator (the `/stage-*` skills) runs on the model of your session — the plugin does not set it; the recommended one is Opus (`/model`). The agents use the `model:` field in the frontmatter, and it was chosen by a `scripts/eval.mjs` measurement, not by role:
 
 | Model | Agents | Why |
 |---|---|---|
-| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep`, `docs-lookup` | judgment and accuracy: a false green from a checker is worse than a red one, and noise is refuted by the expensive orchestrator |
+| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-*`, `proto-*`, `devtools-verify`, `dead-code`, `i18n-sweep`, `docs-lookup`, `human-text-check` | judgment and accuracy: a false green from a checker is worse than a red one, and noise is refuted by the expensive orchestrator |
 | `haiku` | `deps-audit` | mechanical work; on the eval case not worse than Sonnet at a 2.5 times lower price (measurement — CHANGELOG 0.9.0) |
 
 The exception is the whole-branch pro-review and the fresh checker run in the fix-loop: they go on `review_model` from the config (`opus` by default) through the `model` parameter: the last check by the strongest model, and in force also not the one that wrote the code (`/stage-check`, Step 3.3). For whole-branch the agent-guard hook enforces this: in live runs 5 of 14 such reviews went to sonnet because the parameter was forgotten.
@@ -163,6 +166,15 @@ The `sonnet` alias resolves differently depending on the Claude Code version: in
 **Three narrow checkers instead of one big one.** `pro-review` answers for correctness, security and conventions. `dead-code`, `i18n-sweep` and `deps-audit` each answer for their own class of junk, with their own confirmation procedure, and run **by a trigger**: something was deleted → dead-code; user text appeared → i18n-sweep; the manifest was touched → deps-audit. No sign — `[skip: no trigger]`, no extra subagent is spent.
 
 **Replacing checkers per repository.** The design source is not Figma but a file one (a repository of HTML prototypes from AI designers): `pipeline.config.md` declares `figma-spec → proto-spec`, `figma-compare → proto-compare` in the "Checker overrides" section — the kickoff/check orchestrators read the config and take the named agents. The rest of the loop is unchanged; such a repository does not need the Figma MCP.
+
+## human-text and feature-doc — outside the loop
+
+Two manual skills for text that people read. Neither is called by the pipeline's stages or hooks.
+
+- **`/stage-pipeline:human-text <to whom> <about what>`** — text about a project for the team, a manager, a newcomer or a client. It also installs on its own, without the pipeline: `claude plugin marketplace add maggi08/claude-pipeline`, then `claude plugin install human-text@magzhan` (the command is then `/human-text:human-text`).
+- **`/stage-pipeline:feature-doc [feature]`** — a doc on a finished feature in `docs/features/`. If a separate `feature-docs` plugin is installed, this does the same job; both are manual, pick one per repository.
+
+**For whoever edits the plugin.** `skills/human-text/` and `agents/human-text-check.md` are a vendored copy; the source of truth is the repo `maggi08/human-text`. `plugins/stage-pipeline/human-text.lock.json` pins the source commit and the sha256 of each copied file. Change the rules in the human-text repo, then run `node scripts/sync-human-text.mjs` (from the marketplace repo; `../human-text` by default, or a path or a git ref as an argument) and commit the copy together with the lock. `node scripts/validate.mjs` fails on a hand edit of the copy.
 
 ## Files (in the repository — `<repo>/.claude/`)
 

@@ -7,6 +7,7 @@ A personal Claude Code marketplace: plugins I connect to my own projects.
 | Plugin | What it does |
 |---|---|
 | [`stage-pipeline`](plugins/stage-pipeline/README.md) | A staged maker/checker workflow for large UI tasks: splitting into stages, a spec from the design, checks by subagents (Figma/prototype, runtime, code review), a state journal kept in files |
+| [`human-text`](https://github.com/maggi08/human-text) | Rules for writing work text people actually read (status updates, handoffs, docs) and a closed-question check of a draft in a clean context. A copy also ships inside `stage-pipeline` |
 
 ## Installation
 
@@ -30,13 +31,15 @@ The same through settings, if you do not want to install by hand:
 
 This is `~/.claude/settings.json` — the plugin is enabled in all repositories. If you need it in one repository only, use the same commands with `--scope project`; they end up in `<repo>/.claude/settings.json`. In that case make sure `.gitignore` does not swallow the whole `.claude/`: use `.claude/*` + `!.claude/settings.json`.
 
+`human-text` installs on its own, without the pipeline: `claude plugin install human-text@magzhan` (run it as `/human-text:human-text <to whom> <about what>`). Inside `stage-pipeline` the same skill is `/stage-pipeline:human-text`, next to the manual `/stage-pipeline:feature-doc` (a doc on a finished feature) and `/task-wrapup`, which writes the PR description by the same rules.
+
 Update: `claude plugin update stage-pipeline` (pulls the fresh `main`). After an install or an update, restart Claude Code. What changed between versions and what to do by hand on an upgrade is in [CHANGELOG.md](CHANGELOG.md).
 
 **Branches.** `main` is production: everyone installs and updates the plugin from it, so only checked changes with a raised version go into it. Experiments live locally (a marketplace from a folder — below) or in a separate `dev` branch; there is no separate "stable" branch and none is needed.
 
 Rollout to a team is a catalog in GitLab that points to this repository: [ROLLOUT.md](ROLLOUT.md).
 
-Check that it arrived: `claude plugin details stage-pipeline` — it must show 18 skills, 12 agents, 2 MCP servers. Then `/pipeline-doctor` in the target repository checks the environment (MCP, dev server, baseline).
+Check that it arrived: `claude plugin details stage-pipeline` — it must show 20 skills, 13 agents, 2 MCP servers. Then `/pipeline-doctor` in the target repository checks the environment (MCP, dev server, baseline).
 
 ### Development mode — a marketplace from a local clone
 
@@ -58,7 +61,7 @@ claude plugin install stage-pipeline@magzhan
 plugins/<name>/
   .claude-plugin/plugin.json      plugin manifest (name, version, description)
   skills/<name>/SKILL.md          skills (called as /<name>)
-  skills/<name>/references/       rule precedents — for whoever changes a rule, not for execution
+  skills/<name>/references/       rule precedents — for whoever changes a rule, not read during a run; the exception is `human-text/references/rules.md`, which task-wrapup, stage-force and feature-doc read while they work
   agents/<name>.md                checker subagents
   hooks/hooks.json                plugin hooks (six: session-start, git-guard, force-guard, agent-guard, journal-gate, frames-guard)
   scripts/                        permissions / archive-stages / retro and the hook scripts
@@ -92,5 +95,7 @@ Comparing models on the same cases: `node scripts/eval.mjs --runs 3 --model i18n
 GitHub Actions runs `validate.mjs` on push and PR, `release-check.mjs` on a PR into `main`, and on a push to `main` it creates the tag `stage-pipeline--v<version>` if it does not exist (`.github/workflows/validate.yml`). `claude plugin validate` and `eval.mjs` do not run in CI: the first needs the CLI, the second needs model calls.
 
 Releasing a version: raise `version` in `plugin.json` + add a section to `CHANGELOG.md` → a PR into `main` → CI creates the tag. Commit messages: `feat:` / `fix:` / `docs:` in lowercase, describing the substance of the change.
+
+Vendored human-text: `plugins/stage-pipeline/skills/human-text/`, `agents/human-text-check.md` and `human-text.lock.json` are a copy of the repo `maggi08/human-text`, which is the source of truth. Edit the rules there, then run `node scripts/sync-human-text.mjs [path-to-human-text | git-ref]` here; `validate.mjs` fails on a hand edit of the copy.
 
 Retro over real tasks: `node plugins/stage-pipeline/scripts/retro.mjs ~/programming/<repo>` — the share of false findings, fix-loop rounds, skips per checker, bloated STAGES.md files.
