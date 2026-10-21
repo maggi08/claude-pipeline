@@ -24,7 +24,7 @@ Forbidden: `git add`/`commit`/`push`, edits of STAGES.md (the journal and the st
 The final message is data for the orchestrator, up to 25 lines:
 - `Changed:` file paths (A/M/D).
 - `Decisions:` what you chose where the spec/plan did not dictate, one line each, with the reason (the orchestrator will carry them into the stage's `Decisions:` line).
-- `Product-visible:` changes of behavior/defaults that must go into "⚠ Awaiting user confirmation" — where it is visible.
+- `Product-visible:` changes of behavior/defaults that must go into "⚠ Awaiting user confirmation" — where it is visible, the rollback cost, and the basis (`path:line`, a quote or "guess").
 - `lint / type_check / floor-guard:` the result in numbers against the baseline (`type_check: 193 = baseline 193`), not "green" — without numbers the orchestrator will run it itself; the diff size line and the number of violations of the first floor-guard run (for `floor=` in the metrics); `floor-ok` exceptions, if there were any.
 - `Not done / blocker:` what and why. For a fork — the options, your recommendation and which `AC-*` depend on it; for a rejected action — the exact command.
 - `ACs without implementation:` the criteria that could not be closed by code.

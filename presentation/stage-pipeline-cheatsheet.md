@@ -1,6 +1,6 @@
 # Stage Pipeline · cheatsheet
 
-A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.17.0 — 20 skills, 13 agents.
+A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.18.0 — 20 skills, 13 agents.
 
 ---
 
@@ -123,7 +123,7 @@ No trigger → `[skip: no trigger]`, no subagent is spent.
 
 **Acceptance criteria are numbered.** `AC-<stage>.<n>` + a tag of whoever is able to check
 (`[verify: figma-compare]`, `[verify: devtools-verify]`, `[verify: pro-review]`,
-`[verify: user-review]`, `[live: user-side]`). Checker reports refer to the ID and do not
+`[verify: user-review]`; `[live: user-side — …]` is written by the checker at check time, never by the plan). Checker reports refer to the ID and do not
 retell the criterion; a stage is not closed with a criterion without an outcome; `TEST-PLAN.md`
 is assembled by ID mechanically. A criterion with nothing to check it is a defect of the plan,
 and it is caught at kickoff, not after the PR.

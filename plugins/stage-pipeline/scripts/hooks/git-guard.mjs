@@ -2,11 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { journalText, openLedgers, reportNames } from '../journal-check.mjs'
-import { scanOverrides, summarize } from '../kit-override-scan.mjs'
-import { PARITY_TABLE } from '../markers.mjs'
-import { commitScope, gitInvocations } from './git-command.mjs'
-import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
+import { readHookInput } from './pipeline-state.mjs'
 
 /**
  * In the normal pipeline mode the index and the commit belong to the user: /stage-check
@@ -38,13 +34,41 @@ import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-stat
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
 if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(0)
+// The hook runs before and after every Bash call: the rule modules are loaded only for a command that can add or commit.
+const { journalText, openLedgers, readTaskFile, reportNames } = await import('../journal-check.mjs')
+const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
+const { PARITY_TABLE } = await import('../markers.mjs')
+const { commitVerdict, finishPending, savePending } = await import('../receipts.mjs')
+const { commitScope, gitInvocations } = await import('./git-command.mjs')
+const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
 
 const cwd = input.cwd ?? process.cwd()
+const archiveScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'archive-stages.mjs')
 const invocations = gitInvocations(command, cwd)
+const callId = input.tool_use_id ?? input.session_id ?? 'call'
+
+// PostToolUse: a force commit that went through leaves its receipt (the pre-hook below saved the verdict).
+if (input.hook_event_name === 'PostToolUse') {
+  for (const { subcommand, dir } of invocations) {
+    if (subcommand !== 'commit') continue
+    const worktree = toplevel(dir)
+    if (worktree) finishPending(pluginDataDir(), callId, worktree)
+  }
+  process.exit(0)
+}
 for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
 
+  // A journal that cannot be read: neither mode can be told, and no rule can run — refused in both, with the file and the limit named (fail closed).
+  if (task?.unreadable) {
+    deny(
+      `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}, and its ${task.unreadable.message.replace(/^STAGES\.md/, task.stagesPath)} ` +
+        'Until it can be read, git add and git commit on this branch are rejected: the hook cannot tell the normal mode from a force run. ' +
+        'Do not repeat the command: show git status and the ready commit message and hand the commit to the user (their own terminal is not gated). ' +
+        (task.unreadable.file === 'STAGES.md' && task.unreadable.problem === 'too-large' ? `To fold the closed stages: node "${archiveScript}" ${task.stagesPath} --apply.` : ''),
+    )
+  }
   if (task && !task.forceActive) {
     deny(
       `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}${task.foreign ? ` (STAGES.md is in the task directory of another repo: ${task.stagesPath})` : ''}, ` +
@@ -75,6 +99,23 @@ for (const { subcommand, dir, args } of invocations) {
   const paths = commitPaths(invocations, state.worktree)
   if (paths?.length === 0) continue
 
+  // Stage receipts (VT-1 stage 3): the window of this commit holds the stage's checkers — only for a Force block opened after this version first saw the task (receipts.mjs).
+  const verdict = commitVerdict({
+    dataDir: pluginDataDir(),
+    taskDir: task.dir,
+    ticket: task.ticket,
+    branch: state.branch,
+    worktree: state.worktree,
+    changed: changedFiles(state.worktree, paths),
+  })
+  if (verdict?.missing.length) {
+    deny(
+      `stage-pipeline: the stage commit has no proof that its checkers ran — rejected.\n${verdict.missing.map((line) => `- ${line}`).join('\n')}\n` +
+        'The window is the checker reports written after the previous force commit on this branch (and after the Force block date); a fix commit that touches only the files of the previous force commit needs no new reports.',
+    )
+  }
+  if (verdict) savePending(pluginDataDir(), callId, { ...verdict, ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim() })
+
   const journal = journalText(task.dir)
   const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
   if (removed.length) {
@@ -86,9 +127,10 @@ for (const { subcommand, dir, args } of invocations) {
   }
 
   const overrides = safeScan(state.worktree, paths, state.config)
+  // Read bounded, as every task file: a kit report that cannot be read reports no file.
   const kitReports = reportNames(task.dir)
     .filter((name) => name.includes('kit-overrides'))
-    .map((name) => readFileSync(join(task.dir, 'checks', name), 'utf8'))
+    .map((name) => readTaskFile(task.dir, 'checks', name) ?? '')
     .join('\n')
   const unreported = overrides.filter(({ file }) => !kitReports.includes(file))
   if (unreported.length) {
@@ -150,6 +192,13 @@ function commitPaths(calls, worktree) {
   for (const name of names('diff', '--cached', '--name-only', '--no-renames', '-z')) paths.add(name)
   if (scope.tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
   return [...paths]
+}
+
+/** The files this commit changes: tracked changes against HEAD plus untracked files, inside the commit's pathspecs (`null` — the whole tree). */
+function changedFiles(worktree, paths) {
+  const spec = paths ? ['--', ...paths] : []
+  const list = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean)
+  return [...new Set([...list('diff', '--name-only', '--no-renames', '-z', 'HEAD', ...spec), ...list('ls-files', '-o', '--exclude-standard', '-z', ...spec)])]
 }
 
 /**

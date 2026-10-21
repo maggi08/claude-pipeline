@@ -10,10 +10,69 @@
 
 const re = (source, flags = '') => new RegExp(source, flags)
 
+/** Code in backticks and quoted text ("…", «…», “…”): identifiers or copy, not the wording of an outcome ("the untested import is removed"). */
+export const QUOTED = /`[^`\n]{0,200}`|"[^"\n]{0,200}"|«[^«»\n]{0,200}»|“[^“”\n]{0,200}”/g
+export const stripQuoted = (text) => text.replace(QUOTED, ' ')
+
 // --- STAGES.md: headings and fields ---
 
 /** `### Stage A0 …` heading (or its Russian form) — group 1 is the heading level, group 2 the number. */
 export const STAGE_HEADING = /^(#{2,3}) (?:Этап|Stage) ([\w.]+)/
+/**
+ * Stage blocks: `### Stage 3 …` / `## Stage A0 …` (or the Russian form) up to the next heading of the same or a higher level.
+ * If the file has stage headings with `[status: …]`, only they count as stages — otherwise
+ * journal subheadings "### Stage 6 — progress" would count as a second stage 6.
+ */
+export function stageBlocksOf(text) {
+  const lines = text.split('\n')
+  const headings = lines.map((line, index) => ({ index, match: line.match(STAGE_HEADING) })).filter(({ match }) => match)
+  const withStatus = headings.filter(({ index }) => /\[status:/i.test(lines[index]))
+  return (withStatus.length ? withStatus : headings).map(({ index, match }) => {
+    let end = index + 1
+    while (end < lines.length && !(lines[end].match(/^(#{1,6}) /)?.[1].length <= match[1].length)) end++
+    return { number: match[2], block: lines.slice(index, end).join('\n'), start: index, end }
+  })
+}
+
+// The `logic-only` tag of a stage heading, in the forms live journals write (none is rewritten, D7). A tag: in brackets or backticks anywhere
+// (`[logic-only]`, `` `logic-only` ``); a parenthesised qualifier (`(logic-only)`, `(catch-up, logic-only)`); a bare word right after the status
+// bracket, as the last word before it, or after a dash with only a comma list behind it (`— logic-only  [status: …]`, `— logic-only, refactor  [status: …]`).
+// A title word ("logic-only helpers and the card") is not a tag, and neither is a negated one ("not logic-only" and the Russian form).
+const LOGIC_ONLY_NEGATED = /(?:^|[^\wа-яё'’-])(?:not|non|never|(?:is|are|was|were)n['’]t|no\s+longer|не|без)(?:\s+(?:a|an|the|really|just|only|yet))?[\s`[(-]*$/i
+// What may follow the comma of "— logic-only, …" before the status bracket: a short tag list ("refactor"), not a clause ("then the visual layer").
+const LOGIC_ONLY_TAIL = /^\s*(?:,\s*(?!(?:then|and|but|so|which|while|потом|затем|и|но|а)(?![\wа-яё]))[\wа-яё.-]+(?:\s+[\wа-яё.-]+)?\s*)+$/i
+const logicOnlyWrapped = (before, after) => (/\[$/.test(before) && /^\]/.test(after)) || (/`$/.test(before) && /^`/.test(after)) || (/(?:\(|,\s*)$/.test(before) && /^\)/.test(after))
+
+/** Where the `[status: …]` bracket of a heading starts and ends (brackets nested in it, such as a quoted `[live: …]`, are skipped): `{ start, end }` or null. */
+function statusBracket(heading) {
+  const start = heading.search(/\[status:/i)
+  if (start === -1) return null
+  let depth = 0
+  for (let at = start; at < heading.length; at++) {
+    if (heading[at] === '[') depth++
+    else if (heading[at] === ']' && --depth === 0) return { start, end: at + 1 }
+  }
+  return { start, end: heading.length }
+}
+
+/** Whether a stage heading carries the `logic-only` tag (the forms above). */
+export function logicOnlyTag(heading) {
+  const status = statusBracket(heading)
+  for (const found of heading.matchAll(/logic-only/gi)) {
+    const end = found.index + found[0].length
+    if (status && found.index >= status.start && found.index < status.end) continue
+    const before = heading.slice(Math.max(0, found.index - 28), found.index)
+    const after = heading.slice(end, end + 16)
+    if (LOGIC_ONLY_NEGATED.test(before)) continue
+    if (logicOnlyWrapped(before, after)) return true
+    if (!status) continue
+    if (found.index >= status.end && /^\s*(?:[—–-]\s*)?$/.test(heading.slice(status.end, found.index))) return true
+    if (found.index < status.start && /^[\s,;.:]*$/.test(heading.slice(end, status.start))) return true
+    if (found.index < status.start && /(?:^|\s)[—–-]\s*$/.test(before) && status.start - end <= 80 && LOGIC_ONLY_TAIL.test(heading.slice(end, status.start))) return true
+  }
+  return false
+}
+
 /** The same heading, but with the number from `number` (a string, not a regexp). */
 export const stageHeadingOf = (number) => re(`^###\\s+(?:Этап|Stage)\\s+${number}(?![\\w.])[^\\n]*$`, 'm')
 /** "stage 3" (or its Russian form) in a journal or commit line — group 1 is the number. */
@@ -118,6 +177,25 @@ export function freshestForceHeading(stages) {
   return (down > up ? ties[0] : ties.at(-1)).heading
 }
 
+/** A Force heading without its closing tail: `## Force run 2026-10-22 — completed with blockers` → `## Force run 2026-10-22`. The block is the same block before and after its close. */
+export function forceKey(heading) {
+  const at = heading.search(CLOSED_WORD)
+  return (at === -1 ? heading : heading.slice(0, at)).trimEnd().replace(/[—–:,;(-]+$/, '').trim()
+}
+
+/**
+ * Whether a rule released with a per-task date applies to a Force block (D7: the plugin adapts to existing projects). `gate` is what the task snapshot recorded
+ * when this plugin version first saw the task (`releaseGate` in journal-check): `since` — that day (ISO), `seen` — the keys (`forceKey`) of the Force headings already there
+ * and dated before that day. A block in `seen` is an old run. A new block counts from its date (`fallbackDate` when the heading has none, e.g. the `Confirmed:` line):
+ * opened on or after `since` — the rules apply. No readable date, no readable `since`, no gate at all — the rules apply too (fail closed, like CONFIRM_SINCE in agent-guard).
+ */
+export function ruleAppliesToBlock(gate, heading, fallbackDate = null) {
+  if (gate?.seen?.has(forceKey(heading))) return false
+  const date = headingDate(heading) ?? fallbackDate
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(gate?.since ?? '')) return true
+  return date >= gate.since
+}
+
 /** The text of a Force block: from the end of its heading up to the next `## ` section. `heading` is a match of `forceHeadings`. */
 export function forceBlockBody(stages, heading) {
   const rest = stages.slice(heading.index + heading[0].length)
@@ -158,7 +236,9 @@ const REQUEST_WORDS =
 const USER_REQUEST = `\\b${REQUEST_WORDS}\\s+(?:an?\\s+|the\\s+)?user\\s+(?:answer|decision)\\b`
 const NO_REQUEST_AFTER = `(?![^\\n]{0,200}${USER_REQUEST})`
 const NO_REQUEST_BEFORE = `(?<!${USER_REQUEST}[^\\n]{0,200})`
-const NOT_BEFORE = '(?<!\\bnot\\s)'
+const NOT_BEFORE = "(?<!\\b(?:not|never)\\s)(?<!n['’]t\\s)(?<!\\bun-)"
+// The Russian negation before a lift word ("not lifted", "was not closed", "unclosed" as one word); bounded: a few spaces, a short "was" form.
+const NOT_RU = '(?<!не)(?<!(?<![а-яё])не\\s{1,3})(?<!(?<![а-яё])не\\s{1,3}был[аио]?\\s{1,3})'
 const DATE_OR_QUOTE = '(?:«|"|“|\\d{4}-\\d{2}-\\d{2}|\\d{2}\\.\\d{2}\\.\\d{2,4})'
 // A quote followed by a second option ("v1" or "v2", and the Russian form) lists what is asked, it is not the answer.
 const NOT_OPTIONS = '(?![^»"”\\n]{0,80}[»"”]\\s*(?:или|or|vs\\.?|/)\\s*[«"“])'
@@ -169,9 +249,9 @@ const ANSWER_RU = `(?:\\s*(?:от|в\\s+чате|\\())?\\s*(?:[:—–-]\\s*)?${
 /** A blocker is lifted: `lifted by`, `resolved by`, `user decision` … and their Russian forms. */
 export const BLOCKER_LIFTED = new RegExp(
   [
-    'снят|закрыт|отвечен',
+    `${NOT_RU}(?:снят|закрыт|отвечен)`,
     // The Russian "resolved" (masculine, neuter, feminine) as a word of its own, without a negation before it: the noun "decision" and "not resolved" do not lift.
-    '(?<![а-яё])(?<!не\\s)реш[её]н[оа]?(?![а-яё])',
+    `(?<![а-яё])${NOT_RU}реш[её]н[оа]?(?![а-яё])`,
     // "Needs the user's decision/answer …" is a request, not a lift: the answer (ANSWER_*) must follow the words, and a request word must not stand before them (the Russian forms too).
     `(?<!${REQUEST_WORDS}\\s+)(?:ответ|решение)\\s+пользователя${ANSWER_RU}`,
     `${NO_REQUEST_BEFORE}${NOT_BEFORE}\\b(?:lifted|closed|answered)\\s+by${NO_REQUEST_AFTER}|${NO_REQUEST_BEFORE}${NOT_BEFORE}\\bresolved\\s+by${NO_REQUEST_AFTER}|(?<![\\w-])${NOT_BEFORE}resolved:`,
@@ -181,6 +261,16 @@ export const BLOCKER_LIFTED = new RegExp(
   'i',
 )
 
+// The marker an open blocker carries when a final whole-task report is missing or stale and the run closes "completed with blockers" (VT-1 B1):
+// `[final: pro-review — not run]`, `[final: task-converge — stale]`, the Russian state words in a ru task. The brackets, `final:`, the report name and the dash
+// are the same in both languages. Prose is not read: "pro-review found a critical; report missing a recheck" names a finding, not a review that did not run.
+const FINAL_MARKER = /\[final:\s*(pro-review|task-converge)\s*[—–-]\s*(?:not\s+run|stale|не\s+запускался|устарел)\s*\]/gi
+const FINAL_STATE = { en: { missing: 'not run', stale: 'stale' }, ru: { missing: 'не запускался', stale: 'устарел' } }
+/** The final reports a line names by the marker: a Set of `pro-review` / `task-converge`. */
+export const finalMarkerReports = (line) => new Set([...line.matchAll(FINAL_MARKER)].map((found) => found[1].toLowerCase()))
+/** The marker to write: `state` is `missing` or `stale`, `language` is `en` or `ru` (anything else — `en`). */
+export const finalMarker = (report, state, language) => `[final: ${report} — ${(FINAL_STATE[language] ?? FINAL_STATE.en)[state]}]`
+
 // --- checks/ reports ---
 
 /** The structural form of the dead-code summary: `1 to remove` / `1 remove` (or the Russian form) — group 1 is the number. */
@@ -188,6 +278,10 @@ export const DEAD_CODE_REMOVE = /(\d+)\s*(?:удалить(?![а-яё])|(?:to\s+
 
 /** The "Findings outcome" heading (`##` or `###`). */
 export const LEDGER_HEADING = /^#{2,3}\s*(?:Итог находок|Findings outcome)/im
+/** The environment line of a devtools-verify report: `doctor: <verdict>` (or its Russian form). */
+export const DOCTOR_LINE = /^[ \t]*(?:[-*][ \t]*)?`?(?:doctor|окружение)\s*:/im
+/** The login line of a devtools-verify report: `auth: ok | not logged in — …` (or its Russian form). */
+export const AUTH_LINE = /^[ \t]*(?:[-*][ \t]*)?`?(?:auth|вход)\s*:/im
 /** The "Could not verify" heading. */
 export const UNVERIFIED_HEADING = /^#{2,3}\s*(?:Не удалось проверить|Could not verify)/im
 /** The summary line, second line of a report: `Findings: critical N · major N` (or the Russian form). */
@@ -196,8 +290,8 @@ export const SUMMARY_STANDARD = /(?:Находки|Findings):\s*critical\s*\d+\s
 // --- pipeline.config.md ---
 
 /** The heading of the CI gates table. */
-export const CI_GATES_HEADING = /^(#{2,4})\s*(?:Гейты\s+CI|CI\s+gates)\b.*$/im
+export const CI_GATES_HEADING = /^(#{2,4})[ \t]*(?:Гейты\s+CI|CI\s+gates)\b.*$/im
 /** A gate command meaning "none". */
 export const NO_GATE_COMMAND = /^(?:нет|—|-|none|no|n\/a)(?![а-яёa-z])/i
 /** `kit_overrides: off|false|no|disabled` (and the Russian "none"). */
-export const KIT_OVERRIDES_OFF = /^\s*-\s*kit_overrides\s*:\s*`?(?:off|false|no|нет|disabled)(?![\wа-яё])/im
+export const KIT_OVERRIDES_OFF = /^[ \t]*-[ \t]*kit_overrides[ \t]*:[ \t]*`?(?:off|false|no|нет|disabled)(?![\wа-яё])/im

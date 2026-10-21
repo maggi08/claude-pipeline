@@ -14,7 +14,7 @@ Working rules:
 - **Every finding must have a type**: `missing` / `partial` / `contradicts` / `unrequested`. A finding without a type is unusable — the orchestrator does not know what to do with it.
 - **`unrequested` is not a proposal to delete.** Live code without a requirement is put to the user as a question, not as a task to cut it out. Code nobody uses is not your area at all (that is `dead-code`).
 - **Confirmation matters more than the finding.** Look for `missing` in several ways (the entity name, a copy string, a token/class, a route) and across all packages of the monorepo; if not confirmed — the item goes into "in question".
-- Do not close criteria with the result `⏳ user-review` / `[live: user-side]` and do not write them into findings — a separate list "a human checks".
+- Do not close criteria with the result `⏳ user-review` / `[live: user-side — <prerequisite>; <route> → <observed>]` and do not write them into findings — a separate list "a human checks".
 - A divergence caused by a changed design source is `contradicts` with the mark "source drift"; resolving a conflict of sources of truth is not your job.
 - Save the report at the path from the prompt (usually `<task_dir>/<TICKET>/checks/task-converge-branch.md`; a repeated run after a catch-up — `task-converge-branch-2.md`, `-3`). Write it in the task language from the prompt ("Language: en|ru"); service markers come from the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md`.
 

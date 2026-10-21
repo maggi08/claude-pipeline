@@ -68,7 +68,7 @@ As with the other checkers, confirmation is the main part of the work: "not impl
 - Confirm `partial` by pointing out which exact part of the criterion is not met — "no offline branch", not "partly done".
 - `contradicts` requires two references: where in the code and which item of the intent is violated (`AC-2.3` / a journal line from a date).
 - Confirm `unrequested` by the fact that the symbol is **used** (otherwise it is `dead-code`, someone else's area) and that no `AC-*` requires it.
-- Criteria with the result `⏳ user-review` or `[live: user-side]` are **not closed** by converge — they go in a separate list "a human checks", not into findings.
+- Criteria with the result `⏳ user-review` or `[live: user-side — <prerequisite>; <route> → <observed>]` are **not closed** by converge — they go in a separate list "a human checks", not into findings.
 
 Each finding carries a "how checked" column. If not confirmed — into "in question", not into findings.
 
@@ -86,7 +86,7 @@ Severity — in the vocabulary of the pipeline: `critical` — a criterion of a 
 
 Metrics as a line: criteria checked / decisions checked / findings by type / "a human checks".
 
-As separate lines — **in question** and **a human checks** (`⏳`, `[live: user-side]`).
+As separate lines — **in question** and **a human checks** (`⏳`, `[live: user-side — <prerequisite>; <route> → <observed>]`).
 
 ## Step 5. Catch-up — append-only
 

@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
-import { STAGE_HEADING, STAGE_MENTION } from './markers.mjs'
+import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
 const targets = process.argv.slice(2)
 if (!targets.length || targets.includes('--help')) {
@@ -109,7 +109,7 @@ for (const dir of taskDirs) {
 
   acOutcomes.done += (text.match(/AC-\d+\.\d+ ✅/g) ?? []).length
   acOutcomes.userReview += (text.match(/AC-\d+\.\d+ ⏳/g) ?? []).length
-  acOutcomes.live += (text.match(/AC-\d+\.\d+ \[live: user-side\]/g) ?? []).length
+  acOutcomes.live += (text.match(/AC-\d+\.\d+ \[live: user-side\b/g) ?? []).length
 
   // Report names in live tasks diverged (pro-review-2.md, stage2-pro-review.md, stage-2/pro-review.md),
   // so the checker is searched for anywhere in the file name, not by an exact pattern.
@@ -119,22 +119,6 @@ for (const dir of taskDirs) {
   }
 
   stagesSizes.push({ ticket: basename(dir), kb: Math.round(statSync(join(dir, 'STAGES.md')).size / 1024) })
-}
-
-/**
- * Stage blocks: `### Stage 3 …` / `## Stage A0 …` (or the Russian form) up to the next heading of the same or a higher level.
- * If the file has stage headings with `[status: …]`, only they count as stages — otherwise
- * journal subheadings "### Stage 6 — progress" would count as a second stage 6.
- */
-function stageBlocksOf(text) {
-  const lines = text.split('\n')
-  const headings = lines.map((line, index) => ({ index, match: line.match(STAGE_HEADING) })).filter(({ match }) => match)
-  const withStatus = headings.filter(({ index }) => /\[status:/i.test(lines[index]))
-  return (withStatus.length ? withStatus : headings).map(({ index, match }) => {
-    let end = index + 1
-    while (end < lines.length && !(lines[end].match(/^(#{1,6}) /)?.[1].length <= match[1].length)) end++
-    return { number: match[2], block: lines.slice(index, end).join('\n'), start: index, end }
-  })
 }
 
 /**

@@ -58,7 +58,7 @@ the reviewer does not need them. 5–10 items, each one line.>
 <Concrete steps: URL/screen, state, what must happen. Assembled from the `AC-*` of all
 stages (TEST-PLAN.md is already merged by ID) — but do not put IDs into the text, the reviewer does not know them:
 what remains of a criterion is a scenario. Separately — how to reproduce non-trivial states and
-what is left with the outcome `⏳`/`[live: user-side]` — this is what only they can check.>
+what is left with the outcome `⏳`/`[live: user-side — <prerequisite>; <route> → <observed>]` — this is what only they can check.>
 
 ## What the reviewer should look at
 <Conscious decisions that had an alternative; places where shared code changed and
@@ -85,7 +85,7 @@ Before the text is checked and handed out, run and show each one in a single lin
 - `lint`, `type_check` (against the baseline), `test`, the build — on the state of HEAD, not of the working tree: the `full-checks` item of the final checks (on the stages they went by the diff).
 - Uncommitted in the tree: `git status --short`. Non-empty — say so explicitly, it is a risk of loss on a rebase.
 - Is the "⚠ Awaiting user confirmation" block empty? Non-empty — move its items to the "Open questions" section of the description.
-- Do the `AC-*` criteria of all stages have an outcome? The remaining `⏳`/`[live: user-side]` — into "How to test" as separate lines: this is exactly what the reviewer must check by hand, and silently it will not be checked.
+- Do the `AC-*` criteria of all stages have an outcome? The remaining `⏳`/`[live: user-side — <prerequisite>; <route> → <observed>]` — into "How to test" as separate lines: this is exactly what the reviewer must check by hand, and silently it will not be checked.
 - Has the final whole-branch pro-review passed? Not passed — suggest running it before opening the PR with the `pro-review` agent in whole-branch mode on `review_model` (`/stage-check`, Step 3.3), not with the skill in the main context: it catches a class of defects invisible to the per-stage checkers (the radius of a shared component, duplicates between stages, a broken HEAD under a clean tree).
 - Has `/task-converge` passed and returned "converged"? It returned findings — the PR description is premature: catch-up first. This is the only check that answers "is the task really finished", not "is what was done done right".
 

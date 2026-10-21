@@ -30,13 +30,15 @@ Allowed outcomes:
 
 - **`fixed: <file:line or how it was rechecked>`**.
 - **`false: <proof>`** — a measurement, a line of code, a frame. "Pre-existing", "not a regression", "existed before the task" also make a finding false for this task, but only with proof on the base: the base sha, or a prod URL with a measurement. The word "pre-existing" without a check on the base is not enough: in one task such a hydration mismatch was written into the prompts of four checkers as "not a finding", and nobody ever checked it on the base.
+- **`false: <proof>` is read for its kind of proof (VT-1 stage 5, reports written from release 0.18.0).** These do not dismiss a finding: "the fix is impossible" or "the kit / the backend owns it" with no `file:line` in the kit, the contract or the tool; "not reproduced" without two attempts and the route taken (`not reproduced (2 attempts, /root-cause)`, `(3 cold loads on /orders)`); "demoted to minor" as the reason; "this stage did not change it" without a base sha, a diff range or a `git` command; "a later stage owns it" proved by a plan line only; the same report, an acceptance criterion of the run or a force-run assumption as the only basis; "false for the data" from a sample; "not related to the task" with no diff command or range. The finding stands: a fix, a blocker `B<n>` or a user decision.
+- **A critical dismissed as false goes to the fresh pass on `review_model`** (`/stage-check`, Step 3.3), and its line cites the fresh report: `C-1 — false: <proof> — fresh report checks/pro-review-3-fresh.md`. The hook checks that the file exists and is the fresh report of the same checker and stage (`<checker>-<stage>-fresh*.md`).
 - **`B<n>`** — a blocker of the force run (`/stage-force`, Step 2). In normal mode — `user decision <date or "quote">`.
 
 Not an outcome (the hook returns it): "leaving it", "accepted as a compromise", "into Awaiting user confirmation", "won't fix", "to the kit", "to FINDINGS", "as a separate task", "a question for design / product / backend", "out of scope" without proof. All of these are a decision not to fix, and the user makes it, not the one whose work was checked. A finding that the fix-loop did not fix is a blocker, not a line in "Awaiting user confirmation". "Awaiting" is for product decisions with no defect: a new default, a text, an order.
 
 ## Where this is checked
 
-- **journal-gate, report write:** no summary line; a forbidden outcome; "pre-existing" without proof; for devtools-verify — no `geometry` line, no `style-diff` on a stage with a "Visual reference", "no data" instead of putting the state in place.
+- **journal-gate, report write:** no summary line; a weak `false` (above); a critical dismissed without a cited fresh report; a forbidden outcome; "pre-existing" without proof; for devtools-verify — no `geometry` line, no `style-diff` on a stage with a "Visual reference", "no data" instead of putting the state in place.
 - **journal-gate, journal:**
   - a mark `[x] <checker> (checks/<report>.md …)` while the outcome in that report is incomplete;
   - ✅ with a caveat "not captured", "not verified", "from code only", "partly";
@@ -45,4 +47,4 @@ Not an outcome (the hook returns it): "leaving it", "accepted as a compromise", 
 
 The report `checks/stage-<N>-kit-overrides.md` is written not by an agent but by the script `scripts/kit-override-scan.mjs --out …`: every file with kit overrides is a major. The outcome is the same: fixed (the look from the kit), false — with the `path:line` of a reference section that does the same, or a user decision "the look as in the prototype". A repeat scan after the fixes does not erase the outcome.
 
-Only reports written after the plugin first saw the task on this version are checked. Old tasks need not be rewritten.
+The weak-dismissal and fresh-report rules look only at reports written after the plugin first saw the task on release 0.18.0 or later (the snapshot lists the reports that were there). Only reports written after the plugin first saw the task on this version are checked. Old tasks need not be rewritten.

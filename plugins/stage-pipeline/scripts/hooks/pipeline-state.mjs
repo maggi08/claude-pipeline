@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +18,7 @@ import {
   forceHeadings,
   freshestForceHeading,
   headingDate,
+  ruleAppliesToBlock,
 } from '../markers.mjs'
 
 /**
@@ -43,23 +44,28 @@ export function readPipelineState(cwd) {
   const tasks = readTasks(taskDir, branch)
   if (!tasks.some((task) => task.current)) tasks.push(...foreignTasks(taskDir, mainRoot(cwd) ?? root, branch))
 
-  return { root, worktree, branch, config, taskDir, tasks }
+  return { root, worktree, branch, config, taskDir, tasks, oversize: oversizeConfigs(root) }
 }
 
 function readTasks(taskDir, branch) {
   if (!isDir(taskDir)) return []
   return readdirSync(taskDir)
     .map((ticket) => ({ ticket, dir: join(taskDir, ticket), stagesPath: join(taskDir, ticket, 'STAGES.md') }))
-    .filter(({ dir, stagesPath }) => isDir(dir) && isFile(stagesPath))
-    .map(({ ticket, dir, stagesPath }) => {
-      const stages = readFileSync(stagesPath, 'utf8')
-      const { mtimeMs, size } = statSync(stagesPath)
+    .filter(({ dir }) => isDir(dir))
+    .flatMap(({ ticket, dir, stagesPath }) => {
+      // STAGES.md through the task file rule: a journal that is there but cannot be read (over the cap, a link out of the task, not a regular file)
+      // keeps its task — current by the ticket in the branch — with `unreadable`, so the gates refuse instead of finding no rules.
+      const read = taskFile(dir, 'STAGES.md')
+      if (read.problem === 'missing') return []
+      const stages = read.text ?? ''
+      const { mtimeMs, size } = statOf(stagesPath) ?? { mtimeMs: 0, size: read.size ?? 0 }
       const branches = taskBranches(stages)
-      return {
+      return [{
         ticket,
         dir,
         stagesPath,
         stages,
+        unreadable: read.problem ? { file: 'STAGES.md', ...read, message: unreadableMessage('STAGES.md', read) } : null,
         mtime: mtimeMs,
         sizeKb: Math.round(size / 1024),
         status: stages.match(STATUS_LINE)?.[1]?.trim() ?? null,
@@ -68,10 +74,9 @@ function readTasks(taskDir, branch) {
         // A task untouched for longer than STALE_DAYS guards nothing: an abandoned status must not
         // block a branch forever, and a task that returns to work updates STAGES.md at its first kickoff/check.
         current: Date.now() - mtimeMs < STALE_DAYS * DAY && isCurrentTask(ticket, branches, branch),
-        // Live formats: `[status: in-progress]`, `[status: in-progress — waiting for user-review]`, `[status: in progress; …]`.
-        open: /\[status:\s*(todo|in[-\s]progress)\b/i.test(stages),
+        open: OPEN_STATUS.test(stages),
         forceActive: forceActive(stages),
-      }
+      }]
     })
     .sort((a, b) => b.mtime - a.mtime)
 }
@@ -100,34 +105,48 @@ function foreignTasks(ownTaskDir, root, branch) {
  * The plugin data directory: Claude Code gives it to hooks in CLAUDE_PLUGIN_DATA (`stage-pipeline-<marketplace>`; `stage-pipeline-inline`
  * for a `--plugin-dir` session). A script run from Bash has no such variable and used to fall back to a bare `stage-pipeline`
  * directory — a different one, so the snapshots and the gate runs of the two never met. Now the name comes from where the script itself lies:
- * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it gives
+ * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it (or a cached older version of that install) gives
  * `stage-pipeline-<marketplace>`; else the `installLocation` / `source.path` of a marketplace in `known_marketplaces.json` that contains it (a marketplace connected as a directory) gives `stage-pipeline-<marketplace>`; a script outside both (a `--plugin-dir` run) gives `stage-pipeline-inline`, as the hooks of that session do.
  */
 export function pluginDataDir() {
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA
-  const root = join(homedir(), '.claude/plugins/data')
   const here = dirname(fileURLToPath(import.meta.url))
-  try {
-    const { plugins } = JSON.parse(readFileSync(join(homedir(), '.claude/plugins/installed_plugins.json'), 'utf8'))
-    for (const [key, entries] of Object.entries(plugins ?? {})) {
-      const match = key.match(/^stage-pipeline@(.+)$/)
-      const inside = (entries ?? []).some(({ installPath }) => typeof installPath === 'string' && (here === installPath || here.startsWith(installPath + sep)))
-      if (match && inside) return join(root, `stage-pipeline-${match[1].replace(/[^\w.-]/g, '-')}`)
+  const root = join(homedir(), '.claude/plugins/data')
+  const under = (dir) => typeof dir === 'string' && dir !== '' && (here === dir || here.startsWith(dir.replace(/[/\\]+$/, '') + sep))
+  const named = (marketplace) => join(root, `stage-pipeline-${marketplace.replace(/[^\w.-]/g, '-')}`)
+  const readJson = (name) => {
+    try {
+      return JSON.parse(readFileSync(join(homedir(), '.claude/plugins', name), 'utf8'))
+    } catch {
+      return null
     }
-  } catch {
-    // no registry — treated as a script outside every install
   }
+  // An entry of another shape (a v1 file's object, a `null` in the list) is skipped, and a registry that cannot be read is none, as on 0.17.0: then the marketplaces, then `-inline`.
+  let installed = []
+  try {
+    installed = Object.entries(readJson('installed_plugins.json')?.plugins ?? {}).flatMap(([key, entries]) => {
+      const match = key.match(/^stage-pipeline@(.+)$/)
+      if (!match || !Array.isArray(entries) || !entries.every((entry) => entry !== null && typeof entry === 'object')) return []
+      return [{ marketplace: match[1], paths: entries.map(({ installPath }) => installPath) }]
+    })
+  } catch {
+    installed = []
+  }
+  // The current install, then any cached version of it: a session that started before an update still runs `cache/<marketplace>/stage-pipeline/<old version>`,
+  // and its hooks get the same `stage-pipeline-<marketplace>`.
+  for (const { marketplace, paths } of installed) if (paths.some(under)) return named(marketplace)
+  const cached = here.match(/[/\\]plugins[/\\]cache[/\\]([^/\\]+)[/\\]stage-pipeline[/\\]/)
+  if (cached && installed.some(({ marketplace }) => marketplace === cached[1])) return named(cached[1])
   // A marketplace connected as a directory runs the plugin from its working tree while `installPath` points into the cache:
   // the script lies in the marketplace's source directory, and that marketplace's name is the hooks' one.
   try {
-    const known = JSON.parse(readFileSync(join(homedir(), '.claude/plugins/known_marketplaces.json'), 'utf8'))
-    for (const [name, entry] of Object.entries(known ?? {})) {
-      const inside = [entry?.installLocation, entry?.source?.path].some((dir) => typeof dir === 'string' && dir && (here === dir || here.startsWith(dir.replace(/[\\/]+$/, '') + sep)))
-      if (inside) return join(root, `stage-pipeline-${name.replace(/[^\w.-]/g, '-')}`)
+    for (const [name, entry] of Object.entries(readJson('known_marketplaces.json') ?? {})) {
+      if ([entry?.installLocation, entry?.source?.path].some(under)) return named(name)
     }
   } catch {
-    // no list of marketplaces
+    // no list of marketplaces of a shape we read
   }
+  // A script outside every install and marketplace (a `--plugin-dir` run, a worktree): the hooks of that session get `-inline`.
   return join(root, 'stage-pipeline-inline')
 }
 
@@ -177,7 +196,7 @@ export function registerTaskDir(dir) {
 
 /** `review_model` from the config: the model of the whole-branch review and of the fresh checker run (stage-check, Step 3.3). */
 export function reviewModel(config) {
-  const raw = config.match(/^\s*-\s*review_model:\s*[`*]*([\w.-]+)/m)?.[1]
+  const raw = config.match(/^[ \t]*-[ \t]*review_model:[ \t]*[`*]*([\w.-]+)/m)?.[1]
   return raw ? raw.toLowerCase() : 'opus'
 }
 
@@ -216,11 +235,11 @@ const UNREAD_DATE = new RegExp(
  *   files that do not name its ticket: a task fix under someone else's ticket straight in dev is the same work bypassing the journal.
  * A commit rebuilt without a signature is the same commit: the journal recognises it by subject or by patch-id.
  */
-export function unjournaledCommits(state, task, limit = 50) {
+export function unjournaledCommits(state, task, { limit = 50, gate = null } = {}) {
   const cwd = state.worktree
   // The base is the nearest of the integration branches, not only `main_branch`: in live configs it can be
   // `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
-  const configured = state.config.match(/^\s*-\s*main_branch:\s*[`*]*([\w./-]+)/m)?.[1]
+  const configured = state.config.match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
   const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
   const integration = names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
   if (!integration.length) return []
@@ -228,10 +247,10 @@ export function unjournaledCommits(state, task, limit = 50) {
     integration
       .map((base) => ({ ref: base, ahead: Number(git(cwd, 'rev-list', '--count', `${base}..${ref}`) ?? Infinity) }))
       .sort((a, b) => a.ahead - b.ahead)[0]
+  // Through the task file rule: a journal file that cannot be read knows no commit, so its commits are named (a warning, never a stall).
   const journal = ['STAGES.md', 'STAGES-ARCHIVE.md', 'PR.md']
-    .map((name) => join(task.dir, name))
-    .filter(isFile)
-    .map((path) => readFileSync(path, 'utf8'))
+    .map((name) => readTaskFile(task.dir, name))
+    .filter((text) => text !== null)
     .join('\n')
 
   const candidates = new Map()
@@ -258,7 +277,11 @@ export function unjournaledCommits(state, task, limit = 50) {
     if (base.ahead && !(merged && merged >= Number(git(cwd, 'log', '-1', '--format=%ct', ref) ?? Infinity))) add('branch', `${base.ref}..${ref}`)
   }
 
+  const titled = new Set()
+  let ownCommits = []
   const closed = closedForceDate(task.stages)
+  // The ticket-titled rule (0.18.0) is for runs opened after this plugin version first saw the task (`gate` — `releaseGate` of the task snapshot); without a gate it applies.
+  const titledRule = closed && ruleAppliesToBlock(gate, freshestForceHeading(task.stages)?.[0] ?? '', closed)
   const me = git(cwd, 'config', 'user.email')
   const known = journalCommits(cwd, journal)
   if (closed && me && known.length) {
@@ -272,6 +295,7 @@ export function unjournaledCommits(state, task, limit = 50) {
         return { sha, time: Number(time) * 1000, subject: subject.join(' ') }
       })
     const own = info.some(({ subject }) => ticket.test(subject)) ? info.filter(({ subject }) => ticket.test(subject)) : info
+    ownCommits = own
     const files = [...new Set((git(cwd, 'show', '--name-only', '--format=', ...own.map(({ sha }) => sha)) ?? '').split('\n').filter(Boolean))]
     const before = new Set(candidates.keys())
     // After the close — after the last commit of the run, not from the start of the day: a morning hotfix before the run is not follow-up work.
@@ -282,13 +306,21 @@ export function unjournaledCommits(state, task, limit = 50) {
     for (const ref of bases.size ? bases : [nearest('HEAD').ref]) {
       if (files.length) add(ref, `--since=${iso(since)}`, `--until=${iso(until)}`, `--author=${escapeRegExp(me)}`, ref, '--', ...files.slice(0, 400))
     }
-    // The task's own squash into dev ("Feat(KC-1): …") is not work bypassing the journal; a revert of someone else's commit is not task follow-up either.
-    for (const [sha, commit] of candidates) if (!before.has(sha) && (ticket.test(commit.subject) || /^Revert\s/.test(commit.subject))) candidates.delete(sha)
+    // A revert of someone else's commit is not task follow-up. A commit that names the ticket stays: the squash of the task's PR carries "(#17)" and was dropped above,
+    // anything else with the ticket in its title that lands after the close is exactly the work that bypassed the journal; only its SHA or its patch-id can clear it.
+    for (const [sha, commit] of candidates) {
+      if (before.has(sha)) continue
+      if (/^Revert\s/.test(commit.subject) || (ticket.test(commit.subject) && !titledRule)) candidates.delete(sha)
+      else if (ticket.test(commit.subject)) titled.add(sha)
+    }
   }
 
-  const left = [...candidates.values()].filter(({ sha, subject }) => !journal.includes(sha.slice(0, 7)) && !(subject.length >= 12 && journal.includes(subject)))
+  const left = [...candidates.values()].filter(({ sha, subject }) => !journal.includes(sha.slice(0, 7)) && (titled.has(sha) || !(subject.length >= 12 && journal.includes(subject))))
   if (!left.length) return []
   const journaled = new Set(patchIds(cwd, known).values())
+  // A squash of the stage commits without "(#N)" (GitLab: "Feat(KC-1): …") has the patch of their combined diff.
+  const combined = combinedPatchId(cwd, ownCommits)
+  if (combined) journaled.add(combined)
   const ids = patchIds(cwd, left.map(({ sha }) => sha))
   return left.filter(({ sha }) => !journaled.has(ids.get(sha)))
 }
@@ -310,7 +342,19 @@ function journalCommits(cwd, journal) {
   return [...new Set(out.split('\n').filter((line) => / commit$/.test(line)).map((line) => line.split(' ')[0]))]
 }
 
-function patchIds(cwd, shas) {
+// The patch-id of the combined diff of the task's own commits: from the parent of the oldest to the newest one.
+function combinedPatchId(cwd, own) {
+  if (!own?.length) return null
+  const sorted = [...own].sort((a, b) => a.time - b.time)
+  const first = sorted[0].sha
+  const last = sorted[sorted.length - 1].sha
+  if (!isCommit(cwd, `${first}^`)) return null
+  const diff = gitInput(cwd, '', 'diff', '--no-color', '--no-ext-diff', `${first}^`, last)
+  if (!diff) return null
+  return gitInput(cwd, diff, 'patch-id', '--stable').split(' ')[0] || null
+}
+
+export function patchIds(cwd, shas) {
   if (!shas.length) return new Map()
   const diff = gitInput(cwd, '', 'log', '--no-walk=unsorted', '-p', '--no-color', '--no-ext-diff', '--format=commit %H', ...shas)
   if (!diff) return new Map()
@@ -326,7 +370,7 @@ const isCommit = (cwd, ref) => Boolean(git(cwd, 'rev-parse', '-q', '--verify', `
  * `pipeline.config.local.md` (the machine's layout) overrides the shared config.
  */
 export function taskDirFromConfig(config, root) {
-  const raw = config.match(/^\s*-\s*task_path:\s*(.+)$/m)?.[1]
+  const raw = config.match(/^[ \t]*-[ \t]*task_path:[ \t]*(.+)$/m)?.[1]
   if (!raw) return join(root, '.claude/tasks')
   let path = raw.trim().split(/\s+/)[0].replace(/^[`'"]+|[`'"]+$/g, '')
   path = path.split('<')[0]
@@ -339,8 +383,39 @@ export function taskDirFromConfig(config, root) {
 export function readConfig(root) {
   const local = join(root, '.claude/pipeline.config.local.md')
   const shared = join(root, '.claude/pipeline.config.md')
-  // local goes over shared: a field missing in local is taken from the shared config.
-  return [local, shared].filter(isFile).map((path) => readFileSync(path, 'utf8')).join('\n')
+  // local goes over shared: a field missing in local is taken from the shared config. A config over CONFIG_FILE_MAX is read up to its first CONFIG_FILE_MAX bytes (every key the hooks read sits at the top).
+  return [local, shared].map((path) => readConfigPart(path).text ?? null).filter((text) => text !== null).join('\n')
+}
+
+/** The configs that are over CONFIG_FILE_MAX: `{ path, size, max }` each. They are read in part, and session-start says so. */
+export function oversizeConfigs(root) {
+  return ['.claude/pipeline.config.local.md', '.claude/pipeline.config.md'].map((name) => join(root, name)).flatMap((path) => {
+    const { size } = readConfigPart(path)
+    return size === undefined ? [] : [{ path, size, max: CONFIG_FILE_MAX }]
+  })
+}
+
+/** A pointer or a small file's text, or null: a regular file (a link to one is followed) of at most CONFIG_FILE_MAX bytes. */
+const readConfigFile = (path) => readBounded(path, { max: CONFIG_FILE_MAX }).text ?? null
+
+/**
+ * A config file: `{ text }` of a regular file (a link to one is followed); of one over CONFIG_FILE_MAX bytes the first CONFIG_FILE_MAX bytes with its `size`; `{}` for a file
+ * that is not there, not a regular file or cannot be opened. Presence is `isFile`, so a config is never silently empty: it is read in part, and the size is kept.
+ */
+function readConfigPart(path) {
+  const read = readBounded(path, { max: CONFIG_FILE_MAX })
+  if (read.problem !== 'too-large') return read
+  let fd
+  try {
+    fd = openSync(realpathSync(path), 'r')
+    const buffer = Buffer.alloc(CONFIG_FILE_MAX)
+    const got = readSync(fd, buffer, 0, CONFIG_FILE_MAX, 0)
+    return { text: buffer.toString('utf8', 0, got), size: read.size }
+  } catch {
+    return {}
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
 }
 
 /**
@@ -405,15 +480,85 @@ export function forceActive(stages) {
   return forceHeadings(stages).some(([heading]) => !CLOSED_WORD.test(heading))
 }
 
+/** A stage heading that is not finished. Live forms: `[status: in-progress]`, `[status: in-progress — waiting for user-review]`, `[status: in progress; …]`; group 1 is `todo` or `in-progress` / `in progress`. */
+export const OPEN_STATUS = /\[status:\s*(todo|in[-\s]progress)\b/i
 const DAY = 24 * 60 * 60 * 1000
 export const STALE_DAYS = 21
 export const AFTER_CLOSE_DAYS = 14
+/** Task files larger than this are not read: a STAGES.md or a report is kilobytes, a symlink to a device or a runaway file would stall every hook. */
+export const TASK_FILE_MAX = 4 * 1024 * 1024
+/** Config files (and the `.git` / `commondir` pointers) larger than this are not read: a config is a few kilobytes. */
+export const CONFIG_FILE_MAX = 256 * 1024
+
+/**
+ * The one bounded reader for files a hook takes from a repo: `{ text }`, or `{ problem, size?, max? }` and no text. Only a regular file (a link is followed to its target)
+ * of at most `max` bytes; with `within`, only when the real path of the file — every component resolved — lies inside the real `within` directory.
+ * `problem`: `missing` (nothing there, or a dangling link), `outside`, `not-file` (a directory, a device, a FIFO), `too-large`, `unreadable` (no permission).
+ * Precedents: a committed `STAGES-ARCHIVE.md -> /dev/random` made every hook read until it was killed; a link to a 963 MB system file cost 1.5–2 GB and an exit 1
+ * on every Bash call; a `checks/` directory linked to another project put that project's report into the run digest.
+ */
+export function readBounded(path, { max = TASK_FILE_MAX, within = null } = {}) {
+  let real
+  try {
+    real = realpathSync(path)
+  } catch (error) {
+    return { problem: error?.code === 'ENOENT' || error?.code === 'ENOTDIR' ? 'missing' : 'unreadable' }
+  }
+  if (within !== null) {
+    const base = realPath(within)
+    if (!base) return { problem: 'missing' }
+    if (!real.startsWith(base.endsWith(sep) ? base : base + sep)) return { problem: 'outside' }
+  }
+  let stat
+  try {
+    stat = statSync(real)
+  } catch {
+    return { problem: 'unreadable' }
+  }
+  if (!stat.isFile()) return { problem: 'not-file' }
+  if (stat.size > max) return { problem: 'too-large', size: stat.size, max }
+  try {
+    return { text: readFileSync(real, 'utf8') }
+  } catch {
+    return { problem: 'unreadable' }
+  }
+}
+
+/** A file of a task directory through `readBounded`: inside the real task directory, at most TASK_FILE_MAX bytes. The task directory itself may sit behind a symlink (`.claude/tasks` → `~/.claude/team-tasks`). */
+export const taskFile = (taskDir, ...segments) => readBounded(join(taskDir, ...segments), { within: taskDir })
+
+/** The text of a task file, or null (missing or refused: see `taskFile` for why). */
+export const readTaskFile = (taskDir, ...segments) => taskFile(taskDir, ...segments).text ?? null
+
+const megabytes = (bytes) => `${Number((bytes / 1024 / 1024).toFixed(2))} MB`
+/** What a refused task file says: the file, why it is refused (the size and the limit), and that its rules count it as open. `file` is as the message shows it (`STAGES.md`, `checks/x.md`). */
+export function unreadableMessage(file, { problem, size, max = TASK_FILE_MAX }) {
+  const why = {
+    'too-large': `it is ${megabytes(size)}, over the ${megabytes(max)} limit of a task file`,
+    outside: 'its real path is outside the task directory (a symlink in the path)',
+    'not-file': 'it is not a regular file',
+    unreadable: 'it cannot be opened',
+  }[problem]
+  const fix = file === 'STAGES.md' ? 'fold the closed stages (archive-stages.mjs) or move the pasted text out of it' : 'move the pasted log or dump out of it'
+  return `${file} cannot be read: ${why}. The rules cannot run on it, so it counts as open — ${problem === 'outside' ? 'put the file itself in the task directory' : fix}.`
+}
+
+/** The reports of a task: regular `.md` files in `checks/` (a symlink or a directory named `*.md` is not a report). Here, not in journal-check, so journal-gate stamps them without loading the rules. */
+export function reportNames(taskDir) {
+  try {
+    return readdirSync(join(taskDir, 'checks'), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+      .map((entry) => entry.name)
+  } catch {
+    return []
+  }
+}
 
 /**
  * The repo root with the pipeline config. In a worktree `.claude/` may be uncommitted
  * (excluded via .git/info/exclude) — then the config is looked for in the main working tree.
  */
-function configRoot(cwd, worktree) {
+export function configRoot(cwd, worktree) {
   if (isFile(join(worktree, '.claude/pipeline.config.md'))) return worktree
   const main = mainRoot(cwd)
   return main && main !== worktree && isFile(join(main, '.claude/pipeline.config.md')) ? main : null
@@ -423,6 +568,73 @@ function configRoot(cwd, worktree) {
 function mainRoot(cwd) {
   const common = git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
   return common && basename(common) === '.git' ? dirname(common) : null
+}
+
+/**
+ * Whether `readPipelineState` can find a config from here — from the file system alone, without spawning git: the hooks of every Bash call in every repo
+ * ask this first and leave at once outside the pipeline. Walks up to the repository root (the first `.git`) and, in a linked worktree, reads its `.git` file
+ * to check the main tree as `configRoot` does. A config above the repo root says "maybe" — `readPipelineState` decides; never "no" where it would find one.
+ */
+export function hasPipelineConfig(cwd) {
+  let dir = resolve(cwd)
+  for (;;) {
+    if (isFile(join(dir, '.claude/pipeline.config.md'))) return true
+    const dotGit = join(dir, '.git')
+    if (isDir(dotGit)) return false
+    if (isFile(dotGit)) {
+      // Both are one-line pointers: read bounded, as a config is.
+      const pointer = readConfigFile(dotGit)
+      const gitDir = resolve(dir, pointer?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() ?? '')
+      const commondir = pointer === null ? null : readConfigFile(join(gitDir, 'commondir'))
+      // a submodule or a broken link: no main tree to look at, as in configRoot
+      if (commondir === null) return false
+      const common = resolve(gitDir, commondir.trim())
+      return basename(common) === '.git' && isFile(join(dirname(common), '.claude/pipeline.config.md'))
+    }
+    const up = dirname(dir)
+    if (up === dir) return false
+    dir = up
+  }
+}
+
+/**
+ * The "Dev server" section of the config: `url`, `verify_routes:` (comma separated, each `^/\S*$`) and `app_marker:` (one line); the local config overrides the shared one.
+ * The key names are specific on purpose: `routes:` / `marker:` already mean something else in live configs (a path to a routes file). Values that do not fit are ignored and noted.
+ * `null` — no config at `root`.
+ */
+export function devServerConfig(root) {
+  if (!root) return null
+  const texts = ['pipeline.config.md', 'pipeline.config.local.md'].map((name) => readConfigFile(join(root, '.claude', name))).filter((text) => text !== null)
+  return texts.length ? parseDevServer(texts) : null
+}
+
+/** The fields of the "Dev server" sections of the config texts, the later text over the earlier one. Line by line: no regexp runs across lines or backtracks on a long one. */
+export function parseDevServer(texts) {
+  const found = { url: undefined, routes: [], marker: undefined, notes: [] }
+  for (const text of texts) {
+    let inSection = false
+    for (const line of text.split('\n')) {
+      if (/^##[ \t]/.test(line)) {
+        inSection = /^##[ \t]+Dev server/i.test(line)
+        continue
+      }
+      if (!inSection) continue
+      const field = line.match(/^[ \t]*-[ \t]*(url|verify_routes|app_marker)[ \t]*:(.*)$/i)
+      if (!field) continue
+      const key = field[1].toLowerCase()
+      const value = field[2].split(/\s#/)[0].trim().replace(/^`|`$/g, '').trim()
+      if (!value || value === '—') continue
+      if (key === 'url') found.url = value
+      else if (key === 'app_marker') found.marker = value
+      else {
+        const items = value.split(',').map((item) => item.trim().replace(/^`|`$/g, '')).filter(Boolean)
+        const good = items.filter((item) => /^\/\S*$/.test(item))
+        if (good.length !== items.length) found.notes.push(`verify_routes: ${items.length - good.length} value(s) are not a /path`)
+        if (good.length) found.routes = good
+      }
+    }
+  }
+  return found
 }
 
 function realPath(path) {
@@ -469,12 +681,12 @@ function isDir(path) {
   }
 }
 
-export async function readHookInput() {
-  let raw = ''
-  for await (const chunk of process.stdin) raw += chunk
+function statOf(path) {
   try {
-    return JSON.parse(raw)
+    return statSync(path)
   } catch {
-    return {}
+    return null
   }
 }
+
+export { readHookInput } from './hook-input.mjs'
