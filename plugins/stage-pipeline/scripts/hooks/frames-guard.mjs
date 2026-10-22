@@ -28,11 +28,11 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from 
  * - a page this agent opened with `new_page` (the `[selected]` id of the `## Pages` list in its answer; for a `new_page` that answered with an error, a new id at its
  *   URL in a later list — the fresh `[selected]` one, else the newest: ids only grow and `new_page` selects its tab, so an older page at the same URL is the
  *   orchestrator's) is still in the freshest `## Pages` list its MCP calls returned — unless it is the only page left and shows `about:blank`
- *   (MCP 1.6.0 refuses to close the last page: "The last open page cannot be closed"), and unless a later page tool of that list's server answered with a
- *   disconnect error (m-2: no call can close the page any more; the agent names it under "Could not verify");
+ *   (MCP 1.6.0 refuses to close the last page: "The last open page cannot be closed"), and unless a later page tool of that list's server answered with the
+ *   transport's disconnect error (m-2: no call can close the page any more; the agent names it under "Could not verify");
  * - a browser it launched still runs (S-1 of VT-1 5b: a PID counts only from the agent's own Bash call): the `journey: browser pid N` line of references/journey.mjs
- *   in a Bash result, or the single number a Bash call printed for `<a browser or a node/npx script> … & echo $!` when that echo's output is printed (f-2) — the
- *   backgrounded command's first word is a browser by browser-cleanup's list of names (m-1) or a script runner;
+ *   in a Bash result, or the single number a Bash call printed for `<a browser or a node/npx script> … & echo $!` when that echo's output is printed (f-2) — a word
+ *   of the backgrounded command, or of a `bash -c "…"` string in it, is a browser by browser-cleanup's list of names (m-1) or a script runner (m-5: `timeout 600 node …`);
  *   alive now, a browser executable (itself or below it), and started after the agent's first transcript record. A transcript with no timestamps attributes no PID.
  *   Never a number from an MCP answer, a page's console text or a `pgrep` listing.
  * The page list is read only from the answers of the page tools (`new_page`, `list_pages`, `select_page`, `close_page`, `navigate_page`, `handle_dialog`) and only
@@ -62,13 +62,15 @@ let verdict = null // the last doctor result: `ok`, `no dev url`, `wrong app`, `
 let navigation = null // null — fine; 'blind' — navigated before any verify-doctor call; otherwise the verdict the navigation came after
 const NEW_PAGE = /(?:^|__)new_page$/
 const PAGE_TOOL = /^mcp__.*__(?:new_page|list_pages|select_page|close_page|navigate_page|handle_dialog)$/
-// The error a page tool gets once its MCP server is gone: Claude Code's "MCP server … is not connected", the MCP SDK's "MCP error -32000: Connection closed" (m-2).
-const DISCONNECT = /not connected|Connection closed|-32000/i
-// `<a browser or a script runner> … & echo $!`: the background start the skills prescribe for a process the agent stops itself. The program is the first word of
-// the backgrounded command; a browser is told by browser-cleanup's list of names (m-1: a list of its own here missed `google-chrome`, `chromium-browser`), a runner by this.
+// The error a page tool gets once its MCP server is gone (m-2), in the transport's own words at the start of the answer: Claude Code's `MCP server "…" is not
+// connected`, the MCP SDK's `MCP error -32000: Connection closed`. Anywhere else in an error answer the words can be the page's or the agent's (m-4): MCP 1.6.0
+// writes the page's open dialog into it (`# Open dialog\nalert: Not connected…`), and a failed `new_page` the URL it was given (`… at http://…?amount=-32000`).
+const DISCONNECT = /^(?:<tool_use_error>)?(?:Error: )?(?:MCP error -32000: Connection closed|MCP server "[^"\n]*" is not connected)\b/
+const OPEN_DIALOG = /^# Open dialog\b/m
+// `<a browser or a script runner> … & echo $!`: the background start the skills prescribe for a process the agent stops itself. Any word of the backgrounded
+// command counts, not only its first (m-5: a wrapper runs the program — `timeout 600 node …`, `/usr/bin/env node …`, `nice -n 10 …`, `caffeinate -i …`); a browser
+// is told by browser-cleanup's list of names (m-1: a list of its own here missed `google-chrome`, `chromium-browser`), a runner by this.
 const RUNNER = /^(?:node|npx|bun|deno|tsx)$/i
-// What may stand before the program: a `VAR=value` assignment, a wrapper that runs the next word.
-const PREFIX = /^(?:[A-Za-z_]\w*=.*|nohup|exec|env|command|setsid)$/
 const { executableName, isBrowserLike, isBrowserName } = await import('../browser-cleanup.mjs')
 // The `echo $!` right after a background `&`, as a command of its own: only a separator or the end follows it, so its number is printed, not redirected or piped
 // (f-2: in `… & echo $! > /tmp/s.pid; pgrep -n -f "Google Chrome"` the one printed number is pgrep's).
@@ -133,7 +135,7 @@ function readRecord(record) {
  */
 function readPageList(text) {
   const head = /^## Pages[ \t]*$/m.exec(text)
-  if (!head || /^# Open dialog\b/m.test(text.slice(0, head.index))) return null
+  if (!head || OPEN_DIALOG.test(text.slice(0, head.index))) return null
   const pages = new Map()
   for (const raw of text.slice(head.index + head[0].length).split('\n').slice(1)) {
     if (raw.startsWith('## ')) break
@@ -164,16 +166,17 @@ function normalUrl(url) {
 }
 
 /**
- * The server is gone (m-2): an error answer of a page tool of the server whose list is the freshest, with no list, saying the server is not connected. After a
- * disconnect no `close_page` can be answered, so a page rule that waited for a fresh list could never be met: every stop would be blocked until Claude Code ends
- * the loop. Only an error of a page tool counts — a console message or a dialog is the page's own text (S-2, f-1) and is never an error answer. The next good
- * list clears the mark.
+ * The server is gone (m-2): an error answer of a page tool of the server whose list is the freshest, with no list, that starts with the transport's disconnect
+ * error. After a disconnect no `close_page` can be answered, so a page rule that waited for a fresh list could never be met: every stop would be blocked until
+ * Claude Code ends the loop. Only that start of a page tool's error answer counts. A console message is the page's text (S-2); an error answer can carry the page's
+ * text too — MCP 1.6.0 writes the open dialog into it (f-1, m-4) — so an answer with a `# Open dialog` block never counts, and neither does a disconnect word
+ * later in the answer (a failed `new_page` repeats its URL). The next good list clears the mark.
  */
 function readPages(call, block, text) {
   const pages = readPageList(text)
   const server = call.name.slice(0, call.name.lastIndexOf('__'))
   if (!pages) {
-    if (block.is_error === true && server === listServer && DISCONNECT.test(text)) serverGone = true
+    if (block.is_error === true && server === listServer && !OPEN_DIALOG.test(text) && DISCONNECT.test(text.trimStart())) serverGone = true
     if (NEW_PAGE.test(call.name)) unlisted.push(normalUrl(call.input.url))
     return
   }
@@ -197,7 +200,9 @@ function readPages(call, block, text) {
 
 /**
  * PIDs the agent launched, from its own Bash results only (S-1): the `journey: browser pid N` line of journey.mjs, and the one number a `… & echo $!` call printed
- * when what it put in the background is a browser or a script runner. An output with more than that number (a `pgrep` after it) attributes nothing.
+ * when a word of what it put in the background is a browser or a script runner (m-5: under a wrapper too; a `bash -c "node …"` string is read word by word).
+ * This only names a candidate: `leftovers()` counts the PID only with a young browser executable at or below it, so `chromedriver …` or
+ * `tail -f /tmp/google-chrome.log` launches nothing. An output with more than that number (a `pgrep` after it) attributes nothing.
  * The number counts only as that echo's own output (f-2): an echo whose output reaches the result — not redirected, not piped (`ECHO_PID`), and not inside
  * a group, a subshell or a substitution, whose output can go elsewhere as a whole (`(… & echo $!) > /tmp/s.pid`). Such an echo always prints, so a single
  * number in the result is its number.
@@ -209,35 +214,48 @@ function readLaunches(call, text) {
   const command = String(call.input.command ?? '')
   const echo = [...command.matchAll(ECHO_PID)].find((match) => topLevel(command.slice(0, match.index)))
   if (!echo) return
-  const before = command.slice(0, echo.index)
-  const start = Math.max(0, ...[';', '&&', '||', '|', '\n', '('].map((separator) => (before.includes(separator) ? before.lastIndexOf(separator) + separator.length : 0)))
-  const program = programOf(before.slice(start))
-  if (isBrowserName(program) || RUNNER.test(program.split(/[\\/]/).pop())) launched.add(Number(single[1]))
+  if (shellWords(command.slice(0, echo.index), { last: true }).some((word) => launches(word, 0))) launched.add(Number(single[1]))
+}
+
+// A browser or a script runner, or a string with one among its words (`bash -c "node …"`, `sh -c '… && node …'`; nested up to three strings deep).
+function launches(word, depth) {
+  if (isBrowserName(word) || RUNNER.test(word.split(/[\\/]/).pop())) return true
+  return depth < 3 && /\s/.test(word) && shellWords(word).some((inner) => launches(inner, depth + 1))
 }
 
 /**
- * The program a command runs: its first word after `VAR=value` assignments and a `nohup` / `exec` / `env` / `command` / `setsid` wrapper, with quotes and backslash
- * escapes resolved (`"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`, `Google\ Chrome`). One pass over the text, it stops at that word.
+ * The shell words of a text, with quotes and backslash escapes resolved (`"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`, `Google\ Chrome`). With
+ * `last`, only the words of its last command: an unquoted `;`, `&&`, `||`, `|`, `(`, newline or lone `&` (m-5: `yarn dev … & chromium … & echo $!` backgrounds
+ * `chromium`) starts the list again, while the `&` of `2>&1`, `>&` and `&>` is part of a redirection. One pass over the text.
  */
-function programOf(text) {
+function shellWords(text, { last = false } = {}) {
+  let words = []
   let word = null
   let quote = null
-  for (let at = 0; at <= text.length; at++) {
+  const cut = (separator) => {
+    if (word !== null) words.push(word)
+    word = null
+    if (separator && last) words = []
+  }
+  for (let at = 0; at < text.length; at++) {
     const char = text[at]
     if (quote) {
       if (char === quote) quote = null
-      else if (char !== undefined) word += char
-      else return word
+      else if (quote === '"' && char === '\\' && /["\\$`]/.test(text[at + 1] ?? '')) word += text[++at]
+      else word += char
     } else if (char === '"' || char === "'") {
       quote = char
       word ??= ''
     } else if (char === '\\' && at + 1 < text.length) word = (word ?? '') + text[++at]
-    else if (char === undefined || /\s/.test(char)) {
-      if (word !== null && !PREFIX.test(word)) return word
-      word = null
-    } else word = (word ?? '') + char
+    else if (char === '&' && (text[at - 1] === '>' || text[at + 1] === '>')) word = (word ?? '') + char
+    else if (char === '&' || char === '|' || char === ';' || char === '(' || char === '\n') {
+      cut(true)
+      if ((char === '&' || char === '|') && text[at + 1] === char) at++
+    } else if (char === ')' || /\s/.test(char)) cut(false)
+    else word = (word ?? '') + char
   }
-  return ''
+  cut(false)
+  return words
 }
 
 // No `(`, `$(`, `{` or backtick left open in the text before a point of the command.

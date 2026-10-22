@@ -4331,9 +4331,23 @@ rmSync(retroRoot, { recursive: true, force: true })
       ['"not connected" in an error of a tool that is not a page tool', [...OPENED, [call(`${MCP}evaluate_script`, { function: '() => 1' }, 'e1')], [answer('e1', 'Error: socket not connected', { is_error: true })]]],
       ['"not connected" in a page tool\'s answer that is not an error (a dialog\'s text)', [...OPENED, [call(`${MCP}navigate_page`, { type: 'reload' }, 'v1')], [answer('v1', '# navigate_page response\n# Open dialog\nalert: MCP error -32000: Connection closed, not connected\nCall handle_dialog to handle it before continuing.')]]],
       ['a disconnect of another MCP server than the one whose list holds page 2', [...OPENED, [call('mcp__stage-pipeline-chrome__list_pages', {}, 'o1')], [answer('o1', 'Error: MCP server "stage-pipeline-chrome" is not connected', { is_error: true })]]],
+      // m-4 (whole-branch review, run 4): MCP 1.6.0 writes the page's open dialog into a page tool's error answer, and a failed new_page's error repeats its URL —
+      // the page's or the agent's words, not the transport's, so they never switch the page rule off
+      [
+        'an error answer of navigate_page that carries the app\'s alert "Not connected to the server" (m-4)',
+        [...OPENED, [call(`${MCP}navigate_page`, {}, 'v2')], [answer('v2', '# navigate_page response\n# Open dialog\nalert: Not connected to the server. Retrying….\nCall handle_dialog to handle it before continuing.\nError: Either URL or a type is required.', { is_error: true })]],
+      ],
+      [
+        'a failed new_page whose URL holds "-32000" (m-4)',
+        [...OPENED, [call(`${MCP}new_page`, { url: 'http://localhost:3000/payments?amount=-32000' }, 'n2')], [answer('n2', 'Error: net::ERR_CONNECTION_REFUSED at http://localhost:3000/payments?amount=-32000', { is_error: true })]],
+      ],
     ]
     const liveLeft = LIVE_TWINS.map(([name, events]) => [name, guard(events)]).filter(([, run]) => !(run.decision === 'block' && /page 2 — http:\/\/localhost:3000\/orders/.test(run.text)))
-    check('frames-guard m-2 live-server twins: page 2 left open while its server still answers — blocked (a non-disconnect error, a reconnect, another tool\'s or server\'s error, a dialog\'s text)', !liveLeft.length, JSON.stringify(liveLeft.map(([name, run]) => [name, run.decision, run.text.slice(0, 120)])))
+    check(
+      'frames-guard m-2/m-4 live-server twins: page 2 left open while its server still answers — blocked (a non-disconnect error, a reconnect, another tool\'s or server\'s error, a dialog\'s text, a dialog or a URL in an error answer)',
+      !liveLeft.length,
+      JSON.stringify(liveLeft.map(([name, run]) => [name, run.decision, run.text.slice(0, 120)])),
+    )
     const spaces = ' '.repeat(100_000)
     const timed = (events) => {
       const startedAt = performance.now()
@@ -4391,6 +4405,35 @@ rmSync(retroRoot, { recursive: true, force: true })
     const NOT_BROWSERS = ['chromedriver --port=9515 > /tmp/driver.log 2>&1 & echo $!', 'tail -f /tmp/google-chrome.log > /tmp/tail.log 2>&1 & echo $!']
     const notBrowserBlocked = NOT_BROWSERS.map((command) => [command, guard([...DOC, [call('Bash', { command }, 'g2')], [answer('g2', `${linuxChrome.pid}\n`)]])]).filter(([, run]) => run.decision !== 'allow')
     check('frames-guard m-1 legit twin: a non-browser launch (`chromedriver`, `tail … google-chrome.log`) with `& echo $!` — passes', !notBrowserBlocked.length, JSON.stringify(notBrowserBlocked.map(([command, run]) => [command, run.text.slice(0, 160)])))
+    // m-5 (whole-branch review, run 4): `$!` is the wrapper's PID, the browser it launched runs below it. Reading only the backgrounded command's first word let
+    // these stops through with the browser still running; every word counts, a `bash -c "…"` string's too, and a lone `&` starts the next job.
+    const LAUNCHER_BG = script('launcher-bg.mjs', [
+      "import { spawn } from 'node:child_process'",
+      `spawn(process.execPath, ${JSON.stringify(chromeArgv([`--user-data-dir=${join(bRoot, 'launcher-profile')}`, '--headless=new']))}, { argv0: ${JSON.stringify(join(bRoot, 'google-chrome'))}, stdio: 'ignore' })`,
+      'setInterval(() => {}, 1000)',
+      SELF_EXIT,
+    ])
+    const launcherBg = spawn(process.execPath, [LAUNCHER_BG], { stdio: 'ignore' })
+    started.add(launcherBg.pid)
+    await pause(400)
+    const launcherChrome = proc.descendants(proc.processTable() ?? new Map(), launcherBg.pid, { depth: 1 })[0]?.pid
+    if (launcherChrome) started.add(launcherChrome)
+    const WRAPPED = [
+      ['timeout 600 node /tmp/journey.mjs > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['/usr/bin/env node /tmp/journey.mjs > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['env -i PATH=/usr/bin:/bin node /tmp/journey.mjs > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['nice -n 10 node /tmp/journey.mjs > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['caffeinate -i node /tmp/journey.mjs > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['bash -c "node /tmp/journey.mjs" > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['yarn dev > /tmp/d.log 2>&1 & chromium --headless=new > /tmp/c.log 2>&1 & echo $!', linuxChrome.pid],
+    ]
+    const named = (pid) => (pid === linuxChrome.pid ? `pid ${pid} — a browser you launched \\(google-chrome\\)` : `pid ${pid} — launched browser pid ${launcherChrome} \\(google-chrome\\)`)
+    const wrappedMissed = WRAPPED.map(([command, pid]) => [command, guard([...DOC, [call('Bash', { command }, 'w1')], [answer('w1', `${pid}\n`)]]), pid]).filter(([, run, pid]) => !(run.decision === 'block' && new RegExp(named(pid)).test(run.text)))
+    check(
+      'frames-guard m-5 incident: `timeout 600 node …`, `/usr/bin/env node …`, `env -i PATH=… node …`, `nice -n 10 node …`, `caffeinate -i node …`, `bash -c "node …"` and `yarn dev … & chromium … & echo $!`, the browser still running — blocked, names the PIDs',
+      Boolean(launcherChrome) && !wrappedMissed.length,
+      `${launcherChrome} ${JSON.stringify(wrappedMissed.map(([command, run]) => [command, run.decision, run.text.slice(0, 160)]))}`,
+    )
     // S-1: a PID is the agent's only from its own Bash call — the incident forms of the security review must not block, the legit one must
     const otherChrome5b = fakeBrowser('another-session')
     await pause(200)
