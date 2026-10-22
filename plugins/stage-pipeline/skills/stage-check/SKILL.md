@@ -97,6 +97,9 @@ Before fixing, verify every checker finding against the code yourself: is it rea
 
    **The commit message**: `<TICKET>: <what was done>` — one line up to ~72 characters, about the substance of the change, not "stage N"; the body — only the "why" and only if the heading does not fit it; the prefix style — as in `git log <main_branch>`. **No service signatures** (`Co-Authored-By`, a line about generation by a tool) — the user's decision for all their repos. Examples and the breakdown — `${CLAUDE_PLUGIN_ROOT}/skills/stage-check/references/commit-message.md`.
 5. After the commit, offer the user to close the session — `/clear` and `/compact` are typed only by them (in force do not offer: stages run as subagents, `/stage-force` Step 1). **`/clear` is the default** (the new session starts from the status line of the session-start hook and a read of the compact STAGES.md — that is the task's memory); `/compact` — only if related work is left in THIS session.
+6. **The session's browser** (when devtools-verify ran in this stage). Each session's DevTools MCP server keeps the Chrome it launched for the life of the session: three were found open 18–23 h after their sessions went idle. `node ${CLAUDE_PLUGIN_ROOT}/scripts/browser-cleanup.mjs` (read-only) lists this session's MCP browsers with their PIDs; it never closes another session's.
+   - **The opt-in `stage-pipeline-chrome` profile** keeps the login on disk, so close its browser after every stage, in either mode: `node ${CLAUDE_PLUGIN_ROOT}/scripts/browser-cleanup.mjs --session --persistent`. The next MCP call opens it again, logged in.
+   - **The plugin's `--isolated` browser** holds a login that dies with it, and a later stage may need it. Normal mode: do not close it; the summary names its PID and the close command (the `Browser:` line below), and the user closes it after the last stage. Force: the run closes it at its final (`/stage-force`, "Output"), not per stage.
 
 ## Context hygiene
 
@@ -111,6 +114,7 @@ Diff: +A/−R | <size risk, if any>
 figma-compare: PASS after 1 fix iteration (was 3 major) | pro-review: Approve with comments (2 minor) | devtools-verify: PASS | lint: ok | type-check: ok
 Criteria: AC-N.1…N.4 ✅ | AC-N.5 ⏳ user-review
 Fixed: ... | Escalation: ... | skip: <checker — reason>
+Browser: pid 81882 open (--isolated, holds the login) — close after the last stage: node ${CLAUDE_PLUGIN_ROOT}/scripts/browser-cleanup.mjs --session | closed (stage-pipeline-chrome) | none open
 Ready to commit: <TICKET>: <message>
 ```
 

@@ -5,6 +5,33 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.18.1 — 2026-10-22
+
+### The pipeline closes the browsers it opened (VT-1, stage 5b)
+
+What changes against 0.18.0.
+
+Every Claude Code session starts its own Chrome DevTools MCP server, and the server keeps the Chrome it launched until the session ends. On 2026-10-20 seven such servers were running on one machine, and three of their Chromes were still open 18–23 h after their sessions went idle, with the app loaded in their tabs.
+
+**devtools-verify closes what it opened.**
+- At the end of every run the checker closes each page it opened with `new_page`. MCP 1.6.0 refuses to close the last open page, so that page goes to `about:blank` instead and the app stops running in it.
+- frames-guard does not let the checker finish while a page it opened is still open (the last page on `about:blank` is fine), or while a browser it launched itself still runs. A PID counts only from the checker's own Bash results: a `journey: browser pid N` line, or the one number a `<browser or node script> … & echo $!` call printed. The process must be a browser executable started after the checker's first transcript record; a transcript with no timestamps names none, and the message names the PID and the executable, never the command line. A number in a page's console message or in a `pgrep` listing is not the checker's. The page list is read only from the page tools' own `## Pages` section. The orchestrator's pages (the login window of the force interview, also one on the same URL as a tab the checker's failed `new_page` made), another checker's pages and the session's browser itself are not the checker's to close.
+- The playwright fallback runs its journey through `withBrowser` of `skills/devtools-verify/references/journey.mjs`. The browser is closed in a `finally`; when `close()` throws or hangs, or the script gets a SIGTERM, the browser's own PID is killed, and only while that PID still has the start time and command line it had at launch. In the self-test a journey that throws midway without it leaves its browser running; with it the browser is gone when the script exits.
+
+**`scripts/browser-cleanup.mjs` tells which browser belongs to which session.**
+- With no flag it lists this session's MCP browsers with their PID and the close command, and other sessions' browsers with their age and session folder. It also lists a `stage-pipeline-chrome` browser whose MCP server is gone: that process keeps the persistent profile busy, and the line names its PID with `kill <pid>`. It kills nothing.
+- `--session` closes this session's pipeline browsers by PID: the plugin's `--isolated` one and `stage-pipeline-chrome`. The next MCP call opens a fresh browser. `--session --persistent` closes only `stage-pipeline-chrome`. A browser on another profile (a project's own `chrome-devtools` server) is listed and left open.
+- `--orphans` closes temp-profile browsers whose MCP server is gone: a browser executable of this user on a `puppeteer_dev_chrome_profile-*` profile in the OS temp dir. A shell or a script whose arguments name such a profile is left alone.
+- Another session's browser is never closed: it may hold a running force run's login. A process is signalled by PID only, after its command line is read again; SIGKILL goes only while its start time and command line are still the ones read before SIGTERM. Without `ps` nothing is closed.
+
+**When the session's browser closes.**
+- Force: the call that turns the run's heading "completed" (an Edit of the heading, or a Bash call that names the task) makes journal-gate close that session's browser, and the run digest says so: `Session browser: closed by PID …` in the short view of the summary and in `RUN-DIGEST.md`. A close the hook rejected still counts for the same session's edit that fixes the journal. A heading closed by hand, in another session or during an unrelated call leaves the browser open: `Session browser: left open — …; close: <command>`. Within the run it is not closed per stage, because an `--isolated` browser holds the login made at the interview.
+- Normal mode: the `/stage-check` summary has a `Browser:` line with the browser's PID and the close command. The browser stays open while a later stage may need its login; close it after the last stage.
+- With the opt-in `stage-pipeline-chrome` profile the login lives on disk, so `/stage-check` closes that browser after every stage.
+- `STAGE_PIPELINE_BROWSER_CLEANUP=off` in the environment stops journal-gate from closing anything; the digest says `Session browser: left open — STAGE_PIPELINE_BROWSER_CLEANUP=off; close: <command>`, and stage-force leaves the browser open.
+
+**On upgrade.** Nothing to rewrite. frames-guard's new checks use the per-task gate of the 0.18 rules: a force run already open when 0.18 first saw the task is not checked for them; normal mode and later runs are. Browsers left open by earlier runs stay open: list them with `browser-cleanup.mjs`, close your own session's with `--session` and orphans with `--orphans`; another session's browser closes with that session.
+
 ## 0.18.0 — 2026-10-20
 
 ### Proof that checks ran, honest live checks, dismissals and decisions you can weigh; the hooks stop firing on reads (VT-1, release R1)

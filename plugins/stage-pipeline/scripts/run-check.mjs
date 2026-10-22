@@ -27,6 +27,7 @@ import { homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { recordGate, treeState } from './ci-gates.mjs'
 import { pluginDataDir, readConfig } from './hooks/pipeline-state.mjs'
+import { alive } from './processes.mjs'
 
 const args = process.argv.slice(2)
 const baseIndex = args.indexOf('--base')
@@ -168,15 +169,6 @@ function readOwner(lock) {
     } catch {
       return null
     }
-  }
-}
-
-function alive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error.code === 'EPERM'
   }
 }
 

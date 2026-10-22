@@ -5,6 +5,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { sep } from 'node:path'
 import { configRoot, devServerConfig } from './hooks/pipeline-state.mjs'
+import { listeners } from './processes.mjs'
 
 /**
  * verify-doctor — is the dev server on the configured port really THIS worktree's app. Read-only: it sends GET requests and
@@ -129,23 +130,6 @@ async function main() {
 function inside(root, path) {
   const resolved = real(path)
   return resolved === root || resolved.startsWith(root + sep)
-}
-
-/** Every pid listening on the port with its cwd, through lsof; empty where lsof is not there. */
-function listeners(portNumber) {
-  const run = (...lsofArgs) => execFileSync('lsof', lsofArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
-  try {
-    const pids = [...new Set(run('-nP', `-iTCP:${portNumber}`, '-sTCP:LISTEN', '-Fp').split('\n').filter((line) => line.startsWith('p')).map((line) => line.slice(1)))]
-    return pids.map((pid) => {
-      try {
-        return { pid, cwd: run('-a', '-p', pid, '-d', 'cwd', '-Fn').split('\n').find((line) => line.startsWith('n'))?.slice(1) }
-      } catch {
-        return { pid } // another user's process
-      }
-    })
-  } catch {
-    return []
-  }
 }
 
 /** GET with up to three redirects on the same host, self-signed certificates allowed (dev servers). A Location that does not parse is an answer the app cannot give: `error`. */

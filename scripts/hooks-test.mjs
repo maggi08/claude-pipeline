@@ -20,6 +20,9 @@ const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '../plugins/stage-p
 // The task directory registry and the journal snapshots are written by the hooks into the plugin data directory — a temporary one in the test.
 const DATA = mkdtempSync(join(tmpdir(), 'hooks-test-data-'))
 process.env.CLAUDE_PLUGIN_DATA = DATA
+// A force close in journal-gate closes the MCP browser of the Claude Code session above it — run inside a session, the close fixtures would close that
+// session's real browser. Only the stage 5b fixtures turn it on, under a throwaway `claude` process of their own.
+process.env.STAGE_PIPELINE_BROWSER_CLEANUP = 'off'
 const { commitScope, gitInvocations } = await import(join(PLUGIN, 'hooks/git-command.mjs'))
 const { taskDirFromConfig, taskBranches, isCurrentTask, forceActive, openForceBlock, reviewModel } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
 const { planArchive } = await import(join(PLUGIN, 'archive-stages.mjs'))
@@ -2327,7 +2330,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 {
   const rc = await import(join(PLUGIN, 'receipts.mjs'))
   const rRoot = mkdtempSync(join(tmpdir(), 'receipts-test-'))
-  const T0 = Date.parse('2026-10-22T09:00:00')
+  const T0 = Date.now() // the run scope drops reports older than the snapshot taken now; events sit at T0 + hours, so none is before it
   const at = (hours) => (T0 + hours * 3600_000) / 1000
   let rCalls = 0
   const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n`
@@ -3966,6 +3969,693 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('S-5: the digest of a journal with 20 000 lines under one Awaiting item is built in < 2 s, the rows in rollback order', digest.ms < 2000 && digest.value.accepted.length === 2 && digest.value.accepted[0].startsWith('- default sort order'), `${digest.ms.toFixed(0)} ms ${JSON.stringify(digest.value.accepted.map((line) => line.slice(0, 30)))}`)
     rmSync(dData, { recursive: true, force: true })
     rmSync(dTask, { recursive: true, force: true })
+  }
+}
+
+// ── VT-1 stage 5b (0.18.1): devtools-verify closes the pages and browsers it opened; browser-cleanup by session ──
+// Each rule: the live incident form that must fail and the live legitimate form that must pass. Every process signalled here is a throwaway one this block
+// spawns itself: node sleepers with a fake `--user-data-dir=` stand for Chrome, a node script whose arguments name `chrome-devtools-mcp` for the MCP server,
+// a node process started with argv0 `claude` for a session. Real browsers on the machine are never touched: the kill paths run under a fake `claude` and with
+// `--under <this block's directory>`, the hook path only after the fake session was proven to be the one the script sees. Each throwaway process exits by itself
+// after two minutes, and the block kills what is left by PID, only processes whose command line holds its directory.
+{
+  const bc = await import(join(PLUGIN, 'browser-cleanup.mjs'))
+  const proc = await import(join(PLUGIN, 'processes.mjs'))
+  const bRoot = realpathSync(mkdtempSync(join(tmpdir(), 'browsers-test-')))
+  const SCRIPT = join(PLUGIN, 'browser-cleanup.mjs')
+  const started = new Set()
+  const pause = (ms) => new Promise((done) => setTimeout(done, ms))
+  const goneWithin = async (pid, ms = 3000) => {
+    const deadline = Date.now() + ms
+    while (proc.alive(pid) && Date.now() < deadline) await pause(50)
+    return !proc.alive(pid)
+  }
+  const SELF_EXIT = 'setTimeout(() => process.exit(0), 120_000)'
+  const script = (name, lines) => {
+    const path = join(bRoot, name)
+    writeFileSync(path, `${lines.join('\n')}\n`)
+    return path
+  }
+  const SLEEPER = script('sleeper.mjs', ['setInterval(() => {}, 1000)', SELF_EXIT])
+  // A fake Chrome that is one by its executable (S-1 / S-4): node with argv0 `<this block's dir>/Google Chrome` and inline code, so `ps` shows a command line
+  // that starts with that path and ends with the profile switches. `extra` — code run first (a PID-reuse stand-in renames the process on a signal).
+  const CHROME_EXE = join(bRoot, 'Google Chrome')
+  const chromeArgv = (args, extra = '') => ['-e', `${extra}setTimeout(()=>process.exit(0),120000);setInterval(()=>{},1000)`, '--', ...args]
+  const fakeChrome = (args, { extra = '', ...options } = {}) => {
+    const child = spawn(process.execPath, chromeArgv(args, extra), { argv0: CHROME_EXE, stdio: 'ignore', ...options })
+    started.add(child.pid)
+    return child
+  }
+  const REUSED = (signalName) => `process.on('${signalName}',()=>{process.title='${bRoot}/another-process-on-that-pid'});`
+  // A fake MCP server: it launches its "Chrome" (the sleeper) as a child, or as a grandchild through a node process titled like the real inner `chrome-devtools-mcp`.
+  const WRAPPER = script('wrapper.mjs', [
+    "import { spawn } from 'node:child_process'",
+    'const chrome = JSON.parse(process.env.FAKE_CHROME)',
+    `const child = spawn(process.execPath, [${JSON.stringify(SLEEPER)}, ...chrome.args], { stdio: 'ignore' })`,
+    "process.stdout.write('chrome ' + child.pid + '\\n')",
+    // the middle link leaves with its MCP server (the fake session kills the server and the browser by PID)
+    'const parent = process.ppid',
+    "setInterval(() => { try { process.kill(parent, 0) } catch { process.exit(0) } }, 200)",
+    SELF_EXIT,
+  ])
+  const FAKE_MCP = script('fake-mcp.mjs', [
+    "import { spawn } from 'node:child_process'",
+    'const chrome = JSON.parse(process.env.FAKE_CHROME)',
+    `const child = chrome.grandchild ? spawn(process.execPath, [${JSON.stringify(WRAPPER)}, 'chrome-devtools-mcp'], { stdio: ['ignore', 'pipe', 'inherit'] }) : spawn(process.execPath, [${JSON.stringify(SLEEPER)}, ...chrome.args], { stdio: 'ignore' })`,
+    'if (chrome.grandchild) child.stdout.pipe(process.stdout)',
+    "else process.stdout.write('chrome ' + child.pid + '\\n')",
+    'setInterval(() => {}, 1000)',
+    SELF_EXIT,
+  ])
+  // A fake Claude Code session (argv0 `claude`): it starts its MCP servers, runs the given commands as its own children, records which of its processes live after each.
+  const FAKE_CLAUDE = script('fake-claude.mjs', [
+    "import { spawn, spawnSync } from 'node:child_process'",
+    "import { readFileSync, writeFileSync } from 'node:fs'",
+    "const spec = JSON.parse(readFileSync(process.argv[2], 'utf8'))",
+    "const alive = (pid) => { try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' } }",
+    'const tree = []',
+    'for (const server of spec.servers) {',
+    `  const mcp = spawn(process.execPath, [${JSON.stringify(FAKE_MCP)}, ...server.args], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, FAKE_CHROME: JSON.stringify(server.chrome) } })`,
+    "  const chrome = await new Promise((done) => { let text = ''; mcp.stdout.on('data', (chunk) => { text += chunk; const found = /chrome (\\d+)/.exec(text); if (found) done(Number(found[1])) }) })",
+    '  tree.push({ mcp: mcp.pid, chrome })',
+    '}',
+    'const pids = tree.flatMap(({ mcp, chrome }) => [mcp, chrome])',
+    "writeFileSync(spec.out + '.tree', JSON.stringify({ claude: process.pid, tree }))",
+    'const runs = []',
+    'for (const run of spec.runs) {',
+    "  const result = spawnSync(process.execPath, run.args, { input: run.input ?? '', encoding: 'utf8', env: { ...process.env, ...run.env }, timeout: 30_000 })",
+    '  runs.push({ stdout: result.stdout, stderr: result.stderr, status: result.status, alive: Object.fromEntries(pids.map((pid) => [pid, alive(pid)])) })',
+    '}',
+    'writeFileSync(spec.out, JSON.stringify({ claude: process.pid, tree, runs }))',
+    "if (spec.hold) await new Promise((done) => { process.stdin.on('end', done); process.stdin.resume(); setTimeout(done, 120_000) })",
+    "for (const pid of pids) { try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ } }",
+    'process.exit(0)',
+  ])
+  const session = async (name, servers, { runs = [], hold = false } = {}) => {
+    const dir = join(bRoot, name)
+    mkdirSync(dir, { recursive: true })
+    const out = join(bRoot, `${name}.json`)
+    const spec = join(bRoot, `${name}.spec.json`)
+    writeFileSync(spec, JSON.stringify({ servers, runs, hold, out }))
+    const child = spawn(process.execPath, [FAKE_CLAUDE, spec], { argv0: 'claude', cwd: dir, stdio: [hold ? 'pipe' : 'ignore', 'ignore', 'inherit'] })
+    started.add(child.pid)
+    const exited = new Promise((done) => child.on('exit', done))
+    const file = hold ? `${out}.tree` : out
+    const deadline = Date.now() + 60_000
+    let result = null
+    while (!result && Date.now() < deadline) {
+      try {
+        result = JSON.parse(readFileSync(file, 'utf8'))
+      } catch {
+        await pause(50)
+      }
+    }
+    if (!result) return null
+    for (const { mcp, chrome } of result.tree) started.add(mcp).add(chrome)
+    if (!hold) await exited
+    return { ...result, runs: result.runs ?? [], dir, end: async () => (child.stdin?.end(), exited) }
+  }
+  const temp = (name, extra = {}) => ({ args: [`--user-data-dir=${join(bRoot, `puppeteer_dev_chrome_profile-${name}`)}`, '--remote-debugging-pipe'], ...extra })
+  const PERSISTENT = join(bRoot, 'stage-pipeline/chrome/app')
+  const PROJECT = join(bRoot, '.cache/chrome-devtools-mcp/chrome-profile')
+
+  try {
+    // ── recognising the processes (a process table of the live forms, nothing signalled) ──
+    const CLAUDES = [
+      ['/Users/u/.vscode/extensions/anthropic.claude-code-2.1.304-darwin-arm64/resources/native-binary/claude --output-format stream-json --verbose', true],
+      ['claude', true],
+      ['node /Users/u/.nvm/versions/node/v22.11.0/bin/claude --resume', true],
+      ['node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js', true],
+      ['/bin/zsh -c cd /tmp/claude && node browser-cleanup.mjs', false],
+      ['node /Users/u/programming/claude-pipeline/scripts/x.mjs', false],
+      ['/Applications/Claude.app/Contents/MacOS/Claude', false],
+    ]
+    const wrongClaude = CLAUDES.filter(([args, want]) => bc.isClaude(args) !== want)
+    check('browser-cleanup: a Claude Code process is told by its executable (native, npm), not by a "claude" word in a shell command', !wrongClaude.length, JSON.stringify(wrongClaude))
+    const SERVERS = [
+      ['npm exec chrome-devtools-mcp@1.6.0 --isolated', true],
+      ['chrome-devtools-mcp', true],
+      ['/usr/local/bin/node /usr/local/lib/node_modules/chrome-devtools-mcp/build/src/telemetry/watchdog/main.js --parent-pid=111', false],
+      ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/u/.cache/chrome-devtools-mcp/chrome-profile', false],
+      ['claude --mcp-config {"chrome-devtools":{"command":"npx","args":["chrome-devtools-mcp@1.6.0"]}}', false],
+    ]
+    const wrongServer = SERVERS.filter(([args, want]) => bc.isMcpServer(args) !== want)
+    check('browser-cleanup: an MCP server is the npm exec and its node process — not the watchdog, not a Chrome on the MCP profile, not a claude that names the server', !wrongServer.length, JSON.stringify(wrongServer))
+    const UID = process.getuid()
+    const row = (pid, ppid, args, age = 600, uid = UID) => [pid, { pid, ppid, uid, age, args }]
+    const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --allow-pre-commit-input --disable-background-networking'
+    const T = realpathSync(tmpdir())
+    const table = new Map([
+      row(1, 0, '/sbin/launchd'),
+      row(50, 1, '/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)'),
+      row(100, 50, '/Users/u/.vscode/extensions/anthropic.claude-code-2.1.304-darwin-arm64/resources/native-binary/claude --output-format stream-json'),
+      row(101, 100, '/bin/zsh -c cd /tmp/claude && node /p/scripts/browser-cleanup.mjs --session'),
+      row(102, 101, 'node /p/scripts/browser-cleanup.mjs --session'),
+      row(110, 100, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'),
+      row(111, 110, 'chrome-devtools-mcp'),
+      row(112, 111, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-AbC --remote-debugging-pipe`, 82_800),
+      row(113, 112, `/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (Renderer) --type=renderer --user-data-dir=${T}/puppeteer_dev_chrome_profile-AbC`),
+      row(114, 111, '/usr/local/bin/node /usr/local/lib/node_modules/chrome-devtools-mcp/build/src/telemetry/watchdog/main.js --parent-pid=111 --app-version=1.6.0'),
+      row(120, 100, 'npm exec chrome-devtools-mcp@1.6.0 --userDataDir /Users/u/.cache/stage-pipeline/chrome/app'),
+      row(121, 120, 'chrome-devtools-mcp'),
+      row(122, 121, `${CHROME} --user-data-dir=/Users/u/.cache/stage-pipeline/chrome/app --remote-debugging-pipe`),
+      row(130, 100, 'npm exec chrome-devtools-mcp@latest'),
+      row(131, 130, 'chrome-devtools-mcp'),
+      row(132, 131, `${CHROME} --user-data-dir=/Users/u/.cache/chrome-devtools-mcp/chrome-profile --remote-debugging-pipe`),
+      row(200, 50, 'node /Users/u/.nvm/versions/node/v22.11.0/bin/claude'),
+      row(210, 200, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'),
+      row(211, 210, 'chrome-devtools-mcp'),
+      row(212, 211, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Other --remote-debugging-pipe`, 85_000),
+      row(300, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Lost --remote-debugging-pipe`),
+      row(310, 101, 'node /scratch/journey.mjs'),
+      row(311, 310, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Run --remote-debugging-pipe`),
+      row(320, 1, `${CHROME} --user-data-dir=/Users/u/.cache/stage-pipeline/chrome/old --remote-debugging-pipe`),
+      // S-4: a daemonized shell or script that names a puppeteer profile, a browser on such a profile outside the OS temp dir, another user's browser — none is an orphan
+      row(330, 1, `/bin/sh -c sleep 120; : --user-data-dir=${T}/puppeteer_dev_chrome_profile-tmux`),
+      row(331, 1, `node /scratch/e2e.js --user-data-dir=${T}/puppeteer_dev_chrome_profile-e2e --remote-debugging-pipe`),
+      row(332, 1, `${CHROME} --user-data-dir=/Users/u/puppeteer_dev_chrome_profile-home --remote-debugging-pipe`),
+      row(333, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-root --remote-debugging-pipe`, 600, UID + 1),
+      // a profile path with a space is read whole
+      row(334, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Sp ace --remote-debugging-pipe`),
+    ])
+    const seen = bc.survey(table, { from: 102 })
+    const pids = (list) => list.map(({ pid, kind }) => `${pid}:${kind}`)
+    check('browser-cleanup AC-5b.3: the session is the nearest claude above the caller, its browsers are the Chrome mains below its MCP servers (child or grandchild), helpers and the watchdog are not browsers', seen.session?.pid === 100 && same(pids(seen.mine), ['112:temp', '122:persistent', '132:other']), JSON.stringify({ session: seen.session?.pid, mine: pids(seen.mine) }))
+    check('browser-cleanup AC-5b.4: another session\'s MCP browser is listed as theirs, with its session', same(pids(seen.others), ['212:temp']) && seen.others[0].session?.pid === 200, JSON.stringify(pids(seen.others)))
+    check('browser-cleanup AC-5b.4: an orphan is a temp-profile browser whose parent is gone; one with a live parent or a persistent profile is not', same(seen.orphans.map(({ pid }) => pid), [300, 334]), JSON.stringify(seen.orphans.map(({ pid }) => pid)))
+    check('browser-cleanup S-4: a shell or a script that names a puppeteer profile, a browser on one outside the OS temp dir, another user\'s browser — not orphans', !seen.orphans.some(({ pid }) => pid >= 330 && pid <= 333), JSON.stringify(seen.orphans.map(({ pid }) => pid)))
+    check('browser-cleanup m-4: a stage-pipeline-chrome browser whose MCP server is gone is listed as holding the profile, nothing else is', same(seen.held.map(({ pid }) => pid), [320]), JSON.stringify(seen.held.map(({ pid }) => pid)))
+    // S-3: any process's `--user-data-dir=` is parsed in linear time — a 1 MB whitespace run took the old lazy regexp minutes and the force close past its 5 s
+    const spaced = new Map([...table, row(400, 1, `node x --user-data-dir=x${' '.repeat(1_000_000)}y`)])
+    const surveyStart = performance.now()
+    bc.survey(spaced, { from: 102 })
+    const surveyMs = performance.now() - surveyStart
+    check(`browser-cleanup S-3: a 1 MB whitespace run in one process's --user-data-dir= — survey ${surveyMs.toFixed(1)} ms (< 100 ms)`, surveyMs < 100, `${surveyMs} ms`)
+    check('browser-cleanup: no claude above the caller — no session, every MCP browser is someone else\'s', bc.survey(table, { from: 50 }).session === null && bc.survey(table, { from: 50 }).mine.length === 0)
+
+    // ── AC-5b.3 / AC-5b.4 on live throwaway processes: two fake sessions ──
+    const other = await session('session-b', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('b') }], { hold: true })
+    const mine = await session(
+      'session-a',
+      [
+        { args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('a', { grandchild: true }) },
+        { args: ['chrome-devtools-mcp@1.6.0', '--userDataDir', PERSISTENT], chrome: { args: [`--user-data-dir=${PERSISTENT}`, '--remote-debugging-pipe'] } },
+        { args: ['chrome-devtools-mcp@latest'], chrome: { args: [`--user-data-dir=${PROJECT}`, '--remote-debugging-pipe'] } },
+      ],
+      { runs: [{ args: [SCRIPT, '--under', bRoot] }, { args: [SCRIPT, '--session', '--persistent', '--under', bRoot] }, { args: [SCRIPT, '--session', '--under', bRoot] }] },
+    )
+    const [isolated, persistent, project] = mine?.tree ?? []
+    const [listed, persistentRun, sessionRun] = mine?.runs ?? []
+    const otherChrome = other?.tree[0]?.chrome
+    const recognised = Boolean(mine && listed && listed.stdout.includes(`this session — claude ${mine.claude} in ${mine.dir}`))
+    check('browser-cleanup (live): the fake session is the one the script sees, with its folder', recognised, listed?.stdout ?? 'no run')
+    if (mine && other && listed) {
+      check(
+        'browser-cleanup AC-5b.4 (live): no flag lists this session\'s browsers with the close command and the other session\'s with age and folder, and kills none',
+        new RegExp(`pid ${isolated.chrome} — temp profile.*age \\d+ min — close: node \\S+browser-cleanup\\.mjs --session$`, 'm').test(listed.stdout) &&
+          new RegExp(`pid ${persistent.chrome} — stage-pipeline-chrome profile.*--session --persistent$`, 'm').test(listed.stdout) &&
+          new RegExp(`pid ${project.chrome} — another profile.*left to its owner$`, 'm').test(listed.stdout) &&
+          new RegExp(`pid ${otherChrome} — temp profile, chrome-devtools --isolated, MCP pid ${other.tree[0].mcp}, age \\d+ min — session claude ${other.claude} in ${other.dir}$`, 'm').test(listed.stdout) &&
+          Object.values(listed.alive).every(Boolean),
+        listed.stdout,
+      )
+      check(
+        'browser-cleanup (live): --session --persistent closes only the stage-pipeline-chrome browser',
+        !persistentRun.alive[persistent.chrome] && persistentRun.alive[isolated.chrome] && persistentRun.alive[project.chrome] && /closed 1 stage-pipeline-chrome browser\(s\)/.test(persistentRun.stdout),
+        persistentRun.stdout + persistentRun.stderr,
+      )
+      check(
+        'browser-cleanup AC-5b.3 (live): --session closes this session\'s temp-profile browser by PID, leaves the project-profile one and every MCP server running (the next MCP call relaunches)',
+        !sessionRun.alive[isolated.chrome] && sessionRun.alive[project.chrome] && [isolated, persistent, project].every(({ mcp }) => sessionRun.alive[mcp]) &&
+          new RegExp(`closed 1 browser\\(s\\) of this session \\(claude ${mine.claude}\\) by PID: ${isolated.chrome} `).test(sessionRun.stdout) && new RegExp(`left open: ${project.chrome} `).test(sessionRun.stdout),
+        sessionRun.stdout + sessionRun.stderr,
+      )
+      check('browser-cleanup AC-5b.4 (live): the other session\'s browser is still running after this session\'s --session', proc.alive(otherChrome))
+    }
+    await other?.end()
+
+    // ── AC-5b.4 --orphans on live throwaway processes ──
+    // The maker starts the process detached and exits: the process is handed to launchd / init, as a browser whose MCP server died is.
+    const ORPHAN_MAKER = script('orphan-maker.mjs', [
+      "import { spawn } from 'node:child_process'",
+      'const spec = JSON.parse(process.argv[2])',
+      "const child = spawn(process.execPath, spec.args, { detached: true, stdio: 'ignore', ...(spec.argv0 ? { argv0: spec.argv0 } : {}) })",
+      'child.unref()',
+      'process.stdout.write(String(child.pid))',
+    ])
+    const orphan = (profile, { browser = true, extra = '' } = {}) => {
+      const args = [`--user-data-dir=${join(bRoot, profile)}`, '--remote-debugging-pipe']
+      const spec = browser ? { argv0: CHROME_EXE, args: chromeArgv(args, extra) } : { args: [SLEEPER, ...args] }
+      const pid = Number(spawnSync(process.execPath, [ORPHAN_MAKER, JSON.stringify(spec)], { encoding: 'utf8' }).stdout)
+      started.add(pid)
+      return pid
+    }
+    const lost = orphan('puppeteer_dev_chrome_profile-lost')
+    const keptProfile = orphan('stage-pipeline/chrome/old')
+    // S-4 incident: a detached non-browser (a tmux server, a nohup'd e2e script) whose arguments name a puppeteer temp profile — 0.18.1's first draft closed it
+    const notBrowser = orphan('puppeteer_dev_chrome_profile-tmux', { browser: false })
+    const parented = fakeChrome([`--user-data-dir=${join(bRoot, 'puppeteer_dev_chrome_profile-parented')}`, '--remote-debugging-pipe'])
+    await pause(300)
+    const lostParent = proc.processTable()?.get(lost)?.ppid
+    const heldList = spawnSync(process.execPath, [SCRIPT, '--under', bRoot], { encoding: 'utf8' })
+    check(
+      'browser-cleanup m-4 (live): the listing names the stage-pipeline-chrome browser whose MCP server is gone with its PID, profile and kill, counts no non-browser as an orphan, and kills nothing',
+      new RegExp(`^- pid ${keptProfile} — age \\d+ min, profile ${join(bRoot, 'stage-pipeline/chrome/old')} — if no session of this repo uses it: kill ${keptProfile}$`, 'm').test(heldList.stdout) &&
+        /orphaned temp-profile browsers \(MCP parent gone\) — 1 /.test(heldList.stdout) && !heldList.stdout.includes(`pid ${notBrowser} `) && [lost, keptProfile, notBrowser].every((pid) => proc.alive(pid)),
+      heldList.stdout + heldList.stderr,
+    )
+    const swept = spawnSync(process.execPath, [SCRIPT, '--orphans', '--under', bRoot], { encoding: 'utf8' })
+    check(
+      'browser-cleanup AC-5b.4 (live): --orphans closes the temp-profile browser whose parent is gone, by PID',
+      (await goneWithin(lost)) && new RegExp(`closed 1 orphaned temp-profile browser\\(s\\) by PID: ${lost}$`, 'm').test(swept.stdout),
+      `${swept.stdout}${swept.stderr} (its parent after the maker exited: ${lostParent})`,
+    )
+    check('browser-cleanup AC-5b.4 (live): --orphans keeps an orphan on the persistent profile and a temp-profile browser whose parent lives', proc.alive(keptProfile) && proc.alive(parented.pid))
+    check('browser-cleanup S-4 (live): --orphans leaves a detached non-browser whose arguments name a puppeteer temp profile', proc.alive(notBrowser), swept.stdout)
+    // S-6: SIGKILL only to the process that got SIGTERM. The stand-in ignores SIGTERM and renames itself — to `ps` the PID is now another process — so after the wait
+    // it must not get SIGKILL (0.18.1's first draft sent it with no second look).
+    const reused = orphan('reuse/puppeteer_dev_chrome_profile-reuse', { extra: REUSED('SIGTERM') })
+    await pause(300)
+    const reuseSweep = spawnSync(process.execPath, [SCRIPT, '--orphans', '--under', join(bRoot, 'reuse')], { encoding: 'utf8' })
+    check(
+      'browser-cleanup S-6 (live): a PID that is another process by the SIGKILL time (start time / command line changed) gets no SIGKILL',
+      proc.alive(reused) && /another-process-on-that-pid/.test(proc.commandOf(reused) ?? '') && /orphaned temp-profile browser/.test(reuseSweep.stdout),
+      `${reuseSweep.stdout}${reuseSweep.stderr} alive ${proc.alive(reused)} — ${proc.commandOf(reused)}`,
+    )
+    // With no `ps` on the PATH the script can kill nothing: the usage forms run that way, so a parse that regressed (0.18.1's first draft dropped the first flag
+    // when `--under` was absent, and `--session --orphans` ran `--orphans` machine-wide) fails this check instead of signalling anything.
+    const noPs = { ...process.env, PATH: join(bRoot, 'no-such-dir') }
+    const usage = ['--session --orphans', '--persistent', '--under', '--under --session'].map((flags) => spawnSync(process.execPath, [SCRIPT, ...flags.split(' ')], { encoding: 'utf8', env: noPs }))
+    check('browser-cleanup: a flag set that does not parse (--session with --orphans, --persistent alone, --under with no directory) is a usage error, exit 2, nothing runs', usage.every((run) => run.status === 2 && /Usage/.test(run.stderr)), JSON.stringify(usage.map((run) => [run.status, run.stdout])))
+    const blind = spawnSync(process.execPath, [SCRIPT, '--session', '--under', bRoot], { encoding: 'utf8', env: noPs })
+    check('browser-cleanup: fail safe — no `ps`, nothing is killed, one line says why, exit 0', blind.status === 0 && /^browser-cleanup: skipped — `ps` is unavailable, nothing closed$/m.test(blind.stdout), blind.stdout + blind.stderr)
+
+    // ── AC-5b.1: frames-guard — pages the agent opened, browsers it launched ──
+    const fgRoot = join(bRoot, 'frames')
+    mkdirSync(fgRoot)
+    let fgCount = 0
+    const call = (name, input, id) => ({ type: 'tool_use', id, name, input })
+    const answer = (id, text, extra = {}) => ({ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text }], ...extra })
+    // `base` — the time of the first record (default: 100 s ago); `timestamps: false` — records with no timestamp at all
+    const guard = (events, cwd = fgRoot, { base = Date.now() - 100_000, timestamps = true } = {}) => {
+      const path = join(fgRoot, `t-${fgCount++}.jsonl`)
+      writeFileSync(path, events.map((content, i) => JSON.stringify({ ...(timestamps ? { timestamp: new Date(base + i * 1000).toISOString() } : {}), message: { role: content[0].type === 'tool_result' ? 'user' : 'assistant', content } })).join('\n'))
+      return runHook('frames-guard.mjs', { cwd, agent_type: 'stage-pipeline:devtools-verify', agent_transcript_path: path })
+    }
+    const MCP = 'mcp__plugin_stage-pipeline_chrome-devtools__'
+    const DOC = [[call('Bash', { command: 'node /p/scripts/verify-doctor.mjs' }, 'd1')], [answer('d1', 'doctor: ok — http://localhost:3000 answers on / 200')]]
+    const pageList = (...lines) => `# new_page response\n## Pages\n${lines.join('\n')}`
+    const OPENED = [...DOC, [call(`${MCP}new_page`, { url: 'http://localhost:3000/orders' }, 'n1')], [answer('n1', pageList('1: about:blank', '2: Orders (http://localhost:3000/orders) [selected]'))]]
+    const leftOpen = guard(OPENED)
+    check('frames-guard AC-5b.1: a stop that leaves the page its new_page opened — blocked, the message names the page and close_page', leftOpen.decision === 'block' && /page 2 — http:\/\/localhost:3000\/orders/.test(leftOpen.text) && /close_page/.test(leftOpen.text), leftOpen.text)
+    check('frames-guard AC-5b.1: the page closed with close_page — passes', guard([...OPENED, [call(`${MCP}close_page`, { pageId: 2 }, 'c1')], [answer('c1', pageList('1: about:blank [selected]'))]]).decision === 'allow')
+    const ONLY = [
+      ...DOC,
+      [call(`${MCP}new_page`, { url: 'http://localhost:3000/' }, 'n1')],
+      [answer('n1', pageList('2: http://localhost:3000/ [selected]'))],
+      [call(`${MCP}close_page`, { pageId: 2 }, 'c1')],
+      [answer('c1', `The last open page cannot be closed. It is fine to keep it open.\n${pageList('2: http://localhost:3000/ [selected]')}`)],
+    ]
+    const refusedOnly = guard(ONLY)
+    check('frames-guard AC-5b.1: the last page refused by close_page and left on the app — blocked, the message says about:blank', refusedOnly.decision === 'block' && /about:blank/.test(refusedOnly.text), refusedOnly.text)
+    check('frames-guard AC-5b.1: the last page refused by close_page, then navigated to about:blank — passes', guard([...ONLY, [call(`${MCP}navigate_page`, { type: 'url', url: 'about:blank' }, 'v1')], [answer('v1', `Successfully navigated to about:blank.\n${pageList('2: about:blank [selected]')}`)]]).decision === 'allow')
+    const LOGIN = 'Login (http://localhost:3000/login)'
+    check(
+      'frames-guard AC-5b.1: the orchestrator\'s login page stays open, the agent closed its own — passes',
+      guard([...DOC, [call(`${MCP}list_pages`, {}, 'l1')], [answer('l1', pageList(`1: ${LOGIN} [selected]`))], [call(`${MCP}new_page`, { url: 'http://localhost:3000/orders' }, 'n1')], [answer('n1', pageList(`1: ${LOGIN}`, '3: Orders (http://localhost:3000/orders) [selected]'))], [call(`${MCP}close_page`, { pageId: 3 }, 'c1')], [answer('c1', pageList(`1: ${LOGIN} [selected]`))]]).decision === 'allow',
+    )
+    const timedOut = guard([...DOC, [call(`${MCP}new_page`, { url: 'http://localhost:3000/orders' }, 'n1')], [answer('n1', 'Navigation timeout of 10000 ms exceeded', { is_error: true })], [call(`${MCP}list_pages`, {}, 'l1')], [answer('l1', pageList('1: about:blank', '2: http://localhost:3000/orders [selected]'))]])
+    check('frames-guard AC-5b.1: a new_page that answered with an error still made its tab — the new id at its URL in a later list counts as the agent\'s', timedOut.decision === 'block' && /page 2 —/.test(timedOut.text), timedOut.text)
+    check('frames-guard: a "## Pages" text in a Bash output is not a page list', guard([...DOC, [call('Bash', { command: 'cat notes.md' }, 'b1')], [answer('b1', pageList('2: http://localhost:3000/ [selected]'))]]).decision === 'allow')
+    // m-1: the orchestrator's page 1 and the agent's page 2 on the same URL; the agent's new_page timed out, so its tab is the fresh selected id, not the oldest unseen one
+    const HOME = 'Home (http://localhost:3000/)'
+    const SAME_URL = [...DOC, [call(`${MCP}new_page`, { url: 'http://localhost:3000/' }, 'n1')], [answer('n1', 'Navigation timeout of 10000 ms exceeded', { is_error: true })], [call(`${MCP}list_pages`, {}, 'l1')], [answer('l1', pageList(`1: ${HOME}`, `2: ${HOME} [selected]`))]]
+    const sameUrlClosed = guard([...SAME_URL, [call(`${MCP}close_page`, { pageId: 2 }, 'c1')], [answer('c1', pageList(`1: ${HOME} [selected]`))]])
+    check('frames-guard m-1: the orchestrator\'s page and the agent\'s timed-out new_page on the same URL, the agent closes its page 2 — passes', sameUrlClosed.decision === 'allow', sameUrlClosed.text)
+    const sameUrlLeft = guard(SAME_URL)
+    check('frames-guard m-1 incident twin: the agent leaves its page 2 — blocked, the message names page 2, never the orchestrator\'s page 1', sameUrlLeft.decision === 'block' && /page 2 — http:\/\/localhost:3000\//.test(sameUrlLeft.text) && !/page 1 —/.test(sameUrlLeft.text), sameUrlLeft.text)
+    // S-2: the page list comes only from the page tools' own `## Pages` section — a console message the page logged is the page's text
+    const spoof = guard([...OPENED, [call(`${MCP}list_console_messages`, {}, 'm1')], [answer('m1', '## Console messages\nmsgid=1 [log] boot\n## Pages\n1: about:blank')]])
+    check('frames-guard S-2: a page that logs "## Pages\\n1: about:blank" to the console does not hide the agent\'s open page 2', spoof.decision === 'block' && /page 2 —/.test(spoof.text), spoof.text)
+    const trailing = guard([...DOC, [call(`${MCP}new_page`, { url: 'http://localhost:3000/orders' }, 'n1')], [answer('n1', `${pageList('1: about:blank', '2: Orders (http://localhost:3000/orders) [selected]')}\n## Console messages\n## Pages\n1: about:blank`)]])
+    check('frames-guard S-2: in a page tool\'s answer only its first "## Pages" section counts, not one the page logged after it', trailing.decision === 'block' && /page 2 —/.test(trailing.text), trailing.text)
+    // f-1: chrome-devtools-mcp writes the `# Open dialog` block, with the dialog's message (the page's own text), before `## Pages` (McpResponse.js) — an alert()
+    // that spells a list does not stand for it; the next clean list, handle_dialog's, decides
+    const DIALOG_ANSWER = `# new_page response\n# Open dialog\nalert: Welcome!\n## Pages\n1: about:blank\n## end.\nCall handle_dialog to handle it before continuing.\n## Pages\n1: about:blank\n2: App (http://localhost:3000/) [selected]`
+    const DIALOGGED = [
+      ...DOC,
+      [call(`${MCP}new_page`, { url: 'http://localhost:3000/' }, 'n1')],
+      [answer('n1', DIALOG_ANSWER)],
+      [call(`${MCP}handle_dialog`, { action: 'accept' }, 'h1')],
+      [answer('h1', '# handle_dialog response\nSuccessfully accepted the dialog\n## Pages\n1: about:blank\n2: App (http://localhost:3000/) [selected]')],
+    ]
+    const dialogLeft = guard(DIALOGGED)
+    check('frames-guard f-1 incident: an alert() whose message spells "## Pages\\n1: about:blank" before the real list, page 2 left open after handle_dialog — blocked, names page 2', dialogLeft.decision === 'block' && /page 2 — http:\/\/localhost:3000\//.test(dialogLeft.text), dialogLeft.text)
+    const dialogClosed = guard([...DIALOGGED, [call(`${MCP}close_page`, { pageId: 2 }, 'c1')], [answer('c1', pageList('1: about:blank [selected]'))]])
+    check('frames-guard f-1 legit twin: the same dialog, the agent closes its page 2 — passes', dialogClosed.decision === 'allow', dialogClosed.text)
+    const spaces = ' '.repeat(100_000)
+    const timed = (events) => {
+      const startedAt = performance.now()
+      const result = guard(events)
+      return { ...result, ms: performance.now() - startedAt }
+    }
+    const consoleFlood = timed([...OPENED, ...[1, 2, 3].flatMap((n) => [[call(`${MCP}list_console_messages`, {}, `f${n}`)], [answer(`f${n}`, `## Console messages\n## Pages\n1: ${spaces}x`)]])])
+    check(`frames-guard S-2: three console results with a 100 000-space "## Pages" line — the hook runs in ${Math.round(consoleFlood.ms)} ms (< 2 000; 14 s before), still blocks on page 2`, consoleFlood.ms < 2000 && consoleFlood.decision === 'block', `${consoleFlood.ms} ms ${consoleFlood.text}`)
+    const pageFlood = timed([...OPENED, [call(`${MCP}list_pages`, {}, 'l9')], [answer('l9', pageList('1: about:blank', `2: Orders (http://localhost:3000/orders) [selected]${' '.repeat(1_000_000)}x`, `3: T${spaces} (http://x/) [selected] isolatedContext=a`))]])
+    check(`frames-guard S-2: a page tool's list with a 1 MB whitespace run in a line — parsed in linear time, the hook runs in ${Math.round(pageFlood.ms)} ms (< 2 000)`, pageFlood.ms < 2000, `${pageFlood.ms} ms`)
+
+    const fakeBrowser = (name) => fakeChrome(temp(name).args)
+    const journeyBrowser = fakeBrowser('journey')
+    await pause(200)
+    const JOURNEY_RAN = (pid) => [...DOC, [call('Bash', { command: 'node /scratch/journey.mjs' }, 'j1')], [answer('j1', `journey: browser pid ${pid}\nError: step 3 failed midway`)]]
+    const running = guard(JOURNEY_RAN(journeyBrowser.pid))
+    check(
+      'frames-guard AC-5b.1: the browser a journey launched still runs at the stop — blocked, the message names its PID, the executable and kill, not the command line',
+      running.decision === 'block' && new RegExp(`pid ${journeyBrowser.pid} — a browser you launched \\(Google Chrome\\), still running`).test(running.text) && /kill <pid>/.test(running.text) && !/user-data-dir|setInterval/.test(running.text),
+      running.text,
+    )
+    journeyBrowser.kill('SIGKILL')
+    await goneWithin(journeyBrowser.pid)
+    check('frames-guard AC-5b.1: that browser stopped — passes', guard(JOURNEY_RAN(journeyBrowser.pid)).decision === 'allow')
+    const bashChrome = fakeBrowser('bash')
+    await pause(200)
+    const echoed = guard([...DOC, [call('Bash', { command: '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --user-data-dir=/tmp/x > /tmp/chrome.log 2>&1 & echo $!' }, 'b1')], [answer('b1', String(bashChrome.pid))]])
+    check('frames-guard AC-5b.1: a Chrome started from Bash with `& echo $!` and still running — blocked', echoed.decision === 'block' && new RegExp(`pid ${bashChrome.pid}`).test(echoed.text), echoed.text)
+    const devServer = spawn(process.execPath, [SLEEPER], { stdio: 'ignore' })
+    started.add(devServer.pid)
+    await pause(200)
+    check('frames-guard: a dev server started with `& echo $!` is not a browser — passes', guard([...DOC, [call('Bash', { command: 'yarn dev > /tmp/dev.log 2>&1 & echo $!' }, 'b2')], [answer('b2', String(devServer.pid))]]).decision === 'allow')
+    // S-1: a PID is the agent's only from its own Bash call — the incident forms of the security review must not block, the legit one must
+    const otherChrome5b = fakeBrowser('another-session')
+    await pause(200)
+    const pgrep = guard([...DOC, [call('Bash', { command: 'npx serve out > /tmp/serve.log 2>&1 & echo $!; sleep 1; pgrep -f "Google Chrome"' }, 'p1')], [answer('p1', `${devServer.pid}\n${otherChrome5b.pid}\n${bashChrome.pid}`)]])
+    check('frames-guard S-1 incident: a `pgrep` listing after `& echo $!` names no browser as the agent\'s — passes', pgrep.decision === 'allow', pgrep.text)
+    // f-2: the single number counts only as the echo's own output — an echo redirected, piped or inside a group whose output goes elsewhere prints nothing,
+    // and the `pgrep -n` after it prints another session's young Chrome
+    const UNPRINTED = [
+      'node server.js > /tmp/s.log 2>&1 & echo $! > /tmp/s.pid; sleep 1; pgrep -n -f "Google Chrome"',
+      'node server.js > /tmp/s.log 2>&1 & echo "$!" >> /tmp/s.pid; pgrep -n -f "Google Chrome"',
+      'node server.js > /tmp/s.log 2>&1 & echo $! 1>&2 2>/dev/null; pgrep -n -f "Google Chrome"',
+      'node server.js > /tmp/s.log 2>&1 & echo $! | tee /tmp/s.pid > /dev/null; pgrep -n -f "Google Chrome"',
+      '{ node server.js > /tmp/s.log 2>&1 & echo $!; } > /tmp/s.pid; pgrep -n -f "Google Chrome"',
+      '(node server.js > /tmp/s.log 2>&1 & echo $!; sleep 1) > /tmp/s.pid; pgrep -n -f "Google Chrome"',
+    ]
+    const unprinted = UNPRINTED.map((command) => [command, guard([...DOC, [call('Bash', { command }, 'r1')], [answer('r1', `${otherChrome5b.pid}\n`)]])]).filter(([, run]) => run.decision !== 'allow')
+    check('frames-guard f-2 incident: `echo $!` redirected, piped or in a redirected group, then `pgrep -n` prints another session\'s young Chrome — not the agent\'s launch, passes', !unprinted.length, JSON.stringify(unprinted.map(([command, run]) => [command, run.text])))
+    const printedThenSleep = guard([...DOC, [call('Bash', { command: '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new > /tmp/chrome.log 2>&1 & echo $!; sleep 1' }, 'b3')], [answer('b3', `${bashChrome.pid}\n`)]])
+    check('frames-guard f-2 legit twin: a Chrome started with a printed `& echo $!` (a silent `sleep` after it), still running — blocked, names its PID', printedThenSleep.decision === 'block' && new RegExp(`pid ${bashChrome.pid}`).test(printedThenSleep.text), printedThenSleep.text)
+    const consolePid = guard([...DOC, [call(`${MCP}list_console_messages`, {}, 'm1')], [answer('m1', `## Console messages\nmsgid=1 [log] x\njourney: browser pid ${otherChrome5b.pid} (1 args)`)]])
+    check('frames-guard S-1 incident: a `journey: browser pid N` line a page logged to the console is not the agent\'s launch — passes', consolePid.decision === 'allow', consolePid.text)
+    const ECHOED_CHROME = [...DOC, [call('Bash', { command: '"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new > /tmp/chrome.log 2>&1 & echo $!' }, 'b1')], [answer('b1', String(bashChrome.pid))]]
+    const noTimes = guard(ECHOED_CHROME, fgRoot, { timestamps: false })
+    check('frames-guard S-1 incident: a transcript with no timestamps attributes no PID (fail open) — passes', noTimes.decision === 'allow', noTimes.text)
+    const older = guard(ECHOED_CHROME, fgRoot, { base: Date.now() + 5000 })
+    check('frames-guard S-1: a browser that started before the agent\'s first transcript record is not its launch — passes', older.decision === 'allow', older.text)
+    // the legit background form: a journey script started by the agent with `& echo $!`, its browser still alive below it
+    const JOURNEY_BG = script('journey-bg.mjs', [
+      "import { spawn } from 'node:child_process'",
+      `spawn(process.execPath, ${JSON.stringify(chromeArgv(temp('journey-bg').args))}, { argv0: ${JSON.stringify(CHROME_EXE)}, stdio: 'ignore' })`,
+      'setInterval(() => {}, 1000)',
+      SELF_EXIT,
+    ])
+    const journeyBg = spawn(process.execPath, [JOURNEY_BG], { stdio: 'ignore' })
+    started.add(journeyBg.pid)
+    await pause(400)
+    const bgChrome = proc.descendants(proc.processTable() ?? new Map(), journeyBg.pid, { depth: 1 })[0]?.pid
+    if (bgChrome) started.add(bgChrome)
+    const background = guard([...DOC, [call('Bash', { command: `node ${JOURNEY_BG} > /tmp/journey.log 2>&1 & echo $!` }, 'j2')], [answer('j2', `${journeyBg.pid}\n`)]])
+    check(
+      'frames-guard S-1 legit: a journey the agent started with `& echo $!`, its browser still running below it — blocked, the message names both PIDs and the executable',
+      background.decision === 'block' && new RegExp(`pid ${journeyBg.pid} — launched browser pid ${bgChrome} \\(Google Chrome\\), still running`).test(background.text),
+      background.text,
+    )
+
+    // D7 of VT-1: a force run already open when this plugin version first saw the task keeps the rules it started with.
+    const dApp = join(bRoot, 'd7')
+    repoAt(dApp, 'main')
+    const dStages = (heading) => `# T-95: task\nLanguage: en\nBranch: \`T-95/feat/b\`\n\n## Status: stage 1\n\n${heading}\nConfirmed: 2026-10-18 — answers\n\n## Stages\n\n### Stage 1: page  [status: in-progress]\n`
+    write(dApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-95/STAGES.md': dStages('## Force run 2026-10-18') })
+    git(dApp, 'checkout', '-qb', 'T-95/feat/b')
+    setGate(join(dApp, '.claude/tasks/T-95'), '2026-10-20', ['## Force run 2026-10-18'])
+    check('frames-guard 5b D7: in a force run open before this version first saw the task, a page left open does not block', guard(OPENED, dApp).decision === 'allow', guard(OPENED, dApp).text)
+    write(dApp, { '.claude/tasks/T-95/STAGES.md': dStages('## Force run 2026-10-22') })
+    check('frames-guard 5b D7: in a force run opened after it, the same stop is blocked', guard(OPENED, dApp).decision === 'block')
+
+    // ── AC-5b.2: the playwright fallback's journey throws midway — its browser is gone after the run ──
+    const JOURNEY_LIB = join(PLUGIN, '../skills/devtools-verify/references/journey.mjs')
+    const launchFake = (profile) => `spawn(process.execPath, [${JSON.stringify(SLEEPER)}, ${JSON.stringify(`--user-data-dir=${join(bRoot, profile)}`)}, '--remote-debugging-pipe'], { stdio: 'ignore' })`
+    const runJourney = (name, lines) => {
+      const run = spawnSync(process.execPath, [script(`${name}.mjs`, lines)], { encoding: 'utf8', timeout: 30_000 })
+      const pid = Number(/^journey: browser pid (\d+)/m.exec(run.stdout)?.[1] ?? 0)
+      if (pid) started.add(pid)
+      return { ...run, pid }
+    }
+    const plain = runJourney('journey-plain', ["import { spawn } from 'node:child_process'", `const child = ${launchFake('puppeteer_dev_chrome_profile-plain')}`, "console.log('journey: browser pid ' + child.pid)", "throw new Error('step 3 failed midway')"])
+    check('journey AC-5b.2 incident: a journey that throws midway with no close of its own leaves its browser running', plain.status !== 0 && plain.pid > 0 && proc.alive(plain.pid), plain.stdout + plain.stderr)
+    const playwrightShaped = runJourney('journey-playwright', [
+      "import { spawn } from 'node:child_process'",
+      `import { withBrowser } from ${JSON.stringify(JOURNEY_LIB)}`,
+      `await withBrowser(async () => { ${launchFake('puppeteer_dev_chrome_profile-pw')}; return { close: () => new Promise(() => {}) } }, async () => { throw new Error('step 3 failed midway') }, { closeTimeoutMs: 300 })`,
+    ])
+    check(
+      'journey AC-5b.2: withBrowser, a playwright-shaped browser (no process(), a close() that hangs), the journey throws midway — the browser is found below the script and killed by its PID',
+      playwrightShaped.status !== 0 && playwrightShaped.pid > 0 && (await goneWithin(playwrightShaped.pid)) && new RegExp(`journey: browser killed \\(pid ${playwrightShaped.pid}\\)`).test(playwrightShaped.stdout) && /step 3 failed midway/.test(playwrightShaped.stderr),
+      playwrightShaped.stdout + playwrightShaped.stderr,
+    )
+    const puppeteerShaped = runJourney('journey-puppeteer', [
+      "import { spawn } from 'node:child_process'",
+      `import { withBrowser } from ${JSON.stringify(JOURNEY_LIB)}`,
+      `await withBrowser(async () => { const child = ${launchFake('puppeteer_dev_chrome_profile-pp')}; return { process: () => child, close: async () => { child.kill() } } }, async () => { throw new Error('step 3 failed midway') })`,
+    ])
+    check(
+      'journey AC-5b.2: withBrowser, a puppeteer-shaped browser (process(), a working close()), the journey throws midway — closed in the finally',
+      puppeteerShaped.status !== 0 && puppeteerShaped.pid > 0 && (await goneWithin(puppeteerShaped.pid)) && new RegExp(`journey: browser closed \\(pid ${puppeteerShaped.pid}\\)`).test(puppeteerShaped.stdout),
+      puppeteerShaped.stdout + puppeteerShaped.stderr,
+    )
+    // S-6: the browser crashed early and its PID is another process by the end — close() resolves at once, as a crashed browser's does; no SIGKILL may follow
+    const reusedJourney = runJourney('journey-reused', [
+      "import { spawn } from 'node:child_process'",
+      `import { withBrowser } from ${JSON.stringify(JOURNEY_LIB)}`,
+      `const child = spawn(process.execPath, ${JSON.stringify(chromeArgv([`--user-data-dir=${join(bRoot, 'puppeteer_dev_chrome_profile-crashed')}`, '--remote-debugging-pipe'], REUSED('SIGUSR2')))}, { argv0: ${JSON.stringify(CHROME_EXE)}, stdio: 'ignore', detached: true })`,
+      'child.unref()',
+      "await withBrowser(async () => ({ process: () => child, close: async () => {} }), async () => { process.kill(child.pid, 'SIGUSR2'); await new Promise((done) => setTimeout(done, 300)); throw new Error('step 3 failed midway') }, { closeTimeoutMs: 300 })",
+    ])
+    check(
+      'journey S-6: a PID that is another process by the close (start time / command line changed) gets no SIGKILL',
+      reusedJourney.pid > 0 && proc.alive(reusedJourney.pid) && /another-process-on-that-pid/.test(proc.commandOf(reusedJourney.pid) ?? '') && new RegExp(`journey: pid ${reusedJourney.pid} is not the browser launched here any more`).test(reusedJourney.stdout) && !/browser killed/.test(reusedJourney.stdout),
+      `${reusedJourney.stdout}${reusedJourney.stderr} alive ${proc.alive(reusedJourney.pid)}`,
+    )
+    const hung = spawn(process.execPath, [script('journey-sigterm.mjs', [
+      "import { spawn } from 'node:child_process'",
+      `import { withBrowser } from ${JSON.stringify(JOURNEY_LIB)}`,
+      `await withBrowser(async () => { ${launchFake('puppeteer_dev_chrome_profile-term')}; return { close: () => new Promise(() => {}) } }, () => new Promise(() => setInterval(() => {}, 1000)))`,
+    ])], { stdio: ['ignore', 'pipe', 'inherit'] })
+    started.add(hung.pid)
+    const hungExit = new Promise((done) => hung.on('exit', (code, signalName) => done(code ?? signalName)))
+    const hungPid = await new Promise((done) => {
+      let text = ''
+      hung.stdout.on('data', (chunk) => {
+        text += chunk
+        const found = /journey: browser pid (\d+)/.exec(text)
+        if (found) done(Number(found[1]))
+      })
+      setTimeout(() => done(0), 20_000)
+    })
+    if (hungPid) started.add(hungPid)
+    hung.kill('SIGTERM')
+    const hungCode = await hungExit
+    check('journey AC-5b.2: a journey stopped by SIGTERM (a Bash timeout) — its browser is killed by PID on the way out', hungPid > 0 && (await goneWithin(hungPid)) && hungCode === 143, `pid ${hungPid}, exit ${hungCode}`)
+
+    // ── AC-5b.5 / m-2 / m-3 / S-5: only the call that closes the Force block closes its session's MCP browser, and the digest says what happened ──
+    if (!recognised) check('journal-gate AC-5b.5: skipped — the fake session was not recognised, so the hook could reach a real one', false)
+    else {
+      const cApp = join(bRoot, 'close-app')
+      repoAt(cApp, 'main')
+      const OPEN = '## Force run 2026-10-04'
+      const CLOSED = '## Force run 2026-10-04 — completed 2026-10-04'
+      const WITH_BLOCKERS = '## Force run 2026-10-04 — completed with blockers 2026-10-04'
+      const BLOCKER = 'B1 — CI gate red (AC-1) — no runner here — run it on CI — rerun after the merge — nothing else'
+      const cStages = (ticket, heading, blockers = 'none') =>
+        `# ${ticket}: task\nLanguage: en\nBranch: \`${ticket}/feat/c\`\n\n## Status: stage 1\n\n${heading}\nConfirmed: 2026-10-04 — answers\nBlockers: ${blockers}\n\n## Stages\n\n### Stage 1: page  [status: done]\n`
+      const TICKETS = ['T-91', 'T-92', 'T-93', 'T-94', 'T-96', 'T-97', 'T-98', 'T-99']
+      write(cApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', ...Object.fromEntries(TICKETS.map((ticket) => [`.claude/tasks/${ticket}/STAGES.md`, cStages(ticket, OPEN)])) })
+      git(cApp, 'checkout', '-qb', 'T-96/feat/c')
+      for (const ticket of TICKETS) setGate(join(cApp, '.claude/tasks', ticket), '2026-10-20')
+      const stagesOf = (ticket) => join(cApp, '.claude/tasks', ticket, 'STAGES.md')
+      // A run of the fake session that writes the journal as a tool call would; the hook runs after it judge the file as it is then.
+      const writeRun = (ticket, heading, blockers) => ({ args: ['-e', `require('fs').writeFileSync(${JSON.stringify(stagesOf(ticket))}, ${JSON.stringify(cStages(ticket, heading, blockers))})`] })
+      const HOOK = join(PLUGIN, 'hooks/journal-gate.mjs')
+      let callNo = 0
+      const hookRun = (tool, event, session, toolInput, { id = `call-${callNo++}`, env = {} } = {}) => ({
+        args: [HOOK],
+        input: JSON.stringify({ cwd: cApp, tool_name: tool, hook_event_name: event, session_id: session, tool_use_id: id, tool_input: toolInput }),
+        env: { STAGE_PIPELINE_BROWSER_CLEANUP: '', ...env },
+      })
+      const edit = (ticket, session, from, to, options) => hookRun('Edit', 'PostToolUse', session, { file_path: stagesOf(ticket), old_string: from, new_string: to }, options)
+      const contextOf = (run) => {
+        try {
+          return JSON.parse(run?.stdout || '{}').hookSpecificOutput?.additionalContext ?? ''
+        } catch {
+          return run?.stdout ?? ''
+        }
+      }
+      const decisionOf = (run) => {
+        try {
+          return JSON.parse(run?.stdout || '{}').decision ?? 'allow'
+        } catch {
+          return 'unparsed'
+        }
+      }
+      const LEFT_OPEN_CMD = 'close: `node \\S+browser-cleanup\\.mjs --session`'
+
+      // Session C: the off switch, a heading closed by hand, a close that was rejected and then fixed — by another session, then by C itself.
+      const gate = await session('session-gate', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('gate') }], {
+        runs: [
+          writeRun('T-97', CLOSED),
+          edit('T-97', 'C', OPEN, CLOSED, { env: { STAGE_PIPELINE_BROWSER_CLEANUP: 'off' } }),
+          writeRun('T-98', CLOSED),
+          edit('T-98', 'C', '### Stage 1: page', '### Stage 1: page'),
+          writeRun('T-99', CLOSED, BLOCKER),
+          edit('T-99', 'C', OPEN, CLOSED),
+          writeRun('T-99', WITH_BLOCKERS, BLOCKER),
+          edit('T-99', 'D', CLOSED, WITH_BLOCKERS),
+          edit('T-99', 'C', '### Stage 1: page', '### Stage 1: page'),
+        ],
+      })
+      const gChrome = gate?.tree[0]?.chrome
+      const [, offRun, , byHand, , rejected, , otherFix, ownFix] = gate?.runs ?? []
+      check(
+        'journal-gate m-3: with STAGE_PIPELINE_BROWSER_CLEANUP=off the closing edit leaves the browser, and the digest says "left open — …=off" with the close command',
+        Boolean(offRun) && offRun.alive[gChrome] && /force run T-97 is closed/.test(contextOf(offRun)) && new RegExp(`Session browser: left open — STAGE_PIPELINE_BROWSER_CLEANUP=off; ${LEFT_OPEN_CMD}\\.`).test(contextOf(offRun)),
+        `${contextOf(offRun).slice(-400)} ${offRun?.stderr ?? ''}`,
+      )
+      check(
+        'journal-gate m-2: a normal-mode edit after the block was closed elsewhere (by hand) closes nothing; the digest records "left open" with the close command',
+        Boolean(byHand) && byHand.alive[gChrome] && /force run T-98 is closed/.test(contextOf(byHand)) && new RegExp(`Session browser: left open — the Force block was not closed by a call of this session [^\\n]*; ${LEFT_OPEN_CMD}\\.`).test(contextOf(byHand)),
+        `${contextOf(byHand).slice(-400)} ${byHand?.stderr ?? ''}`,
+      )
+      check('journal-gate m-2: a closing edit the hook rejects (an open blocker) closes nothing yet', Boolean(rejected) && decisionOf(rejected) === 'block' && rejected.alive[gChrome], `${rejected?.stdout ?? ''}`.slice(0, 400))
+      check(
+        'journal-gate S-5: another session that fixes that close does not close its browser here (only the closing session\'s calls count)',
+        Boolean(otherFix) && otherFix.alive[gChrome] && /Session browser: left open — the Force block was not closed by a call of this session/.test(contextOf(otherFix)),
+        `${contextOf(otherFix).slice(-400)} ${otherFix?.stderr ?? ''}`,
+      )
+      check(
+        'journal-gate m-2: the closing session\'s next edit after its rejected close closes its browser by PID and shows the digest again',
+        Boolean(ownFix) && !ownFix.alive[gChrome] && new RegExp(`Session browser: closed by PID ${gChrome} — the next MCP call opens a fresh one\\.`).test(contextOf(ownFix)),
+        `${contextOf(ownFix).slice(-400)} ${ownFix?.stderr ?? ''}`,
+      )
+
+      // f-3: a rejected close is forgotten once its block is open again. C2's close is rejected, C2 reopens the block, the heading is closed by hand with the
+      // blocker cleared, and C2's later no-op edit closes nothing: the digest and the record say "left open" (`skipped: not this call`).
+      const { browserCleanupOf } = await import(join(PLUGIN, 'run-digest.mjs'))
+      const reopen = await session('session-reopen', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('reopen') }], {
+        runs: [
+          writeRun('T-92', CLOSED, BLOCKER),
+          edit('T-92', 'C2', OPEN, CLOSED),
+          writeRun('T-92', OPEN, BLOCKER),
+          edit('T-92', 'C2', CLOSED, OPEN),
+          writeRun('T-92', CLOSED),
+          edit('T-92', 'C2', '### Stage 1: page', '### Stage 1: page'),
+        ],
+      })
+      const rChrome = reopen?.tree[0]?.chrome
+      const [, reRejected, , reOpened, , reNoop] = reopen?.runs ?? []
+      check(
+        'journal-gate f-3 incident: close rejected → reopened by the same session → closed by hand → that session\'s no-op edit leaves its browser open, "left open" recorded',
+        Boolean(reNoop) &&
+          decisionOf(reRejected) === 'block' &&
+          decisionOf(reOpened) === 'allow' &&
+          reNoop.alive[rChrome] &&
+          /force run T-92 is closed/.test(contextOf(reNoop)) &&
+          /Session browser: left open — the Force block was not closed by a call of this session/.test(contextOf(reNoop)) &&
+          browserCleanupOf(DATA, join(cApp, '.claude/tasks/T-92'), CLOSED)?.skipped === 'not this call',
+        `${decisionOf(reRejected)} ${decisionOf(reOpened)} ${contextOf(reNoop).slice(-400)} ${reNoop?.stderr ?? ''}`,
+      )
+      // f-3: an entry older than 7 days is not read — C3's no-op edit after a hand close leaves its browser open.
+      const rejectedFile = join(DATA, 'browser-close-rejected.json')
+      let rejectedNow = {}
+      try {
+        rejectedNow = JSON.parse(readFileSync(rejectedFile, 'utf8'))
+      } catch {
+        // no entries yet
+      }
+      writeFileSync(rejectedFile, JSON.stringify({ ...rejectedNow, [`${join(cApp, '.claude/tasks/T-91')}::${OPEN}`]: { session: 'C3', at: new Date(Date.now() - 8 * 86_400_000).toISOString() } }))
+      const stale = await session('session-stale', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('stale') }], {
+        runs: [writeRun('T-91', CLOSED), edit('T-91', 'C3', '### Stage 1: page', '### Stage 1: page')],
+      })
+      const sChrome = stale?.tree[0]?.chrome
+      const [, staleNoop] = stale?.runs ?? []
+      check(
+        'journal-gate f-3: a rejected-close entry 8 days old is ignored — the session\'s no-op edit after a hand close leaves its browser open',
+        Boolean(staleNoop) && staleNoop.alive[sChrome] && /Session browser: left open — the Force block was not closed by a call of this session/.test(contextOf(staleNoop)),
+        `${contextOf(staleNoop).slice(-400)} ${staleNoop?.stderr ?? ''}`,
+      )
+
+      // S-5 with two sessions on one task: B's unrelated Bash call runs while A's edit closes the block, then A's closing edit is judged.
+      const sessionB = await session('session-b5', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('b5') }], {
+        runs: [
+          hookRun('Bash', 'PreToolUse', 'B', { command: 'npm test' }, { id: 'b5-npm' }),
+          writeRun('T-96', CLOSED),
+          hookRun('Bash', 'PostToolUse', 'B', { command: 'npm test' }, { id: 'b5-npm' }),
+          // B's own close of another task by a Bash call that names it: the PreToolUse stamp held the open heading
+          hookRun('Bash', 'PreToolUse', 'B', { command: `perl -pi -e 's/x/y/' ${stagesOf('T-94')}` }, { id: 'b5-close' }),
+          writeRun('T-94', CLOSED),
+          hookRun('Bash', 'PostToolUse', 'B', { command: `perl -pi -e 's/x/y/' ${stagesOf('T-94')}` }, { id: 'b5-close' }),
+        ],
+      })
+      const bChrome = sessionB?.tree[0]?.chrome
+      const [, , bUnrelated, , , bClose] = sessionB?.runs ?? []
+      check(
+        'journal-gate S-5 incident: B\'s unrelated Bash call during which another session closed the block — B\'s browser is untouched, the digest says "left open"',
+        Boolean(bUnrelated) && bUnrelated.alive[bChrome] && /Session browser: left open — the Force block was not closed by a call of this session/.test(contextOf(bUnrelated)),
+        `${contextOf(bUnrelated).slice(-400)} ${bUnrelated?.stderr ?? ''}`,
+      )
+      check(
+        'journal-gate m-2: a Bash call that names the task and turns its heading from open to closed closes its own session\'s browser',
+        Boolean(bClose) && !bClose.alive[bChrome] && new RegExp(`force run T-94 is closed[\\s\\S]*Session browser: closed by PID ${bChrome}`).test(contextOf(bClose)),
+        `${contextOf(bClose).slice(-400)} ${bClose?.stderr ?? ''}`,
+      )
+      const sessionA = await session('session-a5', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('a5') }], { runs: [edit('T-96', 'A', OPEN, CLOSED)] })
+      const [{ mcp: aMcp, chrome: aChrome } = {}] = sessionA?.tree ?? []
+      const [aClose] = sessionA?.runs ?? []
+      check(
+        'journal-gate AC-5b.5 / S-5: A\'s closing edit closes A\'s MCP browser by PID before the summary, keeps the MCP server, and A gets the digest that says so',
+        Boolean(aClose) && !aClose.alive[aChrome] && aClose.alive[aMcp] && /force run T-96 is closed/.test(contextOf(aClose)) && new RegExp(`Session browser: closed by PID ${aChrome} — the next MCP call opens a fresh one\\.`).test(contextOf(aClose)),
+        `${contextOf(aClose).slice(-600)} ${aClose?.stderr ?? ''}`,
+      )
+      const digestFile = join(cApp, '.claude/tasks/T-96/RUN-DIGEST.md')
+      check('journal-gate AC-5b.5: RUN-DIGEST.md carries the browser line', existsSync(digestFile) && new RegExp(`Session browser: closed by PID ${aChrome}`).test(readFileSync(digestFile, 'utf8')))
+      const again = spawnSync(process.execPath, [join(PLUGIN, 'run-digest.mjs'), join(cApp, '.claude/tasks/T-96'), '--no-write'], { cwd: cApp, encoding: 'utf8' })
+      check('journal-gate AC-5b.5: the orchestrator\'s own run-digest.mjs for the summary keeps the line (recorded for that Force block)', new RegExp(`Session browser: closed by PID ${aChrome}`).test(again.stdout), again.stdout + again.stderr)
+
+      // m-2, Write: the PreToolUse run stamps the heading the Write replaces; open before, closed in the content — this Write closed the block.
+      const writer = await session('session-w5', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('w5') }], {
+        runs: [
+          hookRun('Write', 'PreToolUse', 'W', { file_path: stagesOf('T-93'), content: cStages('T-93', CLOSED) }, { id: 'w5' }),
+          writeRun('T-93', CLOSED),
+          hookRun('Write', 'PostToolUse', 'W', { file_path: stagesOf('T-93'), content: cStages('T-93', CLOSED) }, { id: 'w5' }),
+        ],
+      })
+      const wChrome = writer?.tree[0]?.chrome
+      const [, , wClose] = writer?.runs ?? []
+      check(
+        'journal-gate m-2: a Write whose file held the open heading and whose content closes it closes its session\'s browser',
+        Boolean(wClose) && !wClose.alive[wChrome] && new RegExp(`Session browser: closed by PID ${wChrome}`).test(contextOf(wClose)),
+        `${contextOf(wClose).slice(-400)} ${wClose?.stderr ?? ''}`,
+      )
+    }
+  } finally {
+    for (const pid of started) {
+      if (pid > 0 && proc.alive(pid) && proc.commandOf(pid)?.includes(bRoot)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // gone in between
+        }
+      }
+    }
+    rmSync(bRoot, { recursive: true, force: true })
   }
 }
 
