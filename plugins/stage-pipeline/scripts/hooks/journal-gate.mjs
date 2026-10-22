@@ -54,7 +54,7 @@ const tool = input.tool_name ?? ''
 const toolInput = input.tool_input ?? {}
 const target = tool === 'Bash' ? '' : String(toolInput.file_path ?? '')
 if (tool !== 'Bash' && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
-const { hasPipelineConfig, pluginDataDir, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
+const { hasPipelineConfig, pluginDataDir, readBounded, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
 const cwd = input.cwd ?? process.cwd()
 const pre = input.hook_event_name === 'PreToolUse'
 
@@ -120,12 +120,8 @@ if (pre && tool !== 'Bash') {
   const file = real(resolve(cwd, target))
   if (tool === 'Write' && basename(file) === 'STAGES.md') {
     const { freshestForceHeading } = await import('../markers.mjs')
-    let heading = null
-    try {
-      heading = freshestForceHeading(readFileSync(file, 'utf8'))?.[0] ?? null
-    } catch {
-      // a new journal — no heading before
-    }
+    // through the bounded reader, as every hook read of a journal (m-3): a new journal, or one over 4 MB that no rule can read, has no heading before
+    const heading = freshestForceHeading(readBounded(file).text ?? '')?.[0] ?? null
     saveStamp(writeStampPath, { file, heading })
   }
   const dir = basename(dirname(file)) === 'checks' ? dirname(dirname(file)) : dirname(file)

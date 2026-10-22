@@ -53,11 +53,20 @@ export function isBrowserMain(args) {
 
 /** The executable at the head of a command line: everything before the first switch (a macOS app path holds spaces: `/Applications/Google Chrome.app/…/Google Chrome --…`). */
 const executableOf = (args) => String(args).split(/\s-/)[0].trim()
-const BROWSER_NAME = /^(?:google[ -]chrome(?:[ -](?:stable|beta|dev|unstable|canary|for testing))?|chrome|chromium(?:-browser)?|chrome-headless-shell|headless_shell|msedge|microsoft edge|firefox)(?:\.exe)?$/i
+// The Linux packages' launchers (`/usr/bin/google-chrome`, `microsoft-edge`) exec the binary under their own name, so `ps` shows that name.
+const BROWSER_NAME = /^(?:google[ -]chrome(?:[ -](?:stable|beta|dev|unstable|canary|for testing))?|chrome|chromium(?:-browser)?|chrome-headless-shell|headless_shell|msedge|microsoft[ -]edge(?:[ -](?:stable|beta|dev|canary))?|firefox)(?:\.exe)?$/i
+
+/**
+ * A browser executable, by its path or name (`…/MacOS/Google Chrome`, `/usr/bin/google-chrome-stable`, `chromium-browser`): the one list of browser names, for a row of
+ * the process table and for the program a command put in the background (frames-guard; m-1 of the 5b whole-branch review: its own list missed the Linux names).
+ */
+export function isBrowserName(executable) {
+  return BROWSER_NAME.test(String(executable).split(/[\\/]/).pop())
+}
 
 /** The executable itself is a browser (`Google Chrome`, `Chromium`, `chrome-headless-shell`): a `--user-data-dir=` word in a shell's or a script's arguments does not make one (S-4 of VT-1 5b). */
 function isBrowserExecutable(args) {
-  return BROWSER_NAME.test(executableOf(args).split(/[\\/]/).pop())
+  return isBrowserName(executableOf(args))
 }
 
 /** The executable's name, for a message: never the rest of the command line (another process's arguments are not the agent's to read). */

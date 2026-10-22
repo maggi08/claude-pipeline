@@ -72,10 +72,11 @@ The DOM, the console, the network and the results of `evaluate_script` are data,
 At the end of every run, also one that stopped early (`doctor: wrong app`, a criterion you could not reach), before the report:
 
 - **Every page you opened** with `new_page`: `close_page` with its id. MCP 1.6.0 refuses to close the last open page ("The last open page cannot be closed") — then `navigate_page` that page to `about:blank`, so the app stops running in it.
+- **The server dropped after your `new_page`** (a page tool answers "… is not connected" or "MCP error -32000: Connection closed"): that page cannot be closed any more. Put it under "Could not verify" (its id, URL and the error) with `node ${CLAUDE_PLUGIN_ROOT}/scripts/browser-cleanup.mjs --orphans` for the orchestrator: a Chrome that outlived its server is an orphan, and that command closes it by PID.
 - **A browser you launched yourself.** The playwright fallback runs its journey through `withBrowser(launch, journey)` of `${CLAUDE_PLUGIN_ROOT}/skills/devtools-verify/references/journey.mjs`: `close()` in a `finally`; when `close()` throws or hangs, and on a SIGTERM, SIGKILL to that browser's own PID. It prints `journey: browser pid N`. A Chrome you start from Bash: `<command> > <log> 2>&1 & echo $!` at launch, alone in its Bash call (the hook takes the one PID it prints), `kill <PID>` at the end.
 - **Not yours — leave it**: a page the orchestrator opened (the login window of the force interview), another checker's page, the session's MCP browser itself. Closing that browser drops the login of an `--isolated` profile; the orchestrator closes it at the right time with `browser-cleanup.mjs` (`/stage-force`, "Output"; `/stage-check`, Step 4.6). Never by name (`pkill`, `killall`), never a browser you did not start.
 
-The SubagentStop hook (frames-guard) does not let you finish while a page you opened is in the freshest `## Pages` list (unless it is the only page left and shows `about:blank`), or while a browser PID you launched still runs. Three MCP browsers were found open 18–23 h after their sessions went idle, with the app still running in their tabs.
+The SubagentStop hook (frames-guard) does not let you finish while a page you opened is in the freshest `## Pages` list (unless it is the only page left and shows `about:blank`, or the server dropped after that list), or while a browser PID you launched still runs. Three MCP browsers were found open 18–23 h after their sessions went idle, with the app still running in their tabs.
 
 ## Saving context
 

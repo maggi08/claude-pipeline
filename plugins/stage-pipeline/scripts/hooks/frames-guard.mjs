@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
-import { ruleAppliesToBlock } from '../markers.mjs'
+import { CONFIRMED_LINE, headingDate, ruleAppliesToBlock } from '../markers.mjs'
 import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
@@ -28,9 +28,11 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from 
  * - a page this agent opened with `new_page` (the `[selected]` id of the `## Pages` list in its answer; for a `new_page` that answered with an error, a new id at its
  *   URL in a later list — the fresh `[selected]` one, else the newest: ids only grow and `new_page` selects its tab, so an older page at the same URL is the
  *   orchestrator's) is still in the freshest `## Pages` list its MCP calls returned — unless it is the only page left and shows `about:blank`
- *   (MCP 1.6.0 refuses to close the last page: "The last open page cannot be closed");
+ *   (MCP 1.6.0 refuses to close the last page: "The last open page cannot be closed"), and unless a later page tool of that list's server answered with a
+ *   disconnect error (m-2: no call can close the page any more; the agent names it under "Could not verify");
  * - a browser it launched still runs (S-1 of VT-1 5b: a PID counts only from the agent's own Bash call): the `journey: browser pid N` line of references/journey.mjs
- *   in a Bash result, or the single number a Bash call printed for `<a browser or a node/npx script> … & echo $!` when that echo's output is printed (f-2);
+ *   in a Bash result, or the single number a Bash call printed for `<a browser or a node/npx script> … & echo $!` when that echo's output is printed (f-2) — the
+ *   backgrounded command's first word is a browser by browser-cleanup's list of names (m-1) or a script runner;
  *   alive now, a browser executable (itself or below it), and started after the agent's first transcript record. A transcript with no timestamps attributes no PID.
  *   Never a number from an MCP answer, a page's console text or a `pgrep` listing.
  * The page list is read only from the answers of the page tools (`new_page`, `list_pages`, `select_page`, `close_page`, `navigate_page`, `handle_dialog`) and only
@@ -60,13 +62,21 @@ let verdict = null // the last doctor result: `ok`, `no dev url`, `wrong app`, `
 let navigation = null // null — fine; 'blind' — navigated before any verify-doctor call; otherwise the verdict the navigation came after
 const NEW_PAGE = /(?:^|__)new_page$/
 const PAGE_TOOL = /^mcp__.*__(?:new_page|list_pages|select_page|close_page|navigate_page|handle_dialog)$/
-// `<a browser or a script runner> … & echo $!`: the background start the skills prescribe for a process the agent stops itself
-const LAUNCHER = /(?:^|[\s"'\/])(?:google chrome|chrome|chromium|chrome-headless-shell|headless_shell|msedge|firefox|node|npx|bun|deno|tsx)(?=[\s"']|$)/i
+// The error a page tool gets once its MCP server is gone: Claude Code's "MCP server … is not connected", the MCP SDK's "MCP error -32000: Connection closed" (m-2).
+const DISCONNECT = /not connected|Connection closed|-32000/i
+// `<a browser or a script runner> … & echo $!`: the background start the skills prescribe for a process the agent stops itself. The program is the first word of
+// the backgrounded command; a browser is told by browser-cleanup's list of names (m-1: a list of its own here missed `google-chrome`, `chromium-browser`), a runner by this.
+const RUNNER = /^(?:node|npx|bun|deno|tsx)$/i
+// What may stand before the program: a `VAR=value` assignment, a wrapper that runs the next word.
+const PREFIX = /^(?:[A-Za-z_]\w*=.*|nohup|exec|env|command|setsid)$/
+const { executableName, isBrowserLike, isBrowserName } = await import('../browser-cleanup.mjs')
 // The `echo $!` right after a background `&`, as a command of its own: only a separator or the end follows it, so its number is printed, not redirected or piped
 // (f-2: in `… & echo $! > /tmp/s.pid; pgrep -n -f "Google Chrome"` the one printed number is pgrep's).
 const ECHO_PID = /(?<![&>])&\s*echo[ \t]+(["']?)\$!\1(?=[ \t]*(?:[;\n]|&&|\|\||$))/g
 const calls = new Map() // tool_use id → { name, input }
 let pageList = null // the freshest `## Pages` list an MCP call returned: id → { url, selected }
+let listServer = null // the MCP server whose page tool returned that list (`mcp__<server>__<tool>`)
+let serverGone = false // a page tool of that server answered with a disconnect error after the list: no call can close a page there any more (m-2)
 const seenPages = new Set() // every page id any list showed
 const opened = new Set() // page ids this agent opened with new_page
 const unlisted = [] // URLs of new_page calls that answered without a list (the tab was made, then the load failed)
@@ -153,12 +163,22 @@ function normalUrl(url) {
   }
 }
 
+/**
+ * The server is gone (m-2): an error answer of a page tool of the server whose list is the freshest, with no list, saying the server is not connected. After a
+ * disconnect no `close_page` can be answered, so a page rule that waited for a fresh list could never be met: every stop would be blocked until Claude Code ends
+ * the loop. Only an error of a page tool counts — a console message or a dialog is the page's own text (S-2, f-1) and is never an error answer. The next good
+ * list clears the mark.
+ */
 function readPages(call, block, text) {
   const pages = readPageList(text)
+  const server = call.name.slice(0, call.name.lastIndexOf('__'))
   if (!pages) {
+    if (block.is_error === true && server === listServer && DISCONNECT.test(text)) serverGone = true
     if (NEW_PAGE.test(call.name)) unlisted.push(normalUrl(call.input.url))
     return
   }
+  listServer = server
+  serverGone = false
   const fresh = [...pages.keys()].filter((id) => !seenPages.has(id))
   for (const id of pages.keys()) seenPages.add(id)
   const selected = [...pages].find(([, page]) => page.selected)?.[0]
@@ -191,7 +211,33 @@ function readLaunches(call, text) {
   if (!echo) return
   const before = command.slice(0, echo.index)
   const start = Math.max(0, ...[';', '&&', '||', '|', '\n', '('].map((separator) => (before.includes(separator) ? before.lastIndexOf(separator) + separator.length : 0)))
-  if (LAUNCHER.test(before.slice(start))) launched.add(Number(single[1]))
+  const program = programOf(before.slice(start))
+  if (isBrowserName(program) || RUNNER.test(program.split(/[\\/]/).pop())) launched.add(Number(single[1]))
+}
+
+/**
+ * The program a command runs: its first word after `VAR=value` assignments and a `nohup` / `exec` / `env` / `command` / `setsid` wrapper, with quotes and backslash
+ * escapes resolved (`"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`, `Google\ Chrome`). One pass over the text, it stops at that word.
+ */
+function programOf(text) {
+  let word = null
+  let quote = null
+  for (let at = 0; at <= text.length; at++) {
+    const char = text[at]
+    if (quote) {
+      if (char === quote) quote = null
+      else if (char !== undefined) word += char
+      else return word
+    } else if (char === '"' || char === "'") {
+      quote = char
+      word ??= ''
+    } else if (char === '\\' && at + 1 < text.length) word = (word ?? '') + text[++at]
+    else if (char === undefined || /\s/.test(char)) {
+      if (word !== null && !PREFIX.test(word)) return word
+      word = null
+    } else word = (word ?? '') + char
+  }
+  return ''
 }
 
 // No `(`, `$(`, `{` or backtick left open in the text before a point of the command.
@@ -260,7 +306,8 @@ async function leftovers() {
   if (!opened.size && !launched.size) return []
   if (!(await leftoverRulesApply())) return []
   const out = []
-  if (pageList) {
+  // The server is gone (m-2): its pages cannot be closed — the agent names them under "Could not verify" (the skill, "Closing"), the stop goes through.
+  if (pageList && !serverGone) {
     const mine = [...opened].filter((id) => pageList.has(id))
     const blankLast = mine.length === 1 && pageList.size === 1 && pageList.get(mine[0]).url === 'about:blank'
     // the URL is the page's text: cut, so a page cannot flood the message (a stop reason past 64 KB is cut mid-JSON on its way out)
@@ -270,7 +317,6 @@ async function leftovers() {
   // No timestamps in the transcript: the agent's run has no start, so no PID can be shown to be its own — none is named (S-1, fail open).
   if (launched.size && Number.isFinite(started)) {
     const { processTable, descendants } = await import('../processes.mjs')
-    const { executableName, isBrowserLike } = await import('../browser-cleanup.mjs')
     const table = processTable({ timeout: 2000 })
     // Started after the agent's first transcript record (`etime` is whole seconds, so a process started then never reads as older): an older one is not its launch.
     const runSeconds = (Date.now() - started) / 1000
@@ -292,7 +338,9 @@ async function leftoverRulesApply() {
   if (!block) return true
   try {
     const { releaseGate } = await import('../journal-check.mjs')
-    return ruleAppliesToBlock(releaseGate(pluginDataDir(), task.dir), block.heading)
+    // a heading with no date counts from its `Confirmed:` line, as the receipts and final-review rules count it (receipts.mjs)
+    const confirmed = headingDate(block.body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')
+    return ruleAppliesToBlock(releaseGate(pluginDataDir(), task.dir), block.heading, confirmed)
   } catch {
     return true
   }

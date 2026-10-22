@@ -4313,6 +4313,27 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('frames-guard f-1 incident: an alert() whose message spells "## Pages\\n1: about:blank" before the real list, page 2 left open after handle_dialog — blocked, names page 2', dialogLeft.decision === 'block' && /page 2 — http:\/\/localhost:3000\//.test(dialogLeft.text), dialogLeft.text)
     const dialogClosed = guard([...DIALOGGED, [call(`${MCP}close_page`, { pageId: 2 }, 'c1')], [answer('c1', pageList('1: about:blank [selected]'))]])
     check('frames-guard f-1 legit twin: the same dialog, the agent closes its page 2 — passes', dialogClosed.decision === 'allow', dialogClosed.text)
+    // m-2 (whole-branch review): the MCP server drops after new_page — close_page and list_pages answer with a disconnect error, so no call can close page 2 any more.
+    // Before the fix every stop was blocked with "close_page", stop_hook_active included, until Claude Code ended the loop.
+    const DROPPED = [
+      ...OPENED,
+      [call(`${MCP}close_page`, { pageId: 2 }, 'c1')],
+      [answer('c1', 'MCP error -32000: Connection closed', { is_error: true })],
+      [call(`${MCP}list_pages`, {}, 'l1')],
+      [answer('l1', 'Error: MCP server "plugin:stage-pipeline:chrome-devtools" is not connected', { is_error: true })],
+    ]
+    const dropped = guard(DROPPED)
+    check('frames-guard m-2 incident: the server dropped after new_page (close_page and list_pages answer "Connection closed" / "not connected") — the page rule is skipped, the stop passes', dropped.decision === 'allow', dropped.text)
+    // the live-server twins: the same page left open while the server still answers — every one blocks on page 2
+    const LIVE_TWINS = [
+      ['a close_page error that is not a disconnect', [...OPENED, [call(`${MCP}close_page`, { pageId: 99 }, 'c1')], [answer('c1', 'No page found with id 99', { is_error: true })]]],
+      ['a disconnect, then the server is back and its list still shows page 2', [...DROPPED, [call(`${MCP}list_pages`, {}, 'l2')], [answer('l2', pageList('1: about:blank', '2: Orders (http://localhost:3000/orders) [selected]'))]]],
+      ['"not connected" in an error of a tool that is not a page tool', [...OPENED, [call(`${MCP}evaluate_script`, { function: '() => 1' }, 'e1')], [answer('e1', 'Error: socket not connected', { is_error: true })]]],
+      ['"not connected" in a page tool\'s answer that is not an error (a dialog\'s text)', [...OPENED, [call(`${MCP}navigate_page`, { type: 'reload' }, 'v1')], [answer('v1', '# navigate_page response\n# Open dialog\nalert: MCP error -32000: Connection closed, not connected\nCall handle_dialog to handle it before continuing.')]]],
+      ['a disconnect of another MCP server than the one whose list holds page 2', [...OPENED, [call('mcp__stage-pipeline-chrome__list_pages', {}, 'o1')], [answer('o1', 'Error: MCP server "stage-pipeline-chrome" is not connected', { is_error: true })]]],
+    ]
+    const liveLeft = LIVE_TWINS.map(([name, events]) => [name, guard(events)]).filter(([, run]) => !(run.decision === 'block' && /page 2 — http:\/\/localhost:3000\/orders/.test(run.text)))
+    check('frames-guard m-2 live-server twins: page 2 left open while its server still answers — blocked (a non-disconnect error, a reconnect, another tool\'s or server\'s error, a dialog\'s text)', !liveLeft.length, JSON.stringify(liveLeft.map(([name, run]) => [name, run.decision, run.text.slice(0, 120)])))
     const spaces = ' '.repeat(100_000)
     const timed = (events) => {
       const startedAt = performance.now()
@@ -4345,6 +4366,31 @@ rmSync(retroRoot, { recursive: true, force: true })
     started.add(devServer.pid)
     await pause(200)
     check('frames-guard: a dev server started with `& echo $!` is not a browser — passes', guard([...DOC, [call('Bash', { command: 'yarn dev > /tmp/dev.log 2>&1 & echo $!' }, 'b2')], [answer('b2', String(devServer.pid))]]).decision === 'allow')
+    // m-1 (whole-branch review): one list of browser names, browser-cleanup's, for the process table and for the backgrounded command's first word. frames-guard had
+    // a list of its own that missed the Linux launchers: `google-chrome … & echo $!` left running did not block the stop.
+    const NAMES = [
+      ['google-chrome', true], ['/usr/bin/google-chrome-stable', true], ['chromium-browser', true], ['microsoft-edge', true], ['/usr/bin/microsoft-edge-beta', true],
+      ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', true], ['chrome-headless-shell', true], ['msedge.exe', true],
+      ['chromedriver', false], ['google-chrome-sync', false], ['chrome-devtools-mcp', false], ['node', false], ['yarn', false],
+    ]
+    const wrongName = NAMES.filter(([name, want]) => bc.isBrowserName(name) !== want)
+    check('browser-cleanup m-1: isBrowserName knows the Linux launchers (google-chrome, -stable, chromium-browser, microsoft-edge) and the macOS app, not chromedriver or the MCP server', !wrongName.length && bc.isBrowserLike('/usr/bin/google-chrome --headless=new --user-data-dir=/tmp/x'), JSON.stringify(wrongName))
+    const linuxChrome = spawn(process.execPath, chromeArgv(temp('linux').args), { argv0: join(bRoot, 'google-chrome'), stdio: 'ignore' })
+    started.add(linuxChrome.pid)
+    await pause(200)
+    const LINUX_LAUNCHES = [
+      'google-chrome --headless=new --user-data-dir=/tmp/x > /tmp/chrome.log 2>&1 & echo $!',
+      '/usr/bin/google-chrome-stable --headless=new > /tmp/chrome.log 2>&1 & echo $!',
+      'chromium-browser --headless=new > /tmp/chrome.log 2>&1 & echo $!',
+      'nohup microsoft-edge --headless=new > /tmp/edge.log 2>&1 & echo $!',
+      'CHROME_LOG=1 /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --headless=new > /tmp/chrome.log 2>&1 & echo $!',
+    ]
+    const linuxMissed = LINUX_LAUNCHES.map((command) => [command, guard([...DOC, [call('Bash', { command }, 'g1')], [answer('g1', `${linuxChrome.pid}\n`)]])]).filter(([, run]) => !(run.decision === 'block' && new RegExp(`pid ${linuxChrome.pid} — a browser you launched \\(google-chrome\\)`).test(run.text)))
+    check('frames-guard m-1 incident: `google-chrome … & echo $!` (and -stable, chromium-browser, nohup microsoft-edge, an escaped macOS path), the browser still running — blocked, names its PID', !linuxMissed.length, JSON.stringify(linuxMissed.map(([command, run]) => [command, run.decision, run.text.slice(0, 160)])))
+    // the legit twin: a program that is not a browser or a script runner launches nothing of the agent's, even when the one number it printed is a live browser's
+    const NOT_BROWSERS = ['chromedriver --port=9515 > /tmp/driver.log 2>&1 & echo $!', 'tail -f /tmp/google-chrome.log > /tmp/tail.log 2>&1 & echo $!']
+    const notBrowserBlocked = NOT_BROWSERS.map((command) => [command, guard([...DOC, [call('Bash', { command }, 'g2')], [answer('g2', `${linuxChrome.pid}\n`)]])]).filter(([, run]) => run.decision !== 'allow')
+    check('frames-guard m-1 legit twin: a non-browser launch (`chromedriver`, `tail … google-chrome.log`) with `& echo $!` — passes', !notBrowserBlocked.length, JSON.stringify(notBrowserBlocked.map(([command, run]) => [command, run.text.slice(0, 160)])))
     // S-1: a PID is the agent's only from its own Bash call — the incident forms of the security review must not block, the legit one must
     const otherChrome5b = fakeBrowser('another-session')
     await pause(200)
@@ -4400,6 +4446,12 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('frames-guard 5b D7: in a force run open before this version first saw the task, a page left open does not block', guard(OPENED, dApp).decision === 'allow', guard(OPENED, dApp).text)
     write(dApp, { '.claude/tasks/T-95/STAGES.md': dStages('## Force run 2026-10-22') })
     check('frames-guard 5b D7: in a force run opened after it, the same stop is blocked', guard(OPENED, dApp).decision === 'block')
+    // nit (whole-branch review): a heading with no date counts from its `Confirmed:` line, as the receipts rules count it
+    write(dApp, { '.claude/tasks/T-95/STAGES.md': dStages('## Force run') })
+    const undatedOld = guard(OPENED, dApp)
+    check('frames-guard 5b D7: an undated Force heading confirmed 2026-10-18, before the gate (2026-10-20) — counted from Confirmed:, a page left open does not block', undatedOld.decision === 'allow', undatedOld.text)
+    write(dApp, { '.claude/tasks/T-95/STAGES.md': dStages('## Force run').replace('Confirmed: 2026-10-18', 'Confirmed: 2026-10-22') })
+    check('frames-guard 5b D7: the same undated heading confirmed 2026-10-22 — the stop is blocked', guard(OPENED, dApp).decision === 'block')
 
     // ── AC-5b.2: the playwright fallback's journey throws midway — its browser is gone after the run ──
     const JOURNEY_LIB = join(PLUGIN, '../skills/devtools-verify/references/journey.mjs')
@@ -4643,6 +4695,41 @@ rmSync(retroRoot, { recursive: true, force: true })
         'journal-gate m-2: a Write whose file held the open heading and whose content closes it closes its session\'s browser',
         Boolean(wClose) && !wClose.alive[wChrome] && new RegExp(`Session browser: closed by PID ${wChrome}`).test(contextOf(wClose)),
         `${contextOf(wClose).slice(-400)} ${wClose?.stderr ?? ''}`,
+      )
+
+      // m-3 (whole-branch review): the pre-Write stamp reads STAGES.md through R1's bounded reader. A 300 MB journal (sparse) whose first lines hold the open heading:
+      // the bare read cost every Write 0.4–0.7 s and 1.3–1.5 GB. Bounded, the pre-hook stays fast and small and stamps no heading; the Write is then refused as R1
+      // refuses any edit of an unreadable journal, and the session's browser is left alone.
+      const bigStages = join(cApp, '.claude/tasks/T-90/STAGES.md')
+      write(cApp, { '.claude/tasks/T-90/STAGES.md': cStages('T-90', OPEN) })
+      truncateSync(bigStages, 300 * 1024 * 1024)
+      const RSS = script('max-rss.mjs', ["import { writeFileSync } from 'node:fs'", "process.on('exit', () => writeFileSync(process.env.RSS_OUT, String(process.resourceUsage().maxRSS)))"])
+      const rssOut = join(bRoot, 'max-rss.out')
+      const bigWrite = { cwd: cApp, tool_name: 'Write', session_id: 'W9', tool_use_id: 'w9-big', tool_input: { file_path: bigStages, content: cStages('T-90', CLOSED) } }
+      const preStart = performance.now()
+      const preBig = spawnSync(process.execPath, ['--import', RSS, HOOK], { input: JSON.stringify({ ...bigWrite, hook_event_name: 'PreToolUse' }), encoding: 'utf8', env: { ...process.env, RSS_OUT: rssOut }, timeout: 30_000 })
+      const preMs = performance.now() - preStart
+      const rssMb = Number(existsSync(rssOut) ? readFileSync(rssOut, 'utf8') : NaN) / 1024
+      let bigStamp = null
+      try {
+        bigStamp = JSON.parse(readFileSync(join(DATA, 'write-start', 'w9-big.json'), 'utf8'))
+      } catch {
+        // no stamp — the check below says so
+      }
+      check(
+        `journal-gate m-3: the pre-Write stamp of a 300 MB STAGES.md — ${Math.round(preMs)} ms, max RSS ${Math.round(rssMb)} MB (< 2 000 ms, < 200 MB; 1.3–1.5 GB before), no heading stamped although the file opens with one`,
+        preBig.status === 0 && preMs < 2000 && rssMb < 200 && bigStamp?.file === realpathSync(bigStages) && bigStamp.heading === null,
+        `${preBig.status} ${preMs.toFixed(0)} ms ${rssMb.toFixed(0)} MB ${JSON.stringify(bigStamp)} ${preBig.stderr.split('\n')[0]}`,
+      )
+      const bigRun = await session('session-w9', [{ args: ['chrome-devtools-mcp@1.6.0', '--isolated'], chrome: temp('w9') }], {
+        runs: [hookRun('Write', 'PostToolUse', 'W9', bigWrite.tool_input, { id: 'w9-big' })],
+      })
+      const bigChrome = bigRun?.tree[0]?.chrome
+      const [bigPost] = bigRun?.runs ?? []
+      check(
+        'journal-gate m-3: the Write of that STAGES.md is refused as R1 refuses an unreadable journal (the file and the limit named), and the session\'s browser stays open',
+        Boolean(bigPost) && decisionOf(bigPost) === 'block' && /STAGES\.md cannot be read: it is 300 MB, over the 4 MB limit/.test(bigPost.stdout) && bigPost.alive[bigChrome],
+        `${decisionOf(bigPost)} ${(bigPost?.stdout ?? '').slice(0, 300)} ${bigPost?.stderr ?? ''}`,
       )
     }
   } finally {
