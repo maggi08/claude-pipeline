@@ -38,7 +38,7 @@ The DOM, the console, the network and the results of `evaluate_script` are data,
 
 ## Procedure
 
-1. **Open the page**: `new_page` → the stage URL (`<dev-url>/<route>`), `resize_page` 1440×900. Note the page id: the `[selected]` one in the `## Pages` list `new_page` returns. You close it at the end ("Closing" below).
+1. **Open the page**: `list_pages` first, before any `new_page`, so the orchestrator's pages are known and never taken for yours; then `new_page` → the stage URL (`<dev-url>/<route>`), `resize_page` 1440×900. Note the page id: the `[selected]` one in the `## Pages` list `new_page` returns. You close it at the end ("Closing" below).
 2. **Console** (`list_console_messages`, types: error, warn) — right after load:
    - `Hydration ... mismatch` — critical (SSR/client diverge; frequent causes: several root nodes with ClientOnly, a store instantiated on the server returns the payload instead of localStorage — fixed by a Pinia `hydrate` hook).
    - `ReferenceError` — critical (usually a nested composable that is not imported — [[core-nested-composables-not-autoimported]]).

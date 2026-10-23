@@ -190,13 +190,17 @@ function readPages(call, block, text) {
   const fallback = FALLBACK_NOTE.test(text.slice(0, Math.max(0, text.search(/^## Pages\b/m))))
   if (NEW_PAGE.test(call.name) && !block.is_error && selected !== undefined && fresh.includes(selected) && !fallback) opened.add(selected)
   // m-1 (final check, run 4): the note says the tab an errored new_page made closed itself, so its pending URL is gone and page 1 is not its tab.
-  if (fallback && unlisted.length > 0) unlisted.pop()
+  // m-1 (branch 7): not on a successful new_page's own answer, whose note is about its own tab; the pending URL of an earlier errored one stays.
+  const own = NEW_PAGE.test(call.name) && !block.is_error
+  if (fallback && !own && unlisted.length > 0) unlisted.pop()
+  // m-2 (branch 7): the note re-selects the oldest page, the orchestrator's, so it never matches a pending URL (a retried errored new_page).
+  const reselected = fallback ? selected : undefined
   // An errored new_page's tab: the fresh selected id first (new_page selects its tab), then the newest — an older unseen page at that URL is someone else's (m-1).
   const candidates = fresh.sort((a, b) => b - a)
   if (fresh.includes(selected)) candidates.unshift(...candidates.splice(candidates.indexOf(selected), 1))
   for (const id of candidates) {
     const at = unlisted.indexOf(pages.get(id).url)
-    if (at === -1 || opened.has(id)) continue
+    if (at === -1 || opened.has(id) || id === reselected) continue
     opened.add(id)
     unlisted.splice(at, 1)
   }
