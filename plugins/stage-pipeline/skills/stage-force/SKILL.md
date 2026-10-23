@@ -156,12 +156,14 @@ Force does not write the PR/MR description: `/task-wrapup` is started only by th
 
 After the final (including the catch-up) rename the block heading to `## Force run <date> — completed <date>`, and with open blockers — to `— completed with blockers <date>`. An open block is read by the hook as a permission, and the next catch-up or a new stage on this branch in the regular mode would go with an autocommit.
 
+**The session's browser closes with the run.** The rename to "completed" is also the browser close: on the call that renames the heading (an Edit or MultiEdit of the heading line, a Write of STAGES.md, or a Bash call that names the task directory) journal-gate runs `browser-cleanup.mjs --session`, which closes by PID the browsers this session's DevTools MCP servers launched (the plugin's `--isolated` one, `stage-pipeline-chrome`) and nothing of another session, and the run digest records its line (`Session browser: closed by PID …`). A close the hook rejects stays this session's: the edit that fixes the journal closes the browser. Rename the heading only after the last devtools-verify, final checks and catch-up included: a later MCP call would open a fresh browser. The short view you paste then says the browser was closed. `Session browser: left open — …; close: …` means the user switched the close off (`STAGE_PIPELINE_BROWSER_CLEANUP=off`) or the heading was closed outside this session's call: paste the line as it is and leave the browser open. Only when the short view has no `Session browser:` line at all (an older plugin in the session) run `node ${CLAUDE_PLUGIN_ROOT}/scripts/browser-cleanup.mjs --session` yourself before the summary and put its line in as `Browser: …`. Within the run, force does not close an `--isolated` browser per stage: it holds the login made at the interview (`/stage-check`, Step 4.6).
+
 A whole-branch `pro-review` or a `task-converge` report that is missing or older than the last tree change, and stays so, is a blocker that carries the fixed marker of that report: `B<n> — [final: pro-review — not run] <why>`, `B<n> — [final: task-converge — stale] <why>` (in a ru task the state takes its Russian form from the marker table in `references/language.md`). The hook reads only the marker: a blocker that names the checker in prose ("pro-review found a critical; the report lacks a recheck", "whole-branch pro-review was not run") does not cover the missing report, and the close is rejected with the marker to add.
 
 ```
 <TICKET> — force run completed: stages N of M, commits K
 Stages: 1 ✅ 2 ✅ 3 ⛔ B1 …
-<the short view of run-digest.mjs, whole: blockers, red CI gates and findings without an outcome line by line; the rest as numbers; the path to RUN-DIGEST.md>
+<the short view of run-digest.mjs, whole: blockers, red CI gates and findings without an outcome line by line; the rest as numbers; the session browser line; the path to RUN-DIGEST.md>
 Not done: <what was put outside the boundaries>
 Next: answers to the blockers → /stage-force will continue from the blocked one. The description — /task-wrapup, if needed. The push is yours.
 ```

@@ -31,6 +31,15 @@ import { readHookInput } from './hook-input.mjs'
  * Stage 3 of VT-1 — "completed" also needs the whole-branch pro-review and task-converge reports newer than the last commit that changed the tree
  * (receipts.mjs); the force commit itself is judged by git-guard against the stage's checker reports.
  *
+ * Stage 5b of VT-1 — the close of a Force block also closes the session's MCP browser (`browser-cleanup.mjs --session`: only this session's
+ * pipeline browsers, by PID; `ps` gets 1.5 s, the browser 0.8 s to exit before SIGKILL), and the run digest records what it did. Three browsers of idle sessions stayed open 18–23 h.
+ * Only the call that turned the heading from open to closed closes it (m-2, S-5): an Edit / MultiEdit whose `old_string` holds the open heading and `new_string`
+ * the closed one, a Write whose file held the open heading before the call (stamped by the PreToolUse run), a Bash call that names the task and whose PreToolUse
+ * stamp held the open heading — or a later call of the same session after that close was rejected and then fixed, unless the block was open again in between
+ * (f-3) or 7 days passed. A heading closed by hand, by another session,
+ * during an unrelated Bash call or by an older plugin leaves the browser open: the digest says so with the close command (`skipped: not this call`), and so it does
+ * with `STAGE_PIPELINE_BROWSER_CLEANUP=off` (`skipped: off`). Nothing about it can hold the close up: no `ps`, no session, an error — the digest says "not checked" or nothing.
+ *
  * The hook runs twice on every Bash call of every repo, so the common case is cheap: outside a pipeline repo the PreToolUse run leaves on a file-system check
  * (no git, no task reads), and the PostToolUse run reads its stamp first and stats only the stamped paths — the task state is read only when one of them changed.
  * The rule modules are loaded only then. Before an Edit / Write / MultiEdit of a task file the PreToolUse run only makes sure the task snapshot exists
@@ -45,7 +54,7 @@ const tool = input.tool_name ?? ''
 const toolInput = input.tool_input ?? {}
 const target = tool === 'Bash' ? '' : String(toolInput.file_path ?? '')
 if (tool !== 'Bash' && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
-const { hasPipelineConfig, pluginDataDir, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
+const { hasPipelineConfig, pluginDataDir, readBounded, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
 const cwd = input.cwd ?? process.cwd()
 const pre = input.hook_event_name === 'PreToolUse'
 
@@ -68,8 +77,15 @@ const statOf = (path) => {
 }
 
 // What a Bash call can change in the journal: STAGES.md and the reports of the tasks, by mtime and size; the directories that hold them, so a new file is seen too.
-const stampPath = join(pluginDataDir(), 'bash-start', `${String(input.tool_use_id ?? input.session_id ?? 'call').replace(/[^\w.-]/g, '_')}.json`)
+const callId = String(input.tool_use_id ?? input.session_id ?? 'call').replace(/[^\w.-]/g, '_')
+const stampPath = join(pluginDataDir(), 'bash-start', `${callId}.json`)
+// The freshest Force heading of STAGES.md before a Write: whether this Write is the one that closed the block (m-2).
+const writeStampPath = join(pluginDataDir(), 'write-start', `${callId}.json`)
+let writeStampRead // undefined — not read yet
+// The closes the hook rejected, by task and block: the session that made each one (see `rememberRejectedClose`).
+const REJECTED = join(pluginDataDir(), 'browser-close-rejected.json')
 let before = null
+let forceBefore = {} // task dir → the freshest Force heading before this Bash call (its PreToolUse stamp)
 if (tool === 'Bash' && !pre) {
   // PostToolUse: the stamp first — no stamp (outside the pipeline, or the pre-hook did not run), nothing to compare; no stamped path moved, nothing changed.
   try {
@@ -80,13 +96,34 @@ if (tool === 'Bash' && !pre) {
   }
   const files = before.files ?? before // a flat stamp of 0.16–0.18 before this change
   if (!Object.entries({ ...files, ...(before.dirs ?? {}) }).some(([path, stamp]) => statOf(path) !== stamp)) process.exit(0)
+  forceBefore = before.force ?? {}
   before = files
+}
+
+/** Writes a PreToolUse stamp; stamps of calls that never came back (an interrupted call) do not pile up. A stamp not written leaves the post-hook without it. */
+const saveStamp = (path, data) => {
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(data))
+    for (const name of readdirSync(dirname(path))) {
+      const old = join(dirname(path), name)
+      if (Date.now() - statSync(old).mtimeMs > 86_400_000) rmSync(old, { force: true })
+    }
+  } catch {
+    // not stamped — the post-hook of this call goes without it
+  }
 }
 if (pre && !hasPipelineConfig(cwd)) process.exit(0)
 
 if (pre && tool !== 'Bash') {
-  // Before an Edit / Write of a task file whose snapshot already exists there is nothing to do: no git, no task reads.
+  // Before an Edit / Write of a task file whose snapshot already exists there is nothing to do: no git, no task reads — except the Force heading a Write is about to replace.
   const file = real(resolve(cwd, target))
+  if (tool === 'Write' && basename(file) === 'STAGES.md') {
+    const { freshestForceHeading } = await import('../markers.mjs')
+    // through the bounded reader, as every hook read of a journal (m-3): a new journal, or one over 4 MB that no rule can read, has no heading before
+    const heading = freshestForceHeading(readBounded(file).text ?? '')?.[0] ?? null
+    saveStamp(writeStampPath, { file, heading })
+  }
   const dir = basename(dirname(file)) === 'checks' ? dirname(dirname(file)) : dirname(file)
   const { baselineName, snapshotCurrent } = await import('../baseline-file.mjs')
   for (const text of readDataFiles(pluginDataDir(), baselineName(dir))) {
@@ -137,14 +174,11 @@ const stampAll = () => {
 let changed = null
 if (tool === 'Bash') {
   if (pre) {
+    // with the freshest Force heading of each stamped task: the post-hook tells the call that closed the block from one that only ran while it closed
     try {
-      mkdirSync(dirname(stampPath), { recursive: true })
-      writeFileSync(stampPath, JSON.stringify(stampAll()))
-      // stamps of calls that never came back (an interrupted call) do not pile up
-      for (const name of readdirSync(dirname(stampPath))) {
-        const old = join(dirname(stampPath), name)
-        if (Date.now() - statSync(old).mtimeMs > 86_400_000) rmSync(old, { force: true })
-      }
+      const { freshestForceHeading } = await import('../markers.mjs')
+      const force = Object.fromEntries(state.tasks.filter((task) => task.current || named(task)).map((task) => [real(task.dir), freshestForceHeading(task.stages ?? '')?.[0] ?? null]))
+      saveStamp(stampPath, { ...stampAll(), force })
     } catch {
       // not stamped — the post-hook of this call stays silent
     }
@@ -162,8 +196,8 @@ if (!tasks.length) process.exit(0)
 const { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, readTaskFile, reportViolations } = await import('../journal-check.mjs')
 const { gateCloseViolations } = await import('../ci-gates.mjs')
 const { finalReviewViolations } = await import('../receipts.mjs')
-const { CLOSED_WORD } = await import('../markers.mjs')
-const { publishDigest, taskRepo } = await import('../run-digest.mjs')
+const { CLOSED_WORD, forceHeadings, forceKey } = await import('../markers.mjs')
+const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-digest.mjs')
 
 const messages = []
 const context = []
@@ -187,9 +221,9 @@ for (const task of tasks) {
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   if (!closing.length) {
-    const digest = closedDigest(task)
+    const digest = await closedDigest(task)
     if (digest) context.push(digest)
-  }
+  } else rememberRejectedClose(task)
 }
 
 if (messages.length) {
@@ -213,11 +247,16 @@ process.exit(0)
  * It goes into the final message as a whole: in one task the summary picked "kk/en texts, tab title",
  * and under that label lay two defects that the user found while using the product.
  */
-function closedDigest(task) {
+async function closedDigest(task) {
   const stages = readTaskFile(task.dir, 'STAGES.md')
   if (stages === null) return null
   const block = lastForceBlock(stages)
-  if (!block || !CLOSED_WORD.test(block.heading)) return null
+  if (!block) return null
+  // The block is open again (f-3): a close rejected before the reopen is not this session's close any more — the next close is judged on its own.
+  if (!CLOSED_WORD.test(block.heading)) {
+    forgetRejectedClose(task, block.heading)
+    return null
+  }
   const { lines } = baselineInfo(pluginDataDir(), task.dir)
   const shown = join(pluginDataDir(), 'digest-shown.json')
   let seen = {}
@@ -231,11 +270,18 @@ function closedDigest(task) {
   }
   const key = `${real(task.dir)}::${block.heading}`
   // A block closed before the snapshot is an old run: its summary was already seen.
-  if (seen[key] || lines.has(fingerprint(block.heading))) return null
+  if (lines.has(fingerprint(block.heading))) return null
+  const closer = closedByThisCall(task, block.heading) || closedEarlierBySession(task, block.heading)
+  // Once per close. A showing by a call that did not close the block (`by: 'other'`) still lets the closing call show it and close its browser (S-5);
+  // a showing of an earlier version (an ISO string) or by the closing call ends it.
+  const prior = seen[key]
+  if (prior && (prior?.by !== 'other' || !closer)) return null
+  await closeSessionBrowser(task, block, closer)
+  if (closer) forgetRejectedClose(task, block.heading)
   const { short, path } = publishDigest(task.dir, pluginDataDir(), taskRepo(task.dir, state))
   try {
     mkdirSync(pluginDataDir(), { recursive: true })
-    writeFileSync(shown, JSON.stringify({ ...seen, [key]: new Date().toISOString() }))
+    writeFileSync(shown, JSON.stringify({ ...seen, [key]: { at: new Date().toISOString(), by: closer ? 'close' : 'other' } }))
   } catch {
     // not written — the summary will come once more, which is safe
   }
@@ -244,4 +290,93 @@ function closedDigest(task) {
     `the full one is in ${path ?? 'RUN-DIGEST.md (could not be written)'}. Put the short one into the final message as a whole, without retelling or picking; ` +
     `on "more" or "what about X" open that section from the file instead of repeating everything.\n\n${short}`
   )
+}
+
+/**
+ * The force close closes this session's MCP browser (stage-force, "Output"); the line goes into the digest. It never fails the hook.
+ * Only the call that closed the block closes it (`closer`); otherwise, and with the off switch, the digest says the browser was left open and how to close it.
+ */
+async function closeSessionBrowser(task, block, closer) {
+  try {
+    const { CLOSE_COMMAND, OFF_SWITCH, closeSession } = await import('../browser-cleanup.mjs')
+    const skipped = process.env[OFF_SWITCH] === 'off' ? 'off' : closer ? null : 'not this call'
+    const result = skipped ? { skipped } : await closeSession({ waitMs: 800, psTimeout: 1500 })
+    recordBrowserCleanup(pluginDataDir(), task.dir, block.heading, { ...result, command: CLOSE_COMMAND })
+  } catch {
+    // the close of the run goes on; the digest just has no browser line
+  }
+}
+
+/**
+ * This call turned the block's heading from open to closed (m-2 / S-5 of VT-1 5b): an Edit / MultiEdit whose `old_string` holds the open heading and whose
+ * `new_string` holds the closed one; a Write whose file held the open heading before the call (the PreToolUse stamp); a Bash call that names the task and whose
+ * PreToolUse stamp held the open heading. A change made by someone else during an unrelated call is not this call's.
+ */
+function closedByThisCall(task, heading) {
+  const key = forceKey(heading)
+  const openIn = (text) => forceHeadings(String(text ?? '')).some(([line]) => !CLOSED_WORD.test(line) && forceKey(line) === key)
+  if (tool === 'Bash') return named(task) && openIn(forceBefore[task.dir])
+  if (filePath !== join(task.dir, 'STAGES.md')) return false
+  if (tool === 'Write') {
+    const stamp = writeStamp()
+    return stamp?.file === filePath && openIn(stamp.heading) && String(toolInput.content ?? '').includes(heading)
+  }
+  const edits = tool === 'MultiEdit' ? (Array.isArray(toolInput.edits) ? toolInput.edits : []) : [toolInput]
+  return edits.some((edit) => String(edit?.new_string ?? '').includes(heading) && openIn(edit?.old_string))
+}
+
+/** The Write stamp of this call, read once and removed. */
+function writeStamp() {
+  if (writeStampRead === undefined) {
+    try {
+      writeStampRead = JSON.parse(readFileSync(writeStampPath, 'utf8'))
+      rmSync(writeStampPath, { force: true })
+    } catch {
+      writeStampRead = null
+    }
+  }
+  return writeStampRead
+}
+
+/**
+ * A close the hook rejected (open blockers, a missing report) is still that session's close: the heading stays written, and the call that fixes the journal
+ * after it does not change the heading. The session that made the open → closed change is kept here, by task and block, until its close goes through, the block
+ * is open again (f-3), or 7 days pass.
+ */
+function rejectedKey(task, heading) {
+  return `${task.dir}::${forceKey(heading)}`
+}
+function recent(entry) {
+  return Date.parse(entry?.at ?? '') > Date.now() - 7 * 86_400_000
+}
+function readRejected() {
+  try {
+    const entries = JSON.parse(readFileSync(REJECTED, 'utf8'))
+    return entries && typeof entries === 'object' && !Array.isArray(entries) ? entries : {}
+  } catch {
+    return {}
+  }
+}
+function writeRejected(entries) {
+  try {
+    mkdirSync(dirname(REJECTED), { recursive: true })
+    writeFileSync(REJECTED, JSON.stringify(Object.fromEntries(Object.entries(entries).filter(([, entry]) => recent(entry)))))
+  } catch {
+    // not kept — that close leaves the browser open and says so
+  }
+}
+function rememberRejectedClose(task) {
+  const block = lastForceBlock(readTaskFile(task.dir, 'STAGES.md') ?? '')
+  if (!input.session_id || !block || !CLOSED_WORD.test(block.heading) || !closedByThisCall(task, block.heading)) return
+  writeRejected({ ...readRejected(), [rejectedKey(task, block.heading)]: { session: String(input.session_id), at: new Date().toISOString() } })
+}
+function closedEarlierBySession(task, heading) {
+  const entry = readRejected()[rejectedKey(task, heading)]
+  return Boolean(input.session_id) && entry?.session === String(input.session_id) && recent(entry)
+}
+function forgetRejectedClose(task, heading) {
+  const entries = readRejected()
+  if (!(rejectedKey(task, heading) in entries)) return
+  delete entries[rejectedKey(task, heading)]
+  writeRejected(entries)
 }

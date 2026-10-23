@@ -23,8 +23,11 @@
  *
  * The digest is a text for the user and belongs to the task's files, so its headings and lines are in the
  * task language (taskLanguage; unknown → ru, as before). Console messages are always English.
+ *
+ * Stage 5b of VT-1 — when a Force block closes, journal-gate closes the session's MCP browser (browser-cleanup.mjs --session) and records what it did
+ * (`recordBrowserCleanup`); both views carry that line for the run it belongs to, also when the orchestrator runs this script again for the summary.
  */
-import { existsSync, lstatSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
@@ -45,8 +48,9 @@ import {
 } from './journal-check.mjs'
 import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
-import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceHeadings, headingDate } from './markers.mjs'
-import { TASK_FILE_MAX, pluginDataDir, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
+import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceHeadings, forceKey, headingDate } from './markers.mjs'
+import { TASK_FILE_MAX, pluginDataDir, readDataFiles, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
+import { baselineName } from './baseline-file.mjs'
 import { bulletTexts, rollbackRank } from './decisions.mjs'
 
 const ACCEPTED = new Set(['fixed', 'false', 'blocker', 'user'])
@@ -98,6 +102,7 @@ const TEXT = {
         'ledger-weak': `checks/${name}: «${shown}» — отклонение без доказательства (${form}). Находка остаётся: исправить, вынести блокером B<n> или решение пользователя (${LEDGER_DOC}).`,
         'ledger-critical-fresh': `checks/${name}: «${shown}» — critical, отклонённый как ложный, проходит свежий прогон на review_model, и строка ссылается на его отчёт (checks/<чекер>-<этап>-fresh.md).`,
       })[rule],
+    browser: ({ closed = [], failed = [], left = [], skipped, command }) => `Браузер сессии: ${skipped === 'off' || skipped === 'not this call' ? `оставлен открытым — ${skipped === 'off' ? 'STAGE_PIPELINE_BROWSER_CLEANUP=off' : 'блок Force закрыт не этим вызовом сессии (вручную, в другой сессии или старой версией плагина)'}${command ? `; закрыть: \`${command}\`` : ''}` : skipped ? `не проверен — ${{ ps: '`ps` недоступен', session: 'над хуком нет сессии Claude Code' }[skipped] ?? skipped}` : failed.length ? `не закрыт — ${failed.map(({ pid, error }) => `${pid} (${error})`).join(', ')}; закрыть: \`kill <pid>\`` : closed.length ? `закрыт по PID ${closed.map(({ pid }) => pid).join(', ')} — следующий вызов MCP откроет новый` : 'на момент закрытия открыт не был'}${left.length ? `; оставлен открытым: ${left.map(({ pid }) => pid).join(', ')} (не профиль конвейера)` : ''}.`,
   },
   en: {
     blockers: (n) => `### Blockers — your answer needed (${n})`,
@@ -128,6 +133,8 @@ const TEXT = {
     file: (path) => `Full digest: ${path} — ask "more" and I will open the section you need from it.`,
     notWritten: (reason) => `Full digest not written: ${{ dirLink: 'the task directory is a symlink', fileLink: 'RUN-DIGEST.md is a symlink', notDir: 'the task path is not a directory', missing: 'the task directory does not exist', outside: 'the task directory is outside the task directory of the config', readonly: 'the task directory is not writable' }[reason]}.`,
     ledger: ({ message }) => message,
+    browser: ({ closed = [], failed = [], left = [], skipped, command }) =>
+      `Session browser: ${skipped === 'off' || skipped === 'not this call' ? `left open — ${skipped === 'off' ? 'STAGE_PIPELINE_BROWSER_CLEANUP=off' : 'the Force block was not closed by a call of this session (by hand, in another session or by an older plugin)'}${command ? `; close: \`${command}\`` : ''}` : skipped ? `not checked — ${{ ps: '`ps` is unavailable', session: 'no Claude Code session above the hook' }[skipped] ?? skipped}` : failed.length ? `not closed — ${failed.map(({ pid, error }) => `${pid} (${error})`).join(', ')}; close it with \`kill <pid>\`` : closed.length ? `closed by PID ${closed.map(({ pid }) => pid).join(', ')} — the next MCP call opens a fresh one` : 'none was open at the close'}${left.length ? `; left open: ${left.map(({ pid }) => pid).join(', ')} (not a pipeline profile)` : ''}.`,
   },
 }
 const megabytes = (bytes = TASK_FILE_MAX) => Number((bytes / 1024 / 1024).toFixed(2))
@@ -253,7 +260,33 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     const ui = uiFiles(receipt.files ?? [])
     return `${TEXT[language].noRuntimeLine({ stage: receipt.stage, sha: String(receipt.sha).slice(0, 7), ui: `${ui.slice(0, 3).join(', ')}${ui.length > 3 ? ` +${ui.length - 3}` : ''}`, skip: skip?.reason })}`
   })
-  return { language, text: TEXT[language], receipted, noRuntime, notReady, unreadable, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals }
+  const browser = block ? browserCleanupOf(dataDir, taskDir, block.heading) : null
+  return { language, text: TEXT[language], receipted, noRuntime, notReady, unreadable, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals, browser }
+}
+
+const browserRecord = (taskDir) => join('browser-cleanup', basename(baselineName(taskDir)))
+
+/**
+ * What journal-gate's close did with the session's MCP browser (`closeSession` of browser-cleanup.mjs), kept for the Force block it closed. `skipped`: `off` — the
+ * switch, `not this call` — the heading was closed outside the session's own closing call; both leave the browser open and carry `command`, the close to run.
+ */
+export function recordBrowserCleanup(dataDir, taskDir, heading, { session = null, closed = [], failed = [], left = [], skipped = null, command = null }) {
+  const path = join(dataDir, browserRecord(taskDir))
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify({ block: forceKey(heading), at: new Date().toISOString(), session, closed, failed, left, skipped, command }))
+}
+
+/** The record of that close for this Force block; null when the block's close did not run it (another run, a close before 0.18.1). */
+export function browserCleanupOf(dataDir, taskDir, heading) {
+  for (const text of readDataFiles(dataDir, browserRecord(taskDir))) {
+    try {
+      const record = JSON.parse(text)
+      if (record?.block === forceKey(heading)) return record
+    } catch {
+      // a broken record — none
+    }
+  }
+  return null
 }
 
 /** The full view: every line of every category (as the digest was before it had two views, plus the early-run note). */
@@ -279,6 +312,7 @@ function renderFull(d) {
   }
   out.push('', text.accepted(d.accepted.length), ...(d.accepted.length ? d.accepted : [text.none]))
   if (d.noRuntime.length) out.push('', text.noRuntime(d.noRuntime.length), ...d.noRuntime)
+  if (d.browser) out.push('', text.browser(d.browser))
   if (d.scope.sameDay) out.push('', text.sameDay(d.scope.sameDay, d.scope.date))
   return out.join('\n')
 }
@@ -323,6 +357,7 @@ function renderShort(d, path, unwritten = null) {
   if (d.noRuntime.length) out.push(text.noRuntime(d.noRuntime.length))
   else if (d.receipted) empty.push(text.labels.noRuntime)
   if (empty.length) out.push(text.noneOf(empty))
+  if (d.browser) out.push(text.browser(d.browser))
   if (d.scope.sameDay) out.push(text.sameDay(d.scope.sameDay, d.scope.date))
   if (path) out.push(text.file(path))
   else if (unwritten) out.push(text.notWritten(unwritten))
