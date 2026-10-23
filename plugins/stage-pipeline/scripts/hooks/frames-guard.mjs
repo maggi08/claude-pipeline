@@ -26,8 +26,8 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from 
  * Stage 5b of VT-1 — the agent leaves nothing running of what it opened. Each session's MCP server keeps one Chrome for the life of the session, and three of them
  * were still open 18–23 h after their sessions went idle, the app polling in their tabs. A stop is a reason to continue while:
  * - a page this agent opened with `new_page` (the `[selected]` id of the `## Pages` list in its answer; for a `new_page` that answered with an error, a new id at its
- *   URL in a later list — the fresh `[selected]` one, else the newest: ids only grow and `new_page` selects its tab, so an older page at the same URL is the
- *   orchestrator's) is still in the freshest `## Pages` list its MCP calls returned — unless it is the only page left and shows `about:blank`
+ *   URL in a later list — the fresh `[selected]` one whatever its URL (`about:blank` before the server answered, a redirect), else the newest at its URL: ids
+ *   only grow and `new_page` selects its tab, so an older page at the same URL is the orchestrator's) is still in the freshest `## Pages` list its MCP calls returned — unless it is the only page left and shows `about:blank`
  *   (MCP 1.6.0 refuses to close the last page: "The last open page cannot be closed"), and unless a later page tool of that list's server answered with the
  *   transport's disconnect error (m-2: no call can close the page any more; the agent names it under "Could not verify");
  * - a browser it launched still runs (S-1 of VT-1 5b: a PID counts only from the agent's own Bash call): the `journey: browser pid N` line of references/journey.mjs
@@ -198,8 +198,10 @@ function readPages(call, block, text) {
   // An errored new_page's tab: the fresh selected id first (new_page selects its tab), then the newest — an older unseen page at that URL is someone else's (m-1).
   const candidates = fresh.sort((a, b) => b - a)
   if (fresh.includes(selected)) candidates.unshift(...candidates.splice(candidates.indexOf(selected), 1))
+  // m-1 (branch 9): new_page selects its tab before it navigates, so a fresh selected page (not from select_page, no note) is the errored one's whatever its URL.
+  const tab = !fallback && !/(?:^|__)select_page$/.test(call.name) ? selected : undefined
   for (const id of candidates) {
-    const at = unlisted.indexOf(pages.get(id).url)
+    const at = id === tab ? unlisted.length - 1 : unlisted.indexOf(pages.get(id).url)
     if (at === -1 || opened.has(id) || id === reselected) continue
     opened.add(id)
     unlisted.splice(at, 1)
