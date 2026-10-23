@@ -35,7 +35,7 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from 
  *   of the backgrounded command, or of a `bash -c "…"` string in it, is a browser by browser-cleanup's list of names (m-1) or a script runner (m-5: `timeout 600 node …`);
  *   alive now, a browser executable (itself or below it), and started after the agent's first transcript record. A transcript with no timestamps attributes no PID.
  *   Never a number from an MCP answer, a page's console text or a `pgrep` listing.
- * The page list is read only from the answers of the page tools (`new_page`, `list_pages`, `select_page`, `close_page`, `navigate_page`, `handle_dialog`) and only
+ * The page list is read only from the answers of the page tools (`new_page`, `list_pages`, `select_page`, `close_page`, `navigate_page`, `resize_page`, `handle_dialog`) and only
  * from their own `## Pages` section — a console message the page logged is the page's text, not the MCP's (S-2), and an answer with an open dialog gives no list
  * (f-1) — with a linear parse.
  * Pages the orchestrator or another checker opened, and the session's MCP browser itself, are not the agent's. A force run already open when this plugin
@@ -61,7 +61,7 @@ let doctored = false
 let verdict = null // the last doctor result: `ok`, `no dev url`, `wrong app`, `down`, `no config`, `error`; 'none' — a call with no verdict (yet)
 let navigation = null // null — fine; 'blind' — navigated before any verify-doctor call; otherwise the verdict the navigation came after
 const NEW_PAGE = /(?:^|__)new_page$/
-const PAGE_TOOL = /^mcp__.*__(?:new_page|list_pages|select_page|close_page|navigate_page|handle_dialog)$/
+const PAGE_TOOL = /^mcp__.*__(?:new_page|list_pages|select_page|close_page|navigate_page|resize_page|handle_dialog)$/
 // The error a page tool gets once its MCP server is gone (m-2), in the transport's own words at the start of the answer: Claude Code's `MCP server "…" is not
 // connected`, the MCP SDK's `MCP error -32000: Connection closed`. Anywhere else in an error answer the words can be the page's or the agent's (m-4): MCP 1.6.0
 // writes the page's open dialog into it (`# Open dialog\nalert: Not connected…`), and a failed `new_page` the URL it was given (`… at http://…?amount=-32000`).
