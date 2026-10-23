@@ -189,6 +189,8 @@ function readPages(call, block, text) {
   // m-1: when the selected page was closed, the answer re-selects page 1 under a note before `## Pages`: that page is not new_page's. Only a fresh selected id counts.
   const fallback = FALLBACK_NOTE.test(text.slice(0, Math.max(0, text.search(/^## Pages\b/m))))
   if (NEW_PAGE.test(call.name) && !block.is_error && selected !== undefined && fresh.includes(selected) && !fallback) opened.add(selected)
+  // m-1 (final check, run 4): the note says the tab an errored new_page made closed itself, so its pending URL is gone and page 1 is not its tab.
+  if (fallback && unlisted.length > 0) unlisted.pop()
   // An errored new_page's tab: the fresh selected id first (new_page selects its tab), then the newest — an older unseen page at that URL is someone else's (m-1).
   const candidates = fresh.sort((a, b) => b - a)
   if (fresh.includes(selected)) candidates.unshift(...candidates.splice(candidates.indexOf(selected), 1))
