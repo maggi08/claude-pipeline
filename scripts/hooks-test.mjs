@@ -4292,6 +4292,17 @@ rmSync(retroRoot, { recursive: true, force: true })
     const SAME_URL = [...DOC, [call(`${MCP}new_page`, { url: 'http://localhost:3000/' }, 'n1')], [answer('n1', 'Navigation timeout of 10000 ms exceeded', { is_error: true })], [call(`${MCP}list_pages`, {}, 'l1')], [answer('l1', pageList(`1: ${HOME}`, `2: ${HOME} [selected]`))]]
     const sameUrlClosed = guard([...SAME_URL, [call(`${MCP}close_page`, { pageId: 2 }, 'c1')], [answer('c1', pageList(`1: ${HOME} [selected]`))]])
     check('frames-guard m-1: the orchestrator\'s page and the agent\'s timed-out new_page on the same URL, the agent closes its page 2 — passes', sameUrlClosed.decision === 'allow', sameUrlClosed.text)
+    // m-1 (final check, run 4): the agent's tab closed itself on load; MCP 1.6.0 answers new_page with a note and re-selects page 1, the orchestrator's login page
+    const FALLBACK = `Note: the previously selected page was closed. Page 1 is now selected.\n${pageList(`1: ${LOGIN} [selected]`)}`
+    const closedSelf = guard([...DOC, [call(`${MCP}list_pages`, {}, 'l1')], [answer('l1', pageList(`1: ${LOGIN} [selected]`))], [call(`${MCP}new_page`, { url: 'http://localhost:3000/bye' }, 'n1')], [answer('n1', FALLBACK)]])
+    check('frames-guard m-1 incident (run 4): new_page whose tab closed itself, answer re-selects the orchestrator\'s page 1 under the fallback note — passes, page 1 not attributed', closedSelf.decision === 'allow' && !/opened by your new_page/.test(closedSelf.text), closedSelf.text)
+    const normalNew = guard([...DOC, [call(`${MCP}list_pages`, {}, 'l1')], [answer('l1', pageList(`1: ${LOGIN} [selected]`))], [call(`${MCP}new_page`, { url: 'http://localhost:3000/orders' }, 'n1')], [answer('n1', pageList(`1: ${LOGIN}`, '2: Orders (http://localhost:3000/orders) [selected]'))]])
+    check('frames-guard m-1 legit twin (run 4): list_pages, then a normal new_page creating page 2 left open — blocked, names page 2', normalNew.decision === 'block' && /page 2 —/.test(normalNew.text) && !/page 1 —/.test(normalNew.text), normalNew.text)
+    // m-3 (final check, run 4): an untitled page whose URL ends in `(about:blank)` is that URL, not a blank page
+    const UNTITLED_BLANK = guard([...DOC, [call(`${MCP}new_page`, { url: 'http://localhost:3000/#(about:blank)' }, 'n1')], [answer('n1', pageList('2: http://localhost:3000/#(about:blank) [selected]'))]])
+    check('frames-guard m-3 incident (run 4): the only page is untitled `http://localhost:3000/#(about:blank)` — blocked, the page rule is on', UNTITLED_BLANK.decision === 'block', UNTITLED_BLANK.text)
+    const TITLED_BLANK = guard([...DOC, [call(`${MCP}new_page`, { url: 'http://localhost:3000/' }, 'n1')], [answer('n1', pageList('2: Blank (about:blank) [selected]'))]])
+    check('frames-guard m-3 legit twin (run 4): the last page titled `Blank (about:blank)` — passes', TITLED_BLANK.decision === 'allow', TITLED_BLANK.text)
     const sameUrlLeft = guard(SAME_URL)
     check('frames-guard m-1 incident twin: the agent leaves its page 2 — blocked, the message names page 2, never the orchestrator\'s page 1', sameUrlLeft.decision === 'block' && /page 2 — http:\/\/localhost:3000\//.test(sameUrlLeft.text) && !/page 1 —/.test(sameUrlLeft.text), sameUrlLeft.text)
     // S-2: the page list comes only from the page tools' own `## Pages` section — a console message the page logged is the page's text
@@ -4426,6 +4437,9 @@ rmSync(retroRoot, { recursive: true, force: true })
       ['caffeinate -i node /tmp/journey.mjs > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
       ['bash -c "node /tmp/journey.mjs" > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
       ['yarn dev > /tmp/d.log 2>&1 & chromium --headless=new > /tmp/c.log 2>&1 & echo $!', linuxChrome.pid],
+      ['yarn playwright test e2e/login.spec.ts > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['pnpm exec playwright test > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
+      ['npm run journey > /tmp/j.log 2>&1 & echo $!', launcherBg.pid],
     ]
     const named = (pid) => (pid === linuxChrome.pid ? `pid ${pid} — a browser you launched \\(google-chrome\\)` : `pid ${pid} — launched browser pid ${launcherChrome} \\(google-chrome\\)`)
     const wrappedMissed = WRAPPED.map(([command, pid]) => [command, guard([...DOC, [call('Bash', { command }, 'w1')], [answer('w1', `${pid}\n`)]]), pid]).filter(([, run, pid]) => !(run.decision === 'block' && new RegExp(named(pid)).test(run.text)))
@@ -4434,6 +4448,9 @@ rmSync(retroRoot, { recursive: true, force: true })
       Boolean(launcherChrome) && !wrappedMissed.length,
       `${launcherChrome} ${JSON.stringify(wrappedMissed.map(([command, run]) => [command, run.decision, run.text.slice(0, 160)]))}`,
     )
+    // m-2 (final check, run 4): a package-manager launch names the PID too; the PID counts only with a young browser below it, so a dev server stays unnamed
+    const yarnDev = guard([...DOC, [call('Bash', { command: 'yarn dev > /tmp/d.log 2>&1 & echo $!' }, 'y1')], [answer('y1', `${devServer.pid}\n`)]])
+    check('frames-guard m-2 legit twin: `yarn dev … & echo $!` whose PID has no browser below it — passes', yarnDev.decision === 'allow', yarnDev.text)
     // S-1: a PID is the agent's only from its own Bash call — the incident forms of the security review must not block, the legit one must
     const otherChrome5b = fakeBrowser('another-session')
     await pause(200)

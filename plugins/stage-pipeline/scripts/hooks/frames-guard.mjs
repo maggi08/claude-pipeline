@@ -66,11 +66,12 @@ const PAGE_TOOL = /^mcp__.*__(?:new_page|list_pages|select_page|close_page|navig
 // connected`, the MCP SDK's `MCP error -32000: Connection closed`. Anywhere else in an error answer the words can be the page's or the agent's (m-4): MCP 1.6.0
 // writes the page's open dialog into it (`# Open dialog\nalert: Not connected…`), and a failed `new_page` the URL it was given (`… at http://…?amount=-32000`).
 const DISCONNECT = /^(?:<tool_use_error>)?(?:Error: )?(?:MCP error -32000: Connection closed|MCP server "[^"\n]*" is not connected)\b/
+const FALLBACK_NOTE = /^Note: the previously selected page (?:was closed|is no longer listed)/m
 const OPEN_DIALOG = /^# Open dialog\b/m
 // `<a browser or a script runner> … & echo $!`: the background start the skills prescribe for a process the agent stops itself. Any word of the backgrounded
 // command counts, not only its first (m-5: a wrapper runs the program — `timeout 600 node …`, `/usr/bin/env node …`, `nice -n 10 …`, `caffeinate -i …`); a browser
 // is told by browser-cleanup's list of names (m-1: a list of its own here missed `google-chrome`, `chromium-browser`), a runner by this.
-const RUNNER = /^(?:node|npx|bun|deno|tsx)$/i
+const RUNNER = /^(?:node|npx|npm|pnpm|yarn|bun|deno|tsx|ts-node|playwright)$/i
 const { executableName, isBrowserLike, isBrowserName } = await import('../browser-cleanup.mjs')
 // The `echo $!` right after a background `&`, as a command of its own: only a separator or the end follows it, so its number is printed, not redirected or piped
 // (f-2: in `… & echo $! > /tmp/s.pid; pgrep -n -f "Google Chrome"` the one printed number is pgrep's).
@@ -152,9 +153,9 @@ function readPageList(text) {
   return pages
 }
 
-// A titled page is `<title> (<url>)`, an untitled one is the URL itself.
+// A titled page is `<title> (<url>)`, an untitled one is the URL itself. The space before the parenthesis tells them apart (m-3: an untitled `http://x/#(about:blank)` is no blank page).
 function pageUrl(label) {
-  return normalUrl(/\(([a-z][a-z0-9+.-]*:[^\s()]*)\)$/i.exec(label)?.[1] ?? label)
+  return normalUrl(/ \(([a-z][a-z0-9+.-]*:[^\s()]*)\)$/i.exec(label)?.[1] ?? label)
 }
 
 function normalUrl(url) {
@@ -185,7 +186,9 @@ function readPages(call, block, text) {
   const fresh = [...pages.keys()].filter((id) => !seenPages.has(id))
   for (const id of pages.keys()) seenPages.add(id)
   const selected = [...pages].find(([, page]) => page.selected)?.[0]
-  if (NEW_PAGE.test(call.name) && !block.is_error && selected !== undefined) opened.add(selected)
+  // m-1: when the selected page was closed, the answer re-selects page 1 under a note before `## Pages`: that page is not new_page's. Only a fresh selected id counts.
+  const fallback = FALLBACK_NOTE.test(text.slice(0, Math.max(0, text.search(/^## Pages\b/m))))
+  if (NEW_PAGE.test(call.name) && !block.is_error && selected !== undefined && fresh.includes(selected) && !fallback) opened.add(selected)
   // An errored new_page's tab: the fresh selected id first (new_page selects its tab), then the newest — an older unseen page at that URL is someone else's (m-1).
   const candidates = fresh.sort((a, b) => b - a)
   if (fresh.includes(selected)) candidates.unshift(...candidates.splice(candidates.indexOf(selected), 1))
