@@ -22,7 +22,8 @@ import { alive, ancestors, commandOf, cwdOf, descendants, identityOf, processTab
  * it is: there can be more than one (the plugin's, a second one after a reconnect, the opt-in `stage-pipeline-chrome`). A browser is the Chrome main process
  * below a server (a child or a grandchild: `npm exec` → `chrome-devtools-mcp` → Chrome), the one with `--user-data-dir=` and no `--type=`; its helpers go with it.
  * `--session` closes the temp-profile browsers (`puppeteer_dev_chrome_profile`, the plugin's `--isolated` server) and the `stage-pipeline-chrome` one; a browser
- * on any other profile (a project's own `chrome-devtools` server on its shared default profile) is the user's and is only listed.
+ * on any other profile (a project's own `chrome-devtools` server on its shared default profile) is the user's and is only listed; a project server started with
+ * `--isolated` also runs on a puppeteer temp profile and cannot be told from the plugin's, so `--session` closes this session's browser of it too.
  * Another session's browser is never closed: it may hold a running force run's login.
  *
  * Processes are killed by PID only: the command line is read again right before the signal (a PID can be reused), then SIGTERM, then SIGKILL
