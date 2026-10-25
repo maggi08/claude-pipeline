@@ -25,11 +25,13 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from 
  *
  * Stage 5b of VT-1 — the agent leaves nothing running of what it opened. Each session's MCP server keeps one Chrome for the life of the session, and three of them
  * were still open 18–23 h after their sessions went idle, the app polling in their tabs. A stop is a reason to continue while:
- * - a page this agent opened with `new_page` (the `[selected]` id of the `## Pages` list in its answer; for a `new_page` that answered with an error, a new id at its
- *   URL in a later list — the newest at its URL (ids only grow, so an older page at the same URL is the orchestrator's); when no list came before the call, the fresh
- *   `[selected]` one first whatever its URL (`about:blank` before the server answered, a redirect), and in the first list after the call, when no URL matches (`new_page` selects its tab)) is still in the freshest `## Pages` list its MCP calls returned — unless it is the only page left and shows `about:blank`
+ * - a page this agent opened with `new_page` is still in the freshest `## Pages` list its MCP calls returned — unless it is the only page left and shows `about:blank`
  *   (MCP 1.6.0 refuses to close the last page: "The last open page cannot be closed"), and unless a later page tool of that list's server answered with the
- *   transport's disconnect error (m-2: no call can close the page any more; the agent names it under "Could not verify");
+ *   transport's disconnect error (m-2: no call can close the page any more; the agent names it under "Could not verify"). A page is the agent's only when its own
+ *   successful `new_page` answer listed it as the fresh `[selected]` page (an id no earlier list showed, with no `Note: the previously selected page …` before the list:
+ *   that note re-selects the orchestrator's page 1). The guard never names a page it cannot attribute (B8 of VT-1): the tab a `new_page` that answered with an error may have
+ *   left, and the tab of a `new_page` answered with an open dialog (no list to trust, f-1), are not matched by URL or by position — another agent's or the orchestrator's page
+ *   can sit at the same URL or id. Those are the skill's to close (devtools-verify, "Closing": `list_pages`, then `close_page`), and a force run closes the session browser at its end;
  * - a browser it launched still runs (S-1 of VT-1 5b: a PID counts only from the agent's own Bash call): the `journey: browser pid N` line of references/journey.mjs
  *   in a Bash result, or the single number a Bash call printed for `<a browser or a node/npx script> … & echo $!` when that echo's output is printed (f-2) — a word
  *   of the backgrounded command, or of a `bash -c "…"` string in it, is a browser by browser-cleanup's list of names (m-1) or a script runner (m-5: `timeout 600 node …`);
@@ -81,8 +83,7 @@ let pageList = null // the freshest `## Pages` list an MCP call returned: id →
 let listServer = null // the MCP server whose page tool returned that list (`mcp__<server>__<tool>`)
 let serverGone = false // a page tool of that server answered with a disconnect error after the list: no call can close a page there any more (m-2)
 const seenPages = new Set() // every page id any list showed
-const opened = new Set() // page ids this agent opened with new_page
-const unlisted = [] // new_page calls that answered without a list (the tab was made, then the load failed): { url, recent: made since the last list, blind: no list before it }
+const opened = new Set() // page ids this agent opened: the fresh selected id of a successful new_page's own list
 const launched = new Set() // PIDs of browsers (or of the scripts that launched them) the agent started
 for (const line of readFileSync(transcript, 'utf8').split('\n')) {
   if (!line.trim()) continue
@@ -131,8 +132,8 @@ function readRecord(record) {
  * The `## Pages` section of a page tool's answer: `2: Orders (http://localhost:3000/orders) [selected]`, `1: about:blank`. The MCP writes it before the console,
  * network and snapshot sections, so the first one at a line start is its own; it ends at the next `## ` line. Each line is cut by string ops, no backtracking.
  * Only the `# Open dialog` block comes before it, and that block carries the dialog's message: the page's own text, newlines included (f-1, an
- * `alert("…\n## Pages\n1: about:blank")`). An answer with an open dialog gives no list: its `new_page` goes to `unlisted`, and the next clean list decides
- * (`handle_dialog` returns one).
+ * `alert("…\n## Pages\n1: about:blank")`). An answer with an open dialog gives no list, and a `new_page` answered that way opens nothing the guard names
+ * (A29 of VT-1: the next clean list, `handle_dialog`'s, does not tell whose page is new).
  */
 function readPageList(text) {
   const head = /^## Pages[ \t]*$/m.exec(text)
@@ -167,6 +168,9 @@ function normalUrl(url) {
 }
 
 /**
+ * One page tool's answer. A good list becomes the freshest one; a successful `new_page` whose list shows a fresh `[selected]` page, with no fallback note, opened that page.
+ * Nothing else names a page (B8 of VT-1): not an errored `new_page`, not a `new_page` answered with an open dialog, not a later list.
+ *
  * The server is gone (m-2): an error answer of a page tool of the server whose list is the freshest, with no list, that starts with the transport's disconnect
  * error. After a disconnect no `close_page` can be answered, so a page rule that waited for a fresh list could never be met: every stop would be blocked until
  * Claude Code ends the loop. Only that start of a page tool's error answer counts. A console message is the page's text (S-2); an error answer can carry the page's
@@ -178,7 +182,6 @@ function readPages(call, block, text) {
   const server = call.name.slice(0, call.name.lastIndexOf('__'))
   if (!pages) {
     if (block.is_error === true && server === listServer && !OPEN_DIALOG.test(text) && DISCONNECT.test(text.trimStart())) serverGone = true
-    if (NEW_PAGE.test(call.name)) unlisted.push({ url: normalUrl(call.input.url), recent: true, blind: seenPages.size === 0 })
     return
   }
   listServer = server
@@ -189,39 +192,6 @@ function readPages(call, block, text) {
   // m-1: when the selected page was closed, the answer re-selects page 1 under a note before `## Pages`: that page is not new_page's. Only a fresh selected id counts.
   const fallback = FALLBACK_NOTE.test(text.slice(0, Math.max(0, text.search(/^## Pages\b/m))))
   if (NEW_PAGE.test(call.name) && !block.is_error && selected !== undefined && fresh.includes(selected) && !fallback) opened.add(selected)
-  // m-1 (final check, run 4): the note says the tab an errored new_page made closed itself, so its pending URL is gone and page 1 is not its tab.
-  // m-1 (branch 7): not on a successful new_page's own answer, whose note is about its own tab; the pending URL of an earlier errored one stays.
-  const own = NEW_PAGE.test(call.name) && !block.is_error
-  if (fallback && !own && unlisted.length > 0) unlisted.pop()
-  // m-2 (branch 7): the note re-selects the oldest page, the orchestrator's, so it never matches a pending URL (a retried errored new_page).
-  const reselected = fallback ? selected : undefined
-  const eligible = (id) => !opened.has(id) && id !== reselected
-  // An errored new_page's tab by URL: the fresh selected id first (new_page selects its tab), then the newest — an older unseen page at that URL is someone else's (m-1).
-  const byUrl = () => {
-    for (const id of [...fresh].sort((a, b) => (b === selected) - (a === selected) || b - a)) {
-      const at = unlisted.findIndex((entry) => entry.url === pages.get(id).url)
-      if (at === -1 || !eligible(id)) continue
-      opened.add(id)
-      unlisted.splice(at, 1)
-    }
-  }
-  // By tab (m-1 branch 9, narrowed in m-1 branch 10): new_page selects its tab before it navigates, so a fresh selected page is the errored one's whatever its URL
-  // (`about:blank`, a redirect) — but only for a call made since the last list (`recent`), never the lowest listed id (the orchestrator's), not under the fallback
-  // note or after select_page. A stale pending URL or another agent's tab is not named.
-  const lowest = Math.min(...pages.keys())
-  const byTab = () => {
-    if (fallback || /(?:^|__)select_page$/.test(call.name)) return
-    const ids = fresh.filter((id) => id !== lowest && eligible(id)).sort((a, b) => (b === selected) - (a === selected) || b - a)
-    for (const id of ids) {
-      const at = unlisted.findLastIndex((entry) => entry.recent)
-      if (at === -1) break
-      opened.add(id)
-      unlisted.splice(at, 1)
-    }
-  }
-  // m-2 (branch 10): a retried new_page before any list (`blind`) has no earlier page to tell its tab from, so the tab rule goes first; otherwise the URL does.
-  if (unlisted.some((entry) => entry.recent && entry.blind)) { byTab(); byUrl() } else { byUrl(); byTab() }
-  for (const entry of unlisted) entry.recent = false
   pageList = pages
 }
 
