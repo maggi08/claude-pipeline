@@ -48,7 +48,7 @@ import {
 } from './journal-check.mjs'
 import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
-import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceHeadings, forceKey, headingDate } from './markers.mjs'
+import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceBlockDate, forceHeadings, forceKey, headingDate } from './markers.mjs'
 import { TASK_FILE_MAX, pluginDataDir, readDataFiles, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
 import { baselineName } from './baseline-file.mjs'
 import { bulletTexts, rollbackRank } from './decisions.mjs'
@@ -160,7 +160,7 @@ const lineDate = (line) => {
  * reports are taken from (the later of the run date and the task snapshot), and how many other blocks sit on the same date.
  */
 export function runScope(stages, block, ledgerSince) {
-  const date = block ? (headingDate(block.heading) ?? headingDate(block.body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')) : null
+  const date = block ? forceBlockDate(block.heading, block.body) : null
   const start = date ? new Date(`${date}T00:00:00`).getTime() : 0
   const sameDay = date ? forceHeadings(stages).filter(([heading]) => heading !== block.heading && headingDate(heading) === date).length : 0
   return { date, since: Math.max(ledgerSince, start), sameDay }
@@ -200,7 +200,7 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   // Read the way journal-gate reads a fresh report (strict + taskDir; `ledgerOld` is the old/new split).
   const ledgers = reports.map(({ name, text }) => ({ name, violations: ledgerViolations(text, name, { complete: true, strict: strictFor(name), taskDir }) }))
 
-  const blockers = (block ? openBlockers(block.body) : []).map((line) => `- ${bullet(line)}`)
+  const blockers = (block ? openBlockers(block) : []).map((line) => `- ${bullet(line)}`)
   const gates = (repo ? gateStatus(dataDir, repo.worktree, repo.config, forceSkips(taskDir)) : []).map((gate) => ({ ok: gateAccepted(gate), skipped: gate.status === 'skipped', lastRed: Boolean(gate.lastRed), line: `- ${gate.status === 'green' ? '✅' : gate.status === 'skipped' ? '⏭' : '✗'} ${describe(gate, language)}` }))
   const noOutcome = ledgers.flatMap(({ violations }) => violations.map((violation) => `- ${TEXT[language].ledger(violation)}`))
 

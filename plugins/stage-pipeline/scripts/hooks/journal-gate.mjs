@@ -287,7 +287,7 @@ async function closedDigest(task) {
   }
   return (
     `stage-pipeline: force run ${task.ticket} is closed. Below is the short summary, picked by the script from the journal and reports; ` +
-    `the full one is in ${path ?? 'RUN-DIGEST.md (could not be written)'}. Put the short one into the final message as a whole, without retelling or picking; ` +
+    `the full one is in ${path ?? 'RUN-DIGEST.md (could not be written)'}. Put the short one into the final message as a whole, without retelling or picking, as plain markdown and never inside a code block (its headings must render); ` +
     `on "more" or "what about X" open that section from the file instead of repeating everything.\n\n${short}`
   )
 }

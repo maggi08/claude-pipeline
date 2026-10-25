@@ -23,8 +23,13 @@ import { pathToFileURL } from 'node:url'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
   AUTH_LINE,
+  BLOCKER_FIELD_SINCE,
   BLOCKER_LIFTED,
+  BLOCKER_LIFT_FIELD,
+  BLOCKER_LIFT_SUBITEM,
   BLOCKER_LINE,
+  INTERVIEW_FIELD,
+  PLAIN_BLOCKER_LINE,
   CLOSED_WORD,
   DEAD_CODE_REMOVE,
   DOCTOR_LINE,
@@ -36,6 +41,7 @@ import {
   VISUAL_REFERENCE_FIELD,
   WITH_BLOCKERS,
   forceBlockBody,
+  forceBlockDate,
   forceHeadings,
   forceKey,
   freshestForceHeading,
@@ -924,18 +930,54 @@ const fieldLifted = (field) => {
   const last = field.slice(0, end).split(/[.;](?=\s)|[—–]/).pop().trim()
   return FIELD_CLOSING.test(last)
 }
-/** Every blocker line of a block body, whether lifted or open (a field the whole of which is lifted is left out). */
-export const blockerLines = (body) =>
-  body
-    .split('\n')
-    .flatMap((line) => {
-      const field = line.match(BLOCKERS_FIELD)
-      if (field && fieldLifted(field[1])) return []
-      return field ? field[1].replace(/([.;])\s+(?=B\d+\s*[—–:-])/g, '$1\n').split('\n') : [line]
-    })
-    .filter((line) => BLOCKER_LINE.test(line))
-    .map((line) => line.trim())
-export const openBlockers = (body) => blockerLines(body).filter((line) => !BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' ')))
+const asBlock = (input) => (typeof input === 'string' ? { heading: '', body: input } : input)
+const isBullet = (line) => /^[^\S\n]*[-*][^\S\n]/.test(line)
+const indentOf = (line) => line.length - line.trimStart().length
+/**
+ * The one reader of blocker state (stage 5e, K5): every caller passes the Force block (`lastForceBlock`), and the date comes from the block.
+ * A block dated on or after `BLOCKER_FIELD_SINCE` is read by the fixed field alone: a blocker is lifted by the lift field (`Lifted:`, or its Russian form) in its own text or on an indented sub-item,
+ * and no word of the description and no field-wide mark lifts anything. An older or undated block (or a bare body text) keeps the word matcher and the field-wide marks.
+ * A carried blocker `B<n> (<run>) …` is a blocker line in every field except the interview answers, where it answers one.
+ */
+function blockerEntries(input) {
+  const { heading, body } = asBlock(input)
+  const date = forceBlockDate(heading, body)
+  const fixed = Boolean(date) && date >= BLOCKER_FIELD_SINCE
+  const lines = body.split('\n')
+  const found = []
+  let interview = null
+  lines.forEach((line, index) => {
+    if (interview && line.trim() && indentOf(line) <= interview.indent && (interview.bullet || !isBullet(line))) interview = null
+    if (!interview && INTERVIEW_FIELD.test(line)) interview = { indent: indentOf(line), bullet: isBullet(line) }
+    const field = line.match(BLOCKERS_FIELD)
+    if (field) {
+      if (!fixed && fieldLifted(field[1])) return
+      for (const piece of field[1].replace(/([.;])\s+(?=B\d+(?:[^\S\n]*[—–:-]|[^\S\n]*\(\d{1,3}\)(?:[^\S\n]*[—–:-]|[^\S\n]+\S)))/g, '$1\n').split('\n')) {
+        if (BLOCKER_LINE.test(piece)) found.push({ line: piece.trim(), sub: false })
+      }
+      return
+    }
+    if (!(interview ? PLAIN_BLOCKER_LINE : BLOCKER_LINE).test(line)) return
+    let sub = false
+    if (fixed) {
+      for (let next = index + 1; next < lines.length; next++) {
+        if (!lines[next].trim()) continue
+        if (indentOf(lines[next]) <= indentOf(line) || BLOCKER_LINE.test(lines[next])) break
+        if (BLOCKER_LIFT_SUBITEM.test(lines[next])) sub = true
+      }
+    }
+    found.push({ line: line.trim(), sub })
+  })
+  return { fixed, found }
+}
+/** Every blocker line of a Force block (or of a bare body text), whether lifted or open (a field the whole of which is lifted is left out in a block read by words). */
+export const blockerLines = (input) => blockerEntries(input).found.map(({ line }) => line)
+export const openBlockers = (input) => {
+  const { fixed, found } = blockerEntries(input)
+  return found
+    .filter(({ line, sub }) => !(fixed ? sub || BLOCKER_LIFT_FIELD.test(line) : BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' '))))
+    .map(({ line }) => line)
+}
 
 /**
  * Closing a force run as "completed" (without "with blockers") with open blockers or reports without an outcome.
@@ -953,7 +995,7 @@ export function forceCloseViolations(dataDir, taskDir) {
   if (lines.has(fingerprint(block.heading))) return []
   if (WITH_BLOCKERS.test(block.heading)) return []
   const found = []
-  const blockers = openBlockers(block.body)
+  const blockers = openBlockers(block)
   if (blockers.length) {
     found.push({
       rule: 'force-blockers',

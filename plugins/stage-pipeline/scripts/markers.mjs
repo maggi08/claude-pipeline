@@ -228,7 +228,26 @@ export const CONFIRMED_LINE = /^[ \t]*(?:[-*][ \t]*)?\**(?:Подтвержд[е
 export const MODE_WORD = 'режим|mode'
 
 /** A blocker `B<n> — …`. */
-export const BLOCKER_LINE = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**\s*[—–:-]/
+export const PLAIN_BLOCKER_LINE = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**\s*[—–:-]/
+/** A blocker `B<n> — …`, or the one carried from an earlier run: `B<n> (<run>) — …` / `B<n> (<run>) text` (stage 5e, K4). */
+export const BLOCKER_LINE = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**(?:\s*[—–:-]|[^\S\n]*\(\d{1,3}\)\**(?:[^\S\n]*[—–:-]|[^\S\n]+\S))/
+/** The `Interview answers` field (or the Russian form): `B<n> (<run>) — accept the recommendation` there answers a blocker, it is not one. */
+export const INTERVIEW_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Ответы\s+интервью|Interview\s+answers)[^:\n]{0,200}:/i
+/**
+ * The first day a Force block is read by the fixed lift field alone (VT-2 / stage 5e, K1). A block dated on or after it: a blocker is lifted only by
+ * the lift field (`Lifted:`, or its Russian form). An older or undated block keeps the word matcher below (D7: no retrofitting).
+ */
+export const BLOCKER_FIELD_SINCE = '2026-10-26'
+/** The date of a Force block: its heading, else its `Confirmed:` line (the Russian form too); null when neither has one. */
+export const forceBlockDate = (heading, body) => headingDate(heading) ?? headingDate(body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')
+/**
+ * The fixed lift field inside a blocker's own text: the lift field (`Lifted:`, or its Russian form) (bold allowed) that opens a segment — right after the ID (and its run) or after
+ * `—`, `–`, `;`, `.`, `(` — and is followed, within 120 characters on the same line, by a date (`YYYY-MM-DD` or `DD.MM.YYYY`) — who and when. "Lifted: no" or "none" (or the Russian "no") lifts nothing.
+ */
+export const BLOCKER_LIFT_FIELD =
+  /(?:^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**(?:[^\S\n]*\(\d{1,3}\)\**)?|[—–(]|[;.](?=\s))[^\S\n]*\**(?:[Ll]ifted|[Сс]нят)\**[^\S\n]*:\**[^\S\n]*(?![Nn]o(?![\wа-яё])|[Nn]one(?![\wа-яё])|[Nn]ot(?![\wа-яё])|нет(?![\wа-яё]))(?=[^\n]{0,120}(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}))/
+/** The same field alone on an indented sub-item under a blocker (the form of VT-1 B7). */
+export const BLOCKER_LIFT_SUBITEM = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:[Ll]ifted|[Сс]нят)\**[^\S\n]*:\**[^\S\n]*(?![Nn]o(?![\wа-яё])|[Nn]one(?![\wа-яё])|[Nn]ot(?![\wа-яё])|нет(?![\wа-яё]))(?=[^\n]{0,120}(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}))/
 // A request for the user's answer ("needs a user decision", "awaiting a user answer", and the Russian forms): it lifts nothing, even if the line also says "closed by" or quotes the options.
 // One list for both languages: `\b` is ASCII, so in the branches that put it before the list only the English words take part.
 const REQUEST_WORDS =
@@ -249,7 +268,8 @@ const ANSWER_RU = `(?:\\s*(?:от|в\\s+чате|\\())?\\s*(?:[:—–-]\\s*)?${
 /** A blocker is lifted: `lifted by`, `resolved by`, `user decision` … and their Russian forms. */
 export const BLOCKER_LIFTED = new RegExp(
   [
-    `${NOT_RU}(?:снят|закрыт|отвечен)`,
+    // Not the noun forms ("closing the flag" and "lifting", in Russian): they describe, they do not lift (stage 5e, K3).
+    `${NOT_RU}(?:снят|закрыт|отвечен)(?!и[еяюи])`,
     // The Russian "resolved" (masculine, neuter, feminine) as a word of its own, without a negation before it: the noun "decision" and "not resolved" do not lift.
     `(?<![а-яё])${NOT_RU}реш[её]н[оа]?(?![а-яё])`,
     // "Needs the user's decision/answer …" is a request, not a lift: the answer (ANSWER_*) must follow the words, and a request word must not stand before them (the Russian forms too).

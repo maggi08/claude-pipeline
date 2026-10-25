@@ -5,6 +5,28 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.18.2 — 2026-10-25
+
+### The run summary is a normal answer, and no blocker drops out of it (VT-1, stage 5e)
+
+What changes against 0.18.1.
+
+The run summary of announcement-details run 9 reached the chat as one monospace block with a horizontal scroll, and two open blockers were missing from it: the orchestrator added them by hand after the digest.
+
+**The summary is plain markdown.**
+- The «Output» template of `stage-force` has no code fence any more, and says the summary is plain markdown, never inside a code block. The run-digest `###` headings render as headings.
+- The close message of journal-gate says the same. `scripts/validate.mjs` fails if the «Output» section of the stage-force skill holds a fenced block.
+
+**A blocker is lifted by a field, not by words.**
+- In a Force block dated 2026-10-26 or later, a blocker is lifted only by `Lifted: <who> <date> …` (its Russian form is in the marker table). The field opens a segment of the blocker's own line (after the ID, or after `—`, `–`, `;`, `.`, `(`), or stands on an indented sub-item under it. "closing", "lifted", "resolved" or "closed" in the description (the Russian words too) lift nothing, and neither does a field-wide mark such as "both lifted" on the `Blockers:` line: each item carries its own field.
+- A block dated before 2026-10-26, or with no date, keeps the old word matcher, so old task journals raise nothing new. It no longer lifts on the Russian nouns for "closing" and "lifting" in their cases ("with the flag closed" describes, it does not lift). That is the one change to an old block: the B1 of announcement-details run 9 (2026-10-21) is open now.
+- One reader decides blocker state for every caller — the run digest, the CI-gate close rule, the final-review receipts and the close rule of journal-check — and the date comes from the block.
+
+**A carried blocker keeps its run.**
+- `B<n> (<run>) — …`, or `B<n> (<run>) text`, is a blocker line in every field of the block except the interview answers, where `B1 (10) — accept the recommendation` answers a blocker. The digest lists `B1 (8)` next to the current run's `B1`, and nothing merges blockers by number.
+
+The marker table of `references/language.md` has the rows for the lift field and the carried form.
+
 ## 0.18.1 — 2026-10-22
 
 ### The pipeline closes the browsers it opened (VT-1, stage 5b)

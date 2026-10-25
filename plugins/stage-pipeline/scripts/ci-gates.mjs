@@ -219,7 +219,7 @@ export function gateCloseViolations(dataDir, worktree, config, taskDir) {
   const failing = gateStatus(dataDir, worktree, config, skips).filter((gate) => !gateAccepted(gate))
   if (!failing.length) return []
   const withBlockers = WITH_BLOCKERS.test(block.heading)
-  const blockers = openBlockers(block.body).join('\n').toLowerCase()
+  const blockers = openBlockers(block).join('\n').toLowerCase()
   return failing
     .filter((gate) => !withBlockers || !(blockers.includes(gate.name.toLowerCase()) || blockers.includes(gate.command.toLowerCase())))
     .map((gate) => ({

@@ -22,7 +22,7 @@ Force moves all the questions to the start: they are collected ONCE, then the ru
 
 Read STAGES.md in full, the "Orientation" header of FEATURE-MAP.md (its other sections only if a stage requires them), DESIGN-QUESTIONS.md and the "⚠ Awaiting user confirmation" block. Go through ALL the stages of the plan and write out everything you would ask at their kickoffs in the regular mode. After the batch is answered, asking is no longer possible (Step 2): a question that would surface on stage 4 is asked now, otherwise it becomes a blocker and stage 4 will not be done.
 
-Blockers of the previous run (the `Blockers:` line of a closed "Force run" block) go into the batch first: a new run starts with the answers to them.
+Blockers of the previous run (the `Blockers:` line of a closed "Force run" block) go into the batch first: a new run starts with the answers to them. An answered blocker gets `Lifted: <who> <date> …` on its own line (Step 2 names the field): only that field lifts it in a block dated 2026-10-26 or later, words in its description never do.
 
 **Taxonomy first, questions second.** The batch is the only collection point for the whole run, and a missed category costs not one stage but the whole run: there will be nowhere to ask before the end of the task. So do not rely on the needed thing coming to mind by itself — go through the fixed list and give every category a status: **Clear / Partially / Not covered**:
 
@@ -125,7 +125,7 @@ After the `Confirmed:` line the user is not at the screen. A question in the mid
 
 A blocker does not stop the run but cuts out of it exactly what depends on the blocker:
 
-1. Add a line to `Blockers:` of the Force run block in the format `B<n> — what is blocked (AC, stage) — why — what is needed from the user — your recommendation — what else depends on it`. For a rejected action add the exact command the user will run.
+1. Add a line to `Blockers:` of the Force run block in the format `B<n> — what is blocked (AC, stage) — why — what is needed from the user — your recommendation — what else depends on it`. For a rejected action add the exact command the user will run. A blocker is lifted only by the field `Lifted: <who> <date> …` (the Russian form is in the marker table of `references/language.md`) in its own line or on an indented sub-item under it; from a block dated 2026-10-26 on no word of the description lifts it. A blocker carried into a new run keeps its run: `B<n> (<run>) — …`, and the same number in two runs stays two blockers.
 2. The blocked criteria are marked `[blocked: B<n>]` in STAGES.md and are not implemented. An irreversible "for now like this" is not done.
 3. The rest of the stage is brought to the end: checkers, fix-loop, commit, journal (blockers go into `escalations=` of the `metrics:` line). A stage with an open critical is committed as is: the branch is local, and the next stage needs a clean diff. What exactly is broken is told by the blocker line. A red `type_check` or build breaks the checks of all the following stages, so only the stages whose checks it does not affect go on (another monorepo package), and `stage-implement` gets a new baseline with the blocker number. A stage in which nothing unblocked is left gets `[status: todo — blocked: B<n>]` and stays without code.
 4. Move on to the next stage that does not depend on the blocker. Dependent stages get the same `todo — blocked: B<n>` and are not implemented. A missing stage is appended to STAGES.md with this status and a recommendation: without the user the scope does not grow.
@@ -160,13 +160,17 @@ After the final (including the catch-up) rename the block heading to `## Force r
 
 A whole-branch `pro-review` or a `task-converge` report that is missing or older than the last tree change, and stays so, is a blocker that carries the fixed marker of that report: `B<n> — [final: pro-review — not run] <why>`, `B<n> — [final: task-converge — stale] <why>` (in a ru task the state takes its Russian form from the marker table in `references/language.md`). The hook reads only the marker: a blocker that names the checker in prose ("pro-review found a critical; the report lacks a recheck", "whole-branch pro-review was not run") does not cover the missing report, and the close is rejected with the marker to add.
 
-```
+The summary is plain markdown, never inside a code block: the short view carries `###` headings, and in a fence they show as one monospace block with a horizontal scroll. The lines, in this order:
+
 <TICKET> — force run completed: stages N of M, commits K
+
 Stages: 1 ✅ 2 ✅ 3 ⛔ B1 …
+
 <the short view of run-digest.mjs, whole: blockers, red CI gates and findings without an outcome line by line; the rest as numbers; the session browser line; the path to RUN-DIGEST.md>
+
 Not done: <what was put outside the boundaries>
+
 Next: answers to the blockers → /stage-force will continue from the blocked one. The description — /task-wrapup, if needed. The push is yours.
-```
 
 **The lines you write yourself** (the heading, `Not done:`, `Next:` and anything that is not the run-digest output): the heading keeps the template form (`stages N of M, commits K`) with the numbers taken from the journal, the rules below act on the words around them, and `Not done:` does not repeat lines of the run-digest short view. They follow `${CLAUDE_PLUGIN_ROOT}/skills/human-text/references/rules.md`: the first line is the status, a blocker or red gate is named with its severity and not softened, numbers and names instead of "several" and "some issues", no closing paragraph that retells the summary. Only the rules apply here; the `human-text-check` agent is not run on every force run (it is too expensive for a summary). The run-digest short view is pasted as is, the rules do not touch it.
 
