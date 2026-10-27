@@ -1,7 +1,13 @@
 {
   "agent": "pro-review",
   "why": "task language en (the \"Language: en\" line in the STAGES.md header and in the prompt): the report is English — the summary line is \"Findings:\", not \"Находки:\"",
-  "prompt": "Ticket EVAL-1, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN name is empty, null or whitespace THEN `t('profile.anonymous')` is shown instead of the name (locale selection is out of scope — we do not touch `src/i18n.ts`) — [verify: pro-review]",
+  "identity": {
+    "repo": "account-profile",
+    "ticket": "PRF-6",
+    "user": "Hana Weiss",
+    "email": "hana.weiss@account-profile.dev"
+  },
+  "prompt": "Ticket PRF-6, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN name is empty, null or whitespace THEN `t('profile.anonymous')` is shown instead of the name (locale selection is out of scope — we do not touch `src/i18n.ts`) — [verify: pro-review]",
   "expect": [
     {
       "pattern": "AC-1\\.1[^\\n]*PASS[^\\n]*ProfileName\\.tsx:\\d+",

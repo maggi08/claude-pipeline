@@ -67,7 +67,8 @@ plugins/<name>/
   scripts/                        permissions / archive-stages / retro and the hook scripts
   .mcp.json                       MCP servers that come with the plugin
   README.md                       plugin documentation
-evals/cases/<name>/               fixtures with planted defects for scripts/eval.mjs
+evals/cases/<name>/               synthetic projects with planted problems for scripts/eval.mjs (case.json, base/, stages/, working/, stubs/)
+evals/ledger.tsv                  one row per eval run: version, SHA, models, hits, cost (local, gitignored)
 ```
 
 Rules:
@@ -87,10 +88,13 @@ node scripts/validate.mjs                         # structure, links, budgets, C
 node scripts/release-check.mjs origin/main        # plugin changed → version raised and a CHANGELOG section exists
 claude plugin validate . --strict
 claude plugin validate ./plugins/stage-pipeline --strict
-node scripts/eval.mjs                             # if agents changed: real runs, $0.1–0.3 per case
+node scripts/eval.mjs --lint                      # free: builds every eval case and runs the leak lint (validate.mjs runs it too)
+node scripts/eval.mjs                             # if agents changed: real runs, three per case, $0.1–0.5 per run
 ```
 
-Comparing models on the same cases: `node scripts/eval.mjs --runs 3 --model i18n-sweep=haiku i18n-hardcode` — a copy of the plugin with the agent's `model:` rewritten; the summary shows the pass rate, the real model from `modelUsage` and the cost of the run.
+Comparing models on the same cases: `node scripts/eval.mjs --model i18n-sweep=haiku i18n-hardcode` — a copy of the plugin with the agent's `model:` rewritten; the summary shows the pass rate, the real model from `modelUsage` and the cost of the run.
+
+The harness is blind and runs the production plugin: every case is dressed as a project of its own (repo name, ticket, git author and commits from `identity` in `case.json`), a leak lint aborts a case before any model call when its tree, prompt, paths or git history contain a word that gives the test away, MCP tools carry their production names, permissions come from `permissions/base.json`, and an agent case runs as a real subagent under a thin haiku parent session so the subagent hooks fire. Graders are deterministic: regexps, finding lines in the ledger form (severity and `file:line` on one line, a negated mention does not count), and traces over the subagent's tool calls. Every run appends a row to `evals/ledger.tsv`; `--budget-usd` keeps a lane inside its money; `--ref <tag>` and `--ablate <skill>` run a case against an older or reduced plugin, and a case added later carries `provenFailing`, its recorded failure there (`--record-failing`). The header of `scripts/eval.mjs` lists every grader.
 
 GitHub Actions runs `validate.mjs` on push and PR, `release-check.mjs` on a PR into `main`, and on a push to `main` it creates the tag `stage-pipeline--v<version>` if it does not exist (`.github/workflows/validate.yml`). `claude plugin validate` and `eval.mjs` do not run in CI: the first needs the CLI, the second needs model calls.
 

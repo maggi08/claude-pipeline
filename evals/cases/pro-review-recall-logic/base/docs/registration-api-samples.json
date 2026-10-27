@@ -1,0 +1,9 @@
+{
+  "note": "Real responses of POST /registration/submit, copied from the staging service.",
+  "samples": [
+    { "status": 422, "body": { "code": "invalid_document", "reason": "Document number is too short" } },
+    { "status": 422, "body": { "code": "police_rejected", "reason": 4012 } },
+    { "status": 422, "body": { "code": "police_rejected", "reason": null } },
+    { "status": 404, "body": { "code": "not_found" } }
+  ]
+}

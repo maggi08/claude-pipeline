@@ -1,0 +1,14 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #1d2430; background: #f6f4ef; }
+.top { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: #fff; border-bottom: 1px solid #ddd; }
+.top h1 { margin: 0; font-size: 22px; }
+main { padding: 24px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.card { background: #fff; border-radius: 12px; padding: 16px; border: 1px solid #e3ded3; }
+.card h2 { margin: 0 0 8px; font-size: 18px; }
+.price { margin: 0 0 12px; font-weight: 600; }
+button { border: 0; border-radius: 8px; padding: 8px 14px; background: #1f6f5c; color: #fff; font: inherit; }
+.note { width: 320px; max-height: 44px; overflow: hidden; margin: 24px 0; padding: 8px 12px; background: #fff7dd; border: 1px solid #ecd98f; border-radius: 8px; }
+.note p { margin: 0; font-size: 14px; }
+.compare { width: 1100px; border-collapse: collapse; background: #fff; }
+.compare th, .compare td { padding: 10px 12px; border: 1px solid #e3ded3; text-align: left; }

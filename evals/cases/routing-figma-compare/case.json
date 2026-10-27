@@ -3,5 +3,9 @@
   "why": "a Russian request to compare markup with a Figma design finds figma-compare (a vocabulary hole found by scripts/routing.mjs)",
   "base": "../pro-review-clean-ac/base",
   "prompt": "Сверь вёрстку ProfileName с макетом в фигме: https://www.figma.com/design/abc123/Profile?node-id=12-445",
-  "expectSkill": "figma-compare"
+  "expectSkill": "figma-compare",
+  "forbidSkills": [
+    "stage-force",
+    "stage-kickoff"
+  ]
 }

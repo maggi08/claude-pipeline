@@ -1,0 +1,12 @@
+:root {
+  --color-surface-card: #ffffff;
+  --color-border-subtle: #e3ded3;
+  --color-text-primary: #1d2430;
+  --color-text-accent: #0b6e4f;
+  --color-action-primary: #1f6f5c;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}

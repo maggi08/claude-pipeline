@@ -109,6 +109,15 @@
       "reason": "the Russian form of the \"N skills / N agents\" showcase count and its exceptions, next to the English one"
     },
     {
+      "glob": "scripts/eval-lib.mjs",
+      "reason": "the leak lint's word list and the negation patterns of the finding grader match Russian words, as a Russian task report and a Russian-speaking developer produce them"
+    },
+    {
+      "glob": "scripts/eval.mjs",
+      "line": "^ \\*.*кейс",
+      "reason": "the header names the Russian leak words the lint looks for"
+    },
+    {
       "glob": "plugins/stage-pipeline/skills/*/SKILL.md",
       "line": "^description:[^\\u0400-\\u04FF]* RU triggers — ",
       "reason": "the Russian tail of trigger phrases: a description line is allowed to hold Cyrillic only after the label \" RU triggers — \"; the English part before it must have none"
@@ -139,11 +148,11 @@
       "reason": "the language-pair cases quote the Russian \"Language:\" and \"Findings:\" markers in the English why"
     },
     {
-      "glob": "evals/cases/pro-review-language-ru/base/tasks/EVAL-1/STAGES.md",
+      "glob": "evals/cases/pro-review-language-ru/base/tasks/PRF-8/STAGES.md",
       "reason": "the RU fixture of the language case: a task with the Russian language line"
     },
     {
-      "glob": "evals/cases/stage-implement-reuse/base/tasks/EVAL-1/STAGES.md",
+      "glob": "evals/cases/stage-implement-reuse/base/tasks/PAY-14/STAGES.md",
       "line": "^- `AC-2\\.3`.*«Время оплаты истекло»",
       "reason": "the Russian locale string that the eval checks in locales/ru.json"
     },

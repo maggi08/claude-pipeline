@@ -1,7 +1,13 @@
 {
   "agent": "pro-review",
   "why": "whole-branch catches a formatter duplicate spread over two stages (each stage is clean on its own)",
-  "prompt": "Ticket EVAL-1. Mode: whole-branch — the final run before the PR, the whole feature branch against main (no remote, use the local main). The task stages are already closed.",
+  "identity": {
+    "repo": "orders-frontend",
+    "ticket": "ORD-41",
+    "user": "Leo Hartmann",
+    "email": "leo.hartmann@orders-frontend.dev"
+  },
+  "prompt": "Ticket ORD-41. Mode: whole-branch — the final run before the PR, the whole feature branch against main (no remote, use the local main). The task stages are already closed.",
   "expect": [
     {
       "pattern": "toClock|formatTime",
@@ -10,6 +16,12 @@
     {
       "pattern": "дубл|duplicat|повтор|одинаков",
       "why": "the finding is classified as a duplicate"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Approve\\*{0,2}\\s*$",
+      "why": "a plain Approve on a branch that duplicates a formatter"
     }
   ]
 }

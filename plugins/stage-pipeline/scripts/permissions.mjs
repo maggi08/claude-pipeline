@@ -12,10 +12,11 @@
  *   node permissions.mjs --groups pipeline,vcs | --all | --minimal
  *   node permissions.mjs --dirs ../ui-lib,../prototypes --scope project --apply
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { generatedEntries, loadProfile, wantedFor } from './permission-profile.mjs'
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -43,7 +44,7 @@ const target =
     ? join(homedir(), '.claude', 'settings.json')
     : join(process.cwd(), '.claude', 'settings.local.json')
 
-const profile = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'permissions', 'base.json'), 'utf8'))
+const profile = loadProfile(PLUGIN_ROOT)
 const allGroups = Object.keys(profile.groups)
 
 let groups = profile.defaultGroups
@@ -56,38 +57,9 @@ if (explicit) {
   if (unknown.length) die(`unknown groups: ${unknown.join(', ')} (available: ${allGroups.join(', ')})`)
 }
 
-/** Skill(...) and mcp__* — from the plugin itself, so the list does not diverge from its contents */
-const generated = () => {
-  const manifest = JSON.parse(readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
-  const entries = []
+const generated = () => generatedEntries(PLUGIN_ROOT)
 
-  const skillsDir = join(PLUGIN_ROOT, 'skills')
-  if (existsSync(skillsDir)) {
-    for (const name of readdirSync(skillsDir).sort()) {
-      if (!existsSync(join(skillsDir, name, 'SKILL.md'))) continue
-      entries.push(`Skill(${manifest.name}:${name})`, `Skill(${manifest.name}:${name} *)`)
-    }
-  }
-
-  const mcpPath = join(PLUGIN_ROOT, '.mcp.json')
-  if (existsSync(mcpPath)) {
-    const raw = JSON.parse(readFileSync(mcpPath, 'utf8'))
-    for (const server of Object.keys(raw.mcpServers ?? raw)) {
-      // the plugin's server is visible under both names — depends on the Claude Code version
-      entries.push(`mcp__${server}`, `mcp__plugin_${manifest.name}_${server}`)
-    }
-  }
-  // the persistent-profile browser `/pipeline-doctor` proposes (item 4a) is a local-scope server under the plugin's own name, not in .mcp.json
-  entries.push('mcp__stage-pipeline-chrome')
-
-  return entries
-}
-
-const wanted = { allow: [], ask: profile.ask, deny: profile.deny }
-for (const group of groups) {
-  wanted.allow.push(...profile.groups[group].allow)
-  if (profile.groups[group].generated) wanted.allow.push(...generated())
-}
+const wanted = wantedFor(PLUGIN_ROOT, groups, profile)
 
 const readSettings = () => {
   if (!existsSync(target)) return {}

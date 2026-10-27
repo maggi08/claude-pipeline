@@ -2,3 +2,4 @@
 *.log
 .product-denylist
 evals/.results/
+evals/ledger.tsv

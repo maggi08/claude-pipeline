@@ -1,6 +1,6 @@
-# Pipeline config — eval-fixture
+# Pipeline config — cart-service-web
 ## Project
-- slug: eval-fixture
+- slug: cart-service-web
 - stack: React 18 / TS
 - package_manager: npm
 - main_branch: main

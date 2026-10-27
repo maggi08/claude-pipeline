@@ -1,6 +1,12 @@
 {
   "agent": "docs-lookup",
   "why": "the package is not installed (no node_modules), the network is unavailable — a short \"not installed — not verified\" with the version from the lockfile and not a single API claim from memory",
+  "identity": {
+    "repo": "admin-console",
+    "ticket": "ADM-31",
+    "user": "Priya Raman",
+    "email": "priya.raman@admin-console.dev"
+  },
   "prompt": "Library: react-router-dom. Question: how do I correctly redirect an unauthenticated user to /login and navigate programmatically after sign-out in this repo? The file where the API is used: src/App.tsx.",
   "requireReport": false,
   "maxSummaryLines": 6,

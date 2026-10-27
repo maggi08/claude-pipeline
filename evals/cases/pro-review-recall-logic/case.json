@@ -1,0 +1,45 @@
+{
+  "agent": "pro-review",
+  "why": "recall (logic-correctness, reuse-duplicate): rawMessage trusts the declared `reason?: string` while the service samples in docs/ show a number and null (reason.trim throws on both, and on undefined), and the new guest loader rebuilds the 404 check that src/shared/http/errors.ts exports as is404Error - outside the configured reuse_baseline, found only by a repo-wide search for the shape",
+  "identity": {
+    "repo": "registration-web",
+    "ticket": "REG-18",
+    "user": "Elias Karlsen",
+    "email": "elias.karlsen@registration-web.dev"
+  },
+  "prompt": "Ticket REG-18, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN the guest has no registration (404) THEN the loader answers null\n- `AC-1.2` WHEN the service refuses the submit THEN the message is the error code followed by the reason when there is one",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "rawMessage\\.ts",
+      "line": 5,
+      "tolerance": 1,
+      "why": "error.reason.trim() throws when the service sends a number, null or no reason - the declared type is not what the samples show"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "useGuestRegistration\\.ts[^\\n]*(is404Error|duplicat|already|reuse|shared)|(is404Error|duplicat|already exists|reuse)[^\\n]*useGuestRegistration\\.ts",
+      "why": "the 404 check duplicates is404Error of src/shared/http/errors.ts"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Approve\\*{0,2}\\s*$",
+      "why": "a plain Approve on a change with a crash on a documented payload"
+    }
+  ],
+  "provenFailing": {
+    "on": "ablate:agent:pro-review",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@0494f328e",
+    "runs": 1,
+    "failed": 1,
+    "caseHash": "ac4ea2b01cd072bf",
+    "failures": [
+      "no finding line: error.reason.trim() throws when the service sends a number, null or no reason - the declared type is not what the samples show (critical|major ",
+      "no finding line: the 404 check duplicates is404Error of src/shared/http/errors.ts (critical|major|minor /useGuestRegistration\\.ts[^\\n]*(is404Error|duplicat|alre"
+    ]
+  }
+}

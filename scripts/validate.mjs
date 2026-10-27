@@ -3,6 +3,8 @@ import { join, dirname, basename, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { appendFileSync, cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const errors = []
@@ -405,15 +407,40 @@ function validateHooks(pluginDir) {
  * (one name per line, the file is in .gitignore).
  */
 function validateNoProjectIds(pluginDir) {
+  scanProjectIds(walkMarkdown(join(ROOT, pluginDir)))
+}
+
+/** Ticket-shaped ids that are invented on purpose and stay in the eval cases (the text of a status update the human-text-check cases grade). */
+const SYNTHETIC_IDS = new Set(['SEARCH-212'])
+
+/** The same scan over the eval cases: a company's ticket or product name in a fixture, a prompt or a recorded result is as much a leak as one in a skill. */
+function validateNoProjectIdsInEvals() {
+  const files = existsSync(join(ROOT, 'evals'))
+    ? walkAll(join(ROOT, 'evals')).filter((file) => !file.includes('/evals/.results/') && !file.endsWith('/evals/ledger.tsv'))
+    : []
+  scanProjectIds(files, SYNTHETIC_IDS)
+}
+
+function walkAll(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name)
+    if (entry.isSymbolicLink()) return []
+    return entry.isDirectory() ? walkAll(path) : [path]
+  })
+}
+
+function scanProjectIds(files, synthetic = new Set()) {
   const denylistPath = join(ROOT, '.product-denylist')
   const names = existsSync(denylistPath)
     ? readFileSync(denylistPath, 'utf8').split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'))
     : []
-  for (const file of walkMarkdown(join(ROOT, pluginDir))) {
-    readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+  for (const file of files) {
+    const buffer = readFileSync(file)
+    if (buffer.subarray(0, 4096).includes(0)) continue
+    buffer.toString('utf8').split('\n').forEach((line, i) => {
       const where = `${file.replace(`${ROOT}/`, '')}:${i + 1}`
       // Standards (SHA-256, ISO-8601, RFC-7231, CVE-…) look like a ticket but are not one.
-      const ticket = line.match(/\b(?!AC-|SHA-|ISO-|RFC-|CVE-|UTF-|WCAG-|HTTP-|ECMA-|ES-)[A-Z]{2,6}-\d{3,5}\b/)
+      const ticket = [...line.matchAll(/\b(?!AC-|SHA-|ISO-|RFC-|CVE-|UTF-|WCAG-|HTTP-|ECMA-|ES-)[A-Z]{2,6}-\d{3,5}\b/g)].find((match) => !synthetic.has(match[0]))
       if (ticket) fail(where, `ticket id «${ticket[0]}» — write a precedent without identifiers`)
       for (const name of names) {
         if (line.toLowerCase().includes(name.toLowerCase())) fail(where, `name from .product-denylist «${name}»`)
@@ -638,6 +665,115 @@ function validateCyrillic() {
     if (hits.length) fail(`${path}:${hits.slice(0, 8).join(',')}`, `Cyrillic outside the allowlist in ${hits.length} line(s) — translate it or add a rule with a reason to scripts/cyrillic-allowlist.json`)
   }
 }
+
+/**
+ * The eval cases (VT-3 stage 6). Free: no model call.
+ *  - every case is blind: the leak lint builds each one (tree, prompts, paths, git history, MCP config) and must find nothing (AC-6.1);
+ *    a copy with a planted «eval» word must be aborted;
+ *  - the finding grader does not count a negated mention («formatTime — no duplicates found») as a finding (AC-6.4);
+ *  - every non-routing case has at least one forbid-family grader, a routing case has forbidSkills;
+ *  - a case added after 0494f32 carries `provenFailing`, its failing run on the previous tag or with the skill ablated (AC-6.6);
+ *  - the project-id check runs over evals/** as well (AC-6.7).
+ */
+const FROZEN_CASES = new Set([
+  'dead-code-orphan', 'deps-audit-duplicate-lib', 'docs-lookup-not-installed', 'docs-lookup-version-mismatch', 'human-text-check-clean',
+  'human-text-check-feature-doc', 'human-text-check-injection', 'human-text-check-violations', 'i18n-hardcode', 'pro-review-clean-ac',
+  'pro-review-cross-stage-dup', 'pro-review-language-en', 'pro-review-language-ru', 'routing-figma-compare', 'routing-figma-compare-en',
+  'routing-root-cause', 'routing-root-cause-en', 'routing-stage-check', 'routing-stage-check-en', 'routing-stays-quiet', 'routing-stays-quiet-en',
+  'stage-implement-reuse',
+])
+const FORBID_FAMILY = ['forbid', 'findingsForbid', 'forbidSummary', 'filesForbid', 'traceForbid']
+
+async function validateEvals() {
+  const casesDir = join(ROOT, 'evals/cases')
+  if (!existsSync(casesDir)) return
+  const names = readdirSync(casesDir).filter((name) => existsSync(join(casesDir, name, 'case.json')))
+  for (const name of names) {
+    const where = `evals/cases/${name}/case.json`
+    const spec = readJson(where)
+    if (!spec) continue
+    if (spec.kind === 'routing') {
+      if (!spec.forbidSkills?.length) fail(where, 'a routing case needs forbidSkills: a skill that must not be picked for this phrase')
+    } else if (!FORBID_FAMILY.some((key) => spec[key]?.length)) {
+      fail(where, `no forbid: add at least one of ${FORBID_FAMILY.join(' / ')} — what the agent must not do or say`)
+    }
+    if (!FROZEN_CASES.has(name)) {
+      const proof = spec.provenFailing
+      if (!proof || !proof.on || !proof.date || !Array.isArray(proof.failures) || !proof.failures.length) {
+        fail(where, 'a case added after 0494f32 needs `provenFailing` {on, date, plugin, runs, failed, caseHash, failures}: its failing run on the previous tag or with the skill ablated (node scripts/eval.mjs --ref <tag> --record-failing <case>)')
+      } else if (!Number.isInteger(proof.runs) || proof.runs < 1 || proof.failed !== proof.runs) {
+        fail(where, `provenFailing must have failed === runs (every recorded run failed on the comparison); got runs ${proof.runs}, failed ${proof.failed}`)
+      } else {
+        const { caseHash } = await import('./eval-lib.mjs')
+        if (proof.caseHash !== caseHash(join(casesDir, name))) fail(where, 'provenFailing.caseHash does not match the case: the case changed since the failing run was recorded — record it again (node scripts/eval.mjs --ref <tag> --record-failing <case>)')
+      }
+    }
+  }
+  const linted = spawnSync(process.execPath, [join(ROOT, 'scripts/eval.mjs'), '--lint'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 24 })
+  if (linted.status !== 0) fail('scripts/eval.mjs --lint', `the leak lint failed:\n${(linted.stdout + linted.stderr).split('\n').filter((line) => /^\s+|✘/.test(line)).slice(0, 12).join('\n')}`)
+  await validateEvalSelfTests(names)
+}
+
+async function validateEvalSelfTests(names) {
+  // Loaded here, not at the top: scripts/hooks-test.mjs runs copies of this file in directories that have no eval harness.
+  const { findingMatches, gradeAgent, lintCase, unreadScreenshots } = await import('./eval-lib.mjs')
+  const here = 'scripts/eval-lib.mjs'
+  // AC-6.1: a copy of a case with a planted word is aborted, and the original passes.
+  const probe = names.find((name) => existsSync(join(ROOT, 'evals/cases', name, 'base/CLAUDE.md'))) ?? names[0]
+  if (probe) {
+    const holder = mkdtempSync(join(tmpdir(), 'lint-probe-'))
+    try {
+      cpSync(join(ROOT, 'evals/cases', probe), join(holder, probe), { recursive: true })
+      const claudeMd = join(holder, probe, 'base/CLAUDE.md')
+      const original = readFileSync(claudeMd, 'utf8')
+      appendFileSync(claudeMd, '\nThis project runs in an eval harness.\n')
+      const hits = lintCase(join(holder, probe))
+      if (!hits.some((hit) => hit.word.toLowerCase() === 'eval')) fail(here, `leak lint self-test: a copy of ${probe} with the word «eval» in CLAUDE.md was not aborted`)
+      writeFileSync(join(holder, probe, 'case.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(holder, probe, 'case.json'), 'utf8')), prompt: 'Review this. The change is evaluated by retrieval of candidates.' }))
+      const words = lintCase(join(holder, probe)).map((hit) => hit.word.toLowerCase())
+      if (!words.includes('candidates') || words.includes('evaluated') || words.includes('retrieval')) fail(here, `leak lint self-test: the lint must stop at «candidates» and not at «evaluated» / «retrieval» (got ${words.join(', ')})`)
+      writeFileSync(claudeMd, original)
+      writeFileSync(join(holder, probe, 'case.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(holder, probe, 'case.json'), 'utf8')), prompt: 'Review the candidate list.', leakAllow: [{ word: 'candidate', why: 'a voting list' }] }))
+      if (lintCase(join(holder, probe)).length) fail(here, 'leak lint self-test: a word in the case allowlist must pass')
+    } finally {
+      rmSync(holder, { recursive: true, force: true })
+    }
+  }
+  // AC-6.4: a negated mention is not a finding; a finding in the ledger form is.
+  const negated = 'formatTime — no duplicates found'
+  const asks = { severity: 'any', file: 'formatTime' }
+  const expectMatches = (label, spec, text, count) => {
+    const got = findingMatches(spec, text).length
+    if ((count === 0) !== (got === 0)) fail(here, `finding grader self-test: ${label} — wanted ${count === 0 ? 'no match' : 'a match'}, got ${got}`)
+  }
+  expectMatches('the negation example in prose', asks, negated, 0)
+  expectMatches('the negation example as a list item', asks, `- ${negated}`, 0)
+  expectMatches('"not an orphan" under Deliberately kept', { severity: 'any', file: 'PromoBanner' }, '## Deliberately kept\n- `PromoBanner.tsx` (added by the task, not an orphan)', 0)
+  expectMatches('"not an orphan" as a list item outside that section', { severity: 'any', file: 'PromoBanner' }, '- PromoBanner.tsx (added by the task, not an orphan)', 0)
+  expectMatches('a finding with the wrong severity', { severity: 'critical', file: 'toClock' }, '- minor: src/orders/toClock.ts:12 repeats formatTime', 0)
+  expectMatches('a finding with another line', { severity: 'major', file: 'toClock', line: 40 }, '- major: src/orders/toClock.ts:12 repeats formatTime', 0)
+  expectMatches('a finding in the ledger form', { severity: 'major|critical', file: 'toClock', line: 12 }, '- major: src/orders/toClock.ts:12 repeats formatTime', 1)
+  expectMatches('a table row without a severity word', { severity: 'any', file: 'OldBanner' }, '| 1 | Component `OldBanner` | src/components/OldBanner.tsx | its only use was replaced |', 1)
+  // A negation counts only as the predicate attached to the file token, not anywhere on the line.
+  expectMatches('"without" and "problems" in one finding line', { severity: 'major', file: 'toClock', line: 12 }, '- major: src/orders/toClock.ts:12 copies formatTime without the timezone argument, so output has problems', 1)
+  expectMatches('"not reuse ... a duplicate" in one finding line', { severity: 'major', file: 'toClock', line: 12 }, '- major: src/orders/toClock.ts:12 does not reuse formatTime, a duplicate', 1)
+  expectMatches('"no error shown ... no findings logged" in one finding line', { severity: 'major|critical', file: 'removeGuest' }, '- major: removeGuest is not awaited: no error shown to the user and no findings logged', 1)
+  expectMatches('the negation example with a path and a line', asks, '- src/orders/formatTime.ts:3 — no duplicates found', 0)
+  expectMatches('a finding that says "no" about something else', { severity: 'minor', file: 'a\\.ts', line: 5 }, '- minor: src/a.ts:5 — no error handling around fetch', 1)
+  const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
+  if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
+  // Trace graders: a denied call does not count; every screenshot must be opened.
+  const call = (name, input, extra = {}) => ({ name, input, result: '', isError: false, denied: false, ...extra })
+  const traced = (calls) => gradeAgent({ trace: [{ tool: 'Bash', input: 'floor-guard\\.mjs', why: 'floor-guard ran' }] }, { repo: ROOT, report: '', summary: '', calls }).failures.length
+  if (traced([call('Bash', { command: 'node /p/scripts/floor-guard.mjs' })])) fail(here, 'trace grader self-test: a Bash call of floor-guard was not counted')
+  if (!traced([call('Bash', { command: 'node /p/scripts/floor-guard.mjs' }, { isError: true, denied: true })])) fail(here, 'trace grader self-test: a denied call was counted')
+  const shot = call('mcp__plugin_stage-pipeline_chrome-devtools__take_screenshot', { filePath: '/w/shot-1440.png' })
+  if (unreadScreenshots([shot, call('Read', { file_path: '/w/shot-1440.png' })]).length) fail(here, 'screenshot grader self-test: an opened screenshot was reported')
+  if (!unreadScreenshots([shot, call('Read', { file_path: '/w/other.png' })]).length) fail(here, 'screenshot grader self-test: an unopened screenshot passed')
+}
+
+await validateEvals()
+validateNoProjectIdsInEvals()
 
 validateCyrillic()
 

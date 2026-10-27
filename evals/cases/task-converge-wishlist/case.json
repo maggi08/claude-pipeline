@@ -1,0 +1,57 @@
+{
+  "agent": "task-converge",
+  "why": "the whole-task checker compares the criteria of both stages with the code on HEAD: AC-2.2 is missing (no empty state anywhere), AC-2.3 is partial (the label is there, the button is not disabled), the share button is live code that no criterion asked for and the boundaries forbid; the closed criteria are not flagged and the run is not called converged",
+  "identity": {
+    "repo": "shop-wishlist",
+    "ticket": "SHOP-17",
+    "user": "Kari Nystrom",
+    "email": "kari.nystrom@shop-wishlist.dev"
+  },
+  "prompt": "Ticket SHOP-17. Language: en. Mode: before opening the PR - all stages are closed.",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major|minor",
+      "file": "AC-2\\.2[^\\n]*missing|missing[^\\n]*AC-2\\.2",
+      "why": "AC-2.2: no empty state in the code - missing"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "AC-2\\.3[^\\n]*partial|partial[^\\n]*AC-2\\.3",
+      "why": "AC-2.3: the label exists, the button is not disabled - partial"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "(share|navigator)[^\\n]*unrequested|unrequested[^\\n]*(share|navigator)",
+      "why": "the share button is live code no criterion asked for (and the boundaries forbid sharing) - unrequested"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "critical|major|minor",
+      "file": "AC-(1\\.1|1\\.2|2\\.1)\\b[^\\n]*(missing|partial|contradicts)",
+      "why": "the criteria that hold in the code are not flagged"
+    }
+  ],
+  "forbidSummary": [
+    {
+      "pattern": "converge:\\s*converged",
+      "why": "never converged with open findings"
+    }
+  ],
+  "unchanged": [
+    "tasks/SHOP-17/STAGES.md"
+  ],
+  "provenFailing": {
+    "on": "ablate:agent:task-converge",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@0494f328e",
+    "runs": 1,
+    "failed": 1,
+    "caseHash": "70179cc647f6457a",
+    "failures": [
+      "no finding line: AC-2.3: the label exists, the button is not disabled - partial (critical|major|minor /AC-2\\.3[^\\n]*partial|partial[^\\n]*AC-2\\.3/)"
+    ]
+  }
+}

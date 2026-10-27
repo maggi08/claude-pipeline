@@ -1,6 +1,6 @@
-# Pipeline config — eval-fixture
+# Pipeline config — orders-frontend
 ## Project
-- slug: eval-fixture
+- slug: orders-frontend
 - stack: React 18 / TS
 - package_manager: npm
 - main_branch: main

@@ -1,7 +1,13 @@
 {
   "agent": "deps-audit",
   "why": "a second date library next to date-fns, tooling in the runtime section, an asset with no references",
-  "prompt": "Ticket EVAL-1, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status, including untracked files). The stage added a period report.",
+  "identity": {
+    "repo": "reports-portal",
+    "ticket": "RPT-7",
+    "user": "Marcus Lindqvist",
+    "email": "marcus.lindqvist@reports-portal.dev"
+  },
+  "prompt": "Ticket RPT-7, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status, including untracked files). The stage added a period report.",
   "expect": [
     {
       "pattern": "moment[\\s\\S]{0,400}date-fns|date-fns[\\s\\S]{0,400}moment",

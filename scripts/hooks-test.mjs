@@ -5306,4 +5306,21 @@ rmSync(retroRoot, { recursive: true, force: true })
   }
 }
 
+// ── VT-3 stage 6: the eval harness isolates the plugin data dir ──────────────
+{
+  // Claude Code overwrites CLAUDE_PLUGIN_DATA for hooks, so the harness needs a variable of its own that wins over it.
+  const a = mkdtempSync(join(tmpdir(), 'pd-override-'))
+  const b = mkdtempSync(join(tmpdir(), 'pd-claude-'))
+  const dirOf = (extra) => {
+    const env = { ...process.env, ...extra }
+    for (const key of ['STAGE_PIPELINE_DATA_DIR', 'CLAUDE_PLUGIN_DATA']) if (extra[key] === undefined) delete env[key]
+    return spawnSync(process.execPath, ['--input-type=module', '-e', `import { pluginDataDir } from ${JSON.stringify(join(PLUGIN, 'hooks/pipeline-state.mjs'))}; console.log(pluginDataDir())`], { env, encoding: 'utf8' }).stdout.trim()
+  }
+  check('data dir: STAGE_PIPELINE_DATA_DIR wins over CLAUDE_PLUGIN_DATA', dirOf({ STAGE_PIPELINE_DATA_DIR: a, CLAUDE_PLUGIN_DATA: b }) === a, dirOf({ STAGE_PIPELINE_DATA_DIR: a, CLAUDE_PLUGIN_DATA: b }))
+  check('data dir legit: without the override CLAUDE_PLUGIN_DATA is used as before', dirOf({ CLAUDE_PLUGIN_DATA: b }) === b, dirOf({ CLAUDE_PLUGIN_DATA: b }))
+  check('data dir: a relative or empty override is ignored', dirOf({ STAGE_PIPELINE_DATA_DIR: 'relative/dir', CLAUDE_PLUGIN_DATA: b }) === b && dirOf({ STAGE_PIPELINE_DATA_DIR: '', CLAUDE_PLUGIN_DATA: b }) === b)
+  rmSync(a, { recursive: true, force: true })
+  rmSync(b, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)
