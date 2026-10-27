@@ -62,6 +62,9 @@ const BASH_WRITE = [
   /\bperl\s+-[a-zA-Z]*i/,
   /(?:prettier\s+(?:.*\s)?--write|--fix\b)/,
 ]
+// macOS reports /tmp as /private/tmp; a path under a repo root is the same file under either spelling.
+const foldTmp = (path) => path.replace(/^\/private(?=\/(?:tmp|var)\/)/, '')
+const underRoot = (path, roots) => roots.some((r) => foldTmp(path).startsWith(`${foldTmp(r)}/`))
 const NOT_SOURCE = (path) => /^\/(?:private\/)?tmp\//.test(path) || /\/scratchpad\//.test(path) || /^\/dev\//.test(path)
 
 // ── reading transcripts ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -370,8 +373,11 @@ function auditRun(w, ctx) {
   for (const e of events.filter((x) => x.kind === 'use' && !x.agentId)) {
     if (EDIT_TOOLS.has(e.name)) {
       const p = e.input.file_path
-      if (!p || taskDirs.some((d) => p.startsWith(`${d}/`)) || NOT_SOURCE(p)) continue
-      sourceEdits.push({ tool: e.name, path: p, where: repoRoots.some((r) => p.startsWith(`${r}/`)) ? 'repo' : 'other' })
+      if (!p || underRoot(p, taskDirs)) continue
+      // a repo root wins over the temp-dir exclusion (CI keeps its checkout and fixtures under /tmp), the same order bashWrite uses
+      const inRepo = underRoot(p, repoRoots)
+      if (!inRepo && NOT_SOURCE(p)) continue
+      sourceEdits.push({ tool: e.name, path: p, where: inRepo ? 'repo' : 'other' })
     } else if (e.name === 'Bash') {
       const w = bashWrite(e.input.command ?? '', { repoRoots, taskDirs })
       if (w) sourceEdits.push({ tool: 'Bash', path: w.label, where: w.where })

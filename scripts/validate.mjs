@@ -1080,6 +1080,26 @@ async function validateRunAudit() {
     bashWrite(`cat <<${'A'.repeat(2000)}\n${' \n'.repeat(20000)}`, { repoRoots: ['/synthetic/r'], taskDirs: [] })
     if (Date.now() - heredocStart > 1000) bad(`an unterminated heredoc took ${Date.now() - heredocStart} ms: the heredoc regex backtracks`)
     if (bashWrite("cat <<'EOF'\nx > /synthetic/r/leak.txt\nEOF\n", { repoRoots: ['/synthetic/r'], taskDirs: [] })) bad('a heredoc body was read as a command: its text was not collapsed')
+    // VT-3 7d: a repo that lives under /tmp (Linux CI keeps os.tmpdir() there) still counts its edits as source; task dirs and temp paths outside every repo stay excluded.
+    const tmpRoot = mkdtempSync('/tmp/run-audit-tmproot-')
+    try {
+      cpSync(fixtures, tmpRoot, { recursive: true })
+      const s1 = join(tmpRoot, 'transcripts/s1.jsonl')
+      const edit = (id, file) => `{"type":"tool_use","id":"${id}","name":"Edit","input":{"file_path":"${file}","old_string":"1","new_string":"2"}},`
+      const extra = edit('m3c', '/tmp/run-audit-outside-repo/x.ts') + edit('m3d', `/private${tmpRoot}/repo/src/b.ts`)
+      for (const file of walkAll(join(tmpRoot, 'transcripts'))) {
+        if (!file.endsWith('.jsonl')) continue
+        let text = readFileSync(file, 'utf8').replaceAll('/synthetic/repo', join(tmpRoot, 'repo'))
+        if (file === s1) text = text.replace('{"type":"tool_use","id":"m3b"', `${extra}{"type":"tool_use","id":"m3b"`)
+        writeFileSync(file, text)
+      }
+      const tmpReport = runAudit({ repos: [join(tmpRoot, 'repo')], transcripts: [join(tmpRoot, 'transcripts')], tasks: ['TK-1'], plugin: join(tmpRoot, 'plugin') })
+      const edits = tmpReport.tasks[0]?.runs?.[0]?.sourceEdits ?? []
+      const fileEdits = edits.filter((x) => x.tool === 'Edit')
+      eq('orchestrator edits with the repo under /tmp (two in the repo, one of them spelled /private/tmp; the task-dir edit and the temp path outside every repo are not source)', [fileEdits.filter((x) => x.where === 'repo').length, fileEdits.length], [2, 2])
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true })
+    }
     const noSource = readFileSync(join(ROOT, 'scripts/run-audit.mjs'), 'utf8')
     if (/readdirSync\([^)]*\.claude\/projects['"`]\s*\)/.test(noSource) || /readdirSync\(\s*join\(homedir\(\),\s*['"]\.claude\/projects['"]\s*\)\s*\)/.test(noSource)) bad('the script lists ~/.claude/projects as a whole')
   } catch (error) {
