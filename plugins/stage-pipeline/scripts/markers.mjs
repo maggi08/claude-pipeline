@@ -250,12 +250,9 @@ export function blockerFieldApplies(gate, heading, body) {
 }
 /** The date of a Force block: its heading, else its `Confirmed:` line (the Russian form too); null when neither has one. */
 export const forceBlockDate = (heading, body) => headingDate(heading) ?? headingDate(body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')
-// What follows the colon of a lift field and means "not lifted": no / none / not / never / n/a / pending / TBD / waiting / awaiting, a dash, a "<who>" placeholder, and the Russian
-// and the Russian forms of not / no / waiting / awaiting. The lookahead sits right after the colon and consumes the stars and spaces itself, so a quantifier after it cannot backtrack to a place where the word is not seen (S1).
-const LIFT_NOT_LIFTED = /(?!(?:\*|[^\S\n])*(?:(?:[Nn]o|[Nn]one|[Nn]ot|[Nn]ever|[Pp]ending|[Tt][Bb][Dd]|[Ww]aiting|[Aa]waiting|[Нн]е|[Нн]ет|[Жж]д[её]м|[Жж]ду|[Оо]жида[а-яё]*)(?![\wа-яё])|[Nn]\/[Aa](?!\w)|[—–<-]))/.source
 // A date within 120 characters on the same line: who and when.
 const LIFT_DATED = /\**[^\S\n]*(?=[^\n]{0,120}(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}))/.source
-const LIFT_TAIL = `\\**[^\\S\\n]*:${LIFT_NOT_LIFTED}${LIFT_DATED}`
+const LIFT_TAIL = `\\**[^\\S\\n]*:${LIFT_DATED}`
 // The English label in either case; the Russian one only capitalised (the lower-case Russian form in a description means "measured", K12).
 const LIFT_LABEL = /(?:[Ll]ifted|Снят)/.source
 const LIFT_ID = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**(?:[^\S\n]*\(\d{1,3}\)\**)?(?:[^\S\n]*:|[^\S\n]+-)?[^\S\n]+\**/.source
@@ -270,6 +267,52 @@ export const BLOCKER_LIFT_FIELD = new RegExp(
 )
 /** The same field alone on an indented sub-item under a blocker (the form of VT-1 B7). */
 export const BLOCKER_LIFT_SUBITEM = new RegExp(`^[^\\S\\n]*(?:[-*][^\\S\\n]*)?\\**${LIFT_LABEL}${LIFT_TAIL}`)
+const LIFT_DATE = /\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}/
+// A value that says "not lifted" (K13): negation and pending words in either language, whole words, any case. `\b` is ASCII, so the edges are letters and digits.
+const NOT_LIFTED_WORD = new RegExp(
+  '(?<![\\p{L}\\p{N}_])(?:no|none|not|never|pending|tbd|waiting|awaiting|open|still|yet|false|нет|не|пока|ещё|еще|ждём|ждем|жду|ожида\\p{L}*|открыт\\p{L}*|n/a)(?![\\p{L}\\p{N}_])|[⏳?❌]',
+  'iu',
+)
+/**
+ * Whether a regex match of the lift field is a real lift (K13). The value is the span from the colon to the date: it opens with a letter or a digit, holds no negation or pending word and no `⏳`, `?`, `❌`.
+ * A `(` opener counts only when its parenthesis closes the segment (`)` then the end of the line, `.`, `;` or a dash): "waits for B1 (lifted: user 2026-10-27) and …" mentions another blocker.
+ * Done in code after the match, so the cost stays linear (the value is at most 120 characters).
+ */
+function liftValueOk(line, match) {
+  const start = match.index + match[0].length
+  const date = LIFT_DATE.exec(line.slice(start, start + 140))
+  if (!date) return false
+  const value = line.slice(start, start + date.index)
+  if (!/^[\p{L}\p{N}]/u.test(value) || NOT_LIFTED_WORD.test(value)) return false
+  if (match[0][0] !== '(') return true
+  const close = line.indexOf(')', start + date.index)
+  return close >= 0 && /^\s*(?:$|[.;—–])/.test(line.slice(close + 1))
+}
+const LIFT_FIELD_ALL = new RegExp(BLOCKER_LIFT_FIELD.source, 'g')
+/** The lift field in a blocker's own text: a match whose value is real. One helper for the line form and the sub-item form, on the field path and on the word path (K11). */
+export function blockerLiftField(line) {
+  LIFT_FIELD_ALL.lastIndex = 0
+  for (let match; (match = LIFT_FIELD_ALL.exec(line)); ) {
+    if (liftValueOk(line, match)) return true
+    if (match[0].length === 0) LIFT_FIELD_ALL.lastIndex++
+  }
+  return false
+}
+/** The line with every lift field whose value is refused blanked out, so the word matcher of an old block cannot lift on its label (the Russian "not yet" after the Russian label, K13 on the K11 word path). */
+export function withoutRefusedLiftFields(line) {
+  LIFT_FIELD_ALL.lastIndex = 0
+  let out = line
+  for (let match; (match = LIFT_FIELD_ALL.exec(line)); ) {
+    if (match[0].length === 0) LIFT_FIELD_ALL.lastIndex++
+    else if (!liftValueOk(line, match)) out = out.slice(0, match.index) + ' '.repeat(match[0].length) + out.slice(match.index + match[0].length)
+  }
+  return out
+}
+/** The lift field alone on an indented sub-item. */
+export function subItemLiftField(line) {
+  const match = BLOCKER_LIFT_SUBITEM.exec(line)
+  return !!match && liftValueOk(line, match)
+}
 // A request for the user's answer ("needs a user decision", "awaiting a user answer", and the Russian forms): it lifts nothing, even if the line also says "closed by" or quotes the options.
 // One list for both languages: `\b` is ASCII, so in the branches that put it before the list only the English words take part.
 const REQUEST_WORDS =

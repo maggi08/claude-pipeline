@@ -25,8 +25,9 @@ import {
   AUTH_LINE,
   blockerFieldApplies,
   BLOCKER_LIFTED,
-  BLOCKER_LIFT_FIELD,
-  BLOCKER_LIFT_SUBITEM,
+  blockerLiftField,
+  subItemLiftField,
+  withoutRefusedLiftFields,
   BLOCKER_LINE,
   INTERVIEW_FIELD,
   PLAIN_BLOCKER_LINE,
@@ -41,7 +42,6 @@ import {
   VISUAL_REFERENCE_FIELD,
   WITH_BLOCKERS,
   forceBlockBody,
-  forceBlockDate,
   forceHeadings,
   forceKey,
   freshestForceHeading,
@@ -974,8 +974,8 @@ const indentOf = (line) => line.length - line.trimStart().length
 function subItemLifts(lines, index) {
   for (let next = index + 1; next < lines.length; next++) {
     if (!lines[next].trim()) continue
-    if (indentOf(lines[next]) <= indentOf(lines[index]) || BLOCKER_LINE.test(lines[next])) break
-    if (BLOCKER_LIFT_SUBITEM.test(lines[next])) return true
+    if (indentOf(lines[next]) <= indentOf(lines[index]) || BLOCKER_LINE.test(lines[next]) || BLOCKERS_FIELD.test(lines[next])) break
+    if (subItemLiftField(lines[next])) return true
   }
   return false
 }
@@ -1019,7 +1019,7 @@ export const blockerLines = (input, gate) => blockerEntries(input, gate).found.m
 export const openBlockers = (input, gate) => {
   const { fixed, found } = blockerEntries(input, gate)
   return found
-    .filter(({ line, sub }) => !(fixed ? sub || BLOCKER_LIFT_FIELD.test(line) : BLOCKER_LIFT_FIELD.test(line) || BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' '))))
+    .filter(({ line, sub }) => !(fixed ? sub || blockerLiftField(line) : blockerLiftField(line) || BLOCKER_LIFTED.test(withoutRefusedLiftFields(line).replace(GROUP_NEGATION, ' '))))
     .map(({ line }) => line)
 }
 
@@ -1039,12 +1039,16 @@ export function forceCloseViolations(dataDir, taskDir) {
   if (lines.has(fingerprint(block.heading))) return []
   if (WITH_BLOCKERS.test(block.heading)) return []
   const found = []
-  const blockers = openBlockers(block, blockerGate(dataDir, taskDir))
+  const gate = blockerGate(dataDir, taskDir)
+  const blockers = openBlockers(block, gate)
   if (blockers.length) {
+    const rule = blockerFieldApplies(gate, block.heading, block.body)
+      ? ' In this block a blocker is lifted only by `Lifted: <who> <date>` (the Russian form is in the marker table of language.md) on its line or an indented sub-item; words in the description do not lift, and a value that says no / pending / not yet lifts nothing.'
+      : ''
     found.push({
       rule: 'force-blockers',
       id: 'force',
-      message: `Block "${block.heading.replace(/^## /, '')}": ${blockers.length} open blockers (${blockers[0].slice(0, 60)}…) — close it as "completed with blockers", they come first in the summary.`,
+      message: `Block "${block.heading.replace(/^## /, '')}": ${blockers.length} open blockers (${blockers[0].slice(0, 60)}…) — close it as "completed with blockers", they come first in the summary.${rule}`,
     })
   }
   return [...found, ...openLedgers(dataDir, taskDir)]

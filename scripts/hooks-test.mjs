@@ -5066,6 +5066,7 @@ rmSync(retroRoot, { recursive: true, force: true })
       check('5e K10 (m-1): a block open at the first look (2026-10-29, first look 2026-11-03) is read by the field: "closed by" does not lift B1', jc.openBlockers({ heading: OPEN, body: OPEN_BODY }, later).length === 1 && jc.openBlockers({ heading: `${OPEN} — completed 2026-10-29`, body: OPEN_BODY }, later).length === 1)
       writeFileSync(join(task, 'STAGES.md'), `# T-K9: task\n\n${FEMO}\n${FEMO_BODY}\n${OPEN} — completed 2026-10-29\n${OPEN_BODY}`)
       check('5e K10 (m-1): the "completed" close of that block is refused (force-blockers)', jc.forceCloseViolations(data, task).some(({ rule }) => rule === 'force-blockers'), JSON.stringify(jc.forceCloseViolations(data, task)))
+      check('5e round 4 m-2: the force-blockers refusal of a block read by the field names `Lifted:` and the Russian form', jc.forceCloseViolations(data, task).some(({ rule, message }) => rule === 'force-blockers' && message.includes('`Lifted: <who> <date>`') && message.includes('Russian form')), JSON.stringify(jc.forceCloseViolations(data, task).map(({ message }) => message.slice(-120))))
       check('5e K11 (m-2): in a held block the field on the blocker\'s own line lifts, the indented sub-item does not', same(jc.openBlockers({ heading: FEMO, body: 'Блокеры:\n- B1 — x — Lifted: user 2026-10-26\n- B2 — y\n  - Lifted: user 2026-10-26\n' }, later).map((line) => line.slice(0, 4)), ['- B2']))
       check('5e S4: the snapshot is written through a temp file and a rename: no temp file is left in the directory', existsSync(file) && !readdirSync(dirname(file)).some((name) => name.endsWith('.tmp')) && /renameSync\(temp, target\)/.test(readFileSync(join(PLUGIN, 'journal-check.mjs'), 'utf8')))
     }
@@ -5083,10 +5084,39 @@ rmSync(retroRoot, { recursive: true, force: true })
     const lang = readFileSync(join(PLUGIN, '../references/language.md'), 'utf8')
     check('5e A4: language.md has the marker row for the lift field in both languages', /`Lifted: <who> <date>[^|]*\| `Снят: /.test(lang))
   }
+  // round 4 (final checks): M-1 — the value of the field is checked whole (K13); every probe line stays open in an old and a new block, the legitimate forms still lift
+  {
+    const PROBES = [
+      '- B1 — CI e2e red — needs the token — Lifted: still pending (asked the user 2026-10-27)',
+      '- B1 — CI e2e red — needs the token — Lifted: (pending, asked the user 2026-10-27)',
+      '- B1 — CI e2e red — needs the token — Lifted: ⏳ asked the user 2026-10-27',
+      '- B1 — CI e2e red — needs the token — Lifted: NO, asked 2026-10-27',
+      '- B1 — CI e2e red — needs the token — Lifted: `no` (asked 2026-10-27)',
+      '- B1 — CI e2e red — needs the token — Lifted: open, asked 2026-10-27',
+      '- B1 — CI e2e red — needs the token — Lifted: false, 2026-10-27',
+      '- B1 — CI e2e red — needs the token — Lifted: not needed, user 2026-10-27',
+      '- B1 — CI e2e red — needs the token — Lifted: user? 2026-10-27',
+      '- B1 — CI e2e red — needs the token — Lifted: ❌ 2026-10-27',
+      '- B1 — CI e2e red — needs the token — Снят: пока нет (спросил 27.10.2026)',
+      '- B1 — CI e2e red — needs the token — Снят: ещё нет, 27.10.2026',
+      '- B2 — stage 7 waits for B1 (lifted: user 2026-10-27) and the token — needed: the token',
+      '- B2 — stage 7 waits for B1 (lifted: user 2026-10-27), then the token',
+    ]
+    for (const [label, date] of [['old block', OLD], ['new block', NEW]]) {
+      const still = PROBES.filter((line) => openOf(head(date), `${line}\n`).length !== 1)
+      check(`5e round 4 M-1 (${label}): a value that says "not lifted" (a second word, upper case, a backtick, ⏳, ?, ❌, a Russian "not yet", another blocker's status in parentheses) keeps the blocker open on the line`, still.length === 0, JSON.stringify(still))
+      const sub = PROBES.filter((line) => /Lifted|Снят/.test(line) && !line.includes('waits for') && openOf(head(date), `- B1 — a\n  - ${line.replace(/^.*?— (Lifted|Снят)/, '$1')}\n`).length !== 1)
+      check(`5e round 4 M-1 (${label}): the same values on an indented sub-item${date === OLD ? ' (not read in an old block: open either way)' : ''}`, sub.length === 0, JSON.stringify(sub))
+      check(`5e round 4 M-1 (${label}): the legitimate forms still lift (VT-1 B7 quote, the sub-item with a quote, the Russian decision, S3's closing parenthesis)`,
+        openOf(head(date), '- B1 — x — Lifted: user decision 2026-10-20 «go with your suggestion». Done in run 6\n- B2 — y — Снят: решение пользователя 28.10.2026\n- B3 — a — token (Lifted: user 2026-10-27).\n').length === 0 &&
+        (date === OLD || openOf(head(date), '- B4 — z\n  - Lifted: user decision 2026-10-23 «B7, yes»; fixed in run 6\n').length === 0))
+    }
+    check('5e round 4 M-1: a second lift field later on the line still lifts when its own value is real ("Lifted: no 2026-10-27 — Lifted: user 2026-10-27")', openOf(head(NEW), '- B1 — x — Lifted: no 2026-10-27 — Lifted: user 2026-10-27\n').length === 0)
+  }
   // linear time: the new patterns on 50 000 characters of pathological input
   {
     const pad = (unit) => unit.repeat(Math.ceil(50_000 / unit.length))
-    const inputs = [`- B1 — ${pad(';  ')}`, `- B1 — ${pad('. ')}x`, `- B1 — ${pad('(')}`, `- B1 — ${pad(';*')}`, `- B1 — x ${' '.repeat(50_000)}Lifted:`, `- B1 ${' '.repeat(50_000)}(8)${' '.repeat(50_000)}`, `- B1 (1)${pad('*')}`, `- B1${'*'.repeat(100_000)} — x`, `- B1 (8)${'*'.repeat(100_000)} — x`, `- B1 — x${'*'.repeat(100_000)}Lifted: user`, `- B1 — x — Lifted:${'*'.repeat(100_000)} 2026-10-27`, `- B1 — x${pad(' - ')}Lifted:`, `Blockers: ${pad('**B1** — x, ')}`, `- B1 (${pad('1')}`, `- B1 — x\n${pad('  - ')}\n`, `- B1 — x\n${pad('  \n')}  - Lifted:`, `Blockers: ${pad('B1 (8) ')}`, `Blockers: ${pad('B1 — x. ')}`, `${pad('- B1 — x\n  - y\n')}`, `${pad('- B1 (8) x\n')}`, `Ответы интервью:\n${pad('- B1 (8) — x\n')}`, `- B1 — x Lifted: ${' '.repeat(50_000)}`, `- B1 — x Lifted: ${pad('x ')}`, `- B1 — ${pad('Lifted: x ')}`, `- B1 — x\n${pad('  - Lifted: ')}`, `Blockers: ${pad('B1 (8) x; ')}`, `Blockers: ${pad('B1 (8')}`]
+    const inputs = [`- B1 — ${pad(';  ')}`, `- B1 — ${pad('. ')}x`, `- B1 — ${pad('(')}`, `- B1 — ${pad(';*')}`, `- B1 — x ${' '.repeat(50_000)}Lifted:`, `- B1 ${' '.repeat(50_000)}(8)${' '.repeat(50_000)}`, `- B1 (1)${pad('*')}`, `- B1${'*'.repeat(100_000)} — x`, `- B1 (8)${'*'.repeat(100_000)} — x`, `- B1 — x${'*'.repeat(100_000)}Lifted: user`, `- B1 — x — Lifted:${'*'.repeat(100_000)} 2026-10-27`, `- B1 — x${pad(' - ')}Lifted:`, `Blockers: ${pad('**B1** — x, ')}`, `- B1 (${pad('1')}`, `- B1 — x\n${pad('  - ')}\n`, `- B1 — x\n${pad('  \n')}  - Lifted:`, `Blockers: ${pad('B1 (8) ')}`, Array.from({ length: 2000 }, (_, i) => `${' '.repeat(i)}Blockers: B${i} — x`).join('\n'), `Blockers: ${pad('B1 — x. ')}`, `${pad('- B1 — x\n  - y\n')}`, `${pad('- B1 (8) x\n')}`, `Ответы интервью:\n${pad('- B1 (8) — x\n')}`, `- B1 — x Lifted: ${' '.repeat(50_000)}`, `- B1 — x Lifted: ${pad('x ')}`, `- B1 — ${pad('Lifted: x ')}`, `- B1 — x\n${pad('  - Lifted: ')}`, `Blockers: ${pad('B1 (8) x; ')}`, `Blockers: ${pad('B1 (8')}`]
     const worst = { ms: 0, input: '' }
     for (const body of inputs) for (const heading of [head(OLD), head(NEW)]) {
       const t0 = performance.now()
