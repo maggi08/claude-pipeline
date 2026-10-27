@@ -28,7 +28,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { baselineInfo, fingerprint, lastForceBlock, openBlockers, readTaskFile } from './journal-check.mjs'
+import { baselineInfo, blockerGate, fingerprint, lastForceBlock, openBlockers, readTaskFile } from './journal-check.mjs'
 import { pluginDataDir, readDataFiles, readPipelineState } from './hooks/pipeline-state.mjs'
 import { CI_GATES_HEADING, CLOSED_WORD, NO_GATE_COMMAND, WITH_BLOCKERS } from './markers.mjs'
 
@@ -219,7 +219,7 @@ export function gateCloseViolations(dataDir, worktree, config, taskDir) {
   const failing = gateStatus(dataDir, worktree, config, skips).filter((gate) => !gateAccepted(gate))
   if (!failing.length) return []
   const withBlockers = WITH_BLOCKERS.test(block.heading)
-  const blockers = openBlockers(block).join('\n').toLowerCase()
+  const blockers = openBlockers(block, blockerGate(dataDir, taskDir)).join('\n').toLowerCase()
   return failing
     .filter((gate) => !withBlockers || !(blockers.includes(gate.name.toLowerCase()) || blockers.includes(gate.command.toLowerCase())))
     .map((gate) => ({

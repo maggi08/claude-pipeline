@@ -26,4 +26,6 @@ export const snapshotCurrent = (data) =>
   Boolean(data.closedSeen && data.liveSeen && data.dismissSeen) &&
   Array.isArray(data.ledgerOld) &&
   typeof data.since018 === 'string' &&
-  Array.isArray(data.forceSeen)
+  Array.isArray(data.forceSeen) &&
+  typeof data.since0182 === 'string' &&
+  Array.isArray(data.blockerSeen)

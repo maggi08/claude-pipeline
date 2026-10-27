@@ -32,6 +32,7 @@ import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:pat
 import { pathToFileURL } from 'node:url'
 import {
   baselineInfo,
+  blockerGate,
   collectDismissals,
   disposition,
   findingCounts,
@@ -48,7 +49,7 @@ import {
 } from './journal-check.mjs'
 import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
-import { AWAITING_SECTION, CONFIRMED_LINE, UNVERIFIED_HEADING, forceBlockBody, forceBlockDate, forceHeadings, forceKey, headingDate } from './markers.mjs'
+import { AWAITING_SECTION, UNVERIFIED_HEADING, forceBlockBody, forceBlockDate, forceHeadings, forceKey, headingDate } from './markers.mjs'
 import { TASK_FILE_MAX, pluginDataDir, readDataFiles, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
 import { baselineName } from './baseline-file.mjs'
 import { bulletTexts, rollbackRank } from './decisions.mjs'
@@ -200,7 +201,7 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   // Read the way journal-gate reads a fresh report (strict + taskDir; `ledgerOld` is the old/new split).
   const ledgers = reports.map(({ name, text }) => ({ name, violations: ledgerViolations(text, name, { complete: true, strict: strictFor(name), taskDir }) }))
 
-  const blockers = (block ? openBlockers(block) : []).map((line) => `- ${bullet(line)}`)
+  const blockers = (block ? openBlockers(block, blockerGate(dataDir, taskDir)) : []).map((line) => `- ${bullet(line)}`)
   const gates = (repo ? gateStatus(dataDir, repo.worktree, repo.config, forceSkips(taskDir)) : []).map((gate) => ({ ok: gateAccepted(gate), skipped: gate.status === 'skipped', lastRed: Boolean(gate.lastRed), line: `- ${gate.status === 'green' ? '✅' : gate.status === 'skipped' ? '⏭' : '✗'} ${describe(gate, language)}` }))
   const noOutcome = ledgers.flatMap(({ violations }) => violations.map((violation) => `- ${TEXT[language].ledger(violation)}`))
 

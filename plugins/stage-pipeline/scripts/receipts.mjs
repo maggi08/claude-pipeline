@@ -26,9 +26,9 @@
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
-import { LEGIT_REASON, baselineInfo, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
+import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
 import { OPEN_STATUS, patchIds, readDataFiles, taskLanguage } from './hooks/pipeline-state.mjs'
-import { BLOCKER_FIELD_SINCE, CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, forceBlockDate, headingDate, logicOnlyTag, ruleAppliesToBlock, stageBlocksOf } from './markers.mjs'
+import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
 const NOT_UI = /\.(?:test|spec|stories|story)\.\w+$|(?:^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//
@@ -306,11 +306,11 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
     { checker: 'pro-review', match: (name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
     { checker: 'task-converge', match: (name) => reportChecker(name) === 'task-converge', how: 'the `task-converge` agent, `checks/task-converge.md`' },
   ].filter((item) => dirty.length || !newReports(taskDir, since).some((name) => item.match(name) && readTaskFile(taskDir, 'checks', name) !== null))
-  const blockers = openBlockers(run.block)
+  const bGate = blockerGate(dataDir, taskDir)
+  const blockers = openBlockers(run.block, bGate)
   const withBlockers = WITH_BLOCKERS.test(run.block.heading)
   const language = taskLanguage(run.stages)
-  const blockDate = withBlockers ? forceBlockDate(run.block.heading, run.block.body) : null
-  const fixedBlock = Boolean(blockDate) && blockDate >= BLOCKER_FIELD_SINCE
+  const fixedBlock = withBlockers && blockerFieldApplies(bGate, run.block.heading, run.block.body)
   const reason = dirty.length
     ? `tracked files have uncommitted edits (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''})`
     : `newer than the code last changed (the tree of HEAD appeared ${new Date(since).toISOString()}; a rewrite that keeps the tree does not count)`
@@ -320,7 +320,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
       const marker = finalMarker(item.checker, newReports(taskDir, 0).some(item.match) ? 'stale' : 'missing', language)
       const prose = withBlockers ? blockers.find((line) => line.toLowerCase().includes(item.checker)) : undefined
       // The marker is there, but a lift word in the reason ("skipped per user decision 2026-10-20", "closed by the token limit") makes the line read as lifted.
-      const lifted = withBlockers ? blockerLines(run.block).find((line) => !blockers.includes(line) && finalMarkerReports(line).has(item.checker)) : undefined
+      const lifted = withBlockers ? blockerLines(run.block, bGate).find((line) => !blockers.includes(line) && finalMarkerReports(line).has(item.checker)) : undefined
       return {
         rule: 'final-review',
         id: item.checker,

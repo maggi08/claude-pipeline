@@ -238,6 +238,15 @@ export const INTERVIEW_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Ответы\s+�
  * the lift field (`Lifted:`, or its Russian form). An older or undated block keeps the word matcher below (D7: no retrofitting).
  */
 export const BLOCKER_FIELD_SINCE = '2026-10-26'
+/**
+ * Whether a Force block is read by the fixed lift field (K1 + K9): dated on or after `BLOCKER_FIELD_SINCE`, and — when a `gate` is passed (`blockerGate` in journal-check) — not one the task
+ * snapshot already held at the first look of 0.18.2 (those keep the word matcher, D7: the old plugin wrote such blocks with prose lifts). With no gate (a test, a bare body) the date alone decides.
+ */
+export function blockerFieldApplies(gate, heading, body) {
+  const date = forceBlockDate(heading, body)
+  if (!date || date < BLOCKER_FIELD_SINCE) return false
+  return gate ? ruleAppliesToBlock(gate, heading, date) : true
+}
 /** The date of a Force block: its heading, else its `Confirmed:` line (the Russian form too); null when neither has one. */
 export const forceBlockDate = (heading, body) => headingDate(heading) ?? headingDate(body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')
 /**

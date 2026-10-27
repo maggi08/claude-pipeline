@@ -4986,10 +4986,43 @@ rmSync(retroRoot, { recursive: true, force: true })
     rmSync(dir, { recursive: true, force: true })
     rmSync(data, { recursive: true, force: true })
   }
-  // K5: no caller reads blocker state from a bare body any more
+  // K5: no caller reads blocker state from a bare body any more; K9: every caller passes the task gate along with the block
   for (const file of ['run-digest.mjs', 'ci-gates.mjs', 'receipts.mjs', 'journal-check.mjs']) {
     const text = readFileSync(join(PLUGIN, file), 'utf8')
     check(`5e K5: ${file} passes the Force block, with its date, to the blocker reader`, !/(?:openBlockers|blockerLines)\((?:[\w.]*\.)?body\)/.test(text))
+    check(`5e K9: ${file} passes the task gate along with the block (no one-argument call of the blocker reader)`, !/(?:openBlockers|blockerLines)\(\s*[^(),]+\)/.test(text) && /blockerGate\(|bGate/.test(text))
+  }
+  // K9: the per-task gate of the fixed field. The femo-shaped incident block (the old plugin wrote it dated 2026-10-26, its prose lifts stay) and the legitimate block opened after the first look.
+  {
+    const dir = mkdtempSync(join(tmpdir(), 'blockers-k9-'))
+    const task = join(dir, 'T-K9')
+    const data = mkdtempSync(join(tmpdir(), 'blockers-k9-data-'))
+    mkdirSync(join(task, 'checks'), { recursive: true })
+    const FEMO = '## Force-прогон 2026-10-26 — завершён с блокерами 2026-10-26'
+    const FEMO_BODY = 'Блокеры:\n- B1 — x — снят 2026-10-26 коммитом этапа 3 `656cc1e`\n- B2 — y — снят 2026-10-26 коммитом `abc1234`\n- B5 — z — открыт\n'
+    writeFileSync(join(task, 'STAGES.md'), `# T-K9: task\nЯзык: ru\n\n${FEMO}\n${FEMO_BODY}`)
+    jc.baselineInfo(data, task)
+    const file = snapshotFile(data, task)
+    // the first look of 0.18.2 was on 2026-10-27, the femo block was already there
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since0182: '2026-10-27', blockerSeen: [markers.forceKey(FEMO)] }))
+    const gate = jc.blockerGate(data, task)
+    check('5e K9 incident (femo): a block dated 2026-10-26 that the snapshot held at the first look keeps its prose lifts: 1 open', same(jc.openBlockers({ heading: FEMO, body: FEMO_BODY }, gate).map((line) => line.slice(0, 4)), ['- B5']), JSON.stringify(jc.openBlockers({ heading: FEMO, body: FEMO_BODY }, gate)))
+    check('5e K9: with no gate the reading is by the date alone (the prose lifts do not lift: 3 open)', jc.openBlockers({ heading: FEMO, body: FEMO_BODY }).length === 3)
+    const NEWH = '## Force-прогон 2026-10-27 — x'
+    const NEWB = '- B1 — a — снят 2026-10-27 коммитом `abc`\n- B2 — b — Lifted: user 2026-10-27\n- B3 — c\n'
+    check('5e K9 legit: a block opened after the first look and dated on or after the floor is read by the fixed field (prose does not lift, `Lifted:` does)', same(jc.openBlockers({ heading: NEWH, body: NEWB }, gate).map((line) => line.slice(0, 4)), ['- B1', '- B3']))
+    check('5e K9: the gate does not move a block dated before the floor (word matcher either way)', jc.openBlockers({ heading: '## Force-прогон 2026-10-20 — x', body: '- B1 — x снят пользователем\n' }, gate).length === 0)
+    check('5e K9: blockerLines gets the same gate', jc.blockerLines({ heading: FEMO, body: FEMO_BODY }, gate).length === 3 && jc.blockerGate(data, task).since === '2026-10-27')
+    // a snapshot from the 0.18 migration (since018 / forceSeen, no new mark) is migrated lazily and keeps its 0.18 marks
+    const old = JSON.parse(readFileSync(file, 'utf8'))
+    delete old.since0182
+    delete old.blockerSeen
+    writeFileSync(file, JSON.stringify({ ...old, since018: '2026-10-20', forceSeen: ['## Force-прогон 2026-10-19'] }))
+    const migrated = jc.baselineInfo(data, task)
+    const disk = JSON.parse(readFileSync(file, 'utf8'))
+    check('5e K9: a snapshot with the 0.18 marks and no new one gets only the new one; since018 and forceSeen stay', disk.since018 === '2026-10-20' && same(disk.forceSeen, ['## Force-прогон 2026-10-19']) && /^\d{4}-\d{2}-\d{2}$/.test(disk.since0182) && Array.isArray(disk.blockerSeen) && migrated.since === '2026-10-20' && migrated.since0182 === disk.since0182)
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(data, { recursive: true, force: true })
   }
   // the summary template: no fence in the Output section, and the close message says plain markdown
   {

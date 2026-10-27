@@ -23,7 +23,7 @@ import { pathToFileURL } from 'node:url'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
   AUTH_LINE,
-  BLOCKER_FIELD_SINCE,
+  blockerFieldApplies,
   BLOCKER_LIFTED,
   BLOCKER_LIFT_FIELD,
   BLOCKER_LIFT_SUBITEM,
@@ -782,6 +782,8 @@ export function baselineInfo(dataDir, taskDir) {
     ledgerOld: new Set(snapshot.ledgerOld),
     since: snapshot.since018,
     forceSeen: new Set(snapshot.forceSeen),
+    since0182: snapshot.since0182,
+    blockerSeen: new Set(snapshot.blockerSeen),
   })
   if (data?.version === BASELINE_VERSION) {
     if (snapshotCurrent(data)) {
@@ -791,6 +793,7 @@ export function baselineInfo(dataDir, taskDir) {
     // is already there keeps its set, so a line written after that earlier migration is not made old by this one).
     const text = journalText(taskDir)
     const since018 = typeof data.since018 === 'string' ? data.since018 : localDate()
+    const since0182 = typeof data.since0182 === 'string' ? data.since0182 : localDate()
     const migrated = {
       ...data,
       reports: Array.isArray(data.reports) ? data.reports : reportNames(taskDir),
@@ -804,6 +807,9 @@ export function baselineInfo(dataDir, taskDir) {
       // opened after them (`releaseGate`).
       since018,
       forceSeen: Array.isArray(data.forceSeen) ? data.forceSeen : forceKeysBefore(text, since018),
+      // 0.18.2 (K9): the day this version first read the task and the Force headings already there, dated before it — they keep the word matcher for blockers (`blockerGate`).
+      since0182,
+      blockerSeen: Array.isArray(data.blockerSeen) ? data.blockerSeen : forceKeysBefore(text, since0182),
       lines: [
         ...new Set([
           ...data.lines,
@@ -838,6 +844,8 @@ export function baselineInfo(dataDir, taskDir) {
     ledgerOld: reportNames(taskDir),
     since018: localDate(new Date(now)),
     forceSeen: forceKeysBefore(text, localDate(new Date(now))),
+    since0182: localDate(new Date(now)),
+    blockerSeen: forceKeysBefore(text, localDate(new Date(now))),
   }
   writeBaseline(dataDir, taskDir, next)
   return info(next)
@@ -859,6 +867,15 @@ const forceKeysBefore = (text, day) => [...new Set(forceHeadings(text).map(([hea
 export function releaseGate(dataDir, taskDir) {
   const { since, forceSeen } = baselineInfo(dataDir, taskDir)
   return { since, seen: forceSeen }
+}
+
+/**
+ * The per-task gate of the fixed blocker field (stage 5e, K9), the same shape as `releaseGate`: the day 0.18.2 first read the task and the Force headings already there and dated before it.
+ * Every caller passes it with the block to `openBlockers` / `blockerLines`; a block opened by the old plugin on that very day is read as new (fail closed, like the 0.18 gate).
+ */
+export function blockerGate(dataDir, taskDir) {
+  const { since0182, blockerSeen } = baselineInfo(dataDir, taskDir)
+  return { since: since0182, seen: blockerSeen }
 }
 
 export function ensureBaseline(dataDir, taskDir) {
@@ -935,14 +952,13 @@ const isBullet = (line) => /^[^\S\n]*[-*][^\S\n]/.test(line)
 const indentOf = (line) => line.length - line.trimStart().length
 /**
  * The one reader of blocker state (stage 5e, K5): every caller passes the Force block (`lastForceBlock`), and the date comes from the block.
- * A block dated on or after `BLOCKER_FIELD_SINCE` is read by the fixed field alone: a blocker is lifted by the lift field (`Lifted:`, or its Russian form) in its own text or on an indented sub-item,
+ * A block dated on or after `BLOCKER_FIELD_SINCE` and not held by the task snapshot at the first look of 0.18.2 (`gate`, K9) is read by the fixed field alone: a blocker is lifted by the lift field (`Lifted:`, or its Russian form) in its own text or on an indented sub-item,
  * and no word of the description and no field-wide mark lifts anything. An older or undated block (or a bare body text) keeps the word matcher and the field-wide marks.
  * A carried blocker `B<n> (<run>) …` is a blocker line in every field except the interview answers, where it answers one.
  */
-function blockerEntries(input) {
+function blockerEntries(input, gate) {
   const { heading, body } = asBlock(input)
-  const date = forceBlockDate(heading, body)
-  const fixed = Boolean(date) && date >= BLOCKER_FIELD_SINCE
+  const fixed = blockerFieldApplies(gate, heading, body)
   const lines = body.split('\n')
   const found = []
   let interview = null
@@ -971,9 +987,9 @@ function blockerEntries(input) {
   return { fixed, found }
 }
 /** Every blocker line of a Force block (or of a bare body text), whether lifted or open (a field the whole of which is lifted is left out in a block read by words). */
-export const blockerLines = (input) => blockerEntries(input).found.map(({ line }) => line)
-export const openBlockers = (input) => {
-  const { fixed, found } = blockerEntries(input)
+export const blockerLines = (input, gate) => blockerEntries(input, gate).found.map(({ line }) => line)
+export const openBlockers = (input, gate) => {
+  const { fixed, found } = blockerEntries(input, gate)
   return found
     .filter(({ line, sub }) => !(fixed ? sub || BLOCKER_LIFT_FIELD.test(line) : BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' '))))
     .map(({ line }) => line)
@@ -995,7 +1011,7 @@ export function forceCloseViolations(dataDir, taskDir) {
   if (lines.has(fingerprint(block.heading))) return []
   if (WITH_BLOCKERS.test(block.heading)) return []
   const found = []
-  const blockers = openBlockers(block)
+  const blockers = openBlockers(block, blockerGate(dataDir, taskDir))
   if (blockers.length) {
     found.push({
       rule: 'force-blockers',
