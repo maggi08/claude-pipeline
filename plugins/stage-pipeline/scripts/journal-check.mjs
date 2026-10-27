@@ -23,6 +23,7 @@ import { pathToFileURL } from 'node:url'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
   AUTH_LINE,
+  MAP_LINE,
   blockerFieldApplies,
   BLOCKER_LIFTED,
   blockerLiftField,
@@ -567,7 +568,7 @@ export function summaryViolation(text, name) {
  * Precedents: a badge collapsed at the bottom of the menu (`m-4` in a container without padding) while the checker measured width and nesting;
  * a country name in three lines stuck out of the card on the checker's own screenshots.
  */
-export function runtimeViolations(text, name, taskDir = null, fresh = false) {
+export function runtimeViolations(text, name, taskDir = null, fresh = false, map = false) {
   if (reportChecker(name) !== 'devtools-verify' || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
   const found = []
   // A stage with a "Visual reference" — a typography comparison with a neighbouring section: the prototype matched the code, and "too bold" and "different buttons"
@@ -605,6 +606,15 @@ export function runtimeViolations(text, name, taskDir = null, fresh = false) {
         })
     }
   }
+  // VT-4 0.20 (stage 8): a repo with the verify map README (`map`, set by the hook) gets the `map:` line in a new report; a repo without one is untouched.
+  if (fresh && map && !MAP_LINE.test(text))
+    found.push({
+      rule: 'no-map',
+      id: name,
+      message:
+        `checks/${name}: no \`map:\` line — this repo has a verify map (\`verify_map:\` README), so the report says \`map: <ids> · entries a/b · drift N\` or, for a stage whose routes have no map entry, ` +
+        '`map: none — <route> unmapped` (skill devtools-verify, "Verify map"; the task language form is in references/language.md).',
+    })
   const unverified = text.slice(Math.max(0, text.search(UNVERIFIED_HEADING)))
   const line = unverified.split('\n').find((candidate) => NO_DATA.test(candidate) && !STUBBED.test(candidate))
   if (UNVERIFIED_HEADING.test(text) && line) {
@@ -629,7 +639,7 @@ export function languageViolation(text, name, language) {
 }
 
 /** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
-export function reportViolations(path, language = null, { fresh = false, strict = false } = {}) {
+export function reportViolations(path, language = null, { fresh = false, strict = false, map = false } = {}) {
   const read = reportRead(path)
   const name = basename(path)
   if (read.problem === 'missing') return []
@@ -637,7 +647,7 @@ export function reportViolations(path, language = null, { fresh = false, strict 
   const { text } = read
   // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
   const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
-  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh)].filter(Boolean)
+  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map)].filter(Boolean)
 }
 
 /** The "Visual reference" of the stage a report belongs to (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), or null. */

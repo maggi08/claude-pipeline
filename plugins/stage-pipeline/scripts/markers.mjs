@@ -424,3 +424,89 @@ export const CI_GATES_HEADING = /^(#{2,4})[ \t]*(?:Гейты\s+CI|CI\s+gates)\b
 export const NO_GATE_COMMAND = /^(?:нет|—|-|none|no|n\/a)(?![а-яёa-z])/i
 /** `kit_overrides: off|false|no|disabled` (and the Russian "none"). */
 export const KIT_OVERRIDES_OFF = /^[ \t]*-[ \t]*kit_overrides[ \t]*:[ \t]*`?(?:off|false|no|нет|disabled)(?![\wа-яё])/im
+
+// --- verify map (`<repo>/.claude/verify/`, stage 8) ---
+
+/** The map line of a devtools-verify report: `map: <ids> · entries a/b · drift N` or `map: none — <route> unmapped` (or its Russian form). */
+export const MAP_LINE = /^[ \t]*(?:[-*][ \t]*)?`?(?:map|карта)\s*:/im
+/** The header line of a feature file: `Routes: … · Auth: … · Platforms: … · Status: draft | verified <date> <sha>`. */
+export const MAP_ROUTES_FIELD = /(?:^|[ \t·])(?:Routes|Маршруты)[ \t]*:[ \t]*/i
+export const MAP_STATUS_FIELD = /(?:^|[ \t·])(?:Status|Статус)[ \t]*:[ \t]*(draft|verified|черновик|проверено)(?![\p{L}\d])/iu
+/** The four sections of a feature file, in the order of the format; each is `[English heading, regexp of both languages]`. */
+export const MAP_FEATURE_SECTIONS = [
+  ['Sub-features', /^##[ \t]*(?:Sub-features|Подфункции)(?![\p{L}\d])/imu],
+  ['How to get to it (user POV)', /^##[ \t]*(?:How to get to it|Как дойти)/im],
+  ['Driving it with Chrome DevTools MCP', /^##[ \t]*(?:Driving it with Chrome DevTools MCP|Управление через Chrome DevTools MCP)/im],
+  ['Gotchas', /^##[ \t]*(?:Gotchas|Подводные камни)(?![\p{L}\d])/imu],
+]
+/** The texts `verify-map.mjs --init` writes, per task language. Values come from the config; a missing one is the `notSet` slot, never a guess. */
+export const MAP_TEXT = {
+  en: {
+    title: 'Verify map',
+    base: 'Base',
+    updated: 'Updated',
+    notSet: 'not set',
+    instance: 'Instance and doctor',
+    preconditions: 'Baseline preconditions',
+    conventions: 'Driving conventions',
+    proof: 'Proof and skip reporting',
+    features: 'Features (sweep order)',
+    dev: 'Dev',
+    marker: 'App marker',
+    routes: 'Baseline routes',
+    ready: 'Ready = the baseline routes answer 200 and the marker is on the page (`node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-doctor.mjs`)',
+    auth: 'Auth',
+    e2e: 'E2E command',
+    playwright: 'Playwright / storageState',
+    data: 'Data',
+    writes: 'Stand writes',
+    surface: 'Surface',
+    widths: 'desktop widths',
+    webview: 'webview',
+    theme: 'Theme',
+    conv1: 'Handles as take_snapshot prints them (`button "Save"`), then data-testid, then aria-label; never CSS classes',
+    conv2: 'click and fill by uid; no el.click() inside evaluate; evaluate only arranges preconditions or reads state after the user path',
+    conv3: 'wait for an observable end state, no sleeps',
+    proof1: 'action + resulting state; feature id + entry point on every artifact',
+    proof2: 'mutation: request (method, path, status, key fields) + read-back after reload or a second view',
+    proof3: 'a skipped entry point is not verified through another one; unreachable = prerequisite + route tried + closest path covered',
+    none: 'none yet — feature-checker adds `- [<id>](features/<id>.md) — <route>`',
+  },
+  ru: {
+    title: 'Карта проверки',
+    base: 'База',
+    updated: 'Обновлено',
+    notSet: 'не задано',
+    instance: 'Стенд и doctor',
+    preconditions: 'Исходные условия',
+    conventions: 'Правила управления',
+    proof: 'Доказательства и пропуски',
+    features: 'Фичи (порядок обхода)',
+    dev: 'Dev',
+    marker: 'Метка приложения',
+    routes: 'Базовые маршруты',
+    ready: 'Готово = базовые маршруты отвечают 200 и метка есть на странице (`node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-doctor.mjs`)',
+    auth: 'Вход',
+    e2e: 'Команда E2E',
+    playwright: 'Playwright / storageState',
+    data: 'Данные',
+    writes: 'Записи на стенд',
+    surface: 'Поверхность',
+    widths: 'ширины десктопа',
+    webview: 'webview',
+    theme: 'Тема',
+    conv1: 'Ручки так, как их печатает take_snapshot (`button "Save"`), затем data-testid, затем aria-label; не CSS-классы',
+    conv2: 'click и fill по uid; без el.click() внутри evaluate; evaluate только готовит условия или читает состояние после пользовательского пути',
+    conv3: 'ждать наблюдаемого конечного состояния, без sleep',
+    proof1: 'действие + получившееся состояние; id фичи + точка входа на каждом артефакте',
+    proof2: 'мутация: запрос (метод, путь, статус, ключевые поля) + чтение после перезагрузки или в другом виде',
+    proof3: 'пропущенная точка входа не проверяется через другую; недоступна = условие + пробованный маршрут + ближайший пройденный путь',
+    none: 'пока нет — feature-checker добавит `- [<id>](features/<id>.md) — <маршрут>`',
+  },
+}
+/** A config value meaning "none" (the same words as NO_GATE_COMMAND, whole value). */
+export const NO_VALUE = /^(?:—|-|–|none|no|нет|n\/a)$/i
+/** The FEATURE-MAP "Entry points" heading and the route / files columns of its table, both languages. */
+export const ENTRY_POINTS_HEADING = /^##\s*(?:Entry points|Точки входа)\s*$/i
+export const ENTRY_ROUTE_COLUMN = /^(?:Route|Маршрут)/i
+export const ENTRY_FILES_COLUMN = /^(?:Files|Файлы)/i

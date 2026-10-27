@@ -68,6 +68,7 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 ## Task state
 - task_path: .claude/tasks/     # in the repo: STAGES.md / specs/ / checks/ / DESIGN-QUESTIONS.md by ticket
 - memory_path: .claude/memory/  # in the repo: project memory (decisions/pitfalls of this repo)
+- verify_map: .claude/verify/   # optional: the repo's verify map (user journeys per feature that devtools-verify drives); no README.md there — no map, the pipeline behaves as without it. Rules: ${CLAUDE_PLUGIN_ROOT}/skills/devtools-verify, "Verify map"
 
 ## Commands
 - dev: <yarn dev>
@@ -125,11 +126,22 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 - The project conventions are in CLAUDE.md (pro-review rubric A reads it). No CLAUDE.md — suggest `/init`.
 ```
 
+## Output: the verify map README (`<verify_map>/README.md`)
+
+After the config is written, create the README of the repo's verify map — the per-repo, user-facing description of how to reach and drive the app, which `feature-checker` fills with one feature file per feature and `devtools-verify` reads:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-map.mjs --init [--language ru]
+```
+
+The script writes **only the README, and only from values the config already has** (the dev URL, `app_marker`, `verify_routes`, `breakpoints`, `e2e`, the slug); a value the config lacks stays an explicit `not set` slot (the Russian form is in `${CLAUDE_PLUGIN_ROOT}/references/language.md`) that the user or a later task fills in — do not guess auth, data or stand rules to make the README look complete. It never overwrites an existing README. It creates no `features/` files: those come from `feature-checker`. Say in the summary that the README was written and which slots are `not set`. The user declines the map — skip this step; a repo without `<verify_map>/README.md` has no map and nothing changes for it.
+
 ## After generation
 
 1. Show the user the filled-in config and **ask about the fields you could not determine** (dev URL, the reuse baseline, the type-check baseline, the webview repo, the default task `language`: `ru` or `en`).
 2. Report on MCP (step 8): what is connected and alive, what needs the user's action (start Figma desktop, approve the plugin's servers).
-3. Show the permissions script's report (step 9) and, with consent, apply it. Not applied — say plainly that confirmations will be asked at every checker, and leave the ready command.
-4. No CLAUDE.md — suggest Claude Code `/init`, so that pro-review has something to rely on.
+3. Name the `not set` slots of the verify map README (auth, test data, stand writes, theme), so the user knows what is theirs to fill in.
+4. Show the permissions script's report (step 9) and, with consent, apply it. Not applied — say plainly that confirmations will be asked at every checker, and leave the ready command.
+5. No CLAUDE.md — suggest Claude Code `/init`, so that pro-review has something to rely on.
 
 From this moment the pipeline skills in this repository read `.claude/pipeline.config.md` and work in its context. The order of work from here is in `${CLAUDE_PLUGIN_ROOT}/README.md` (init → feature-checker → stage-plan → the stage loop).

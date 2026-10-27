@@ -5536,4 +5536,171 @@ rmSync(retroRoot, { recursive: true, force: true })
   rmSync(dir, { recursive: true, force: true })
 }
 
+// ── stage 8 (VT-4): the verify map — verify-map.mjs and the `map:` report rule ───────────────────────────────────────────────
+{
+  const VM = join(PLUGIN, 'verify-map.mjs')
+  const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
+  const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' })
+  const put = (root, file, text) => {
+    mkdirSync(dirname(join(root, file)), { recursive: true })
+    writeFileSync(join(root, file), text)
+  }
+  const mkRepo = (files) => {
+    const root = mkdtempSync(join(tmpdir(), 'verify-map-'))
+    gitIn(root, 'init', '-q')
+    for (const [file, text] of Object.entries(files)) put(root, file, text)
+    gitIn(root, 'add', '-A')
+    gitIn(root, 'commit', '-q', '-m', 'base')
+    return root
+  }
+  const CONFIG = '# Pipeline config — fx\n## Project\n- slug: fx\n## Task state\n- task_path: .claude/tasks/\n## Dev server\n- url: http://localhost:3000   # the dev server\n- app_marker: <title>Fx</title>\n- verify_routes: /, /orders\n## Design sources of truth\n- breakpoints: 1440, 1280\n'
+  const README = '# Verify map — fx\nBase: abc (main) · Updated: 2026-10-25\n## Features (sweep order)\n- [orders](features/orders.md) — /orders/:orderId\n- [cart](features/cart.md) — /cart\n'
+  const FEATURE = (id, route, extra = '') =>
+    `# ${id}\nRoutes: ${route} · Auth: yes · Platforms: desktop · Status: draft\nThe user can use ${id}.\n## Sub-features\n- \`${id}-open\`\n## How to get to it (user POV)\n- Header → «Orders»${extra}\n## Driving it with Chrome DevTools MCP\nPreconditions: doctor ok, auth ok.\n- **Header entry.** click \`link "Orders"\` → URL /orders, \`heading "Orders"\`.\n## Gotchas\n- Store created on SSR: assert after hydration.\n`
+  const mapFiles = { '.claude/pipeline.config.md': CONFIG, '.claude/verify/README.md': README, '.claude/verify/features/orders.md': FEATURE('orders', '/orders/:orderId'), '.claude/verify/features/cart.md': FEATURE('cart', '/cart') }
+  const dirs = []
+
+  // AC-8.5: a new Nuxt page is listed as unmapped; a changed mapped page is mapped (params of any spelling are one form)
+  const nuxt = mkRepo({ ...mapFiles, 'nuxt.config.ts': 'export default {}\n', 'pages/index.vue': '<template/>', 'pages/orders/[id].vue': '<template/>', 'components/Foo.vue': '<template/>' })
+  dirs.push(nuxt)
+  put(nuxt, 'pages/new.vue', '<template/>')
+  put(nuxt, 'pages/orders/[id].vue', '<template>x</template>')
+  put(nuxt, 'components/Foo.vue', '<template>x</template>')
+  const nuxtOut = vm(nuxt, '--changed')
+  check('verify-map --changed, Nuxt fixture: the new page pages/new.vue is listed as an unmapped route', /^route \/new — unmapped$/m.test(nuxtOut.stdout), nuxtOut.stdout + nuxtOut.stderr)
+  check('verify-map --changed, Nuxt: [id] and the map\'s :orderId are one form — the changed order page is mapped: orders', /^route \/orders\/:id — mapped: orders$/m.test(nuxtOut.stdout), nuxtOut.stdout)
+  check('verify-map --changed, Nuxt: a component is not a route, no warning for it', !/Foo\.vue|^warning/m.test(nuxtOut.stdout) && nuxtOut.status === 0, nuxtOut.stdout)
+  put(nuxt, '.claude/verify/features/cart.md', FEATURE('cart', '/cart', ' · deep link /cart?from=push'))
+  check('verify-map --changed: a touched feature file is listed', /^feature touched: cart$/m.test(vm(nuxt, '--changed').stdout), vm(nuxt, '--changed').stdout)
+  gitIn(nuxt, 'add', '-A')
+  gitIn(nuxt, 'commit', '-q', '-m', 'stage')
+  check('verify-map --changed --base: against the first commit the committed page is still found', /^route \/new — unmapped$/m.test(vm(nuxt, '--changed', '--base', 'HEAD~1').stdout) && !/route \/new/.test(vm(nuxt, '--changed').stdout))
+
+  // K8.3: Next app router, a route group is dropped; a route with no map entry is unmapped
+  const next = mkRepo({ ...mapFiles, 'next.config.js': 'module.exports = {}\n', 'app/page.tsx': 'export default 1\n' })
+  dirs.push(next)
+  put(next, 'app/(shop)/cart/page.tsx', 'export default 1\n')
+  put(next, 'app/(shop)/[slug]/page.tsx', 'export default 1\n')
+  put(next, 'app/(shop)/layout.tsx', 'export default 1\n')
+  put(next, 'pages/api/hello.ts', 'export default 1\n')
+  const nextOut = vm(next, '--changed')
+  check('verify-map --changed, Next app router: the route group (shop) is dropped — /cart is mapped: cart', /^route \/cart — mapped: cart$/m.test(nextOut.stdout), nextOut.stdout)
+  check('verify-map --changed, Next: [slug] is a parameter and has no map entry — unmapped', /^route \/:slug — unmapped$/m.test(nextOut.stdout), nextOut.stdout)
+  check('verify-map --changed, Next: a layout and an API file are not routes', !/layout|hello/.test(nextOut.stdout), nextOut.stdout)
+
+  // A4: another router is a warning, never a guess; React Router routes come from the FEATURE-MAP rows
+  const plain = mkRepo({ ...mapFiles, 'package.json': '{"dependencies":{"react-router-dom":"6"}}\n', 'src/App.tsx': 'export default 1\n' })
+  dirs.push(plain)
+  put(plain, 'src/App.tsx', 'export default 2\n')
+  const plainOut = vm(plain, '--changed')
+  check('verify-map --changed, a repo that is neither Nuxt nor Next: a warning line, no route is guessed', /^warning: src\/App\.tsx/m.test(plainOut.stdout) && !/^route /m.test(plainOut.stdout), plainOut.stdout)
+  const fm = join(plain, 'FEATURE-MAP.md')
+  writeFileSync(fm, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| cart | desktop | /cart | src/App.tsx:12 |\n\n## Data architecture\n')
+  const rrOut = vm(plain, '--changed', '--feature-map', fm)
+  check('verify-map --changed, React Router: the FEATURE-MAP row that names the changed file gives the route (mapped by the ID column)', /^route \/cart — mapped: cart$/m.test(rrOut.stdout) && !/^warning/m.test(rrOut.stdout), rrOut.stdout)
+
+  // AC-8.1: no README — one line, nothing else
+  const bare = mkRepo({ '.claude/pipeline.config.md': CONFIG, 'nuxt.config.ts': 'export default {}\n', 'pages/index.vue': '<template/>' })
+  dirs.push(bare)
+  put(bare, 'pages/new.vue', '<template/>')
+  const bareOut = vm(bare, '--changed')
+  check('AC-8.1 verify-map --changed, no .claude/verify/README.md: the single "no map" line, exit 0, no route listed', bareOut.status === 0 && /^verify-map: no map/.test(bareOut.stdout) && bareOut.stdout.trim().split('\n').length === 1, bareOut.stdout + bareOut.stderr)
+  const outside = vm(bare, '--changed')
+  check('AC-8.1 verify_map: a path outside the repo is refused (exit 2)', (() => {
+    writeFileSync(join(bare, '.claude/pipeline.config.md'), `${CONFIG}- verify_map: ../elsewhere/\n`)
+    const result = vm(bare, '--changed')
+    return result.status === 2 && /must be a path inside the repo/.test(result.stdout)
+  })(), outside.stdout)
+
+  // AC-8.2: --init writes the README from config values only, and never overwrites
+  const init = mkRepo({ '.claude/pipeline.config.md': CONFIG })
+  dirs.push(init)
+  const initOut = vm(init, '--init')
+  const initText = existsSync(join(init, '.claude/verify/README.md')) ? readFileSync(join(init, '.claude/verify/README.md'), 'utf8') : ''
+  check('AC-8.2 verify-map --init: the README is written', initOut.status === 0 && /# Verify map — fx/.test(initText), initOut.stdout + initOut.stderr)
+  check('AC-8.2 --init: the config values are in it (dev url, marker, baseline routes, breakpoints)', initText.includes('- Dev: http://localhost:3000\n') && initText.includes('<title>Fx</title>') && initText.includes('Baseline routes: /, /orders') && initText.includes('desktop widths: 1440, 1280'), initText)
+  check('AC-8.2 --init: what the config lacks is "not set" (auth, data, stand writes, theme, playwright, webview), nothing invented', ['Auth', 'Playwright / storageState', 'Data', 'Stand writes', 'Theme'].every((label) => initText.includes(`- ${label}: not set`)) && initText.includes('webview: not set'), initText)
+  check('AC-8.2 --init: no URL, port or path that the config does not hold', [...initText.matchAll(/https?:\/\/[^\s)]+|localhost:\d+/g)].every(([url]) => CONFIG.includes(url)), initText)
+  check('AC-8.2 --init: only the README, no feature files', !existsSync(join(init, '.claude/verify/features')))
+  writeFileSync(join(init, '.claude/verify/README.md'), 'HAND WRITTEN\n')
+  const again = vm(init, '--init')
+  check('AC-8.2 --init: an existing README is left as it is', readFileSync(join(init, '.claude/verify/README.md'), 'utf8') === 'HAND WRITTEN\n' && /left as it is/.test(again.stdout), again.stdout)
+  const initRu = mkRepo({ '.claude/pipeline.config.md': CONFIG.replace('## Task state', '- language: ru\n## Task state') })
+  dirs.push(initRu)
+  vm(initRu, '--init')
+  check('AC-8.2 --init: a ru config gives the Russian headings and the Russian "not set"', /^# Карта проверки — fx/.test(readFileSync(join(initRu, '.claude/verify/README.md'), 'utf8')) && /Вход: не задано/.test(readFileSync(join(initRu, '.claude/verify/README.md'), 'utf8')))
+  const initBare = mkRepo({ '.claude/pipeline.config.md': '## Project\n- slug: z\n## Dev server\n- url: —\n' })
+  dirs.push(initBare)
+  vm(initBare, '--init')
+  const bareText = readFileSync(join(initBare, '.claude/verify/README.md'), 'utf8')
+  check('AC-8.2 --init: a config with no dev server values gives "not set" for url, marker and routes', /- Dev: not set/.test(bareText) && /- App marker: not set/.test(bareText) && /- Baseline routes: not set/.test(bareText), bareText)
+
+  // AC-8.3: --lint — the draft a feature-checker writes passes; a file path or a missing part fails
+  const lintFile = join(init, 'f.md')
+  const lint = (text) => {
+    writeFileSync(lintFile, text)
+    return vm(init, '--lint', lintFile)
+  }
+  check('AC-8.3 --lint: a feature file with the header line and the four sections passes', lint(FEATURE('orders', '/orders')).status === 0, lint(FEATURE('orders', '/orders')).stdout)
+  const withPath = lint(FEATURE('orders', '/orders', ' · see components/orders/OrderList.vue:12'))
+  check('AC-8.3 --lint: a file path inside the file fails, with its line', withPath.status === 1 && /f\.md:\d+ — file path "components\/orders\/OrderList\.vue/.test(withPath.stdout), withPath.stdout)
+  check('AC-8.3 --lint: a bare file name with a source extension fails too', lint(FEATURE('orders', '/orders', ' · OrderList.vue')).status === 1)
+  check('AC-8.3 --lint: routes, URLs and request paths are not file paths', lint(FEATURE('orders', '/orders/[id]', ' · POST /api/orders 201 · https://stand.example/app/orders · Next.js')).status === 0, lint(FEATURE('orders', '/orders/[id]', ' · POST /api/orders 201 · https://stand.example/app/orders · Next.js')).stdout)
+  const noSection = lint(FEATURE('orders', '/orders').replace('## Gotchas\n- Store created on SSR: assert after hydration.\n', ''))
+  check('AC-8.3 --lint: a missing section fails and is named', noSection.status === 1 && /no "## Gotchas" section/.test(noSection.stdout), noSection.stdout)
+  const noHeader = lint(FEATURE('orders', '/orders').replace(/Routes:.*\n/, ''))
+  check('AC-8.3 --lint: no header line fails', noHeader.status === 1 && /no header line/.test(noHeader.stdout), noHeader.stdout)
+  const verified = lint(FEATURE('orders', '/orders').replace('Status: draft', 'Status: verified 2026-10-25 abc1234'))
+  check('AC-8.3 --lint: Status: verified <date> <sha> passes', verified.status === 0, verified.stdout)
+  const ruFeature = '# Заказы\nМаршруты: /orders · Вход: да · Платформы: desktop · Статус: черновик\nТекст.\n## Подфункции\n- `orders-open`\n## Как дойти (глазами пользователя)\n- Шапка\n## Управление через Chrome DevTools MCP\n- шаг\n## Подводные камни\n- нет\n'
+  check('AC-8.3 --lint: the Russian header and headings pass', lint(ruFeature).status === 0, lint(ruFeature).stdout)
+
+  // K8.4: the `map:` report rule — gated like the doctor:/auth: lines (fresh reports only), and only in a repo with the README
+  const mapBody = (mapLine) => `# devtools-verify — stage 3\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not needed — no auth-gated criteria\n${mapLine}\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n\n## Could not verify\n- nothing\n`
+  const noMap = (text, fresh = true, map = true) => jc.runtimeViolations(text, 'devtools-verify-3.md', null, fresh, map).filter(({ rule }) => rule === 'no-map')
+  check('map rule, incident: README present, a new report without the map: line is rejected', noMap(mapBody('')).length === 1, JSON.stringify(noMap(mapBody(''))))
+  check('map rule, legitimate: README present, `map: orders · entries 2/3 · drift 1` passes', noMap(mapBody('map: orders · entries 2/3 · drift 1')).length === 0)
+  check('map rule, legitimate: README present, `map: none — /new unmapped` passes', noMap(mapBody('map: none — /new unmapped')).length === 0)
+  check('map rule, legitimate: README present, the Russian key (karta:) passes', noMap(mapBody('\u043a\u0430\u0440\u0442\u0430: orders \u00b7 2/3 \u00b7 0')).length === 0)
+  check('map rule, legitimate: no README (no map) — a report without map: is left alone', noMap(mapBody(''), true, false).length === 0)
+  check('map rule, release gate: a report already on disk (not fresh) is left alone even with the README', noMap(mapBody(''), false, true).length === 0)
+  check('map rule: a skipped report needs no map: line', jc.runtimeViolations('# devtools-verify\nskip: MCP unavailable\n', 'devtools-verify-3.md', null, true, true).length === 0)
+  const mapTask = mkdtempSync(join(tmpdir(), 'verify-map-task-'))
+  dirs.push(mapTask)
+  put(mapTask, 'checks/devtools-verify-3.md', mapBody(''))
+  check('map rule through reportViolations: a fresh report with map:true is rejected, without map:true it is not', jc.reportViolations(join(mapTask, 'checks/devtools-verify-3.md'), null, { fresh: true, map: true }).some(({ rule }) => rule === 'no-map') && !jc.reportViolations(join(mapTask, 'checks/devtools-verify-3.md'), null, { fresh: true }).some(({ rule }) => rule === 'no-map'))
+  const { mapReadme } = await import(join(PLUGIN, 'verify-map.mjs'))
+  check('map rule: the hook finds the README by verify_map: (default and custom dir), and no README is null', Boolean(mapReadme([nuxt], CONFIG)) && mapReadme([bare], CONFIG) === null && (put(bare, 'docs/vm/README.md', '# x\n'), Boolean(mapReadme([bare], `${CONFIG}- verify_map: docs/vm/\n`))))
+
+  // VT-4 stage 8 fix round 1: M1 the main tree's README, M2 the E2E label, M3 whole-path match
+  {
+    const main = mkRepo({ '.claude/pipeline.config.md': CONFIG, 'nuxt.config.ts': 'export default {}\n', 'pages/index.vue': '<template/>' })
+    dirs.push(main)
+    writeFileSync(join(main, '.git/info/exclude'), '.claude/\n')
+    put(main, '.claude/verify/README.md', README)
+    const wt = `${main}-wt`
+    dirs.push(wt)
+    gitIn(main, 'worktree', 'add', '-q', wt, '-b', 'wt-branch')
+    put(wt, 'pages/new.vue', '<template/>')
+    const wtOut = vm(wt, '--changed')
+    check('M1 verify-map --changed, worktree whose README lives only in the main tree: the map is found', !existsSync(join(wt, '.claude/verify/README.md')) && /^map: /m.test(wtOut.stdout) && !/no map/.test(wtOut.stdout) && /^route \/new — unmapped$/m.test(wtOut.stdout), wtOut.stdout + wtOut.stderr)
+  }
+  const e2eRepo = mkRepo({ '.claude/pipeline.config.md': `${CONFIG}- e2e: pnpm test:e2e\n` })
+  dirs.push(e2eRepo)
+  vm(e2eRepo, '--init')
+  const e2eText = readFileSync(join(e2eRepo, '.claude/verify/README.md'), 'utf8')
+  check('M2 --init: the config e2e value is labeled "E2E command", the Playwright slot stays "not set"', e2eText.includes('- E2E command: pnpm test:e2e\n') && e2eText.includes('- Playwright / storageState: not set\n') && !/- Playwright[^\n]*pnpm/.test(e2eText), e2eText)
+  const rrShort = mkRepo({ ...mapFiles, 'package.json': '{"dependencies":{"react-router-dom":"6"}}\n', 'pages/a.tsx': 'export default 1\n' })
+  dirs.push(rrShort)
+  put(rrShort, 'pages/a.tsx', 'export default 2\n')
+  const fmShort = join(rrShort, 'FEATURE-MAP.md')
+  writeFileSync(fmShort, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| cart | desktop | /cart | src/pages/a.tsx.bak, src/xpages/a.tsx |\n\n## Data architecture\n')
+  const shortOut = vm(rrShort, '--changed', '--feature-map', fmShort)
+  check('M3 verify-map --changed: a short path does not match a longer row path (substring)', !/^route \/cart/m.test(shortOut.stdout) && /^warning: pages\/a\.tsx/m.test(shortOut.stdout), shortOut.stdout)
+  writeFileSync(fmShort, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| cart | desktop | /cart | src/pages/a.tsx:3 |\n\n## Data architecture\n')
+  check('M3 verify-map --changed: a row path ending with the changed file on a segment boundary matches', /^route \/cart — mapped: cart$/m.test(vm(rrShort, '--changed', '--feature-map', fmShort).stdout))
+
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)

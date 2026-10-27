@@ -206,6 +206,7 @@ const { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJour
 const { gateCloseViolations } = await import('../ci-gates.mjs')
 const { finalReviewViolations } = await import('../receipts.mjs')
 const { CLOSED_WORD, forceHeadings, forceKey } = await import('../markers.mjs')
+const { mapReadme } = await import('../verify-map.mjs')
 const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-digest.mjs')
 
 const messages = []
@@ -227,7 +228,7 @@ for (const task of tasks) {
   const { reports: known, ledgerOld } = baselineInfo(pluginDataDir(), task.dir)
   const reports = written.flatMap((path) => {
     const after018 = !ledgerOld.has(basename(path))
-    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018 })
+    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: Boolean(mapReadme([state.worktree, state.root], state.config)) })
   })
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
