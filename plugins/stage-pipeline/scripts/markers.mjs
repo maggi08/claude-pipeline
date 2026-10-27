@@ -239,24 +239,37 @@ export const INTERVIEW_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Ответы\s+�
  */
 export const BLOCKER_FIELD_SINCE = '2026-10-26'
 /**
- * Whether a Force block is read by the fixed lift field (K1 + K9): dated on or after `BLOCKER_FIELD_SINCE`, and — when a `gate` is passed (`blockerGate` in journal-check) — not one the task
- * snapshot already held at the first look of 0.18.2 (those keep the word matcher, D7: the old plugin wrote such blocks with prose lifts). With no gate (a test, a bare body) the date alone decides.
+ * Whether a Force block is read by the fixed lift field (K1 + K9 + K10): dated on or after `BLOCKER_FIELD_SINCE`, and — when a `gate` is passed (`blockerGate` in journal-check) — not one the task
+ * snapshot already held at the first look of 0.18.2 (`gate.seen`: the blocks already closed then and dated before that day; they keep the word matcher, D7: the old plugin wrote such blocks with prose lifts).
+ * A block still open at the first look is not held, whatever its date: the new plugin is writing it. With no gate (a test, a bare body) the date alone decides.
  */
 export function blockerFieldApplies(gate, heading, body) {
   const date = forceBlockDate(heading, body)
   if (!date || date < BLOCKER_FIELD_SINCE) return false
-  return gate ? ruleAppliesToBlock(gate, heading, date) : true
+  return gate ? !gate.seen?.has(forceKey(heading)) : true
 }
 /** The date of a Force block: its heading, else its `Confirmed:` line (the Russian form too); null when neither has one. */
 export const forceBlockDate = (heading, body) => headingDate(heading) ?? headingDate(body.split('\n').find((line) => CONFIRMED_LINE.test(line)) ?? '')
+// What follows the colon of a lift field and means "not lifted": no / none / not / never / n/a / pending / TBD / waiting / awaiting, a dash, a "<who>" placeholder, and the Russian
+// and the Russian forms of not / no / waiting / awaiting. The lookahead sits right after the colon and consumes the stars and spaces itself, so a quantifier after it cannot backtrack to a place where the word is not seen (S1).
+const LIFT_NOT_LIFTED = /(?!(?:\*|[^\S\n])*(?:(?:[Nn]o|[Nn]one|[Nn]ot|[Nn]ever|[Pp]ending|[Tt][Bb][Dd]|[Ww]aiting|[Aa]waiting|[Нн]е|[Нн]ет|[Жж]д[её]м|[Жж]ду|[Оо]жида[а-яё]*)(?![\wа-яё])|[Nn]\/[Aa](?!\w)|[—–<-]))/.source
+// A date within 120 characters on the same line: who and when.
+const LIFT_DATED = /\**[^\S\n]*(?=[^\n]{0,120}(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}))/.source
+const LIFT_TAIL = `\\**[^\\S\\n]*:${LIFT_NOT_LIFTED}${LIFT_DATED}`
+// The English label in either case; the Russian one only capitalised (the lower-case Russian form in a description means "measured", K12).
+const LIFT_LABEL = /(?:[Ll]ifted|Снят)/.source
+const LIFT_ID = /^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**(?:[^\S\n]*\(\d{1,3}\)\**)?(?:[^\S\n]*:|[^\S\n]+-)?[^\S\n]+\**/.source
 /**
- * The fixed lift field inside a blocker's own text: the lift field (`Lifted:`, or its Russian form) (bold allowed) that opens a segment — right after the ID (and its run) or after
- * `—`, `–`, `;`, `.`, `(` — and is followed, within 120 characters on the same line, by a date (`YYYY-MM-DD` or `DD.MM.YYYY`) — who and when. "Lifted: no" or "none" (or the Russian "no") lifts nothing.
+ * The fixed lift field inside a blocker's own text: the lift field (`Lifted:` in either case, or the capitalised Russian form of it) (bold allowed) that opens a segment — right after the ID (and its run; `B1: `, `B1 - `
+ * and `B1 (8) ` too), after `—`, `–`, a spaced ` - `, `;`, `.`, and, for the English label only, after `(` — and is followed, within 120 characters on the same line, by a date (`YYYY-MM-DD` or `DD.MM.YYYY`) — who and when.
+ * "Lifted: no / none / not / never / pending / TBD / waiting / awaiting / a dash / <who>" (and the Russian forms of not / no / waiting / awaiting) lifts nothing, whatever date follows.
+ * After the ID the gap needs a space: two star runs around an optional gap made the pattern quadratic on a run of `*` (S2).
  */
-export const BLOCKER_LIFT_FIELD =
-  /(?:^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**(?:[^\S\n]*\(\d{1,3}\)\**)?|[—–(]|[;.](?=\s))[^\S\n]*\**(?:[Ll]ifted|[Сс]нят)\**[^\S\n]*:\**[^\S\n]*(?![Nn]o(?![\wа-яё])|[Nn]one(?![\wа-яё])|[Nn]ot(?![\wа-яё])|нет(?![\wа-яё]))(?=[^\n]{0,120}(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}))/
+export const BLOCKER_LIFT_FIELD = new RegExp(
+  `(?:${LIFT_ID}${LIFT_LABEL}|(?:[—–]|[;.](?=\\s)|[^\\S\\n]-(?=[^\\S\\n]))[^\\S\\n]*\\**${LIFT_LABEL}|\\([^\\S\\n]*\\**[Ll]ifted)${LIFT_TAIL}`,
+)
 /** The same field alone on an indented sub-item under a blocker (the form of VT-1 B7). */
-export const BLOCKER_LIFT_SUBITEM = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:[Ll]ifted|[Сс]нят)\**[^\S\n]*:\**[^\S\n]*(?![Nn]o(?![\wа-яё])|[Nn]one(?![\wа-яё])|[Nn]ot(?![\wа-яё])|нет(?![\wа-яё]))(?=[^\n]{0,120}(?:\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}))/
+export const BLOCKER_LIFT_SUBITEM = new RegExp(`^[^\\S\\n]*(?:[-*][^\\S\\n]*)?\\**${LIFT_LABEL}${LIFT_TAIL}`)
 // A request for the user's answer ("needs a user decision", "awaiting a user answer", and the Russian forms): it lifts nothing, even if the line also says "closed by" or quotes the options.
 // One list for both languages: `\b` is ASCII, so in the branches that put it before the list only the English words take part.
 const REQUEST_WORDS =

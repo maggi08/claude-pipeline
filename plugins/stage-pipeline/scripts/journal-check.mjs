@@ -17,7 +17,7 @@
  * look at the task: old tasks and closed stages do not have to be rewritten.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
@@ -748,7 +748,21 @@ function readBaseline(dataDir, taskDir) {
 function writeBaseline(dataDir, taskDir, data) {
   try {
     mkdirSync(join(dataDir, 'journal-baseline'), { recursive: true })
-    writeFileSync(baselinePath(dataDir, taskDir), JSON.stringify(data))
+    // Atomic (S4): a temp file in the same directory, then a rename. A plain write truncates the snapshot first, and a second hook that reads it in that moment
+    // sees a torn file, rebuilds it from the current journal (closed heading included) and waves a close through.
+    const target = baselinePath(dataDir, taskDir)
+    const temp = `${target}.${process.pid}.${Date.now()}.tmp`
+    try {
+      writeFileSync(temp, JSON.stringify(data))
+      renameSync(temp, target)
+    } catch (error) {
+      try {
+        unlinkSync(temp)
+      } catch {
+        // no temp file left to remove
+      }
+      throw error
+    }
   } catch {
     // the snapshot was not written — the next look will create it again
   }
@@ -807,9 +821,9 @@ export function baselineInfo(dataDir, taskDir) {
       // opened after them (`releaseGate`).
       since018,
       forceSeen: Array.isArray(data.forceSeen) ? data.forceSeen : forceKeysBefore(text, since018),
-      // 0.18.2 (K9): the day this version first read the task and the Force headings already there, dated before it — they keep the word matcher for blockers (`blockerGate`).
+      // 0.18.2 (K9, K10): the day this version first read the task and the Force headings already closed then and dated before it — they keep the word matcher for blockers (`blockerGate`).
       since0182,
-      blockerSeen: Array.isArray(data.blockerSeen) ? data.blockerSeen : forceKeysBefore(text, since0182),
+      blockerSeen: Array.isArray(data.blockerSeen) ? data.blockerSeen : closedKeysBefore(text, since0182),
       lines: [
         ...new Set([
           ...data.lines,
@@ -845,7 +859,7 @@ export function baselineInfo(dataDir, taskDir) {
     since018: localDate(new Date(now)),
     forceSeen: forceKeysBefore(text, localDate(new Date(now))),
     since0182: localDate(new Date(now)),
-    blockerSeen: forceKeysBefore(text, localDate(new Date(now))),
+    blockerSeen: closedKeysBefore(text, localDate(new Date(now))),
   }
   writeBaseline(dataDir, taskDir, next)
   return info(next)
@@ -859,6 +873,10 @@ const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.ge
  */
 const forceKeysBefore = (text, day) => [...new Set(forceHeadings(text).map(([heading]) => forceKey(heading)))].filter((key) => (headingDate(key) ?? '9999') < day)
 
+/** The same, only the headings already closed at the first look (K10): a run still open then is written by the new plugin, so the fixed field reads it. */
+const closedKeysBefore = (text, day) =>
+  [...new Set(forceHeadings(text).filter(([heading]) => CLOSED_WORD.test(heading)).map(([heading]) => forceKey(heading)))].filter((key) => (headingDate(key) ?? '9999') < day)
+
 /**
  * The per-task release gate of the 0.18 rules that are keyed on a Force block (stage receipts, the close needing fresh final reviews, the ticket-titled commits after a close):
  * `{ since, seen }` for `ruleAppliesToBlock` (markers.mjs) — the day this version first saw the task and the Force headings already there and dated before that day.
@@ -870,7 +888,7 @@ export function releaseGate(dataDir, taskDir) {
 }
 
 /**
- * The per-task gate of the fixed blocker field (stage 5e, K9), the same shape as `releaseGate`: the day 0.18.2 first read the task and the Force headings already there and dated before it.
+ * The per-task gate of the fixed blocker field (stage 5e, K9), the same shape as `releaseGate`: the day 0.18.2 first read the task and the Force headings already there, closed and dated before it (K10: a run still open then is read by the field).
  * Every caller passes it with the block to `openBlockers` / `blockerLines`; a block opened by the old plugin on that very day is read as new (fail closed, like the 0.18 gate).
  */
 export function blockerGate(dataDir, taskDir) {
@@ -916,6 +934,8 @@ export function lastForceBlock(stages) {
 
 // A blocker `B<n> — …` without a mark that the user lifted it. A blocker also stands on the `Blockers:` field line itself (the Russian field name too),
 // and several of them can follow each other there ("Blockers: B1 — … B7 — …"): each one is an item of its own, and the lift mark is looked for in its own text.
+// The start of the next item of a one-line field: `B<n> —`, `**B<n>** —`, `B<n> (<run>) —` or `B<n> (<run>) text`.
+const NEXT_ITEM = String.raw`\**B\d+\**(?:[^\S\n]*[—–:-]|[^\S\n]*\(\d{1,3}\)\**(?:[^\S\n]*[—–:-]|[^\S\n]+\S))`
 const BLOCKERS_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Блокеры|Blockers)\**\s*:\s*(\S.*)$/i
 // One mark for the whole field: "both lifted", "all lifted" (the Russian plural forms too), or "lifted …". It counts only in the head of the field, before the first
 // `B<n>` ("Blockers: lifted on 2026-10-14. B1 — …"), or as the closing phrase of the line ("B1 — …; B2 — … — both lifted by the user 2026-10-14."). A mark in the middle of an item
@@ -950,10 +970,19 @@ const fieldLifted = (field) => {
 const asBlock = (input) => (typeof input === 'string' ? { heading: '', body: input } : input)
 const isBullet = (line) => /^[^\S\n]*[-*][^\S\n]/.test(line)
 const indentOf = (line) => line.length - line.trimStart().length
+/** Whether an indented sub-item under `lines[index]` carries the lift field (the scan stops at the next line that is not indented deeper, or at the next blocker line). */
+function subItemLifts(lines, index) {
+  for (let next = index + 1; next < lines.length; next++) {
+    if (!lines[next].trim()) continue
+    if (indentOf(lines[next]) <= indentOf(lines[index]) || BLOCKER_LINE.test(lines[next])) break
+    if (BLOCKER_LIFT_SUBITEM.test(lines[next])) return true
+  }
+  return false
+}
 /**
  * The one reader of blocker state (stage 5e, K5): every caller passes the Force block (`lastForceBlock`), and the date comes from the block.
  * A block dated on or after `BLOCKER_FIELD_SINCE` and not held by the task snapshot at the first look of 0.18.2 (`gate`, K9) is read by the fixed field alone: a blocker is lifted by the lift field (`Lifted:`, or its Russian form) in its own text or on an indented sub-item,
- * and no word of the description and no field-wide mark lifts anything. An older or undated block (or a bare body text) keeps the word matcher and the field-wide marks.
+ * and no word of the description and no field-wide mark lifts anything. An older, held or undated block (or a bare body text) keeps the word matcher and the field-wide marks, and the lift field on the blocker's own line lifts there too (K11; an indented sub-item is not read).
  * A carried blocker `B<n> (<run>) …` is a blocker line in every field except the interview answers, where it answers one.
  */
 function blockerEntries(input, gate) {
@@ -968,21 +997,20 @@ function blockerEntries(input, gate) {
     const field = line.match(BLOCKERS_FIELD)
     if (field) {
       if (!fixed && fieldLifted(field[1])) return
-      for (const piece of field[1].replace(/([.;])\s+(?=B\d+(?:[^\S\n]*[—–:-]|[^\S\n]*\(\d{1,3}\)(?:[^\S\n]*[—–:-]|[^\S\n]+\S)))/g, '$1\n').split('\n')) {
-        if (BLOCKER_LINE.test(piece)) found.push({ line: piece.trim(), sub: false })
-      }
+      // Items split at `. ` or `; ` before a `B<n> —` / `**B<n>** —`; a piece that itself opens as a blocker line is split again at `, ` before the next one (S3): one item's lift field must not lift the item next to it.
+      // A comma inside prose that does not open as a blocker ("— (B1–B3 lifted: B1 — done, B2 — stage 7)") splits nothing: it is not a list of blockers.
+      const pieces = field[1]
+        .replace(new RegExp(`([.;])\\s+(?=${NEXT_ITEM})`, 'g'), '$1\n')
+        .split('\n')
+        .flatMap((piece) => (BLOCKER_LINE.test(piece) ? piece.split(new RegExp(`,\\s+(?=${NEXT_ITEM})`)) : [piece]))
+        .filter((piece) => BLOCKER_LINE.test(piece))
+      // A field that holds exactly one blocker may continue on an indented line (the live journals do): that sub-item is read, as under a plain blocker line (m-3).
+      const sub = fixed && pieces.length === 1 && subItemLifts(lines, index)
+      for (const piece of pieces) found.push({ line: piece.trim(), sub })
       return
     }
     if (!(interview ? PLAIN_BLOCKER_LINE : BLOCKER_LINE).test(line)) return
-    let sub = false
-    if (fixed) {
-      for (let next = index + 1; next < lines.length; next++) {
-        if (!lines[next].trim()) continue
-        if (indentOf(lines[next]) <= indentOf(line) || BLOCKER_LINE.test(lines[next])) break
-        if (BLOCKER_LIFT_SUBITEM.test(lines[next])) sub = true
-      }
-    }
-    found.push({ line: line.trim(), sub })
+    found.push({ line: line.trim(), sub: fixed && subItemLifts(lines, index) })
   })
   return { fixed, found }
 }
@@ -991,7 +1019,7 @@ export const blockerLines = (input, gate) => blockerEntries(input, gate).found.m
 export const openBlockers = (input, gate) => {
   const { fixed, found } = blockerEntries(input, gate)
   return found
-    .filter(({ line, sub }) => !(fixed ? sub || BLOCKER_LIFT_FIELD.test(line) : BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' '))))
+    .filter(({ line, sub }) => !(fixed ? sub || BLOCKER_LIFT_FIELD.test(line) : BLOCKER_LIFT_FIELD.test(line) || BLOCKER_LIFTED.test(line.replace(GROUP_NEGATION, ' '))))
     .map(({ line }) => line)
 }
 
