@@ -612,8 +612,8 @@ export function runtimeViolations(text, name, taskDir = null, fresh = false, map
         })
     }
   }
-  // VT-4 0.20 (stage 8): a repo with the verify map README (`map`, set by the hook) gets the `map:` line in a new report; a repo without one is untouched.
-  if (fresh && map && !MAP_LINE.test(text))
+  // VT-4 0.20 (stage 8): a repo with the verify map README (`map`, set by the hook) gets the `map:` line in a new full report (a recheck/repro keeps only `doctor:` and `auth:`); a repo without one is untouched.
+  if (fresh && map && !partial && !MAP_LINE.test(text))
     found.push({
       rule: 'no-map',
       id: name,
@@ -739,15 +739,28 @@ function ownReport(name) {
 }
 
 /**
- * The re-run artifact a `fixed` line cites, or null: a recheck report of the SAME checker and stage that exists in this task's `checks/` (`-r<k>`, `-fresh`, `-recheck[-<k>]`; not the report itself),
- * or a screenshot `checks/screens/<file>` / `screens/<file>` that exists inside this task's `checks/screens/` (no absolute path, no `..`, no symlink out of it).
+ * The prefixes a re-run of this report starts with: `devtools-verify-5-r1.md` and `stage-5-devtools-verify.md` both give `devtools-verify-5-` and `stage-5-devtools-verify-`;
+ * a report with no stage in its name takes `<checker>-`. `null` — not a checker report.
+ */
+function ownPrefixes(name) {
+  const checker = reportChecker(name)
+  if (!checker) return null
+  const stage = name.match(STAGE_FILE)?.[1] ?? name.slice(name.indexOf(checker) + checker.length).match(/^-(\d+[a-z]?)(?=[-.]|$)/i)?.[1]
+  return stage ? [`${checker}-${stage}-`, `stage-${stage}-${checker}-`] : [`${checker}-`]
+}
+
+/**
+ * The re-run artifact a `fixed` line cites, or null: a recheck report of the SAME checker and stage that exists in this task's `checks/` (`-r<k>`, `-fresh`, `-recheck[-<k>]`; not the report itself;
+ * a bare name or `checks/<name>`, any other directory part rejects it), or a screenshot `checks/screens/<file>` / `screens/<file>` that exists inside this task's `checks/screens/`
+ * (no absolute path, no `..`, no symlink out of it).
  */
 function citedRerun(entry, name, taskDir) {
-  const own = ownReport(name)
+  const own = ownPrefixes(name)
   for (const word of entry.split(/[^\w./-]+/).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
     if (word.length > 200) continue
     const base = word.split('/').pop()
-    if (own && base.startsWith(`${own}-`) && RERUN_SUFFIX.test(base.slice(own.length + 1)) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
+    const prefix = own?.find((candidate) => base.startsWith(candidate))
+    if (prefix && (word === base || word === `checks/${base}`) && RERUN_SUFFIX.test(base.slice(prefix.length)) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
     if (RERUN_SCREEN.test(word) && (!taskDir || screenExists(taskDir, base))) return word
   }
   return null

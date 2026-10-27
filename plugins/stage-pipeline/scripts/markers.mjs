@@ -520,7 +520,7 @@ export const REQUEST_PROOF = /\b(?:GET|POST|PUT|PATCH|DELETE)[ \t]+(?:https?:\/\
 /** The read-back of an effect: the state read again after a reload or from a second view (either language). */
 export const READBACK_PROOF = /read[- ]?back|after\s+(?:a\s+|the\s+)?(?:page\s+)?(?:reload|refresh)|reload(?:ed)?|second\s+(?:view|tab|page|session)|another\s+(?:view|tab)|перезагруз|обновлени[ея]\s+страницы|прочита\w*\s+(?:обратно|заново|снова)|чтени[ея]\s+после|втор(?:ой|ом|ая)\s+(?:вкладк|вид|страниц|сесси)|друго[йм]\s+(?:вкладк|виде|вид)/i
 /** A re-run artifact a runtime `fixed` cites: the recheck report of the SAME stage (`devtools-verify-<stage>-` + this suffix: `r<k>`, `fresh`, `recheck[-<k>]`) or a screenshot under this task's `checks/screens/`. */
-export const RERUN_SUFFIX = /^(?:r\d+|fresh[\w-]*|recheck(?:-\d+)?)\.md$/i
+export const RERUN_SUFFIX = /^(?:r\d+|fresh[\w-]*|recheck(?:-?\d+)?)\.md$/i
 export const RERUN_SCREEN = /^(?:checks\/)?screens\/[\w.-]+\.(?:png|jpe?g|webp)$/i
 /** A partial devtools-verify run: the recheck of named findings (`devtools-verify-<stage>-r<k>.md`) and the before-fix repro (`…-repro.md`). It measures what it was asked to, not the geometry of every width. */
-export const PARTIAL_RUN = /^devtools-verify(?:-\w+)?-(?:r\d+|repro)\.md$/i
+export const PARTIAL_RUN = /^(?:devtools-verify(?:-\w+)?|(?:stage|этап)-?\d+[a-z]?-devtools-verify)-(?:r\d+|repro|recheck(?:-?\d+)?)\.md$/i

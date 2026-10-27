@@ -5997,7 +5997,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('K9a.6 incident: a -r1 and a -repro report without geometry or style-diff lines pass the runtime rules', !hasGeometry(repro, 'devtools-verify-5-r1.md').length && !hasGeometry(repro, 'devtools-verify-5-repro.md').length, JSON.stringify(hasGeometry(repro, 'devtools-verify-5-r1.md')))
     check('K9a.6 legitimate: the full report of the same stage still needs geometry and style-diff', ['no-geometry', 'no-style-diff'].every((rule) => hasGeometry(repro, 'devtools-verify-5.md').includes(rule)))
     check('K9a.6: doctor: and auth: still apply to a -r1 report', hasGeometry('# devtools-verify — stage 5, recheck\nFindings: critical 0 · major 0 · minor 0\n', 'devtools-verify-5-r1.md').filter((rule) => rule === 'no-doctor').length === 2)
-    check('K9a.6: -fresh and -recheck are not partial runs by name (the fresh pass is a full one)', hasGeometry(repro, 'devtools-verify-5-fresh.md').includes('no-geometry'))
+    check('K9a.6: -fresh is not a partial run by name (the fresh pass is a full one)', hasGeometry(repro, 'devtools-verify-5-fresh.md').includes('no-geometry'))
   }
 
   // AC-9a.5 (K9a.8): --base resolves to a commit before it reaches git diff
@@ -6136,6 +6136,61 @@ rmSync(retroRoot, { recursive: true, force: true })
     write(mApp, { '.claude/tasks/T-94/checks/devtools-verify-1.md': '# devtools-verify — stage 1\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not needed — no auth-gated criteria\n\n## Stage criteria\n- `AC-1.1` — PASS, title «Orders» at 1440, `h1` 32px\n\n## Could not verify\n- nothing\n' })
     const full = runHook('journal-gate.mjs', { cwd: mApp, tool_name: 'Write', tool_input: { file_path: join(tdir, 'checks/devtools-verify-1.md') } })
     check('K9a.6 gate: the full report of the same stage without geometry is still rejected', full.decision === 'block' && /geometry/.test(full.text), full.text)
+  }
+
+  // round 2 (final check): the radius names every importer without a route, -recheck is partial, stage-<N>-devtools-verify naming, bare citations, local verify_map in --init
+  {
+    const rrLayout = mkRepo({
+      ...mapFiles,
+      'package.json': '{"dependencies":{"react-router-dom":"6"}}\n',
+      'src/shared/Info.tsx': 'export const Info = () => null\n',
+      'src/pages/Cart.tsx': 'import { Info } from "../shared/Info"\nexport default 1\n',
+      'src/pages/Legacy.tsx': 'import { Info } from "../shared/Info"\nexport default 2\n',
+      'src/App.tsx': 'import Cart from "./pages/Cart"\nimport Legacy from "./pages/Legacy"\nexport const routes = [{ path: "/cart", element: Cart }, { path: "/old", element: Legacy }]\n',
+      'src/main.tsx': 'import { routes } from "./App"\nconsole.log(routes)\n',
+    })
+    const fmL = join(rrLayout, 'FEATURE-MAP.md')
+    writeFileSync(fmL, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| cart | desktop | /cart | src/pages/Cart.tsx:3 |\n')
+    const outL = vm(rrLayout, '--radius', 'src/shared/Info.tsx', '--feature-map', fmL)
+    check('round 2 M-1 incident: React Router route table (App imports every page, main imports App) — the unrouted Legacy.tsx is named, not only main.tsx', /^warning: .*src\/pages\/Legacy\.tsx/m.test(outL.stdout), outL.stdout)
+    check('round 2 M-1: with rows given the warning does not advise passing --feature-map; the routed Cart.tsx is not named', !/pass --feature-map/.test(outL.stdout) && !/^warning: .*src\/pages\/Cart\.tsx/m.test(outL.stdout), outL.stdout)
+    check('round 2 M-1: without rows the advice stays', /pass --feature-map/.test(vm(rrLayout, '--radius', 'src/shared/Info.tsx').stdout))
+    const nuxtLayout = mkRepo({ ...mapFiles, 'nuxt.config.ts': 'export default {}\n', 'components/Info.vue': '<template/>' })
+    put(nuxtLayout, 'layouts/default.vue', '<script setup>import Info from "~/components/Info.vue"</script><template><Info/></template>')
+    put(nuxtLayout, 'pages/orders/[id].vue', '<script setup>import Info from "~/components/Info.vue"</script><template><Info/></template>')
+    const outN = vm(nuxtLayout, '--radius', 'components/Info.vue')
+    check('round 2 M-1 incident: a Nuxt layout importing the shared module is named in a warning, as a layout', /^warning: .*layouts\/default\.vue \(a layout or root file, not a page\)/m.test(outN.stdout) && !/^warning: .*pages\/orders/m.test(outN.stdout), outN.stdout)
+
+    // C3: a verify_map set only in the local config is read by --init as it is by --changed
+    const localMap = mkRepo({ '.claude/pipeline.config.md': CONFIG, 'nuxt.config.ts': 'export default {}\n' })
+    put(localMap, '.claude/pipeline.config.local.md', '## Task state\n- verify_map: docs/verify/\n')
+    const initLocal = vm(localMap, '--init')
+    check('round 2 C3 incident: --init writes the README into the local verify_map directory, not .claude/verify/', initLocal.status === 0 && existsSync(join(localMap, 'docs/verify/README.md')) && !existsSync(join(localMap, '.claude/verify/README.md')), initLocal.stdout + initLocal.stderr)
+    check('round 2 C3: --changed then finds that map', /^map: docs\/verify/m.test(vm(localMap, '--changed').stdout), vm(localMap, '--changed').stdout)
+
+    // m-4: the README lists the routes the doctor uses
+    const { readmeText } = await import(join(PLUGIN, 'verify-map.mjs'))
+    const readme = readmeText({ config: `${CONFIG.replace('/, /orders', '/, orders, /cart?x=1')}`, language: 'en', base: 'abc', branch: 'main', date: '2026-10-27' })
+    check('round 2 m-4 incident: verify_routes "/, orders, /cart?x=1" — the README lists the doctor\'s routes (/, /cart?x=1), not the raw value', readme.includes('/, /cart?x=1') && !readme.includes('orders'), readme)
+
+    // m-1 / m-2 / C2: the citation of a stage-<N>-devtools-verify report, bare names, -recheck as a partial run
+    const task = mkdtempSync(join(tmpdir(), 'v9a2-task-'))
+    dirs.push(task)
+    for (const file of ['devtools-verify-3-r1.md', 'stage-3-devtools-verify-r1.md', 'devtools-verify-5-r1.md']) put(task, `checks/${file}`, '# recheck\n')
+    const elsewhere = mkdtempSync(join(tmpdir(), 'v9a2-else-'))
+    dirs.push(elsewhere)
+    put(elsewhere, 'checks/devtools-verify-5-r1.md', '# recheck\n')
+    const body = (line) => `# devtools-verify — stage 3\nFindings: critical 0 · major 1 · minor 0\n\n## Findings outcome\n${line}\n`
+    const bad = (line, name) => jc.rerunViolations(body(line), name, task).filter(({ rule }) => rule === 'no-rerun').length
+    check('round 2 m-1 legitimate: a stage-3-devtools-verify.md report may cite devtools-verify-3-r1.md and stage-3-devtools-verify-r1.md', ['devtools-verify-3-r1.md', 'stage-3-devtools-verify-r1.md'].every((cited) => bad(`- M-1 — fixed: a.vue:12 — re-run checks/${cited}`, 'stage-3-devtools-verify.md') === 0))
+    check('round 2 m-1 incident: the same report citing the stage 5 recheck is rejected', bad('- M-1 — fixed: a.vue:12 — checks/devtools-verify-5-r1.md', 'stage-3-devtools-verify.md') === 1)
+    check('round 2 C2 legitimate: a bare name and checks/<name> both pass', bad('- M-1 — fixed: a.vue:12 — devtools-verify-3-r1.md', 'devtools-verify-3.md') === 0 && bad('- M-1 — fixed: a.vue:12 — checks/devtools-verify-3-r1.md', 'devtools-verify-3.md') === 0)
+    check('round 2 C2 incident: ../../other/checks/<name> and /etc/passwd/<name> are rejected although a same-named report exists here', bad('- M-1 — fixed: a.vue:12 — ../../other/checks/devtools-verify-3-r1.md', 'devtools-verify-3.md') === 1 && bad('- M-1 — fixed: a.vue:12 — /etc/passwd/devtools-verify-3-r1.md', 'devtools-verify-3.md') === 1 && bad(`- M-1 — fixed: a.vue:12 — ${join(elsewhere, 'checks/devtools-verify-5-r1.md')}`, 'devtools-verify-5.md') === 1)
+    const full = '# devtools-verify — stage 5, recheck\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: ok\n'
+    const rules = (name, map = false) => jc.runtimeViolations(full, name, task, true, map).map(({ rule }) => rule)
+    check('round 2 m-2 incident: -recheck, -recheck-2 and stage-5-devtools-verify-r1.md are partial runs (no geometry rule)', ['devtools-verify-5-recheck.md', 'devtools-verify-5-recheck-2.md', 'stage-5-devtools-verify-r1.md'].every((name) => !rules(name).includes('no-geometry')))
+    check('round 2 m-2 legitimate: -fresh and the plain stage-5 report still need geometry', rules('devtools-verify-5-fresh.md').includes('no-geometry') && rules('stage-5-devtools-verify.md').includes('no-geometry'))
+    check('round 2 m-3 incident: in a mapped repo a -r1 report without map: is not rejected, the full report is', !rules('devtools-verify-5-r1.md', true).includes('no-map') && !rules('devtools-verify-5-repro.md', true).includes('no-map') && rules('devtools-verify-5.md', true).includes('no-map'))
   }
 
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })

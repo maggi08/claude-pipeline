@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { configRoot, mainRoot, readConfig } from './hooks/pipeline-state.mjs'
+import { configRoot, mainRoot, parseDevServer, readConfig } from './hooks/pipeline-state.mjs'
 import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATURE_SECTIONS, MAP_ROUTES_FIELD, MAP_STATUS_FIELD, MAP_TEXT, NO_VALUE } from './markers.mjs'
 
 /**
@@ -271,15 +271,21 @@ function changedFiles(top, base) {
  * FEATURE-MAP "Entry points" rows whose Files cell names a file of `rowFiles` (default: the files with no route of their own). Every file that stays without a route
  * and passes `warnable` is named in one `warnings` line, never a guess. `known`: route key → FEATURE-MAP row id.
  */
-function collectRoutes({ top, files, rows, rowFiles = null, warnable = () => true }) {
+function collectRoutes({ top, files, rows, rowFiles = null, warnable = () => true, nameFramework = false }) {
   const routes = new Map()
   const warnings = []
   const unknown = []
+  const layouts = new Set()
   for (const file of files) {
     const result = routeOfFile(file, top)
     if (!result) {
       if (/\.(?:vue|svelte|tsx|jsx)$/.test(file)) unknown.push(file)
       continue
+    }
+    // a file of a known framework that is not a page (a layout, `app.vue`, `_app.tsx`): named only where the caller asks (the radius), as such
+    if (nameFramework && result.route === undefined && !result.warning && /\.(?:vue|svelte|tsx|jsx|ts|js|mjs)$/.test(file)) {
+      unknown.push(file)
+      layouts.add(file)
     }
     if (result.warning) warnings.push(result.warning)
     else if (result.route !== undefined) routes.set(normalizeRoute(result.route), { route: result.route, file })
@@ -292,11 +298,15 @@ function collectRoutes({ top, files, rows, rowFiles = null, warnable = () => tru
     const named = (rowFiles ?? unknown).find((file) => rowNamesFile(row.files, file))
     if (named) routes.set(normalizeRoute(key), { route: key, file: named })
   }
-  const unrouted = unknown.filter((file) => warnable(file) && ![...routes.values()].some((entry) => entry.file === file))
-  if (unrouted.length)
+  const routed = new Set([...routes.values()].map((entry) => entry.file))
+  const unrouted = unknown.filter((file) => !routed.has(file) && warnable(file, routed))
+  if (unrouted.length) {
+    const shown = unrouted.slice(0, 8).map((file) => (layouts.has(file) ? `${file} (a layout or root file, not a page)` : file))
+    const cause = unrouted.some((file) => !layouts.has(file)) ? 'no nuxt.config / next.config above and no FEATURE-MAP "Entry points" row names' : 'no FEATURE-MAP "Entry points" row names'
     warnings.push(
-      `${unrouted.slice(0, 8).join(', ')}${unrouted.length > 8 ? ` and ${unrouted.length - 8} more` : ''}: no nuxt.config / next.config above and no FEATURE-MAP "Entry points" row names ${unrouted.length > 1 ? 'them' : 'it'} — routes are not derived (React Router and other routers: pass --feature-map)`,
+      `${shown.join(', ')}${unrouted.length > 8 ? ` and ${unrouted.length - 8} more` : ''}: ${cause} ${unrouted.length > 1 ? 'them' : 'it'} — routes are not derived${rows.length ? '' : ' (React Router and other routers: pass --feature-map)'}`,
     )
+  }
   return { routes, warnings, known }
 }
 
@@ -457,8 +467,12 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
   const readme = mapReadme(mapRoots, config)
   const features = readme ? readMap(readme) : null
   const rows = featureMap ? featureMapRows(readText(featureMap) ?? '') : []
-  // an importer the climb ended at (none of its own importers is in the radius: no page above it within the depth) that gets no route is a warning, whatever rows matched: the legacy screens outside the task are what the radius is for
-  const { routes, warnings, known } = collectRoutes({ top, files: [...hops.keys()], rows, rowFiles: [...hops.keys()], warnable: (file) => hops.get(file) > 0 && ![...(importers.get(file) ?? [])].some((importer) => hops.has(importer)) })
+  // an importer in the radius that gets no route is a warning, whatever rows matched (the legacy screens outside the task are what the radius is for), unless it has importers in the radius and all of them are routed
+  const { routes, warnings, known } = collectRoutes({ top, files: [...hops.keys()], rows, rowFiles: [...hops.keys()], nameFramework: true, warnable: (file, routed) => {
+    if (hops.get(file) === 0) return false
+    const above = [...(importers.get(file) ?? [])].filter((importer) => hops.has(importer))
+    return !above.length || !above.every((importer) => routed.has(importer))
+  } })
   const lines = [`radius: ${targets.length} module${targets.length === 1 ? '' : 's'} → ${hops.size - targets.length} importer file${hops.size - targets.length === 1 ? '' : 's'}, depth <= ${depth} · ${features ? `${dir} · README ${resolve(readme)}` : 'no map — routes only'}`]
   const touched = new Map()
   for (const [key, { route, file }] of routes) {
@@ -515,11 +529,10 @@ export function readmeText({ config, language = 'en', base, branch, date, widths
   ].join('\n')
 }
 
-// the "Dev server" section keys, read the way verify-doctor reads them
+// the "Dev server" section, read by the one parser the doctor and the hook use
 function devServerConfigOf(config) {
-  const sections = config.split(/^##[ \t]+/m).filter((part) => /^Dev server\b/i.test(part)).map((part) => part.replace(/^[^\n]*\n/, ''))
-  const own = (key, keepAngle) => sections.map((part) => configValue(part, key, keepAngle)).find(Boolean) ?? null
-  return { url: own('url'), marker: own('app_marker', true), routes: own('verify_routes') }
+  const dev = parseDevServer([config])
+  return { url: dev.url ?? null, marker: dev.marker ?? null, routes: dev.routes.length ? dev.routes.join(', ') : null }
 }
 
 const insideOf = (base, target) => target === base || target.startsWith(`${base}${sep}`)
@@ -550,10 +563,10 @@ function symlinkProblem(top, path) {
   }
 }
 
-export function initReadme({ top, config, language = 'en' }) {
+export function initReadme({ top, config, mapConfig = config, language = 'en' }) {
   let dir
   try {
-    dir = mapDir(config)
+    dir = mapDir(mapConfig)
   } catch (error) {
     return { lines: [`verify-map: ${error.message}`], code: 2 }
   }
@@ -639,7 +652,8 @@ function main(args) {
     // the README is committed: it is built from the shared config only, never from the gitignored local one
     const shared = readText(join(root, '.claude/pipeline.config.md')) ?? ''
     const language = flag('--language') ?? configValue(shared, 'language') ?? 'en'
-    out(initReadme({ top, config: shared, language: language === 'ru' ? 'ru' : 'en' }))
+    // the map directory is read the way the consumers read it (local over shared); the README values stay with the shared config
+    out(initReadme({ top, config: shared, mapConfig: config, language: language === 'ru' ? 'ru' : 'en' }))
   }
   console.error('Usage: node verify-map.mjs --changed [--base <ref>] [--feature-map <file>] | --radius <file>… [--depth N] [--feature-map <file>] | --init [--language en|ru] | --lint <feature-file>')
   process.exit(2)
