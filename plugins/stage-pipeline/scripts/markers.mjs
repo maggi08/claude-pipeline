@@ -275,28 +275,38 @@ const NOT_LIFTED_WORD = new RegExp(
 )
 // The lift field's segment runs from its value to the next ` — `, `– `, `; ` or the line end (5f, A9). Read in a window of at most LIFT_WINDOW characters, so no match scans to the line end: a line of many fields stays linear.
 const LIFT_WINDOW = 300
-const SEGMENT_END = / — |– |; /
+// The cut also stops at the next lift label with its colon: a line of many fields never folds quotes in a long window (5g, M-3).
+const SEGMENT_END = / — |– |; |(?:[Ll]ifted|Снят)\**[^\S\n]*:/
 // Quoted text is an answer, not a status: «…», "…", “…” are replaced by one letter before any word test (backticks stay in the value, `no` was an S1 probe).
 const LIFT_QUOTED = /«[^»\n]*»|"[^"\n]*"|“[^”\n]*”/g
-/** The segment of a lift field that starts at `start` (the first character of its value): quotes folded to `Q`, cut at the first separator. */
+/** The segment of a lift field that starts at `start` (the first character of its value): cut at the first separator or lift label, then the quotes folded to `Q`. */
 function liftSegment(line, start) {
-  const window = line.slice(start, start + LIFT_WINDOW).replace(LIFT_QUOTED, 'Q')
+  const window = line.slice(start, start + LIFT_WINDOW)
   const end = SEGMENT_END.exec(window)
-  return end ? window.slice(0, end.index) : window
+  return (end ? window.slice(0, end.index) : window).replace(LIFT_QUOTED, 'Q')
 }
 /**
  * Reads the field whose label ends at `index + length`: `lifted`, `refused` (a value that is not a lift) or `dateless` (no date in the segment).
- * The shape (5f, B1 answers): `<who> <date> <answer>`. The who is at most 4 words before the first date (or none: a date first), opens with a letter, a digit or a quote, and holds no negation or pending word (K13).
+ * The shape (5f, B1 answers): `<who> <date> <answer>`. The who is at most 4 words before the first date (or none: a date first), opens with a letter or a digit (the raw first character: a quote may follow a who word or the date, never open the value), and holds no negation or pending word (K13).
  * The request and condition words are refused anywhere in the segment, outside quotes. A `(` opener counts only when its first `)` is the last thing on the line (a `.` or `;` may follow) and no other blocker's ID stands right before it.
  * Done in code after the match, on a bounded window: linear.
  */
 function readLiftField(line, index, label) {
+  return readField(line, index, label).read
+}
+/** `readLiftField` with the segment it cut, so a caller that needs the segment too does not cut it twice (5g, M-3). */
+function readField(line, index, label) {
   const start = index + label.length
   const segment = liftSegment(line, start)
+  const read = classifyField(line, index, label, start, segment)
+  return { read, segment }
+}
+function classifyField(line, index, label, start, segment) {
   const date = LIFT_DATE.exec(segment)
   if (!date) return 'dateless'
   const who = segment.slice(0, date.index)
-  if (!/^[\p{L}\p{N}]/u.test(segment) || NOT_LIFTED_WORD.test(who) || (who.match(LIFT_WHO_WORD) ?? []).length > 4) return 'refused'
+  // The opener is tested on the raw value: a quote folded to `Q` must not pass for a letter (5g, M-1).
+  if (!/^[\p{L}\p{N}]/u.test(line.slice(start, start + 1)) || NOT_LIFTED_WORD.test(who) || (who.match(LIFT_WHO_WORD) ?? []).length > 4) return 'refused'
   if (label[0] === '(') {
     // "waits for B1 (lifted: …)." names another blocker's field: a blocker ID right before the opener, which is not the line's own ID, is not this blocker's lift.
     const before = line.slice(Math.max(0, index - 16), index)
@@ -331,9 +341,10 @@ const LIFT_FIELD_ANY = new RegExp(BLOCKER_LIFT_FIELD.source.split(LIFT_DATED).jo
  */
 export function withoutRefusedLiftFields(line) {
   return line.replace(LIFT_FIELD_ANY, (found, offset) => {
-    const read = readLiftField(line, offset, found)
-    const refused = read === 'dateless' ? NOT_LIFTED_WORD.test(liftSegment(line, offset + found.length)) : read === 'refused'
-    return refused ? ' '.repeat(found.length) : found
+    const { read, segment } = readField(line, offset, found)
+    const refused = read === 'dateless' ? NOT_LIFTED_WORD.test(segment) : read === 'refused'
+    // Blanked with `#`, not spaces: the words before the field must never join its date in the base pattern (5g, M-2).
+    return refused ? '#'.repeat(found.length) : found
   })
 }
 /** The lift field alone on an indented sub-item. */

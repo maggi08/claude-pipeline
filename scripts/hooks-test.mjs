@@ -5151,6 +5151,20 @@ rmSync(retroRoot, { recursive: true, force: true })
       // B2 m-2: a dateless Russian "not yet"
       '- B1 — e2e — Снят: пока нет',
       '- B1 — e2e — Снят: нет, ждём токен',
+      // 5g, M-1 (pro-review-branch-4): a value that is only a quote has no who, and a quote is not a letter
+      '- B1 — CI e2e red — Lifted: "no" 2026-10-27',
+      '- B1 — CI e2e red — Lifted: "not yet" 2026-10-27',
+      '- B1 — CI e2e red — Lifted: «pending» (2026-10-27)',
+      '- B1 — CI e2e red — Lifted: "waiting for the user" 2026-10-27',
+      '- B1 — CI e2e red — Lifted: “still open” 2026-10-27',
+      '- B1 — CI e2e red — Lifted: "needs a user decision" 2026-10-27',
+      '- B1 — CI e2e red — Снят: «нет» 27.10.2026',
+      // 5g, M-2: a refused field after "user decision" or "user answer" (the word path of an old block must not bridge the blank to the date)
+      '- B1 — CI e2e red — what is needed from you: a user decision. Lifted: 2026-10-27, pending the token',
+      '- B1 — CI e2e red — user answer — Lifted: 2026-10-27 needs a retry',
+      '- B1 — CI e2e red — user decision; Lifted: 2026-10-27, waiting for the token',
+      '- B1 — CI e2e red — user answer — Lifted: "pending" until 2026-10-30',
+      '- B1 — CI e2e red — user decision (lifted: 2026-10-27) and more',
     ]
     for (const [label, date] of [['old block', '2026-10-25'], ['new block', '2026-10-29']]) {
       const still = INCIDENT.filter((line) => openOf(head(date), `${line}\n`).length !== 1)
@@ -5195,6 +5209,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('5f shape: a who of five words does not lift, four do; a date first needs no who', openOf(head('2026-10-29'), '- B1 — x — Lifted: one two three four five 2026-10-27\n- B2 — x — Lifted: one two three four 2026-10-27\n- B3 — x — Lifted: 2026-10-27\n').length === 1)
     check('5f shape: the request words are read in the segment only; the answer after a dash is free text', openOf(head('2026-10-29'), '- B1 — x — Lifted: user 2026-10-27 — needs nothing, will not return\n- B2 — x — Lifted: user 2026-10-27; waits for nobody\n').length === 0 && openOf(head('2026-10-29'), '- B1 — x — Lifted: user 2026-10-27 will return\n').length === 1)
     check('5f shape: a quoted request word does not refuse ("«once the token is set» 2026-10-27" is the answer), a backtick stays in the value', openOf(head('2026-10-29'), '- B1 — x — Lifted: user decision «once the token is set» 2026-10-27\n').length === 0 && openOf(head('2026-10-29'), '- B1 — x — Lifted: `no` 2026-10-27\n').length === 1)
+    check('5g M-1: a quote may stand in the who after a who word or after the date, and a quote-only value reads open', openOf(head('2026-10-29'), '- B1 — x — Lifted: user «no» 2026-10-27\n- B2 — x — Lifted: 2026-10-27 «no»\n').length === 0 && openOf(head('2026-10-29'), '- B1 — x — Lifted: «no» 2026-10-27\n').length === 1)
     check('5f #2: a "(" opener lifts only when its ")" ends the line: a second parenthesis or text after it keeps the blocker open', openOf(head('2026-10-29'), '- B1 — x (Lifted: user 2026-10-27) (see B2)\n- B2 — x (Lifted: user 2026-10-27) done\n- B3 — x (Lifted: user 2026-10-27\n').length === 3)
     // the refusal says the shape
     {
@@ -5235,10 +5250,10 @@ rmSync(retroRoot, { recursive: true, force: true })
     }
     check('5e: openBlockers on 50 000 characters of pathological input (the lift field, the carried form, sub-items, the interview field) < 100 ms', worst.ms < 100, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
   }
-  // 5f (B2 m-1, security #3): one blocker line of 1 MB of lift fields, in an old block and a new one, one read under 100 ms
+  // 5f (B2 m-1, security #3) and 5g (M-3, A15): one blocker line of 1 MB of lift fields, in an old block and a new one, one read under 250 ms
   {
     const worst = { ms: 0, input: '' }
-    for (const unit of ['; Lifted: no 2026-10-27', ' — Снят: пока нет 27.10.2026', '(lifted: a 2026-10-27 ', '. Lifted: user 2026-10-27 needs', '. Снят: пока нет ']) {
+    for (const unit of ['; Lifted: no 2026-10-27', ' — Снят: пока нет 27.10.2026', '(lifted: a 2026-10-27 ', '. Lifted: user 2026-10-27 needs', '. Снят: пока нет ', '; Lifted: x', '; Снят: ']) {
       const body = `- B1 — x ${unit.repeat(Math.ceil(1_000_000 / unit.length))}\n`
       for (const heading of [head('2026-10-20'), head('2026-10-29')]) {
         const t0 = performance.now()
@@ -5247,7 +5262,7 @@ rmSync(retroRoot, { recursive: true, force: true })
         if (ms > worst.ms) Object.assign(worst, { ms, input: unit })
       }
     }
-    check('5f: openBlockers on one 1 MB line of lift fields (refused values, a parenthesis that never closes, request words), old and new block, < 100 ms', worst.ms < 100, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
+    check('5f: openBlockers on one 1 MB line of lift fields (refused values, a parenthesis that never closes, request words), old and new block, the units `; Lifted: x` and the Russian label unit included, < 250 ms per read', worst.ms < 250, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
   }
 }
 
