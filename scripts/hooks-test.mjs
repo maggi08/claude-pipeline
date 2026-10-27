@@ -2005,6 +2005,15 @@ check('retro: metrics from the journal are split by stage, 2.1 is a separate sta
 check('retro: findings are summed across all stages', /findings in total: 14/.test(retro.stdout))
 check('retro: size by added lines', /\| ≤300 \| 1 \|/.test(retro.stdout) && /\| 301–1000 \| 1 \|/.test(retro.stdout))
 check('retro: the old report name deps-2.md is counted', /\| deps-audit \| 0 \| 0 \| 1 \|/.test(retro.stdout))
+// VT-3 branch review m-4: the flags are read in one pass, whatever their order; a valueless --firings is an error.
+const retroLog = join(retroRoot, 'firings-test.jsonl')
+writeFileSync(retroLog, JSON.stringify({ rule: 'agent-guard/review-model', task: 'T', repo: retroRoot, ts: 1, tool: 'Agent', event: 'PreToolUse', read: false }) + '\n')
+const retroForward = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot, '--firings', retroLog, '--all'], { encoding: 'utf8' })
+const retroReversed = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot, '--all', '--firings', retroLog], { encoding: 'utf8' })
+check('retro: --firings <file> --all reads the file', /agent-guard\/review-model/.test(retroForward.stdout), retroForward.stderr.trim())
+check('retro: --all before --firings <file> reads the same file', /agent-guard\/review-model/.test(retroReversed.stdout), retroReversed.stdout.slice(0, 200))
+const retroBare = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot, '--all', '--firings'], { encoding: 'utf8' })
+check('retro: a valueless --firings exits 2 with a message', retroBare.status === 2 && /--firings needs a file/.test(retroBare.stderr), `${retroBare.status} ${retroBare.stderr.trim()}`)
 rmSync(retroRoot, { recursive: true, force: true })
 
 // ── 0.16 catch-up: English gate forms close only what they should (final reviews of the branch) ──

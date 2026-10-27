@@ -841,6 +841,15 @@ async function validateEvalSelfTests(names) {
   expectMatches('a finding after the counters line of the real final message', portal, realMessage, 1)
   expectMatches('a finding after a «Discarded:» label line is still dropped', portal, 'Discarded at the re-check:\n- 🟠 `src/DeleteGuestModal.tsx:12` — dropped', 0)
   expectMatches('a finding after a bold «Could not verify:» label line is still dropped', portal, '**Could not verify:**\n- major: src/DeleteGuestModal.tsx:12 — x', 0)
+  // VT-3 branch review (fresh) M-1: pro-review's emoji-led shapes, and m-2: the Russian section markers.
+  expectMatches('an emoji-led finding heading', portal, '### 🟠 M-1 `DeleteGuestModal.tsx:12` — the delete is not awaited', 1)
+  expectMatches('a bracket-severity finding heading', portal, '### [major] M-1 src/DeleteGuestModal.tsx:12 — x', 1)
+  expectMatches('a bold emoji severity line', portal, '**🟠 Major** — `src/DeleteGuestModal.tsx:12` — x', 1)
+  expectMatches('an emoji-led finding heading under «Discarded»', portal, '## Discarded at the re-check\n\n### 🟠 M-9 `DeleteGuestModal.tsx:12` — dropped', 0)
+  expectMatches('a finding after «Не удалось проверить» is dropped', portal, '## Не удалось проверить\n\n- major: src/DeleteGuestModal.tsx:12 — x', 0)
+  expectMatches('a finding under «Итог находок» is dropped', portal, '## Итог находок\n\n- M-1 major src/DeleteGuestModal.tsx:12 — исправлено', 0)
+  expectMatches('a finding under «Отброшено при перепроверке» is dropped', portal, '## Отброшено при перепроверке\n\n### M-9 (major) — DeleteGuestModal.tsx:12', 0)
+  if (!gradeAgent({ findingsForbid: [{ ...portal, why: 'x' }] }, { repo: ROOT, report: '### 🟠 M-1 `DeleteGuestModal.tsx:12` — x', summary: 'Summary: 🔴 0 · 🟠 1', calls: [] }).failures.length) fail(here, 'finding grader self-test: findingsForbid passed a report with the forbidden finding in an emoji-led heading')
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
   // Trace graders: a denied call does not count; every screenshot must be opened.
@@ -1050,6 +1059,12 @@ async function validateRunAudit() {
     bashWrite(`sed ${'-e -e '.repeat(100)}x`, { repoRoots: ['/synthetic/r'], taskDirs: [] })
     bashWrite(`sed ${'-n -e s/a/b/ '.repeat(60)}x`, { repoRoots: ['/synthetic/r'], taskDirs: [] })
     if (Date.now() - started > 1000) bad(`200 -e flags took ${Date.now() - started} ms: the sed regex backtracks`)
+    // VT-3 branch review m-3: an unterminated heredoc with a long tag and many blank lines is read in linear time, and a normal heredoc still collapses.
+    const heredocStart = Date.now()
+    bashWrite(`cat <<'${'A'.repeat(2000)}'\n${'\n'.repeat(20000)}`, { repoRoots: ['/synthetic/r'], taskDirs: [] })
+    bashWrite(`cat <<${'A'.repeat(2000)}\n${' \n'.repeat(20000)}`, { repoRoots: ['/synthetic/r'], taskDirs: [] })
+    if (Date.now() - heredocStart > 1000) bad(`an unterminated heredoc took ${Date.now() - heredocStart} ms: the heredoc regex backtracks`)
+    if (bashWrite("cat <<'EOF'\nx > /synthetic/r/leak.txt\nEOF\n", { repoRoots: ['/synthetic/r'], taskDirs: [] })) bad('a heredoc body was read as a command: its text was not collapsed')
     const noSource = readFileSync(join(ROOT, 'scripts/run-audit.mjs'), 'utf8')
     if (/readdirSync\([^)]*\.claude\/projects['"`]\s*\)/.test(noSource) || /readdirSync\(\s*join\(homedir\(\),\s*['"]\.claude\/projects['"]\s*\)\s*\)/.test(noSource)) bad('the script lists ~/.claude/projects as a whole')
   } catch (error) {

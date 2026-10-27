@@ -20,13 +20,22 @@ import { FIRINGS_FILE } from './hooks/firing.mjs'
 import { pluginDataDir, readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
 import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
-const args = process.argv.slice(2)
-const firingsAt = args.indexOf('--firings')
-const allAt = args.indexOf('--all')
-const machineView = allAt >= 0
-if (machineView) args.splice(allAt, 1)
-const firingsFile = firingsAt >= 0 ? resolve(args.splice(firingsAt, 2)[1] ?? '') : join(pluginDataDir(), FIRINGS_FILE)
-const targets = args
+const argv = process.argv.slice(2)
+const targets = []
+let machineView = false
+let firingsArg = null
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--all') machineView = true
+  else if (argv[i] === '--firings') {
+    firingsArg = argv[i + 1]
+    if (!firingsArg || firingsArg.startsWith('--')) {
+      console.error('--firings needs a file: --firings <firings.jsonl>')
+      process.exit(2)
+    }
+    i++
+  } else targets.push(argv[i])
+}
+const firingsFile = firingsArg ? resolve(firingsArg) : join(pluginDataDir(), FIRINGS_FILE)
 if (!targets.length || targets.includes('--help')) {
   console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all]')
   process.exit(targets.length ? 0 : 2)

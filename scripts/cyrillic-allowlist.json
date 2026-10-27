@@ -113,6 +113,11 @@
       "reason": "the Russian form of the \"N skills / N agents\" showcase count and its exceptions, next to the English one"
     },
     {
+      "glob": "scripts/validate.mjs",
+      "line": "^\\s*expectMatches\\('a finding (?:after «Не удалось проверить» is dropped|under «Итог находок» is dropped|under «Отброшено при перепроверке» is dropped)'",
+      "reason": "the Russian section markers of a report, as the finding grader's self-test feeds them"
+    },
+    {
       "glob": "scripts/eval-lib.mjs",
       "reason": "the leak lint's word list and the negation patterns of the finding grader match Russian words, as a Russian task report and a Russian-speaking developer produce them"
     },

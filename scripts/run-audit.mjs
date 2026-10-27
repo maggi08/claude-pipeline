@@ -425,7 +425,7 @@ const commandName = (command) => {
 }
 
 /** Heredoc bodies and quoted text are data, not commands: dropped before the command is read for writes. */
-const withoutBodies = (command) => command.replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2\b/g, '<<$2').replace(/'[^'\n]*'|"[^"\n]*"/g, "''")
+const withoutBodies = (command) => command.replace(/<<-?[ \t]*(['"]?)(\w+)\b\1[^\n]*\n[\s\S]*?\n[ \t]*\2\b/g, '<<$2').replace(/'[^'\n]*'|"[^"\n]*"/g, "''")
 
 /**
  * Whether a Bash command writes, and where: `{ where: 'repo' | 'relative' | 'opaque' | 'other', label }` or null when it writes nothing, or only into temp, the task directory or `~/.claude`.

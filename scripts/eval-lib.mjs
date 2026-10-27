@@ -423,10 +423,10 @@ const negatedTail = (tail) => {
   const rest = tail.slice(bridged.length)
   return NEGATION.test(rest)
 }
-const KEPT_SECTION = /\b(kept|discarded|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен/i
-const ITEM = /^\s*(?:[-*•]|\d+[.)])\s+|^\s*\|(?![\s:|-]*$)|^\s*[*_`>]*\s*(?:[CMFm]-?\d+|#\d+|AC-[\d.]+)\b|^\s*[*_`>]*\s*(?:critical|major|minor|blocker)\b|^\s*(?:🔴|🟠|🟡|⚪)|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)?\s*\[(?:critical|major|minor|blocker)\]/i
+const KEPT_SECTION = /\b(kept|discarded|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен|не удалось проверить|итог находок|отброшено/i
+const ITEM = /^\s*(?:[-*•]|\d+[.)])\s+|^\s*\|(?![\s:|-]*$)|^\s*[*_`>]*\s*(?:[CMFm]-?\d+|#\d+|AC-[\d.]+)\b|^\s*[*_`>]*\s*(?:critical|major|minor|blocker)\b|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)?\s*\[(?:critical|major|minor|blocker)\]/i
 // A heading that is itself a finding («### M-1 (major) — src/a.ts:12 — …»): an id-led heading. It is judged as a line, and it does not open a «kept» section.
-const FINDING_HEADING = /^\s{0,3}#{1,6}\s+[*_`]*(?:[CMFm]-?\d+|#\d+)\b/
+const FINDING_HEADING = /^\s{0,3}#{1,6}\s+[*_`]*\s*(?:(?:🔴|🟠|🟡|⚪)\s*)?(?:\[(?:critical|major|minor|blocker)\]\s*)?[*_`]*(?:[CMFm]-?\d+|#\d+)\b/i
 
 /** The lines of a report that are findings in the ledger form: a list item, a table row or an id/severity-led line, outside the «kept / could not verify» sections. */
 function findingLines(text) {
