@@ -273,21 +273,46 @@ const NOT_LIFTED_WORD = new RegExp(
   '(?<![\\p{L}\\p{N}_])(?:no|none|not|never|pending|tbd|waiting|awaiting|open|still|yet|false|нет|не|пока|ещё|еще|ждём|ждем|жду|ожида\\p{L}*|открыт\\p{L}*|n/a)(?![\\p{L}\\p{N}_])|[⏳?❌]',
   'iu',
 )
-/**
- * Whether a regex match of the lift field is a real lift (K13). The value is the span from the colon to the date: it opens with a letter or a digit, holds no negation or pending word and no `⏳`, `?`, `❌`.
- * A `(` opener counts only when its parenthesis closes the segment (`)` then the end of the line, `.`, `;` or a dash): "waits for B1 (lifted: user 2026-10-27) and …" mentions another blocker.
- * Done in code after the match, so the cost stays linear (the value is at most 120 characters).
- */
-function liftValueOk(line, match) {
-  const start = match.index + match[0].length
-  const date = LIFT_DATE.exec(line.slice(start, start + 140))
-  if (!date) return false
-  const value = line.slice(start, start + date.index)
-  if (!/^[\p{L}\p{N}]/u.test(value) || NOT_LIFTED_WORD.test(value)) return false
-  if (match[0][0] !== '(') return true
-  const close = line.indexOf(')', start + date.index)
-  return close >= 0 && /^\s*(?:$|[.;—–])/.test(line.slice(close + 1))
+// The lift field's segment runs from its value to the next ` — `, `– `, `; ` or the line end (5f, A9). Read in a window of at most LIFT_WINDOW characters, so no match scans to the line end: a line of many fields stays linear.
+const LIFT_WINDOW = 300
+const SEGMENT_END = / — |– |; /
+// Quoted text is an answer, not a status: «…», "…", “…” are replaced by one letter before any word test (backticks stay in the value, `no` was an S1 probe).
+const LIFT_QUOTED = /«[^»\n]*»|"[^"\n]*"|“[^”\n]*”/g
+/** The segment of a lift field that starts at `start` (the first character of its value): quotes folded to `Q`, cut at the first separator. */
+function liftSegment(line, start) {
+  const window = line.slice(start, start + LIFT_WINDOW).replace(LIFT_QUOTED, 'Q')
+  const end = SEGMENT_END.exec(window)
+  return end ? window.slice(0, end.index) : window
 }
+/**
+ * Reads the field whose label ends at `index + length`: `lifted`, `refused` (a value that is not a lift) or `dateless` (no date in the segment).
+ * The shape (5f, B1 answers): `<who> <date> <answer>`. The who is at most 4 words before the first date (or none: a date first), opens with a letter, a digit or a quote, and holds no negation or pending word (K13).
+ * The request and condition words are refused anywhere in the segment, outside quotes. A `(` opener counts only when its first `)` is the last thing on the line (a `.` or `;` may follow) and no other blocker's ID stands right before it.
+ * Done in code after the match, on a bounded window: linear.
+ */
+function readLiftField(line, index, label) {
+  const start = index + label.length
+  const segment = liftSegment(line, start)
+  const date = LIFT_DATE.exec(segment)
+  if (!date) return 'dateless'
+  const who = segment.slice(0, date.index)
+  if (!/^[\p{L}\p{N}]/u.test(segment) || NOT_LIFTED_WORD.test(who) || (who.match(LIFT_WHO_WORD) ?? []).length > 4) return 'refused'
+  if (label[0] === '(') {
+    // "waits for B1 (lifted: …)." names another blocker's field: a blocker ID right before the opener, which is not the line's own ID, is not this blocker's lift.
+    const before = line.slice(Math.max(0, index - 16), index)
+    if (/\bB\d+\**[^\S\n]*$/.test(before) && !/^[^\S\n]*(?:[-*][^\S\n]*)?\**B\d+\**[^\S\n]*$/.test(line.slice(0, index))) return 'refused'
+    const raw = line.slice(start, start + LIFT_WINDOW)
+    const rawDate = LIFT_DATE.exec(raw)
+    const close = rawDate ? raw.indexOf(')', rawDate.index) : -1
+    if (close < 0) return 'refused'
+    LINE_END.lastIndex = start + close + 1
+    if (!LINE_END.test(line)) return 'refused'
+  }
+  return SEGMENT_REFUSED.test(segment) ? 'refused' : 'lifted'
+}
+const LIFT_WHO_WORD = /[\p{L}\p{N}][\p{L}\p{N}'’._-]*/gu
+const LINE_END = /[.;]?[^\S\n]*$/my
+const liftValueOk = (line, match) => readLiftField(line, match.index, match[0]) === 'lifted'
 const LIFT_FIELD_ALL = new RegExp(BLOCKER_LIFT_FIELD.source, 'g')
 /** The lift field in a blocker's own text: a match whose value is real. One helper for the line form and the sub-item form, on the field path and on the word path (K11). */
 export function blockerLiftField(line) {
@@ -298,15 +323,18 @@ export function blockerLiftField(line) {
   }
   return false
 }
-/** The line with every lift field whose value is refused blanked out, so the word matcher of an old block cannot lift on its label (the Russian "not yet" after the Russian label, K13 on the K11 word path). */
+// The same openers without the date lookahead: the word path blanks a dateless "not yet" field as well (A10).
+const LIFT_FIELD_ANY = new RegExp(BLOCKER_LIFT_FIELD.source.split(LIFT_DATED).join('\\**[^\\S\\n]*'), 'g')
+/**
+ * The line with every lift field that is not a real lift blanked out, so the word matcher of an old block cannot lift on its label (the Russian "not yet" after the Russian label, K13 on the K11 word path).
+ * A field with a date is refused by its value; a field with no date is blanked when its segment holds a negation or pending word (A10). One pass, one `replace`: linear.
+ */
 export function withoutRefusedLiftFields(line) {
-  LIFT_FIELD_ALL.lastIndex = 0
-  let out = line
-  for (let match; (match = LIFT_FIELD_ALL.exec(line)); ) {
-    if (match[0].length === 0) LIFT_FIELD_ALL.lastIndex++
-    else if (!liftValueOk(line, match)) out = out.slice(0, match.index) + ' '.repeat(match[0].length) + out.slice(match.index + match[0].length)
-  }
-  return out
+  return line.replace(LIFT_FIELD_ANY, (found, offset) => {
+    const read = readLiftField(line, offset, found)
+    const refused = read === 'dateless' ? NOT_LIFTED_WORD.test(liftSegment(line, offset + found.length)) : read === 'refused'
+    return refused ? ' '.repeat(found.length) : found
+  })
 }
 /** The lift field alone on an indented sub-item. */
 export function subItemLiftField(line) {
@@ -317,6 +345,11 @@ export function subItemLiftField(line) {
 // One list for both languages: `\b` is ASCII, so in the branches that put it before the list only the English words take part.
 const REQUEST_WORDS =
   '(?:needs?|needed|waiting\\s+for|waits?\\s+for|awaiting|pending|requires?|required|нужно|нужен|нужна|нужны|необходим[а-яё]*|жд[её]т|жд[её]м|жду|ожида[а-яё]*|требуется)'
+// The words refused anywhere in a lift field's segment, outside quotes (5f, B1): the request words above and the condition words (once, until, after, when, if, need…, require…, asked, blocked, unresolved, will; the Russian forms).
+const SEGMENT_REFUSED = new RegExp(
+  `(?<![\\p{L}\\p{N}_])(?:${REQUEST_WORDS}|once|until|till|unless|after|when|whenever|if|need\\p{L}*|require\\p{L}*|asked|requested|blocked|unresolved|tbc|will|later|awaits?|waits?|to\\s+be\\s+(?:confirmed|decided|determined)|после|когда|если|нужн\\p{L}*|необходим\\p{L}*|требу\\p{L}*|спрос\\p{L}*|будет|будут|пока|ждать|ждут)(?![\\p{L}\\p{N}_])`,
+  'iu',
+)
 const USER_REQUEST = `\\b${REQUEST_WORDS}\\s+(?:an?\\s+|the\\s+)?user\\s+(?:answer|decision)\\b`
 const NO_REQUEST_AFTER = `(?![^\\n]{0,200}${USER_REQUEST})`
 const NO_REQUEST_BEFORE = `(?<!${USER_REQUEST}[^\\n]{0,200})`

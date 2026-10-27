@@ -1043,7 +1043,7 @@ export function forceCloseViolations(dataDir, taskDir) {
   const blockers = openBlockers(block, gate)
   if (blockers.length) {
     const rule = blockerFieldApplies(gate, block.heading, block.body)
-      ? ' In this block a blocker is lifted only by `Lifted: <who> <date>` (the Russian form is in the marker table of language.md) on its line or an indented sub-item; words in the description do not lift, and a value that says no / pending / not yet lifts nothing.'
+      ? ' In this block a blocker is lifted only by `Lifted: <who> <date> — <answer>` (the who is at most 4 words, the answer comes after the date; the Russian form is in the marker table of language.md) on its line or an indented sub-item; words in the description do not lift, and a value that says no / pending / not yet, or holds a request or condition word (needs, once, after, when, will…) outside quotes, lifts nothing.'
       : ''
     found.push({
       rule: 'force-blockers',

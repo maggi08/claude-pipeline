@@ -5066,7 +5066,7 @@ rmSync(retroRoot, { recursive: true, force: true })
       check('5e K10 (m-1): a block open at the first look (2026-10-29, first look 2026-11-03) is read by the field: "closed by" does not lift B1', jc.openBlockers({ heading: OPEN, body: OPEN_BODY }, later).length === 1 && jc.openBlockers({ heading: `${OPEN} — completed 2026-10-29`, body: OPEN_BODY }, later).length === 1)
       writeFileSync(join(task, 'STAGES.md'), `# T-K9: task\n\n${FEMO}\n${FEMO_BODY}\n${OPEN} — completed 2026-10-29\n${OPEN_BODY}`)
       check('5e K10 (m-1): the "completed" close of that block is refused (force-blockers)', jc.forceCloseViolations(data, task).some(({ rule }) => rule === 'force-blockers'), JSON.stringify(jc.forceCloseViolations(data, task)))
-      check('5e round 4 m-2: the force-blockers refusal of a block read by the field names `Lifted:` and the Russian form', jc.forceCloseViolations(data, task).some(({ rule, message }) => rule === 'force-blockers' && message.includes('`Lifted: <who> <date>`') && message.includes('Russian form')), JSON.stringify(jc.forceCloseViolations(data, task).map(({ message }) => message.slice(-120))))
+      check('5e round 4 m-2: the force-blockers refusal of a block read by the field names the shape `Lifted: <who> <date> — <answer>` and the Russian form (5f: shape in the message)', jc.forceCloseViolations(data, task).some(({ rule, message }) => rule === 'force-blockers' && message.includes('`Lifted: <who> <date> — <answer>`') && message.includes('Russian form')), JSON.stringify(jc.forceCloseViolations(data, task).map(({ message }) => message.slice(-120))))
       check('5e K11 (m-2): in a held block the field on the blocker\'s own line lifts, the indented sub-item does not', same(jc.openBlockers({ heading: FEMO, body: 'Блокеры:\n- B1 — x — Lifted: user 2026-10-26\n- B2 — y\n  - Lifted: user 2026-10-26\n' }, later).map((line) => line.slice(0, 4)), ['- B2']))
       check('5e S4: the snapshot is written through a temp file and a rename: no temp file is left in the directory', existsSync(file) && !readdirSync(dirname(file)).some((name) => name.endsWith('.tmp')) && /renameSync\(temp, target\)/.test(readFileSync(join(PLUGIN, 'journal-check.mjs'), 'utf8')))
     }
@@ -5113,6 +5113,115 @@ rmSync(retroRoot, { recursive: true, force: true })
     }
     check('5e round 4 M-1: a second lift field later on the line still lifts when its own value is real ("Lifted: no 2026-10-27 — Lifted: user 2026-10-27")', openOf(head(NEW), '- B1 — x — Lifted: no 2026-10-27 — Lifted: user 2026-10-27\n').length === 0)
   }
+  // ── stage 5f (B1 and B2 of run 2026-10-25): the value of the lift field has a shape ──
+  {
+    const lineOf = (field) => `- B1 — CI e2e red — ${field}\n`
+    const subOf = (field) => `- B1 — CI e2e red\n  - ${field}\n`
+    const field = (line) => line.replace(/^.*? — (Lifted|Снят)/, '$1')
+    // Incident: every probe line of the reviews stays open, in an old (2026-10-25) and a new (2026-10-29) block
+    const INCIDENT = [
+      // pro-review-branch-3 M-1 and security-review-branch-2 #2: another blocker's parenthesised field followed by a dash, `.` or `;`
+      '- B2 — stage 7 waits for B1 (Lifted: user 2026-10-27) — needed: the token — recommend setting it',
+      '- B2 — stage 7 waits for B1 (lifted: user 2026-10-27).',
+      '- B2 — stage 7 waits for B1 (lifted: user 2026-10-27); needs the token',
+      '- B3 — CI e2e red — depends on B2 (lifted: user 2026-10-27) — still red, needs the token',
+      '- B3 — CI e2e red — see B2 (lifted: user 2026-10-27) — still red',
+      '- B3 — CI e2e red — same root cause as B2 (lifted: user 2026-10-27).',
+      // M-2: a condition or a request in the value
+      '- B1 — CI e2e red — Lifted: once the user sets the token (asked 2026-10-27)',
+      '- B1 — CI e2e red — Lifted: after the user answers, asked 2026-10-27',
+      '- B1 — CI e2e red — Lifted: when the token is set (asked the user 2026-10-27)',
+      '- B1 — CI e2e red — Lifted: needs the token from the user, asked 2026-10-27',
+      '- B1 — CI e2e red — Lifted: to be confirmed by the user, asked 2026-10-27',
+      '- B1 — CI e2e red — Lifted: unresolved, asked the user 2026-10-27',
+      // security #1: requests and statuses, and a "no" after the date
+      '- B1 — CI e2e red — Lifted: needs a user decision 2026-10-27',
+      '- B1 — CI e2e red — Lifted: requires a user decision 2026-10-27',
+      '- B1 — CI e2e red — Lifted: waits for user 2026-10-27',
+      '- B1 — CI e2e red — Lifted: asked the user 2026-10-27, no answer yet',
+      '- B1 — CI e2e red — Lifted: blocked until 2026-10-30',
+      '- B1 — CI e2e red — Lifted: unresolved 2026-10-27',
+      '- B1 — CI e2e red — Lifted: awaits the user, asked 2026-10-27',
+      '- B1 — CI e2e red — Lifted: user will decide after 2026-10-30',
+      '- B1 — CI e2e red — Lifted: user 2026-10-27 until the token is set',
+      '- B1 — CI e2e red — Lifted: user decision of the whole team in the call 2026-10-27',
+      '- B1 — CI e2e red — Снят: нужно решение пользователя 27.10.2026',
+      '- B1 — CI e2e red — Снят: после ответа пользователя 27.10.2026',
+      '- B1 — CI e2e red — Снят: когда токен будет задан, спросил 27.10.2026',
+      // B2 m-2: a dateless Russian "not yet"
+      '- B1 — e2e — Снят: пока нет',
+      '- B1 — e2e — Снят: нет, ждём токен',
+    ]
+    for (const [label, date] of [['old block', '2026-10-25'], ['new block', '2026-10-29']]) {
+      const still = INCIDENT.filter((line) => openOf(head(date), `${line}\n`).length !== 1)
+      check(`5f incident (${label}): every probe line of M-1, M-2, #1, #2 and the dateless "not yet" keeps the blocker open`, still.length === 0, JSON.stringify(still))
+      const sub = INCIDENT.filter((line) => /Lifted|Снят/.test(line) && !/^- B\d — (?:stage|CI e2e red — (?:depends|see|same))/.test(line) && openOf(head(date), subOf(field(line))).length !== 1)
+      check(`5f incident (${label}): the field-value probes on an indented sub-item stay open${date === '2026-10-25' ? ' (not read in an old block: open either way)' : ''}`, sub.length === 0, JSON.stringify(sub))
+    }
+    // Legitimate: VT-1's live lifts (the blocker lines and the sub-items), the user's own form, the quoted answers, the Russian decision, the closing parenthesis
+    const vt1 = [
+      '- B1 — what is blocked: stage 3 `AC-3.3`, the «completed with blockers» half, plus the receipts edge cases (checks/pro-review-3-fresh-2.md M-1, M-2, m-1…m-4). Why: the fix loop is exhausted (2 rounds plus the fresh opus check). Lifted: user decision 2026-10-20 «go with your suggestion». Done in the 2026-10-20 run, stage 5d.',
+      '- B2 — what is blocked: both PRs of this run (`fix/audit-hooks` 0.16.3 and `feat/verified-runs` 0.18.0); no stage. Why: main got two squash merges. Lifted: user decision 2026-10-20 «rebase both»; done in run 4.',
+      '- B3 — what is blocked: stage 5c, the rebase onto `origin/main`. Why: the permission layer denied `git rebase`. Lifted: user decision 2026-10-20 «go»; the user ran it.',
+      '- B4 — what is blocked: three minor findings of the fresh whole-branch review. Why: the final-check loop is exhausted. Lifted: user decision 2026-10-23 «ok»; fixed in run 4 (`c2534bf`), and what that round left is B6 of run 5.',
+      '- B6 — what is blocked: `AC-5b.1` on one input. Why: the final-check loop of this run is exhausted. Lifted: user decision 2026-10-23 «B6 yes»; fixed in run 5 (`31e3e40`), and what run 5 left is its B7.',
+    ]
+    const VT1_SUB = [
+      ['- B7 — what is blocked: three minor findings', '  - Lifted: user decision 2026-10-23 «B7, yes»; fixed in run 6 (`b366edc`, `5d1b57d`), and what run 6 left is its B8.'],
+      ['- B8 — what is blocked: one input', '  - Lifted: user decision 2026-10-25 «a»; done in run 7 (`0494f32`, `b7cff0e`), and the one input left (a multi-word `isolatedContext`) is deferred to 0.18.2 under the stopping rule.'],
+      ['- B9 — what is blocked: the rebase', '  - Lifted: user decision 2026-10-25 «do recommended one»; PR #12 squash-merged 2026-10-26 as `68c1bf1`, and the live tree fast-forwarded to it.'],
+    ]
+    const LEGIT = [
+      'Lifted: Mako 2026-10-27 — yes, fold all four into B1\'s round. The minors are: x',
+      'Lifted: user decision «no e2e for now» 2026-10-27',
+      'Снят: решение «не делать» 27.10.2026',
+      'Снят: 27.10.2026 пользователем',
+      'Lifted: 2026-10-27 user decision «no»',
+      'Снят: решение пользователя 28.10.2026',
+      'Lifted: Mako in chat 2026-10-27 — needs nothing more, no further answer is open',
+      'Lifted: user decision 2026-10-27 «no, keep v1» — done in stage 3',
+    ]
+    for (const [label, date] of [['old block', '2026-10-25'], ['new block', '2026-10-29']]) {
+      const closed = vt1.filter((line) => openOf(head(date), `${line}\n`).length !== 0)
+      check(`5f legit (${label}): VT-1's live lift lines (B1-B4, B6) lift`, closed.length === 0, JSON.stringify(closed.map((line) => line.slice(0, 6))))
+      const lifted = LEGIT.filter((line) => openOf(head(date), lineOf(line)).length !== 0)
+      check(`5f legit (${label}): the user's own form, the quoted answers with "no" / "не", a date first, the Russian decision lift`, lifted.length === 0, JSON.stringify(lifted))
+      check(`5f legit (${label}): "(Lifted: user 2026-10-27)." and "(Lifted: user 2026-10-27);" at the line end lift`, openOf(head(date), '- B1 — token (Lifted: user 2026-10-27).\n- B2 — token (Lifted: user 2026-10-27)\n- B3 — token; (Lifted: user 2026-10-27);\n').length === 0)
+    }
+    const subLifted = VT1_SUB.filter(([a, b]) => openOf(head('2026-10-29'), `${a}\n${b}\n`).length !== 0)
+    check('5f legit (new block): VT-1\'s live sub-item lifts (B7, B8, B9 shape) lift', subLifted.length === 0, JSON.stringify(subLifted.map(([a]) => a.slice(0, 6))))
+    const subLegit = LEGIT.filter((line) => openOf(head('2026-10-29'), subOf(line)).length !== 0)
+    check('5f legit (new block): the user\'s forms lift on an indented sub-item too', subLegit.length === 0, JSON.stringify(subLegit))
+    check('5f shape: a who of five words does not lift, four do; a date first needs no who', openOf(head('2026-10-29'), '- B1 — x — Lifted: one two three four five 2026-10-27\n- B2 — x — Lifted: one two three four 2026-10-27\n- B3 — x — Lifted: 2026-10-27\n').length === 1)
+    check('5f shape: the request words are read in the segment only; the answer after a dash is free text', openOf(head('2026-10-29'), '- B1 — x — Lifted: user 2026-10-27 — needs nothing, will not return\n- B2 — x — Lifted: user 2026-10-27; waits for nobody\n').length === 0 && openOf(head('2026-10-29'), '- B1 — x — Lifted: user 2026-10-27 will return\n').length === 1)
+    check('5f shape: a quoted request word does not refuse ("«once the token is set» 2026-10-27" is the answer), a backtick stays in the value', openOf(head('2026-10-29'), '- B1 — x — Lifted: user decision «once the token is set» 2026-10-27\n').length === 0 && openOf(head('2026-10-29'), '- B1 — x — Lifted: `no` 2026-10-27\n').length === 1)
+    check('5f #2: a "(" opener lifts only when its ")" ends the line: a second parenthesis or text after it keeps the blocker open', openOf(head('2026-10-29'), '- B1 — x (Lifted: user 2026-10-27) (see B2)\n- B2 — x (Lifted: user 2026-10-27) done\n- B3 — x (Lifted: user 2026-10-27\n').length === 3)
+    // the refusal says the shape
+    {
+      const dir = mkdtempSync(join(tmpdir(), 'blockers-5f-'))
+      const data = mkdtempSync(join(tmpdir(), 'blockers-5f-data-'))
+      const task = join(dir, 'T-5F')
+      mkdirSync(join(task, 'checks'), { recursive: true })
+      writeFileSync(join(task, 'STAGES.md'), '# T-5F: task\nLanguage: en\n')
+      jc.baselineInfo(data, task)
+      writeFileSync(join(task, 'STAGES.md'), '# T-5F: task\nLanguage: en\n\n## Force run 2026-10-29 — completed 2026-10-29\nConfirmed: 2026-10-29 — x\nBlockers:\n- B1 — CI red — Lifted: needs a user decision 2026-10-29\n')
+      const violation = jc.forceCloseViolations(data, task).find(({ rule }) => rule === 'force-blockers')
+      check('5f m-3: the refusal names the shape `Lifted: <who> <date> — <answer>`, the 4-word who and the answer after the date', !!violation && violation.message.includes('`Lifted: <who> <date> — <answer>`') && /at most 4 words/.test(violation.message) && /answer comes after the date/.test(violation.message), violation?.message.slice(-300))
+      rmSync(dir, { recursive: true, force: true })
+      rmSync(data, { recursive: true, force: true })
+    }
+    // A11: a Bash call that finishes a run takes the first-look snapshot before it runs, so a block dated before the first-look day is not held as an old one
+    {
+      const bApp = join(gRoot, 'bash-first-look')
+      repoAt(bApp, 'main')
+      const bTask = join(bApp, '.claude/tasks/T-9F')
+      const open = '# T-9F: task\nBranch: `T-9F/feat/g`\n\n## Force run 2026-10-26\nConfirmed: 2026-10-26 — x\nBlockers:\n- B1 — CI e2e red — resolved by a retry, per the log\n\n## Stages\n\n### Stage 1: a  [status: done]\n'
+      write(bApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-9F/STAGES.md': open })
+      git(bApp, 'checkout', '-qb', 'T-9F/feat/g')
+      const close = bashGate(bApp, `python3 close.py ${join(bTask, 'STAGES.md')}`, () => writeFileSync(join(bTask, 'STAGES.md'), open.replace('## Force run 2026-10-26', '## Force run 2026-10-26 — completed 2026-10-26')))
+      check('5f A11: a Bash call that closes a block dated before the first-look day as "completed" over an open blocker is refused (the snapshot was taken before the call)', close.decision === 'block' && /open blockers/.test(close.text), `${close.decision} ${close.text.slice(0, 200)}`)
+    }
+  }
   // linear time: the new patterns on 50 000 characters of pathological input
   {
     const pad = (unit) => unit.repeat(Math.ceil(50_000 / unit.length))
@@ -5125,6 +5234,20 @@ rmSync(retroRoot, { recursive: true, force: true })
       if (ms > worst.ms) Object.assign(worst, { ms, input: body.slice(0, 24) })
     }
     check('5e: openBlockers on 50 000 characters of pathological input (the lift field, the carried form, sub-items, the interview field) < 100 ms', worst.ms < 100, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
+  }
+  // 5f (B2 m-1, security #3): one blocker line of 1 MB of lift fields, in an old block and a new one, one read under 100 ms
+  {
+    const worst = { ms: 0, input: '' }
+    for (const unit of ['; Lifted: no 2026-10-27', ' — Снят: пока нет 27.10.2026', '(lifted: a 2026-10-27 ', '. Lifted: user 2026-10-27 needs', '. Снят: пока нет ']) {
+      const body = `- B1 — x ${unit.repeat(Math.ceil(1_000_000 / unit.length))}\n`
+      for (const heading of [head('2026-10-20'), head('2026-10-29')]) {
+        const t0 = performance.now()
+        jc.openBlockers({ heading, body })
+        const ms = performance.now() - t0
+        if (ms > worst.ms) Object.assign(worst, { ms, input: unit })
+      }
+    }
+    check('5f: openBlockers on one 1 MB line of lift fields (refused values, a parenthesis that never closes, request words), old and new block, < 100 ms', worst.ms < 100, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
   }
 }
 
