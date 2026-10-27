@@ -239,9 +239,9 @@ export const INTERVIEW_FIELD = /^[^\S\n]*(?:[-*][^\S\n]*)?\**(?:Ответы\s+�
  */
 export const BLOCKER_FIELD_SINCE = '2026-10-26'
 /**
- * Whether a Force block is read by the fixed lift field (K1 + K9 + K10): dated on or after `BLOCKER_FIELD_SINCE`, and — when a `gate` is passed (`blockerGate` in journal-check) — not one the task
- * snapshot already held at the first look of 0.18.2 (`gate.seen`: the blocks already closed then and dated before that day; they keep the word matcher, D7: the old plugin wrote such blocks with prose lifts).
- * A block still open at the first look is not held, whatever its date: the new plugin is writing it. With no gate (a test, a bare body) the date alone decides.
+ * Whether a Force block is read by the fixed lift field (K1 + K9 + stage 5h): dated on or after `BLOCKER_FIELD_SINCE`, and — when a `gate` is passed (`blockerGate` in journal-check) — not one the task
+ * snapshot already held at the first look of 0.18.2 (`gate.seen`: every block there then, open or closed, whatever its date; they keep the word matcher, D7: the old plugin wrote them with prose lifts).
+ * A block written after the first look is not held: the new plugin writes it. With no gate (a test, a bare body) the date alone decides.
  */
 export function blockerFieldApplies(gate, heading, body) {
   const date = forceBlockDate(heading, body)

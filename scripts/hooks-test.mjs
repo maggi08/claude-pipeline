@@ -5051,7 +5051,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     const migrated = jc.baselineInfo(data, task)
     const disk = JSON.parse(readFileSync(file, 'utf8'))
     check('5e K9: a snapshot with the 0.18 marks and no new one gets only the new one; since018 and forceSeen stay', disk.since018 === '2026-10-20' && same(disk.forceSeen, ['## Force-прогон 2026-10-19']) && /^\d{4}-\d{2}-\d{2}$/.test(disk.since0182) && Array.isArray(disk.blockerSeen) && migrated.since === '2026-10-20' && migrated.since0182 === disk.since0182)
-    // K10 (m-1): only the blocks already CLOSED at the first look are held. femo's closed block of 2026-10-26 is held (1 open); a block still open at a later first look (2026-11-03) is read by the field.
+    // 5h (replaces K10, withdrawn): every block present at the first look is held, open or closed, whatever its date. A block written after it is read by the field.
     {
       const OPEN = '## Force run 2026-10-29'
       const OPEN_BODY = '- B1 — the CI gate hooks-test is red, closed by the token limit before the rerun — needed: rerun it\n'
@@ -5061,15 +5061,53 @@ rmSync(retroRoot, { recursive: true, force: true })
       writeFileSync(file, JSON.stringify({ ...stale, since0182: '2026-11-03' }))
       const later = jc.blockerGate(data, task)
       const seen = JSON.parse(readFileSync(file, 'utf8')).blockerSeen
-      check('5e K10 (m-1): a 0.18 snapshot migrates to the closed-only rule: the closed femo block is held, the open block is not', same(seen, [markers.forceKey(FEMO)]), JSON.stringify(seen))
+      check('5h (was K10, rewritten): a 0.18 snapshot migrates to every Force block present, the closed femo block and the open one alike', same([...seen].sort(), [markers.forceKey(FEMO), markers.forceKey(OPEN)].sort()), JSON.stringify(seen))
       check('5e K10 incident (femo shape): the closed block 2026-10-26 is held at a later first look: 1 open', same(jc.openBlockers({ heading: FEMO, body: FEMO_BODY }, later).map((line) => line.slice(0, 4)), ['- B5']))
-      check('5e K10 (m-1): a block open at the first look (2026-10-29, first look 2026-11-03) is read by the field: "closed by" does not lift B1', jc.openBlockers({ heading: OPEN, body: OPEN_BODY }, later).length === 1 && jc.openBlockers({ heading: `${OPEN} — completed 2026-10-29`, body: OPEN_BODY }, later).length === 1)
-      writeFileSync(join(task, 'STAGES.md'), `# T-K9: task\n\n${FEMO}\n${FEMO_BODY}\n${OPEN} — completed 2026-10-29\n${OPEN_BODY}`)
-      check('5e K10 (m-1): the "completed" close of that block is refused (force-blockers)', jc.forceCloseViolations(data, task).some(({ rule }) => rule === 'force-blockers'), JSON.stringify(jc.forceCloseViolations(data, task)))
+      check('5h (was K10 m-1, rewritten: documents the cost): a block open at a later first look (2026-10-29, first look 2026-11-03) is held and read by words, so "closed by" lifts B1 (a second data dir that first reads a block 0.18.2 wrote does this)', jc.openBlockers({ heading: OPEN, body: OPEN_BODY }, later).length === 0 && jc.openBlockers({ heading: `${OPEN} — completed 2026-10-29`, body: OPEN_BODY }, later).length === 0)
+      // a block written after the first look is not in the set: it is read by the field
+      const NEW_AFTER = '## Force run 2026-10-30'
+      check('5h legit: a block written after the first look is read by the field: prose does not lift, `Lifted: <who> <date> — <answer>` does', same(jc.openBlockers({ heading: NEW_AFTER, body: '- B1 — a — снят 2026-10-30 коммитом `abc`\n- B2 — b — Lifted: user 2026-10-30 — ok\n- B3 — c — closed by the user\n' }, later).map((line) => line.slice(0, 4)), ['- B1', '- B3']))
+      writeFileSync(join(task, 'STAGES.md'), `# T-K9: task\n\n${FEMO}\n${FEMO_BODY}\n${OPEN}\n${OPEN_BODY}\n${NEW_AFTER} — completed 2026-10-30\nConfirmed: 2026-10-30 — x\n- B1 — the CI gate is red, closed by the token limit\n`)
+      check('5h legit: the "completed" close of a block written after the first look over an open blocker is refused (force-blockers)', jc.forceCloseViolations(data, task).some(({ rule }) => rule === 'force-blockers'), JSON.stringify(jc.forceCloseViolations(data, task)))
       check('5e round 4 m-2: the force-blockers refusal of a block read by the field names the shape `Lifted: <who> <date> — <answer>` and the Russian form (5f: shape in the message)', jc.forceCloseViolations(data, task).some(({ rule, message }) => rule === 'force-blockers' && message.includes('`Lifted: <who> <date> — <answer>`') && message.includes('Russian form')), JSON.stringify(jc.forceCloseViolations(data, task).map(({ message }) => message.slice(-120))))
       check('5e K11 (m-2): in a held block the field on the blocker\'s own line lifts, the indented sub-item does not', same(jc.openBlockers({ heading: FEMO, body: 'Блокеры:\n- B1 — x — Lifted: user 2026-10-26\n- B2 — y\n  - Lifted: user 2026-10-26\n' }, later).map((line) => line.slice(0, 4)), ['- B2']))
       check('5e S4: the snapshot is written through a temp file and a rename: no temp file is left in the directory', existsSync(file) && !readdirSync(dirname(file)).some((name) => name.endsWith('.tmp')) && /renameSync\(temp, target\)/.test(readFileSync(join(PLUGIN, 'journal-check.mjs'), 'utf8')))
     }
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(data, { recursive: true, force: true })
+  }
+  // 5h incident: announcement-details run 12 (the 0.18.1 orchestrator writes it while 0.18.2 first reads the task): an OPEN block dated 2026-10-27 with Russian prose lifts keeps them, at a first look on its own day and on a later day
+  {
+    const RUN12 = '## Force-прогон 2026-10-27 (12)'
+    const RUN12_BODY = 'Блокеры:\n- B1 — dev-api недоступен — ждём DevOps\n- B2 — dev-api отвечает 500 — **снят 2026-10-27**: пользователь сменил подключение, dev-api отвечает 200\n- B3 — (решение пользователя 2026-10-27) нужны данные бэкенда\n- B4 — лишний файл — **снят 2026-10-27**: пользователь согласился, файл удалён `git rm`\n'
+    const open12 = (gate) => jc.openBlockers({ heading: RUN12, body: RUN12_BODY }, gate).map((line) => line.slice(0, 4))
+    for (const [label, since] of [['own day', '2026-10-27'], ['later day', '2026-10-28']]) {
+      const dir = mkdtempSync(join(tmpdir(), 'blockers-5h-'))
+      const data = mkdtempSync(join(tmpdir(), 'blockers-5h-data-'))
+      const task = join(dir, 'T-5H')
+      mkdirSync(join(task, 'checks'), { recursive: true })
+      writeFileSync(join(task, 'STAGES.md'), `# T-5H: task\nЯзык: ru\n\n${RUN12}\n${RUN12_BODY}`)
+      jc.baselineInfo(data, task)
+      const file = snapshotFile(data, task)
+      // a 0.18 snapshot (no 0.18.2 mark) is migrated at the first look of the given day
+      const old = JSON.parse(readFileSync(file, 'utf8'))
+      delete old.blockerSeen
+      writeFileSync(file, JSON.stringify({ ...old, since0182: since }))
+      const gate = jc.blockerGate(data, task)
+      check(`5h incident (run 12, ${label}): an open block dated 2026-10-27 with prose lifts keeps them at a first look on ${since}: only B1 stays open, B2, B3 and B4 lift by words, as on the base`, same(open12(gate), ['- B1']) && JSON.parse(readFileSync(file, 'utf8')).blockerSeen.includes(markers.forceKey(RUN12)), JSON.stringify(open12(gate)))
+      rmSync(dir, { recursive: true, force: true })
+      rmSync(data, { recursive: true, force: true })
+    }
+    // no snapshot at all: the first look is today, whatever today is
+    const dir = mkdtempSync(join(tmpdir(), 'blockers-5h-'))
+    const data = mkdtempSync(join(tmpdir(), 'blockers-5h-data-'))
+    const task = join(dir, 'T-5H')
+    mkdirSync(join(task, 'checks'), { recursive: true })
+    writeFileSync(join(task, 'STAGES.md'), `# T-5H: task\nЯзык: ru\n\n${RUN12}\n${RUN12_BODY}`)
+    check('5h incident (run 12, a fresh snapshot): the first look holds the open block of 2026-10-27 whatever the day of the look is', same(open12(jc.blockerGate(data, task)), ['- B1']))
+    // a block written after that first look is read by the field
+    writeFileSync(join(task, 'STAGES.md'), `# T-5H: task\nЯзык: ru\n\n${RUN12}\n${RUN12_BODY}\n## Force-прогон 2026-10-27 (13)\n- B1 — a — снят 2026-10-27 коммитом\n- B2 — b — Lifted: Mako 2026-10-27 — ok\n`)
+    check('5h legit: the block (13) written after the first look is read by the field (prose does not lift, the field does), run 12 stays held', same(jc.openBlockers({ heading: '## Force-прогон 2026-10-27 (13)', body: '- B1 — a — снят 2026-10-27 коммитом\n- B2 — b — Lifted: Mako 2026-10-27 — ok\n' }, jc.blockerGate(data, task)).map((line) => line.slice(0, 4)), ['- B1']) && same(open12(jc.blockerGate(data, task)), ['- B1']))
     rmSync(dir, { recursive: true, force: true })
     rmSync(data, { recursive: true, force: true })
   }
@@ -5225,16 +5263,18 @@ rmSync(retroRoot, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
       rmSync(data, { recursive: true, force: true })
     }
-    // A11: a Bash call that finishes a run takes the first-look snapshot before it runs, so a block dated before the first-look day is not held as an old one
+    // A11 (rewritten by 5h; its 5f form held a block that was already in the file, and under 5h every block present at the first look is held, so it no longer told a snapshot taken before the call from one taken after):
+    // a Bash call that writes a whole closed block dated before the first-look day is read by the field, because the snapshot was taken before the call and the block was not in it.
     {
       const bApp = join(gRoot, 'bash-first-look')
       repoAt(bApp, 'main')
       const bTask = join(bApp, '.claude/tasks/T-9F')
-      const open = '# T-9F: task\nBranch: `T-9F/feat/g`\n\n## Force run 2026-10-26\nConfirmed: 2026-10-26 — x\nBlockers:\n- B1 — CI e2e red — resolved by a retry, per the log\n\n## Stages\n\n### Stage 1: a  [status: done]\n'
-      write(bApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-9F/STAGES.md': open })
+      const empty = '# T-9F: task\nBranch: `T-9F/feat/g`\n\n## Stages\n\n### Stage 1: a  [status: done]\n'
+      const block = '## Force run 2026-10-26 — completed 2026-10-26\nConfirmed: 2026-10-26 — x\nBlockers:\n- B1 — CI e2e red — resolved by a retry, per the log\n\n'
+      write(bApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-9F/STAGES.md': empty })
       git(bApp, 'checkout', '-qb', 'T-9F/feat/g')
-      const close = bashGate(bApp, `python3 close.py ${join(bTask, 'STAGES.md')}`, () => writeFileSync(join(bTask, 'STAGES.md'), open.replace('## Force run 2026-10-26', '## Force run 2026-10-26 — completed 2026-10-26')))
-      check('5f A11: a Bash call that closes a block dated before the first-look day as "completed" over an open blocker is refused (the snapshot was taken before the call)', close.decision === 'block' && /open blockers/.test(close.text), `${close.decision} ${close.text.slice(0, 200)}`)
+      const close = bashGate(bApp, `python3 close.py ${join(bTask, 'STAGES.md')}`, () => writeFileSync(join(bTask, 'STAGES.md'), empty.replace('## Stages', `${block}## Stages`)))
+      check('5f A11 (5h): a Bash call that writes a closed block dated before the first-look day over an open blocker is refused (the snapshot was taken before the call, so the block was not held)', close.decision === 'block' && /open blockers/.test(close.text), `${close.decision} ${close.text.slice(0, 200)}`)
     }
   }
   // linear time: the new patterns on 50 000 characters of pathological input

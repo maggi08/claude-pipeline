@@ -821,9 +821,9 @@ export function baselineInfo(dataDir, taskDir) {
       // opened after them (`releaseGate`).
       since018,
       forceSeen: Array.isArray(data.forceSeen) ? data.forceSeen : forceKeysBefore(text, since018),
-      // 0.18.2 (K9, K10): the day this version first read the task and the Force headings already closed then and dated before it — they keep the word matcher for blockers (`blockerGate`).
+      // 0.18.2 (K9, stage 5h): the day this version first read the task and every Force heading already there, open or closed, whatever its date — they keep the word matcher for blockers (`blockerGate`).
       since0182,
-      blockerSeen: Array.isArray(data.blockerSeen) ? data.blockerSeen : closedKeysBefore(text, since0182),
+      blockerSeen: Array.isArray(data.blockerSeen) ? data.blockerSeen : presentKeys(text),
       lines: [
         ...new Set([
           ...data.lines,
@@ -859,7 +859,7 @@ export function baselineInfo(dataDir, taskDir) {
     since018: localDate(new Date(now)),
     forceSeen: forceKeysBefore(text, localDate(new Date(now))),
     since0182: localDate(new Date(now)),
-    blockerSeen: closedKeysBefore(text, localDate(new Date(now))),
+    blockerSeen: presentKeys(text),
   }
   writeBaseline(dataDir, taskDir, next)
   return info(next)
@@ -873,9 +873,13 @@ const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.ge
  */
 const forceKeysBefore = (text, day) => [...new Set(forceHeadings(text).map(([heading]) => forceKey(heading)))].filter((key) => (headingDate(key) ?? '9999') < day)
 
-/** The same, only the headings already closed at the first look (K10): a run still open then is written by the new plugin, so the fixed field reads it. */
-const closedKeysBefore = (text, day) =>
-  [...new Set(forceHeadings(text).filter(([heading]) => CLOSED_WORD.test(heading)).map(([heading]) => forceKey(heading)))].filter((key) => (headingDate(key) ?? '9999') < day)
+/**
+ * Every Force heading present at the first look of 0.18.2 (stage 5h), whatever its state and date: each of them was written by an older plugin, because 0.18.2 has not read the task before,
+ * so each keeps the word matcher (the 0.18.1 orchestrator that is still writing an open run lifts blockers in prose). A block written after the first look is not in the set and is read by the field.
+ * The first look is taken before the edit that writes a heading (Edit / Write and the named-task Bash PreToolUse), so a heading is in the set only if it was already in the file.
+ * The cost: a second data dir that first reads the task later holds the blocks 0.18.2 itself wrote, and reads them by words.
+ */
+const presentKeys = (text) => [...new Set(forceHeadings(text).map(([heading]) => forceKey(heading)))]
 
 /**
  * The per-task release gate of the 0.18 rules that are keyed on a Force block (stage receipts, the close needing fresh final reviews, the ticket-titled commits after a close):
@@ -888,8 +892,8 @@ export function releaseGate(dataDir, taskDir) {
 }
 
 /**
- * The per-task gate of the fixed blocker field (stage 5e, K9), the same shape as `releaseGate`: the day 0.18.2 first read the task and the Force headings already there, closed and dated before it (K10: a run still open then is read by the field).
- * Every caller passes it with the block to `openBlockers` / `blockerLines`; a block opened by the old plugin on that very day is read as new (fail closed, like the 0.18 gate).
+ * The per-task gate of the fixed blocker field (stage 5e, K9), the same shape as `releaseGate`: the day 0.18.2 first read the task and every Force heading already there (stage 5h: open or closed, any date — an older plugin wrote them all).
+ * Every caller passes it with the block to `openBlockers` / `blockerLines`; only a block written after the first look is read by the field.
  */
 export function blockerGate(dataDir, taskDir) {
   const { since0182, blockerSeen } = baselineInfo(dataDir, taskDir)

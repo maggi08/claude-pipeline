@@ -174,8 +174,8 @@ const stampAll = () => {
 let changed = null
 if (tool === 'Bash') {
   if (pre) {
-    // The first look of this version at a task the command names (5f, A11): the snapshot is taken before the call, as the Edit / Write PreToolUse does. Taken after a call that closes
-    // a block dated before the first-look day, the block would be recorded as already closed and read by words. A snapshot that exists stays as it is.
+    // The first look of this version at a task the command names (5f, A11): the snapshot is taken before the call, as the Edit / Write PreToolUse does. Taken after a call that writes
+    // a block, the block would be recorded as already there and read by words. A snapshot that exists stays as it is.
     try {
       const { baselineInfo } = await import('../journal-check.mjs')
       for (const task of state.tasks.filter((task) => named(task))) baselineInfo(pluginDataDir(), real(task.dir))
