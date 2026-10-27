@@ -135,11 +135,11 @@ function applyLayer(layer, repo) {
 /**
  * A hash of the case's content: every file of its directory (path and bytes) with case.json taken without `provenFailing`.
  * `provenFailing` carries it, so a record is tied to the version of the case it was recorded on. A file under variants/ counts only when the record
- * is that variant's (`on: variant:<name>`): a `--ref` or `--ablate` run never saw the variants, and keeping one applicable must not void such a record.
+ * is that variant's (`on: variant:<name>`, the `on` argument: --record-failing passes the one it is about to write, the record on disk is the previous one): a `--ref` or `--ablate` run never saw the variants, and keeping one applicable must not void such a record.
  */
-export function caseHash(caseDir) {
+export function caseHash(caseDir, on = readCase(caseDir).provenFailing?.on) {
   const hash = createHash('sha256')
-  const proofOn = readCase(caseDir).provenFailing?.on ?? ''
+  const proofOn = on ?? ''
   const files = walk(caseDir).map((path) => relative(caseDir, path).split('\\').join('/')).filter((path) => !path.endsWith('.DS_Store') && (!path.startsWith('variants/') || path === `variants/${proofOn.replace(/^variant:/, '')}.json`))
   for (const file of files.sort()) {
     hash.update(`${file}\0`)
@@ -436,8 +436,9 @@ function findingLines(text) {
     const kept = KEPT_SECTION.test(heading)
     if (FINDING_HEADING.test(raw)) {
       if (!kept) lines.push({ text: raw, n: index + 1 })
-    } else if (/^\s{0,3}#{1,6}\s/.test(raw) || (!ITEM.test(raw) && raw.trim() && raw.trim().length <= 80)) {
-      // A markdown heading or a short plain label line («Deliberately kept:») opens a section; a long prose line does not.
+    } else if (/^\s{0,3}#{1,6}\s/.test(raw) || (!ITEM.test(raw) && raw.trim().length <= 80 && /:[\s*_`]*$/.test(raw.trim()))) {
+      // A markdown heading or a short label line that ends with «:» («Deliberately kept:», «**Discarded:**») opens a section.
+      // Any other plain line (prose, or a counters line such as «Summary: 🔴 0 · 🟠 1. Discarded at the re-check: 0.») leaves the section as it was.
       heading = raw
     } else if (ITEM.test(raw) && !kept) lines.push({ text: raw, n: index + 1 })
   })
@@ -659,12 +660,35 @@ export function acIdsFor(stagesText, stage, tag) {
 export const configValue = (configText, key) => (key === 'review_model' ? reviewModel(configText) : new RegExp(`^[ \\t]*-[ \\t]*${key}:[ \\t]*[\`*]*([\\w.-]+)`, 'm').exec(configText)?.[1])
 
 /**
+ * The lines of a final message that ask the user something: a line outside a code fence, at most 300 characters, that ends with «?» once the closing markdown (`*`, `_`, backticks,
+ * quotes, brackets) is stripped, or that OPENS with a request for an answer («Reply with …», «Tell me which …», «Let me know …», «Please choose …», «Which one …»; the
+ * saved model runs end a stopped turn with the second form as often as with a «?»). A «?» inside a sentence, in a code span or URL does not count, and neither does a line that only mentions a question; an answer's own
+ * rhetorical question on its own line would count (a deliberate over-reach: a force run's final text before the first spawn is short, and the case wants it silent).
+ */
+const REQUEST_REPLY = /^[\s>#*_\-•\d.)]*(?:reply with|tell me (?:which|what|how|the)|let me know (?:which|what|how|the|if|whether)|please (?:choose|confirm|pick|say|answer)|which (?:one|do you))\b/i
+export function questionLines(text) {
+  let fenced = false
+  const found = []
+  for (const raw of String(text).split('\n')) {
+    if (/^\s*(```|~~~)/.test(raw)) {
+      fenced = !fenced
+      continue
+    }
+    if (fenced) continue
+    const line = raw.replace(/[\s*_`"'»”)\]]+$/u, '').trim()
+    if (line.length >= 3 && line.length <= 300 && (line.endsWith('?') || REQUEST_REPLY.test(line))) found.push(line.replace(/^[\s>#*_\-•\d.)]+/, ''))
+  }
+  return found
+}
+
+/**
  * The verdict on a decision case: the orchestrator ran as the main session until its first spawn or question. `ctx`: { calls (top-level), final, hooks, stagesText, configText }.
  *   expectAgents    [name]       subagent types that must be spawned
  *   forbidAgents    [name]       subagent types that must not
  *   agentPrompts    [{ agent, acs?: { tag, stage }, contains?: [{ pattern, why }] }]  — the prompt of that agent carries every `[verify: <tag>]` AC ID of the stage and each pattern
  *   agentModel      [{ agent, model | "config:<key>", why }]  — the `model` parameter of that agent's call (config:<key> reads the fixture's pipeline config)
  *   forbidTools     [{ tool, input?, why }]  — top-level tools the orchestrator must not call (AskUserQuestion)
+ *   forbidQuestionEnd { why }  — no spawn happened and the final text has a line asking the user something (`questionLines`): the plain-text form of a question
  *   askQuestion     [{ pattern, why }]  — over the AskUserQuestion input; the final text when the tool did not run
  * and the generic trace / traceForbid / expect / forbidSummary / hooks of gradeAgent over the same calls.
  */
@@ -702,6 +726,11 @@ export function gradeDecision(spec, ctx) {
   ;(spec.forbidTools ?? []).forEach((t, i) => {
     const hit = ctx.calls.find((call) => toolMatches(t, call))
     mark(`Y${i + 1}`, !hit, `${t.tool} was called: ${t.why}`)
+  })
+  // `forbidQuestionEnd`: the orchestrator spawned nothing and its final text asks the user something (the turn ends on a question in plain text, which no tool check can see).
+  ;(spec.forbidQuestionEnd ? [spec.forbidQuestionEnd] : []).forEach((q, i) => {
+    const asked = spawns.length ? [] : questionLines(ctx.final ?? '')
+    mark(`K${i + 1}`, !asked.length, `the run ended on a question to the user: ${q.why} («${asked[0]?.slice(0, 120)}»)`)
   })
   ;(spec.askQuestion ?? []).forEach((q, i) => {
     const asks = ctx.calls.filter((call) => call.name === 'AskUserQuestion')

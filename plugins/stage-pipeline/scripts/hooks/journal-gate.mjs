@@ -210,6 +210,8 @@ const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-d
 
 const messages = []
 const context = []
+// One moment for every row this call writes: they are one block (one `decision: 'block'` below), and retro counts the rows that share a moment as one.
+const at = new Date().toISOString()
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
   // The report is the one written by this edit: for Write/Edit its path, for Bash the reports that changed during the call.
@@ -231,7 +233,7 @@ for (const task of tasks) {
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   // One firing per kind of violation the block carries (the violations' own rule names go along as `kinds`: names only, no message text).
   for (const [rule, found] of [['journal-gate/journal', journal], ['journal-gate/report', reports], ['journal-gate/close', closing]]) {
-    if (found.length) recordFiring(rule, { input, task: task.ticket, repo: state.worktree, kinds: found.map((violation) => violation.rule).filter(Boolean) })
+    if (found.length) recordFiring(rule, { input, task: task.ticket, repo: state.worktree, kinds: found.map((violation) => violation.rule).filter(Boolean), at })
   }
   if (!closing.length) {
     const digest = await closedDigest(task)

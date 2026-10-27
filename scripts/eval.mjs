@@ -579,7 +579,7 @@ function recordFailing() {
   }
   const spec = readCase(join(CASES, selected[0]))
   const failures = [...new Set(row.failures.flat().map((message) => message.slice(0, 160)))].slice(0, 6)
-  spec.provenFailing = { on: plugin.refLabel, date: new Date().toISOString().slice(0, 10), plugin: `${plugin.version}@${plugin.sha.slice(0, 9)}`, runs: row.ran, failed: row.ran - row.passed, detection: `${row.ran - row.passed}/${row.ran}`, caseHash: caseHash(join(CASES, selected[0])), failures }
+  spec.provenFailing = { on: plugin.refLabel, date: new Date().toISOString().slice(0, 10), plugin: `${plugin.version}@${plugin.sha.slice(0, 9)}`, runs: row.ran, failed: row.ran - row.passed, detection: `${row.ran - row.passed}/${row.ran}`, caseHash: caseHash(join(CASES, selected[0]), plugin.refLabel), failures }
   writeFileSync(path, `${JSON.stringify(spec, null, 2)}\n`)
   console.log(`\n✔ recorded provenFailing (${plugin.refLabel}, ${row.ran} run(s)) in ${relative(ROOT, path)}`)
 }

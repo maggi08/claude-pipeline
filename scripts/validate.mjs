@@ -3,7 +3,7 @@ import { join, dirname, basename, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -726,7 +726,7 @@ async function validateEvals() {
 
 async function validateEvalSelfTests(names) {
   // Loaded here, not at the top: scripts/hooks-test.mjs runs copies of this file in directories that have no eval harness.
-  const { acIdsFor, applyVariantEdits, decisionSettings, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, unreadScreenshots } = await import('./eval-lib.mjs')
+  const { acIdsFor, applyVariantEdits, caseHash, decisionSettings, questionLines, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, unreadScreenshots } = await import('./eval-lib.mjs')
   const here = 'scripts/eval-lib.mjs'
   // AC-6.1: a copy of a case with a planted word is aborted, and the original passes.
   const probe = names.find((name) => existsSync(join(ROOT, 'evals/cases', name, 'base/CLAUDE.md'))) ?? names[0]
@@ -768,6 +768,23 @@ async function validateEvalSelfTests(names) {
       if (asked.stdout !== join(holder, 'data')) fail(here, `--ref data dir self-test: ${tag} patched resolves pluginDataDir() to «${asked.stdout}» ${asked.stderr.slice(0, 120)}, not the STAGE_PIPELINE_DATA_DIR override`)
     } catch (error) {
       fail(here, `--ref data dir self-test: ${tag}: ${error.message}`)
+    } finally {
+      rmSync(holder, { recursive: true, force: true })
+    }
+  }
+  // VT-3 branch review M-2: a freshly written variant record validates. --record-failing hashes with the `on` it is about to write (the record on disk is the previous one).
+  {
+    const holder = mkdtempSync(join(tmpdir(), 'hash-probe-'))
+    try {
+      mkdirSync(join(holder, 'variants'))
+      writeFileSync(join(holder, 'case.json'), JSON.stringify({ prompt: 'x' }))
+      writeFileSync(join(holder, 'variants', 'v.json'), JSON.stringify({ edits: [] }))
+      const written = caseHash(holder, 'variant:v') // what recordFailing writes: no record on disk yet
+      writeFileSync(join(holder, 'case.json'), JSON.stringify({ prompt: 'x', provenFailing: { on: 'variant:v', caseHash: written } }))
+      if (caseHash(holder) !== written) fail(here, 'caseHash self-test: the hash written by --record-failing for a variant differs from the one validate recomputes from the record on disk')
+      if (caseHash(holder, 'ref:v0.1.0') === written) fail(here, 'caseHash self-test: a variants/ file did not count for the record that names it')
+      writeFileSync(join(holder, 'case.json'), JSON.stringify({ prompt: 'x', provenFailing: { on: 'ref:v0.1.0', caseHash: 'x' } }))
+      if (caseHash(holder, 'ref:v0.1.0') !== caseHash(holder)) fail(here, 'caseHash self-test: a ref record and the explicit on disagree')
     } finally {
       rmSync(holder, { recursive: true, force: true })
     }
@@ -819,6 +836,11 @@ async function validateEvalSelfTests(names) {
   const afterKept = { report: '## Findings\n\n- none\n\n## Could not verify\n\n- no paid run', summary: '- major: src/DeleteGuestModal.tsx:12 — the delete is not awaited' }
   if (gradeAgent({ findings: [{ ...portal, why: 'x' }] }, { repo: ROOT, ...afterKept, calls: [] }).failures.length) fail(here, 'finding grader self-test: a finding in the final message after a report ending in «Could not verify» was swallowed')
   if (!gradeAgent({ findingsForbid: [{ ...portal, why: 'x' }] }, { repo: ROOT, ...afterKept, calls: [] }).failures.length) fail(here, 'finding grader self-test: findingsForbid did not see a forbidden finding in the final message after «Could not verify»')
+  // VT-3 branch review M-1: the agent's own summary shape (a counters line with «Discarded at the re-check: 0.» before the findings) is a counter, not a «kept» section.
+  const realMessage = 'stage: uncommitted `git diff HEAD`, 1 file\n\nSummary: 🔴 0 · 🟠 1 · 🟡 0 · ⚪ 0. Discarded at the re-check: 0.\n\n- 🟠 `src/DeleteGuestModal.tsx:9-13` (M-1, AC-1.1) — `handleConfirm` lost `async`/`await`.\n\nCould not verify: no type_check.\n'
+  expectMatches('a finding after the counters line of the real final message', portal, realMessage, 1)
+  expectMatches('a finding after a «Discarded:» label line is still dropped', portal, 'Discarded at the re-check:\n- 🟠 `src/DeleteGuestModal.tsx:12` — dropped', 0)
+  expectMatches('a finding after a bold «Could not verify:» label line is still dropped', portal, '**Could not verify:**\n- major: src/DeleteGuestModal.tsx:12 — x', 0)
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
   // Trace graders: a denied call does not count; every screenshot must be opened.
@@ -843,6 +865,13 @@ async function validateEvalSelfTests(names) {
   if (!decided({ forbidAgents: ['proto-compare'] }, [spawn('proto-compare', 'x')])) fail(here, 'decision grader self-test: a forbidden agent passed')
   if (!decided({ agentPrompts: [dv] }, [spawn('devtools-verify', 'only AC-1.2')])) fail(here, 'decision grader self-test: a prompt missing a tagged AC ID passed')
   if (!decided({ agentPrompts: [dv] }, [spawn('devtools-verify', 'AC-1.2, AC-1.30')])) fail(here, 'decision grader self-test: AC-1.30 was taken for AC-1.3')
+  // VT-3 branch converge C2: the plain-text form of a question after `Confirmed:` (the recorded variant runs stop with one, no AskUserQuestion call).
+  const quiet = { forbidQuestionEnd: { why: 'x' } }
+  if (!decided(quiet, [], { final: 'I stopped before writing any code.\n\n**Should `PAGE_SIZE` be 20 or 50?**\n\n- 20: the list view.' })) fail(here, 'decision grader self-test: a final text that asks a question with no spawn passed')
+  if (!decided(quiet, [], { final: 'Neither choice is hard to undo.\n\nReply with A, B or another number. I will record it and go on.' })) fail(here, 'decision grader self-test: a final text that asks for a reply with no spawn passed')
+  if (decided(quiet, [spawn('stage-implement', 'x')], { final: 'Should this be 20 or 50? I decided 20 and recorded it.' })) fail(here, 'decision grader self-test: a final text with a question in a run that spawned the maker was failed')
+  if (decided(quiet, [], { final: 'Decided: PAGE_SIZE 20 (matches the list view). Starting stage 1.\n\n```\nwhy not 50?\n```\nSee https://x.dev/a?b=1 for the spec; is it 20? yes, so go on.' })) fail(here, 'decision grader self-test: a «?» inside a sentence, a URL or a code fence counted as a question')
+  if (questionLines('A\nOK?\n> **Which one?**\n').length !== 2) fail(here, 'decision grader self-test: questionLines did not read a bare and a bold quoted question line')
   const review = { agentModel: [{ agent: 'pro-review', model: 'config:review_model', why: 'x' }] }
   if (decided(review, [spawn('pro-review', 'x', 'opus')])) fail(here, 'decision grader self-test: the right model was failed')
   if (!decided(review, [spawn('pro-review', 'x')]) || !decided(review, [spawn('pro-review', 'x', 'sonnet')])) fail(here, 'decision grader self-test: a missing or wrong model passed')
@@ -987,7 +1016,7 @@ async function validateRunAudit() {
     eq('stages without devtools-verify', [task.devtools.uiStages, task.devtools.without.map((x) => x.stage), task.devtools.without.filter((x) => x.skipped).map((x) => x.stage)], [3, ['2', '4'], ['4']])
     eq('a stage with only a ticked devtools-verify box is not covered and is listed as box only', [task.devtools.without.map((x) => x.stage), task.devtools.boxOnly.map((x) => x.stage)], [['2', '4'], ['2']])
     eq('spawns of run 1 (the foreign spawn is left out)', one.spawns.map((x) => [x.type.replace(/^stage-pipeline:/, ''), x.model, x.promptChars]), [['stage-implement', null, 44], ['devtools-verify', 'sonnet', 57], ['pro-review', null, 33]])
-    eq('hook denials of run 1 (rule by the message head; an unknown message by its hook event)', one.denials.map((x) => x.rule).sort(), ['PostToolUse:Edit', 'git-guard/normal-mode', 'journal-gate/close|journal-gate/journal|journal-gate/report'])
+    eq('hook denials of run 1 (rule by the message head; an unknown message by its hook event)', one.denials.map((x) => x.rule).sort(), ['PostToolUse:Edit', 'PreToolUse:Bash', 'git-guard/normal-mode', 'journal-gate/close|journal-gate/journal|journal-gate/report'])
     eq('AskUserQuestion after Confirmed, run 1 / run 2', [one.mid.asksTotal, one.mid.afterConfirmed.length, two.mid.afterConfirmed.length], [1, 1, 1])
     eq('orchestrator edits to source, run 1 (one Edit in the repo, one Bash sed -i; task-dir edits are not source)', [one.sourceEdits.filter((x) => x.tool === 'Edit' && x.where === 'repo').length, one.sourceEdits.filter((x) => x.tool === 'Bash').map((x) => x.where), one.sourceEdits.filter((x) => x.tool !== 'Bash').length], [1, ['relative'], 1])
     const sh = one.screenshots
@@ -1000,6 +1029,11 @@ async function validateRunAudit() {
     eq('skills and agents never invoked, run 1', [one.neverSkills, one.neverAgents], [['root-cause'], ['task-converge']])
     eq('stages implemented / verified / implemented without devtools-verify, run 1 and run 2', [one.implementedStages, one.verifiedStages, one.implementedWithoutDevtools, two.implementedWithoutDevtools], [['1'], ['1'], [], ['2']])
     if (!renderMarkdown(report).includes('git-guard/normal-mode')) bad('the markdown does not carry the rule ID of a denial')
+    // VT-3 branch review m-5: no raw text in the digest. A denial that matches no rule (a force-guard ask-rule message starts with the command; here a secret-shaped URL) shows the event and the tool only;
+    // a question shows its header and the length of the asked text, never the text.
+    const rendered = renderMarkdown(report)
+    if (/SECRET|ghp_|github\.com|force-run/.test(rendered)) bad('the markdown copies text of a command, a denial message or a question (a secret-shaped URL reached the digest)')
+    if (!rendered.includes('PreToolUse:Bash') || !/header "Label", \d+ chars of question text/.test(rendered)) bad('the markdown does not show an unmatched denial as event:tool or a question as header and length')
     // a session given explicitly is one more run, with every event of it
     const withSession = runAudit({ ...base, sessions: [join(dir, 'transcripts/s1.jsonl')] })
     eq('a session given explicitly is audited as a run of its own', [withSession.tasks[0].runs.length, withSession.tasks[0].runs[2]?.heading.startsWith('session s1'), withSession.tasks[0].runs[2]?.spawns.length], [3, true, 4])

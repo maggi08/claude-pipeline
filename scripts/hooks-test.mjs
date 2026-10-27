@@ -5482,4 +5482,49 @@ rmSync(retroRoot, { recursive: true, force: true })
   for (const dir of [scope, shared]) rmSync(dir, { recursive: true, force: true })
 }
 
+// ── VT-3 branch review m-4: the real journal-gate hook stamps the rows of one block with one moment (appended: D3) ─────────────────────────────
+{
+  const dir = mkdtempSync(join(tmpdir(), 'jg-block-'))
+  const jApp = join(dir, 'app')
+  const dataDir = join(dir, 'data')
+  repoAt(jApp, 'main')
+  const jStages = (extra = '') => journal(extra).replace(/^# T-7:[^\n]*\n/, '# T-7: task\nLanguage: en\n')
+  const jReport = join(jApp, '.claude/tasks/T-7/checks/pro-review-1.md')
+  write(jApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': jStages() })
+  git(jApp, 'checkout', '-qb', 'T-7/feat/g')
+  const jRun = (name, input) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: dataDir } })
+  jRun('session-start.mjs', { cwd: jApp })
+  // one edit that breaks two kinds: a new unproven tick on a devtools criterion (journal) and a Russian report in an English task (report)
+  write(jApp, { '.claude/tasks/T-7/STAGES.md': jStages(BAD_LINE), '.claude/tasks/T-7/checks/pro-review-1.md': RU_REPORT })
+  const blocked = jRun('journal-gate.mjs', { cwd: jApp, tool_name: 'Write', tool_input: { file_path: jReport } })
+  const rows = existsSync(join(dataDir, 'firings.jsonl')) ? readFileSync(join(dataDir, 'firings.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
+  check('firings m-4: the real journal-gate hook blocks an edit that breaks two kinds', blocked.stdout.includes('"decision":"block"'), blocked.stdout.slice(0, 200) + blocked.stderr.slice(0, 200))
+  check('firings m-4: its rows for the two kinds share one ts (retro counts them as one block)', rows.length >= 2 && new Set(rows.map((r) => r.rule)).size >= 2 && new Set(rows.map((r) => r.ts)).size === 1, JSON.stringify(rows.map((r) => [r.rule, r.ts])))
+  rmSync(dir, { recursive: true, force: true })
+}
+
+// ── VT-3 branch review m-6: rows a linked worktree of the retro target wrote are the target's (appended: D3) ─────────────────────────────────────
+{
+  const dir = mkdtempSync(join(tmpdir(), 'retro-wt-'))
+  const main = join(dir, 'repo')
+  const lane = join(dir, 'repo-lane')
+  const other = join(dir, 'other')
+  repoAt(main, 'main')
+  repoAt(other, 'main')
+  write(main, { 'T-1/STAGES.md': stages('T-1', 'T-1/feat/a') })
+  git(main, 'worktree', 'add', '-q', '-b', 'T-1/feat/a', lane)
+  const row = (rule, repo, ts) => JSON.stringify({ rule, task: 'T-1', repo, ts, tool: 'Bash', read: false, event: 'PostToolUse' })
+  const logFile = join(dir, 'firings.jsonl')
+  writeFileSync(logFile, [
+    row('git-guard/normal-mode', main, '2026-10-27T10:00:00.000Z'),
+    row('force-guard/ask-rule', lane, '2026-10-27T10:01:00.000Z'),
+    row('force-guard/kill-by-name', lane, '2026-10-27T10:02:00.000Z'),
+    row('agent-guard/review-model', other, '2026-10-27T10:03:00.000Z'),
+    row('agent-guard/no-confirmed', join(dir, 'gone-worktree'), '2026-10-27T10:04:00.000Z'),
+  ].join('\n') + '\n')
+  const printed = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), main, '--firings', logFile], { encoding: 'utf8' }).stdout
+  check('firings m-6: the rows of a linked worktree of the target are counted (3 of 5), another repo and an unresolvable path are not', /\(3 of 5 rows/.test(printed) && /force-guard\/ask-rule/.test(printed) && /force-guard\/kill-by-name/.test(printed) && !/agent-guard\//.test(printed), printed.split('## Hook firings')[1])
+  rmSync(dir, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)

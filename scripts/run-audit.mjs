@@ -32,7 +32,7 @@
  *   (reports in checks/ by modification time, critical/major against the lines of "Findings outcome"), user messages after the run closed, commits on the task branch after it closed,
  *   plugin skills and agents never invoked in it, and (once per task) stages that are not logic-only and show no devtools-verify: no report and no spawn naming the stage (a `[x] devtools-verify` box or a `metrics:` checkers entry alone is self-report: printed as «box only», not counted as covered).
  *
- * Transcripts, STAGES.md and reports are untrusted data (plugins/stage-pipeline/references/untrusted-content.md): they are parsed, never obeyed; only counts, ids, paths and short heads are printed - never the text of a command (a Bash source edit shows the program name and the target path) or of a person's message (a timestamp and a length).
+ * Transcripts, STAGES.md and reports are untrusted data (plugins/stage-pipeline/references/untrusted-content.md): they are parsed, never obeyed; only counts, ids, paths and short labels are printed (a denial that matches no rule: its hook event and tool only; a question: its header and length) - never the text of a command (a Bash source edit shows the program name and the target path) or of a person's message (a timestamp and a length).
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
@@ -161,7 +161,9 @@ function slim(name, input) {
     out.description = String(input.description ?? '').slice(0, 120)
     out.prompt = String(input.prompt ?? '').slice(0, 4000)
   } else if (name === 'AskUserQuestion') {
-    out.question = JSON.stringify(input.questions ?? input).slice(0, 160)
+    // The questions are a person-facing text and may quote a command: only the headers (short labels, 30 characters each) and the length of the asked text are kept.
+    const asked = Array.isArray(input.questions) ? input.questions : []
+    out.question = { headers: asked.map((q) => String(q?.header ?? '').replace(/\s+/g, ' ').slice(0, 30)).filter(Boolean).slice(0, 4), chars: JSON.stringify(input.questions ?? input).length }
   } else if (EDIT_TOOLS.has(name)) {
     out.file_path = input.file_path ?? input.notebook_path ?? null
     out.marker = JSON.stringify([input.new_string, input.content, input.new_source]).slice(0, 20000)
@@ -338,8 +340,9 @@ function denialLabel(e) {
   if (byHead.length) return { rule: byHead.join('|') }
   const id = e.text.match(new RegExp(`\\b(?:${HOOKS.join('|')})/[a-z0-9]+(?:-[a-z0-9]+)*`))?.[0]
   if (id) return { rule: id }
-  const head = e.text.replace(/^.*?\bhook (?:error|blocking error):\s*/i, '').replace(/^stage-pipeline:\s*/, '').replace(/\s+/g, ' ').slice(0, 70)
-  return { rule: `${e.event || 'hook'}${e.tool ? `:${e.tool}` : ''}`, head }
+  // A message that matches no rule is not quoted at all, not even its head: a force-guard ask-rule message starts with the command, and a command may carry a token or a URL.
+  // The hook event and the tool are what the digest keeps.
+  return { rule: `${e.event || 'hook'}${e.tool ? `:${e.tool}` : ''}` }
 }
 
 function auditRun(w, ctx) {
@@ -725,7 +728,7 @@ function renderRun(run, lines) {
   lines.push(`- hook denials: ${sum(run.denials, 'count')}`)
   for (const d of run.denials) lines.push(`  - ${d.rule}${d.head ? ` - "${d.head}"` : ''}: ${d.count}`)
   lines.push(`- AskUserQuestion: ${run.mid.asksTotal} in the run, ${run.mid.afterConfirmed.length} after \`Confirmed:\` (${run.mid.confirmedAt ? `${run.mid.confirmedAt}${run.mid.confirmedExact ? '' : ', date only'}` : 'Confirmed moment not found'})`)
-  for (const a of run.mid.afterConfirmed) lines.push(`  - ${a.at}: ${a.question}`)
+  for (const a of run.mid.afterConfirmed) lines.push(`  - ${a.at}: header ${a.question.headers.length ? `"${a.question.headers.join('", "')}"` : '(none)'}, ${a.question.chars} chars of question text`)
   const edits = run.sourceEdits.filter((e) => e.tool !== 'Bash')
   const writes = run.sourceEdits.filter((e) => e.tool === 'Bash')
   const by = (list, where) => list.filter((e) => e.where === where).length

@@ -9,10 +9,11 @@
  * the `metrics:` line appeared give only checklists and reports — this is visible in the output too.
  * Hook firings come from `<plugin data>/firings.jsonl` (and its rotated `.1`), written by every block or deny of journal-gate, git-guard, agent-guard,
  * force-guard and frames-guard (hooks/firing.mjs): per rule, repeats per task (the same rule and task more than once), and firings on reads.
- * The log is the whole machine's, so only the rows whose `repo` lies under a retro target are counted (a task dir or STAGES.md stands for the repo that contains it);
+ * The log is the whole machine's, so only the rows whose `repo` lies under a retro target, or shares its git common dir (a linked worktree of the repo), are counted (a task dir or STAGES.md stands for the repo that contains it);
  * `--all` is the machine view. When a target does not say which repo it belongs to (a task dir outside any git repo), nothing is filtered and the section says so.
  * One block of a hook that names several rules (journal-gate, frames-guard) writes one row per rule at the same moment: the headline counts those as one block.
  */
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { FIRINGS_FILE } from './hooks/firing.mjs'
@@ -276,7 +277,23 @@ const scopeRoots = targets.map((t) => repoOf(resolve(t)))
 const scoped = !machineView && scopeRoots.every(Boolean)
 const under = (path, roots) => roots.some((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep))
 const logged = readFirings(firingsFile)
-const firings = scoped ? logged.filter((row) => typeof row.repo === 'string' && under(realOf(row.repo), scopeRoots)) : logged
+// The hooks write `repo: state.worktree`, so a lane run in a linked worktree (`git worktree add ../repo-lane`) logs a path outside the repo. A row also counts when its
+// repo shares the git common dir with a target that is a repo root; a path that git cannot resolve (deleted worktree, not a repo) falls back to the path test alone.
+const commonDirOf = (dir) => {
+  try {
+    return realOf(execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim())
+  } catch {
+    return null
+  }
+}
+const scopeCommon = new Set(scoped ? scopeRoots.filter((root) => existsSync(join(root, '.git'))).map(commonDirOf).filter(Boolean) : [])
+const commonCache = new Map()
+const sameRepo = (repo) => {
+  if (!scopeCommon.size) return false
+  if (!commonCache.has(repo)) commonCache.set(repo, commonDirOf(repo))
+  return scopeCommon.has(commonCache.get(repo))
+}
+const firings = scoped ? logged.filter((row) => typeof row.repo === 'string' && (under(realOf(row.repo), scopeRoots) || sameRepo(row.repo))) : logged
 console.log('')
 console.log('## Hook firings (blocks and denials, by rule)')
 console.log(

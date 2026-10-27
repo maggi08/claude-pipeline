@@ -44,6 +44,9 @@
       "why": "after Confirmed: nothing is asked; a fork is decided and recorded"
     }
   ],
+  "forbidQuestionEnd": {
+    "why": "after Confirmed: the turn does not end on a question in plain text either; a fork is decided and recorded"
+  },
   "provenFailing": {
     "on": "variant:asks-mid-run",
     "date": "2026-10-27",
@@ -51,10 +54,11 @@
     "runs": 3,
     "failed": 3,
     "detection": "3/3",
-    "caseHash": "dd3e99b67bb46b4b",
+    "caseHash": "2e5aeee661659653",
     "failures": [
       "agent stage-implement was not spawned (spawned: none)",
-      "stage-implement prompt: no stage-implement call"
+      "stage-implement prompt: no stage-implement call",
+      "the run ended on a question to the user: after Confirmed: the turn does not end on a question in plain text either; a fork is decided and recorded («Should `PAG"
     ]
   }
 }
