@@ -6196,4 +6196,118 @@ rmSync(retroRoot, { recursive: true, force: true })
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
 }
 
+// ── stage 9b (VT-4): the radius note, real FEATURE-MAP rows, more [effect] PASS shapes, own-stem re-run names, bounded map files ───────
+{
+  const VM = join(PLUGIN, 'verify-map.mjs')
+  const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
+  const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' })
+  const put = (root, file, text) => {
+    mkdirSync(dirname(join(root, file)), { recursive: true })
+    writeFileSync(join(root, file), text)
+  }
+  const dirs = []
+  const mkRepo = (files) => {
+    const root = mkdtempSync(join(tmpdir(), 'v9b-'))
+    dirs.push(root)
+    gitIn(root, 'init', '-q')
+    for (const [file, text] of Object.entries(files)) put(root, file, text)
+    gitIn(root, 'add', '-A')
+    gitIn(root, 'commit', '-q', '-m', 'base')
+    return root
+  }
+  const CONFIG = '# Pipeline config — fx\n## Project\n- slug: fx\n## Task state\n- task_path: .claude/tasks/\n'
+  const README = '# Verify map — fx\nBase: abc (main) · Updated: 2026-10-27\n## Features (sweep order)\n- [orders](features/orders.md) — /orders/:orderId\n'
+  const FEATURE = '# orders\nRoutes: /orders/:orderId · Auth: yes · Platforms: desktop · Status: draft\nThe user can use orders.\n## Sub-features\n- `orders-open`\n## How to get to it (user POV)\n- Header → «Orders»\n## Driving it with Chrome DevTools MCP\n- **Header entry.** click `link "Orders"`.\n## Gotchas\n- none\n'
+  const mapFiles = { '.claude/pipeline.config.md': CONFIG, '.claude/verify/README.md': README, '.claude/verify/features/orders.md': FEATURE }
+  const { featureMapRows } = await import(join(PLUGIN, 'verify-map.mjs'))
+
+  // AC-9b.1 (K9b.1, M-1, C1): a page behind a routed route table is named on a `note:` line, not dropped and not a warning
+  const rr = mkRepo({
+    ...mapFiles,
+    'package.json': '{"dependencies":{"react-router-dom":"6"}}\n',
+    'src/shared/Info.tsx': 'export const Info = () => null\n',
+    'src/pages/Cart.tsx': 'import { Info } from "../shared/Info"\nexport default 1\n',
+    'src/pages/Legacy.tsx': 'import { Info } from "../shared/Info"\nexport default 2\n',
+    'src/App.tsx': 'import Cart from "./pages/Cart"\nimport Legacy from "./pages/Legacy"\nexport const routes = [{ path: "/", element: null }, { path: "/cart", element: Cart }, { path: "/old", element: Legacy }]\n',
+    'src/main.tsx': 'import { routes } from "./App"\nconsole.log(routes)\n',
+  })
+  const fm = join(rr, 'FEATURE-MAP.md')
+  writeFileSync(fm, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| home | desktop | / | src/App.tsx:3 |\n| cart | desktop | /cart | src/pages/Cart.tsx:3 |\n\n## Data architecture\n')
+  const hidden = vm(rr, '--radius', 'src/shared/Info.tsx', '--feature-map', fm)
+  const hiddenLines = hidden.stdout.split('\n')
+  check('AC-9b.1 incident: a row names the route table; the page it imports is named on a note: line, and both routes are listed', /^route \/ /m.test(hidden.stdout) && /^route \/cart /m.test(hidden.stdout) && hiddenLines.some((line) => /^note: .*src\/pages\/Legacy\.tsx.*behind a routed importer \(src\/App\.tsx\) — check whether it is a route of its own/.test(line)), hidden.stdout)
+  check('AC-9b.1: the note is not a warning, and the unrouted root file still is one (the 9a rule stays)', !hiddenLines.some((line) => /^warning:.*Legacy/.test(line)) && hiddenLines.some((line) => /^warning: .*src\/main\.tsx/.test(line)), hidden.stdout)
+  check('AC-9b.1 legitimate: a routed page (a row names it) is on neither a note nor a warning', !/Cart\.tsx.*behind/.test(hidden.stdout) && !hiddenLines.some((line) => /^(?:warning|note):.*Cart\.tsx/.test(line)), hidden.stdout)
+  const nuxtNote = mkRepo({ ...mapFiles, 'nuxt.config.ts': 'export default {}\n', 'utils/fmt.ts': 'export const f = 1\n', 'components/A.vue': '<script setup>import { f } from "~/utils/fmt"</script><template/>', 'pages/p.vue': '<script setup>import A from "~/components/A.vue"</script><template><A/></template>' })
+  const nuxtNoteOut = vm(nuxtNote, '--radius', 'utils/fmt.ts')
+  check('AC-9b.1: a Nuxt component under a routed page is a note naming the page, not a warning', /^route \/p /m.test(nuxtNoteOut.stdout) && /^note: components\/A\.vue: behind a routed importer \(pages\/p\.vue\)/m.test(nuxtNoteOut.stdout) && !/^warning/m.test(nuxtNoteOut.stdout), nuxtNoteOut.stdout)
+  put(nuxtNote, 'components/B.vue', '<script setup>import { f } from "~/utils/fmt"</script><template/>')
+  const nuxtTwo = vm(nuxtNote, '--radius', 'utils/fmt.ts')
+  check('AC-9b.1 legitimate: a component with an unrouted importer too is still a warning (9a)', /^warning: .*components\/B\.vue/m.test(nuxtTwo.stdout), nuxtTwo.stdout)
+
+  // AC-9b.2 (K9b.2, M-2): rows as feature-checker writes them — a shape of a real dashboard row, synthetic names
+  const REAL = '# \u041a\u0430\u0440\u0442\u0430 \u0444\u0438\u0447\u0438: guest\n## \u0422\u043e\u0447\u043a\u0438 \u0432\u0445\u043e\u0434\u0430\n| \u041f\u043b\u0430\u0442\u0444\u043e\u0440\u043c\u0430 | \u0420\u043e\u0443\u0442/\u044d\u043a\u0440\u0430\u043d | \u0424\u0430\u0439\u043b |\n|---|---|---|\n| desktop | `/bookings/:id/guest/:guestId` | [getRoutes.tsx:73](apps/dashboard/src/apps/getRoutes.tsx#L73), pages/Guest.tsx:3 |\n| desktop | `/trips` (\u0441\u043f\u0438\u0441\u043e\u043a) | [Trips.tsx](apps/dashboard/src/pages/Trips.tsx#L12-L40) |\n| desktop | `/misc` | s/Other.tsx |\n\n## \u0410\u0440\u0445\u0438\u0442\u0435\u043a\u0442\u0443\u0440\u0430 \u0434\u0430\u043d\u043d\u044b\u0445\n'
+  const rows = featureMapRows(REAL)
+  check('AC-9b.2: the \u0420\u043e\u0443\u0442/\u044d\u043a\u0440\u0430\u043d and \u0424\u0430\u0439\u043b columns are read', rows.length === 3 && rows[0].route.includes('/bookings') && rows[0].files.includes('Guest.tsx'), JSON.stringify(rows))
+  const real = mkRepo({ ...mapFiles, 'package.json': '{"dependencies":{"react-router-dom":"6"}}\n', 'apps/dashboard/src/pages/Guest.tsx': 'export default 1\n', 'apps/dashboard/src/pages/Trips.tsx': 'export default 1\n', 'apps/dashboard/src/pages/Other.tsx': 'export default 1\n' })
+  const realFm = join(real, 'FEATURE-MAP.md')
+  writeFileSync(realFm, REAL)
+  for (const file of ['Guest', 'Trips', 'Other']) put(real, `apps/dashboard/src/pages/${file}.tsx`, 'export default 2\n')
+  const realOut = vm(real, '--changed', '--feature-map', realFm)
+  check('AC-9b.2 incident: a backticked route, a #L anchor and an app-relative path (pages/Guest.tsx) give routes, no warning for them', /^route \/bookings\/:id\/guest\/:guestId /m.test(realOut.stdout) && /^route \/trips /m.test(realOut.stdout) && !/warning: .*(?:Guest|Trips)\.tsx/.test(realOut.stdout), realOut.stdout)
+  check('AC-9b.2 legitimate: a path that is not on a segment boundary (s/Other.tsx for .../pages/Other.tsx) is not a match', !/^route \/misc /m.test(realOut.stdout) && /^warning: .*Other\.tsx/m.test(realOut.stdout), realOut.stdout)
+  const english = featureMapRows('## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| a | web | /a | src/a.tsx |\n')
+  check('AC-9b.2 legitimate: the English Route/screen and Files columns still read', english.length === 1 && english[0].route === '/a' && english[0].files === 'src/a.tsx', JSON.stringify(english))
+
+  // AC-9b.3 (K9b.3, m-3, m-4): the [effect] PASS shapes
+  {
+    const task = mkdtempSync(join(tmpdir(), 'v9b-task-'))
+    dirs.push(task)
+    put(task, 'STAGES.md', '# T-95: task\nLanguage: en\nBranch: `T-95/feat/a`\n\n## Stages\n\n### Stage 9: effects  [status: in-progress]\n- `AC-9.1` WHEN the contract is signed THEN POST /api/contracts saves it — [verify: devtools-verify] [effect]\n')
+    const head = '# devtools-verify — stage 9\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not needed — no auth-gated criteria\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n\n## Stage criteria\n'
+    const eff = (criteria) => jc.effectViolations(`${head}${criteria}\n## Could not verify\n- nothing\n`, 'devtools-verify-9.md', task).filter(({ rule }) => rule === 'no-effect-proof').length
+    const PROOF = '`POST /api/contracts → 201`; read-back after reload: signed'
+    for (const [label, line] of [['a parenthetical', '- `AC-9.1` (1440) — PASS'], ['a check mark', '- AC-9.1 ✅ PASS'], ['a bare id', '- 9.1 PASS']]) {
+      check(`AC-9b.3 incident: ${label} PASS without proof is rejected`, eff(`${line}, the card shows signed\n`) === 1)
+      check(`AC-9b.3 legitimate: ${label} PASS with the request and the read-back on the line passes`, eff(`${line} — ${PROOF}\n`) === 0)
+    }
+    check('AC-9b.3 legitimate: the evidence under a bare-id PASS line counts', eff(`- 9.1 PASS\n  - ${PROOF}\n`) === 0)
+    check('AC-9b.3: a parenthetical longer than 60 characters is not a verdict position; FAIL with a qualifier is not a PASS', eff(`- \`AC-9.1\` (${'x'.repeat(70)}) — PASS\n`) === 0 && eff('- `AC-9.1` (1440) — FAIL: no request\n') === 0)
+  }
+
+  // m-2 (K9b.4): re-run names from the report's own stem
+  {
+    const task = mkdtempSync(join(tmpdir(), 'v9b-rerun-'))
+    dirs.push(task)
+    const etap = '\u044d\u0442\u0430\u043f'
+    for (const file of ['devtools-verify-branch-r1.md', 'devtools-verify-branch-fresh.md', 'devtools-verify-r1.md', `${etap}-5-devtools-verify-r1.md`, 'devtools-verify-5-r1.md']) put(task, `checks/${file}`, '# recheck\n')
+    const bad = (cited, name) => jc.rerunViolations(`# devtools-verify\nFindings: critical 0 · major 1 · minor 0\n\n## Findings outcome\n- M-1 — fixed: a.vue:12 — re-run ${cited}\n`, name, task).filter(({ rule }) => rule === 'no-rerun').length
+    check('m-2 incident: devtools-verify-branch.md cites its own -r1 and -fresh reports', bad('checks/devtools-verify-branch-r1.md', 'devtools-verify-branch.md') === 0 && bad('devtools-verify-branch-fresh.md', 'devtools-verify-branch.md') === 0)
+    check('m-2 incident: the report of a Russian stage name cites its -r1', bad(`checks/${etap}-5-devtools-verify-r1.md`, `${etap}-5-devtools-verify.md`) === 0 && bad('devtools-verify-5-r1.md', `${etap}-5-devtools-verify.md`) === 0)
+    check('m-2 legitimate: an unrelated devtools-verify-r1.md is not accepted for devtools-verify-branch.md; the numbered pair still works', bad('devtools-verify-r1.md', 'devtools-verify-branch.md') === 1 && bad('devtools-verify-5-r1.md', 'devtools-verify-5.md') === 0)
+    const { PARTIAL_RUN } = await import(join(PLUGIN, 'markers.mjs'))
+    check('m-2: PARTIAL_RUN agrees with the citable names', ['devtools-verify-branch-r1.md', `${etap}-5-devtools-verify-r1.md`, 'devtools-verify-5-shared-radius-r1.md'].every((file) => PARTIAL_RUN.test(file)) && !PARTIAL_RUN.test('devtools-verify-branch-fresh.md'))
+  }
+
+  // m-5 (K9b.5): a feature file that is a symlink to a FIFO, or leaves the map directory, does not hang or leak
+  {
+    const mapped = mkRepo({ ...mapFiles, 'package.json': '{}\n' })
+    put(mapped, 'outside.md', '# outside\nRoutes: /leak · Status: draft\n')
+    symlinkSync(join(mapped, 'outside.md'), join(mapped, '.claude/verify/features/leak.md'))
+    put(mapped, 'src/x.tsx', 'export default 1\n')
+    const out = vm(mapped, '--changed')
+    check('m-5 incident: a feature file linked out of the map directory is not read (the map has one feature)', out.status === 0 && /· 1 feature ·/.test(out.stdout) && !/^route \/leak/m.test(out.stdout), out.stdout + out.stderr)
+    const fifo = join(tmpdir(), `v9b-fifo-${process.pid}`)
+    if (spawnSync('mkfifo', [fifo]).status === 0) {
+      symlinkSync(fifo, join(mapped, '.claude/verify/features/evil.md'))
+      const began = Date.now()
+      const fifoOut = vm(mapped, '--changed')
+      check('m-5 incident: a feature file that is a symlink to a FIFO does not hang --changed', fifoOut.status === 0 && Date.now() - began < 10_000, `${fifoOut.status} ${Date.now() - began} ms ${fifoOut.stderr}`)
+      rmSync(fifo, { force: true })
+    }
+  }
+
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)

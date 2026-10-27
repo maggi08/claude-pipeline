@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { configRoot, mainRoot, parseDevServer, readConfig } from './hooks/pipeline-state.mjs'
+import { configRoot, mainRoot, parseDevServer, readBounded, readConfig } from './hooks/pipeline-state.mjs'
 import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATURE_SECTIONS, MAP_ROUTES_FIELD, MAP_STATUS_FIELD, MAP_TEXT, NO_VALUE } from './markers.mjs'
 
 /**
@@ -33,6 +33,7 @@ import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATU
  *     radius: <N> module(s) → <M> file(s), depth <= 4 · <map dir> | no map — routes only
  *     route /orders/:id — mapped: orders (via pages/orders/[id].vue)     route /legacy — unmapped (via pages/legacy.vue)
  *     feature orders — primary path: Header → «Orders» (features/orders.md)
+ *     warning: <files>: … routes are not derived       note: <files>: behind a routed importer (<importer>) — check whether they are routes of their own
  * --init     writes the README from the SHARED config only (never `pipeline.config.local.md`: the README is committed), values the config has (dev url without userinfo, app marker,
  *   baseline routes, breakpoints, e2e without leading `KEY=value`); a value the config lacks is the explicit "not set" slot. Never overwrites an existing README, never writes
  *   through a symlink that leaves the repo. Exit 0 also when it left one alone.
@@ -53,6 +54,12 @@ const readText = (path) => {
   } catch {
     return null
   }
+}
+
+/** A map file (a feature file, the README, a README link target) through the one bounded reader: a regular file of at most 512 KB whose real path lies inside the map directory. `null` otherwise. */
+const readMapFile = (path, within) => {
+  const read = readBounded(path, { max: SIZE_CAP, within })
+  return read.text ?? null
 }
 
 const isFile = (path) => {
@@ -198,7 +205,7 @@ export function featureRoutes(text) {
 /** The features of a map: `{ id, file, routes }`, from the README list and the `features/` directory. */
 export function readMap(readme) {
   const base = dirname(readme)
-  const text = readText(readme) ?? ''
+  const text = readMapFile(readme, base) ?? ''
   const features = new Map()
   const add = (id, file, routes) => {
     const known = features.get(id) ?? { id, file, routes: [] }
@@ -213,7 +220,8 @@ export function readMap(readme) {
   if (existsSync(dir))
     for (const name of readdirSync(dir).filter((entry) => entry.endsWith('.md'))) {
       const id = basename(name, '.md')
-      add(id, `features/${name}`, featureRoutes(readText(join(dir, name)) ?? ''))
+      const body = readMapFile(join(dir, name), base)
+      if (body !== null) add(id, `features/${name}`, featureRoutes(body))
     }
   for (const feature of features.values()) feature.routes = [...new Set(feature.routes)].map((route) => ({ route, key: normalizeRoute(route) }))
   return [...features.values()]
@@ -248,12 +256,22 @@ export function featureMapRows(text) {
 
 // --- modes ---
 
-/** Whether a FEATURE-MAP "Files" cell names `file`: a whole path — equal to it, or ending with it after a `/` — never a substring of a longer name. */
+/**
+ * Whether a FEATURE-MAP "Files" cell names `file`: a whole path, never a substring of a longer name. A cell path may carry a markdown link target (`#L73` anchor dropped),
+ * a `:line` suffix and a `./` prefix; it matches when it equals the repo path, when the repo path ends with it after a `/` and it has two or more segments
+ * (an app-relative `pages/Guest.tsx` for `apps/dashboard/src/pages/Guest.tsx`), or when it ends with the repo path after a `/`.
+ */
 function rowNamesFile(cell, file) {
   return cell
     .split(/[\s,;|<>()[\]`]+/)
-    .map((part) => part.replace(/:\d+(?:[-:]\d+)*$/, '').replace(/^\.\//, ''))
-    .some((path) => path === file || path.endsWith(`/${file}`))
+    .map((part) => part.replace(/#L?\d+(?:-L?\d+)?$/, '').replace(/:\d+(?:[-:]\d+)*$/, '').replace(/^(?:\.{1,2}\/)+/, ''))
+    .some((path) => path === file || path.endsWith(`/${file}`) || (path.includes('/') && file.endsWith(`/${path}`)))
+}
+
+/** The route of a FEATURE-MAP row: the first `/…` token of the route cell, backticks and trailing punctuation dropped (`/bookings/:id (guest)` → `/bookings/:id`); `null` when the cell has none. */
+const rowRoute = (cell) => {
+  const token = cell.replace(/`/g, '').split(/\s+/).find((part) => part.startsWith('/'))
+  return token ? token.replace(/[,;)]+$/, '') : null
 }
 
 function changedFiles(top, base) {
@@ -269,11 +287,12 @@ function changedFiles(top, base) {
 /**
  * The routes of a list of files, one reader for `--changed` and `--radius`: file routing (Nuxt, Next) first; React Router and anything else without it only through the
  * FEATURE-MAP "Entry points" rows whose Files cell names a file of `rowFiles` (default: the files with no route of their own). Every file that stays without a route
- * and passes `warnable` is named in one `warnings` line, never a guess. `known`: route key → FEATURE-MAP row id.
+ * and classifies as `'warning'` is named in one `warnings` line, never a guess; a file the caller classifies `{ note }` goes to one `notes` line. `known`: route key → FEATURE-MAP row id.
  */
-function collectRoutes({ top, files, rows, rowFiles = null, warnable = () => true, nameFramework = false }) {
+function collectRoutes({ top, files, rows, rowFiles = null, classify = () => 'warning', nameFramework = false }) {
   const routes = new Map()
   const warnings = []
+  const notes = []
   const unknown = []
   const layouts = new Set()
   for (const file of files) {
@@ -292,14 +311,24 @@ function collectRoutes({ top, files, rows, rowFiles = null, warnable = () => tru
   }
   const known = new Map()
   for (const row of rows) {
-    const key = row.route.startsWith('/') ? row.route.replace(/`/g, '').split(/\s/)[0] : null
+    const key = rowRoute(row.route)
     if (!key) continue
     if (row.id) known.set(normalizeRoute(key), row.id)
     const named = (rowFiles ?? unknown).find((file) => rowNamesFile(row.files, file))
     if (named) routes.set(normalizeRoute(key), { route: key, file: named })
   }
   const routed = new Set([...routes.values()].map((entry) => entry.file))
-  const unrouted = unknown.filter((file) => !routed.has(file) && warnable(file, routed))
+  // `classify(file, routed)`: `'warning'` (named, no route derived), `{ note: <routed importer> }` (hidden behind a routed importer: named on its own line, not decided to be a route) or `null` (not named)
+  const sorted = unknown.filter((file) => !routed.has(file)).map((file) => [file, classify(file, routed)])
+  const unrouted = sorted.filter(([, kind]) => kind === 'warning').map(([file]) => file)
+  const hidden = sorted.filter(([, kind]) => kind?.note)
+  if (hidden.length) {
+    const shown = hidden.slice(0, 8).map(([file]) => file)
+    const importers = [...new Set(hidden.map(([, kind]) => kind.note))]
+    notes.push(
+      `${shown.join(', ')}${hidden.length > 8 ? ` and ${hidden.length - 8} more` : ''}: behind a routed importer (${importers.slice(0, 3).join(', ')}${importers.length > 3 ? ` and ${importers.length - 3} more` : ''}) — check whether ${hidden.length > 1 ? 'they are routes' : 'it is a route'} of ${hidden.length > 1 ? 'their' : 'its'} own`,
+    )
+  }
   if (unrouted.length) {
     const shown = unrouted.slice(0, 8).map((file) => (layouts.has(file) ? `${file} (a layout or root file, not a page)` : file))
     const cause = unrouted.some((file) => !layouts.has(file)) ? 'no nuxt.config / next.config above and no FEATURE-MAP "Entry points" row names' : 'no FEATURE-MAP "Entry points" row names'
@@ -307,7 +336,7 @@ function collectRoutes({ top, files, rows, rowFiles = null, warnable = () => tru
       `${shown.join(', ')}${unrouted.length > 8 ? ` and ${unrouted.length - 8} more` : ''}: ${cause} ${unrouted.length > 1 ? 'them' : 'it'} — routes are not derived${rows.length ? '' : ' (React Router and other routers: pass --feature-map)'}`,
     )
   }
-  return { routes, warnings, known }
+  return { routes, warnings, notes, known }
 }
 
 export function changedReport({ top, config, base = null, featureMap = null, mapRoots = [top] }) {
@@ -467,11 +496,12 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
   const readme = mapReadme(mapRoots, config)
   const features = readme ? readMap(readme) : null
   const rows = featureMap ? featureMapRows(readText(featureMap) ?? '') : []
-  // an importer in the radius that gets no route is a warning, whatever rows matched (the legacy screens outside the task are what the radius is for), unless it has importers in the radius and all of them are routed
-  const { routes, warnings, known } = collectRoutes({ top, files: [...hops.keys()], rows, rowFiles: [...hops.keys()], nameFramework: true, warnable: (file, routed) => {
-    if (hops.get(file) === 0) return false
+  // an importer in the radius that gets no route is a warning, whatever rows matched (the legacy screens outside the task are what the radius is for); one whose in-radius importers are all routed
+  // is covered through them, but is named on its own `note:` line: a route table or a page can hide a page of its own behind it
+  const { routes, warnings, notes, known } = collectRoutes({ top, files: [...hops.keys()], rows, rowFiles: [...hops.keys()], nameFramework: true, classify: (file, routed) => {
+    if (hops.get(file) === 0) return null
     const above = [...(importers.get(file) ?? [])].filter((importer) => hops.has(importer))
-    return !above.length || !above.every((importer) => routed.has(importer))
+    return !above.length || !above.every((importer) => routed.has(importer)) ? 'warning' : { note: above[0] }
   } })
   const lines = [`radius: ${targets.length} module${targets.length === 1 ? '' : 's'} → ${hops.size - targets.length} importer file${hops.size - targets.length === 1 ? '' : 's'}, depth <= ${depth} · ${features ? `${dir} · README ${resolve(readme)}` : 'no map — routes only'}`]
   const touched = new Map()
@@ -481,11 +511,12 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
     lines.push(`route ${route} — ${features ? (feature ? `mapped: ${feature.id}` : 'unmapped') : 'no map'} (via ${file})`)
   }
   for (const feature of touched.values()) {
-    const path = primaryPath(readText(join(dirname(readme), feature.file)) ?? '')
+    const path = primaryPath(readMapFile(join(dirname(readme), feature.file), dirname(readme)) ?? '')
     lines.push(`feature ${feature.id} — primary path: ${path ?? 'none written — see the feature file'} (${feature.file})`)
   }
   for (const warning of warnings) lines.push(`warning: ${warning}`)
-  if (!routes.size && !warnings.length) lines.push('no page imports these modules within the depth')
+  for (const note of notes) lines.push(`note: ${note}`)
+  if (!routes.size && !warnings.length && !notes.length) lines.push('no page imports these modules within the depth')
   return { lines, code: 0 }
 }
 

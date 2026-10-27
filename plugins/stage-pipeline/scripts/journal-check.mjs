@@ -670,7 +670,7 @@ export function effectCriteria(taskDir) {
   return ids
 }
 
-/** The criteria a report passes, for the `[effect]` rule: the verdict stands right after the id (`AC-x.y — PASS`, `AC-x.y: PASS`, a compact `4.5 PASS` run). The word elsewhere on the line and a line under "Could not verify" are not a PASS. */
+/** The criteria a report passes, for the `[effect]` rule: the verdict stands right after the id (`AC-x.y — PASS`, `AC-x.y: PASS`, `AC-x.y (1440) — PASS` with a parenthetical of up to 60 characters, `AC-x.y ✅ PASS`, a compact `4.5 PASS` run). The word elsewhere on the line and a line under "Could not verify" are not a PASS. */
 function passedIds(text, wanted) {
   const passed = new Set()
   let unverified = false
@@ -681,7 +681,7 @@ function passedIds(text, wanted) {
     // one pass per line: the dotted-id run of PASS_RUN (a table row `| AC-x | PASS |` has none), then the id-named form with one separator class
     for (const match of line.matchAll(PASS_RUN)) for (const [id] of match[1].matchAll(/\d+[a-z]?(?:\.\d+[a-z]?)+/g)) if (wanted.has(id)) passed.add(id)
     if (/\bFAIL\b/.test(line)) continue
-    for (const id of wanted) if (new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)[\\s\x60*|:—–-]*PASS\\b`).test(line)) passed.add(id)
+    for (const id of wanted) if (new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)(?:[\\s\x60*]*\\([^)\\n]{0,60}\\))?[\\s\x60*|:—–✅-]*PASS\\b`).test(line)) passed.add(id)
   }
   return passed
 }
@@ -689,10 +689,10 @@ function passedIds(text, wanted) {
 // a line is read up to this many characters by the rules of the hook: a pasted wall of text must not cost the hook its 5 s
 const RULE_LINE_MAX = 2000
 
-/** Every line that names `AC-<id>`, each with the detail lines under it (up to 6, to a blank line, a heading or another criterion). */
+/** Every line that names `AC-<id>` or the bare id (`9.1`, the compact form `passedIds` also reads), each with the detail lines under it (up to 6, to a blank line, a heading or another criterion). */
 function mentionsOf(text, id) {
   const lines = text.split(/\r?\n/).map((line) => line.slice(0, RULE_LINE_MAX))
-  const own = new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)`)
+  const own = new RegExp(`(?<![\\w.])(?:AC-)?${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)`)
   const found = []
   for (const [index, line] of lines.entries()) {
     if (!own.test(line)) continue
@@ -739,14 +739,16 @@ function ownReport(name) {
 }
 
 /**
- * The prefixes a re-run of this report starts with: `devtools-verify-5-r1.md` and `stage-5-devtools-verify.md` both give `devtools-verify-5-` and `stage-5-devtools-verify-`;
- * a report with no stage in its name takes `<checker>-`. `null` — not a checker report.
+ * The prefixes a re-run of this report starts with, from the report's own stem (a re-run suffix dropped): `devtools-verify-branch.md` → `devtools-verify-branch-`
+ * (`-r1`, `-fresh`); a report with a Russian stage word (`<stage word>-5-devtools-verify.md`) → `<stage word>-5-devtools-verify-`. A report with a stage in its name also gets the stage pair `devtools-verify-5-` ↔ `stage-5-devtools-verify-`.
+ * No bare `<checker>-` fallback: an unrelated `devtools-verify-r1.md` is not a re-run of `devtools-verify-branch.md`. `null` — not a checker report.
  */
 function ownPrefixes(name) {
   const checker = reportChecker(name)
   if (!checker) return null
+  const stem = name.replace(/\.md$/i, '').replace(/-(?:r\d+|fresh[\w-]*|recheck(?:-?\d+)?|repro)$/i, '')
   const stage = name.match(STAGE_FILE)?.[1] ?? name.slice(name.indexOf(checker) + checker.length).match(/^-(\d+[a-z]?)(?=[-.]|$)/i)?.[1]
-  return stage ? [`${checker}-${stage}-`, `stage-${stage}-${checker}-`] : [`${checker}-`]
+  return [...new Set([`${stem}-`, ...(stage ? [`${checker}-${stage}-`, `stage-${stage}-${checker}-`] : [])])]
 }
 
 /**
@@ -756,7 +758,7 @@ function ownPrefixes(name) {
  */
 function citedRerun(entry, name, taskDir) {
   const own = ownPrefixes(name)
-  for (const word of entry.split(/[^\w./-]+/).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
+  for (const word of entry.split(/[^\p{L}\p{N}_./-]+/u).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
     if (word.length > 200) continue
     const base = word.split('/').pop()
     const prefix = own?.find((candidate) => base.startsWith(candidate))

@@ -508,8 +508,8 @@ export const MAP_TEXT = {
 export const NO_VALUE = /^(?:—|-|–|none|no|нет|n\/a)$/i
 /** The FEATURE-MAP "Entry points" heading and the route / files columns of its table, both languages. */
 export const ENTRY_POINTS_HEADING = /^##\s*(?:Entry points|Точки входа)\s*$/i
-export const ENTRY_ROUTE_COLUMN = /^(?:Route|Маршрут)/i
-export const ENTRY_FILES_COLUMN = /^(?:Files|Файлы)/i
+export const ENTRY_ROUTE_COLUMN = /^(?:Route|Маршрут|Роут)/i
+export const ENTRY_FILES_COLUMN = /^(?:Files?|Файл)/i
 
 // --- proof of effects and re-observation (stage 9) ---
 
@@ -523,4 +523,4 @@ export const READBACK_PROOF = /read[- ]?back|after\s+(?:a\s+|the\s+)?(?:page\s+)
 export const RERUN_SUFFIX = /^(?:r\d+|fresh[\w-]*|recheck(?:-?\d+)?)\.md$/i
 export const RERUN_SCREEN = /^(?:checks\/)?screens\/[\w.-]+\.(?:png|jpe?g|webp)$/i
 /** A partial devtools-verify run: the recheck of named findings (`devtools-verify-<stage>-r<k>.md`) and the before-fix repro (`…-repro.md`). It measures what it was asked to, not the geometry of every width. */
-export const PARTIAL_RUN = /^(?:devtools-verify(?:-\w+)?|(?:stage|этап)-?\d+[a-z]?-devtools-verify)-(?:r\d+|repro|recheck(?:-?\d+)?)\.md$/i
+export const PARTIAL_RUN = /^(?:devtools-verify(?:-\w+)*|(?:stage|этап)-?\d+[a-z]?-devtools-verify)-(?:r\d+|repro|recheck(?:-?\d+)?)\.md$/i
