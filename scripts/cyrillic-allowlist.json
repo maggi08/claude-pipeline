@@ -14,6 +14,10 @@
       "reason": "Russian locale of the fixture app: i18n evals check the ru locale on purpose"
     },
     {
+      "glob": "evals/pending/**/locales/ru.json",
+      "reason": "the same fixture locale of a case that waits in evals/pending/ for a discriminating proof"
+    },
+    {
       "glob": "plugins/stage-pipeline/references/language.md",
       "line": "^\\|",
       "reason": "the RU column of the marker table (RU ⇄ EN): the forms the parsers read; table rows only"

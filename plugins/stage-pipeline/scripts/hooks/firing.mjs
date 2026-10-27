@@ -63,12 +63,12 @@ export function isRead(input) {
 }
 
 /** The row for one firing. `agent` hooks (frames-guard on SubagentStop) have no tool: `tool` is the event name there. */
-export function firingRow(rule, { input = {}, task = null, repo = null, kinds = null } = {}) {
+export function firingRow(rule, { input = {}, task = null, repo = null, kinds = null, at = null } = {}) {
   const row = {
     rule,
     task: task ? String(task) : null,
     repo: repo ?? (typeof input.cwd === 'string' ? input.cwd : process.cwd()),
-    ts: new Date().toISOString(),
+    ts: at ?? new Date().toISOString(),
     tool: String(input.tool_name ?? input.hook_event_name ?? ''),
     read: isRead(input),
     event: String(input.hook_event_name ?? ''),
@@ -107,7 +107,9 @@ export function denyTool(rule, reason, context = {}) {
 
 /** A PostToolUse / SubagentStop block (`decision: 'block'`). `rules` is one ID or several that the same message answers for; the message is written once. */
 export function blockWith(rules, reason, context = {}) {
-  for (const rule of [].concat(rules)) recordFiring(rule, context)
+  // One moment for all the rows of the block: retro counts the rows that share it as one block.
+  const at = new Date().toISOString()
+  for (const rule of [].concat(rules)) recordFiring(rule, { ...context, at })
   process.stdout.write(JSON.stringify({ decision: 'block', reason }))
   process.exit(0)
 }

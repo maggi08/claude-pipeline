@@ -726,7 +726,7 @@ async function validateEvals() {
 
 async function validateEvalSelfTests(names) {
   // Loaded here, not at the top: scripts/hooks-test.mjs runs copies of this file in directories that have no eval harness.
-  const { acIdsFor, decisionSettings, findingMatches, gradeAgent, gradeDecision, lintCase, unreadScreenshots } = await import('./eval-lib.mjs')
+  const { acIdsFor, applyVariantEdits, decisionSettings, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, unreadScreenshots } = await import('./eval-lib.mjs')
   const here = 'scripts/eval-lib.mjs'
   // AC-6.1: a copy of a case with a planted word is aborted, and the original passes.
   const probe = names.find((name) => existsSync(join(ROOT, 'evals/cases', name, 'base/CLAUDE.md'))) ?? names[0]
@@ -747,6 +747,45 @@ async function validateEvalSelfTests(names) {
       if (lintCase(join(holder, probe)).length) fail(here, 'leak lint self-test: a word in the case allowlist must pass')
     } finally {
       rmSync(holder, { recursive: true, force: true })
+    }
+  }
+  // M-2: an archived plugin of an old tag, patched as `--ref` patches it, resolves its data directory to STAGE_PIPELINE_DATA_DIR even when CLAUDE_PLUGIN_DATA is set.
+  for (const tag of ['stage-pipeline--v0.15.1', 'stage-pipeline--v0.18.0']) {
+    let tar
+    try {
+      tar = execFileSync('git', ['archive', '--format=tar', tag, 'plugins/stage-pipeline'], { cwd: ROOT, maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] })
+    } catch {
+      continue // a checkout without the tag (a shallow CI clone): nothing to archive
+    }
+    const holder = mkdtempSync(join(tmpdir(), 'ref-probe-'))
+    try {
+      execFileSync('tar', ['-x', '-C', holder], { input: tar })
+      const dir = join(holder, 'plugins/stage-pipeline')
+      patchDataDirOverride(dir)
+      const asked = spawnSync(process.execPath, ['--input-type=module', '-e', `const m = await import(${JSON.stringify(join(dir, 'scripts/hooks/pipeline-state.mjs'))}); process.stdout.write(m.pluginDataDir())`], {
+        encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: join(holder, 'data'), CLAUDE_PLUGIN_DATA: join(holder, 'claude-data') },
+      })
+      if (asked.stdout !== join(holder, 'data')) fail(here, `--ref data dir self-test: ${tag} patched resolves pluginDataDir() to «${asked.stdout}» ${asked.stderr.slice(0, 120)}, not the STAGE_PIPELINE_DATA_DIR override`)
+    } catch (error) {
+      fail(here, `--ref data dir self-test: ${tag}: ${error.message}`)
+    } finally {
+      rmSync(holder, { recursive: true, force: true })
+    }
+  }
+  // m-5: every variant of every case applies to a copy of the plugin (a variant whose `find` text left the skill is dead).
+  for (const name of names) {
+    const variantsDir = join(ROOT, 'evals/cases', name, 'variants')
+    if (!existsSync(variantsDir)) continue
+    for (const file of readdirSync(variantsDir).filter((f) => f.endsWith('.json'))) {
+      const holder = mkdtempSync(join(tmpdir(), 'variant-probe-'))
+      try {
+        cpSync(join(ROOT, 'plugins/stage-pipeline'), join(holder, 'stage-pipeline'), { recursive: true })
+        applyVariantEdits(join(holder, 'stage-pipeline'), JSON.parse(readFileSync(join(variantsDir, file), 'utf8')).edits, file.slice(0, -5))
+      } catch (error) {
+        fail(`evals/cases/${name}/variants/${file}`, `the variant does not apply to the current plugin: ${error.message}`)
+      } finally {
+        rmSync(holder, { recursive: true, force: true })
+      }
     }
   }
   // AC-6.4: a negated mention is not a finding; a finding in the ledger form is.
@@ -770,6 +809,16 @@ async function validateEvalSelfTests(names) {
   expectMatches('"no error shown ... no findings logged" in one finding line', { severity: 'major|critical', file: 'removeGuest' }, '- major: removeGuest is not awaited: no error shown to the user and no findings logged', 1)
   expectMatches('the negation example with a path and a line', asks, '- src/orders/formatTime.ts:3 — no duplicates found', 0)
   expectMatches('a finding that says "no" about something else', { severity: 'minor', file: 'a\\.ts', line: 5 }, '- minor: src/a.ts:5 — no error handling around fetch', 1)
+  // M-1 (VT-3 final checks): the three real shapes of a pro-review report. The bracket item form of the skill's Step 5, a heading that is the finding, and a final message
+  // that follows a report ending in «Could not verify» (the heading must not leak into the message).
+  const portal = { severity: 'critical|major', file: 'DeleteGuestModal\\.tsx', line: 12 }
+  expectMatches('the Step 5 bracket form', portal, '[major] src/DeleteGuestModal.tsx:12 — the delete is not awaited', 1)
+  expectMatches('the Step 5 bracket form with the emoji', portal, '🟠 [major] src/DeleteGuestModal.tsx:12 — the delete is not awaited', 1)
+  expectMatches('a finding heading', { ...portal, line: 11 }, '## Findings\n\n### M-1 (major) — `DeleteGuestModal.tsx:9-13`: removed awaits\n\nProse about it.', 1)
+  expectMatches('a finding heading under «Discarded»', portal, '## Discarded at the re-check\n\n### M-9 (major) — DeleteGuestModal.tsx:12 — dropped', 0)
+  const afterKept = { report: '## Findings\n\n- none\n\n## Could not verify\n\n- no paid run', summary: '- major: src/DeleteGuestModal.tsx:12 — the delete is not awaited' }
+  if (gradeAgent({ findings: [{ ...portal, why: 'x' }] }, { repo: ROOT, ...afterKept, calls: [] }).failures.length) fail(here, 'finding grader self-test: a finding in the final message after a report ending in «Could not verify» was swallowed')
+  if (!gradeAgent({ findingsForbid: [{ ...portal, why: 'x' }] }, { repo: ROOT, ...afterKept, calls: [] }).failures.length) fail(here, 'finding grader self-test: findingsForbid did not see a forbidden finding in the final message after «Could not verify»')
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
   // Trace graders: a denied call does not count; every screenshot must be opened.
@@ -780,6 +829,9 @@ async function validateEvalSelfTests(names) {
   const shot = call('mcp__plugin_stage-pipeline_chrome-devtools__take_screenshot', { filePath: '/w/shot-1440.png' })
   if (unreadScreenshots([shot, call('Read', { file_path: '/w/shot-1440.png' })]).length) fail(here, 'screenshot grader self-test: an opened screenshot was reported')
   if (!unreadScreenshots([shot, call('Read', { file_path: '/w/other.png' })]).length) fail(here, 'screenshot grader self-test: an unopened screenshot passed')
+  if (!unreadScreenshots([call('mcp__plugin_stage-pipeline_chrome-devtools__take_screenshot', { filePath: '/w/1440.png' }), call('Read', { file_path: '/w/dark-1440.png' })]).length) fail(here, 'screenshot grader self-test: dark-1440.png was taken for an opening of 1440.png')
+  const matched = matchScreenshotReads([{ path: '/private/tmp/s/a.png', ts: 1 }, { path: 'b.png', ts: 2 }, { path: '/w/c.png', ts: 3 }, { path: '/w/c.png', ts: 6 }], [{ path: '/tmp/s/a.png', ts: 4 }, { path: '/x/y/b.png', ts: 4 }, { path: '/w/c.png', ts: 7 }])
+  if (matched.map((t) => t.read).join() !== 'true,true,false,true') fail(here, `screenshot matcher self-test: /private fold, a relative tail and the re-shoot rule — got ${matched.map((t) => t.read).join()}, wanted true,true,false,true`)
   // Decision graders: spawn types, the tagged AC IDs in a prompt, the model parameter, forbidden tools, the question text.
   const stagesText = '### Stage 1: A  [status: todo]\nAcceptance criteria:\n- `AC-1.1` x - [verify: figma-compare]\n- `AC-1.2` y - [verify: devtools-verify]\n- `AC-1.3` z - [verify: pro-review, devtools-verify]\n### Stage 2: B\n- `AC-2.1` w - [verify: devtools-verify]\n'
   if (acIdsFor(stagesText, 1, 'devtools-verify').join() !== 'AC-1.2,AC-1.3' || acIdsFor(stagesText, 1, 'figma-compare').join() !== 'AC-1.1') fail(here, 'decision grader self-test: acIdsFor did not take the IDs of the stage by the verifier tag')
@@ -909,7 +961,7 @@ async function validateRunAudit() {
   const here = 'scripts/validate.mjs'
   const fixtures = join(ROOT, 'scripts/fixtures/run-audit')
   scanProjectIds(walkAll(fixtures), new Set(['TK-1', 'OT-2']))
-  const { runAudit, encodeProject, renderMarkdown } = await import('./run-audit.mjs')
+  const { runAudit, encodeProject, renderMarkdown, bashWrite } = await import('./run-audit.mjs')
   const dir = mkdtempSync(join(tmpdir(), 'run-audit-'))
   const bad = (what) => fail(here, `run-audit self-test: ${what}`)
   try {
@@ -942,7 +994,8 @@ async function validateRunAudit() {
     eq('screenshots taken / failed / with a file / read back (a.png saved as a.jpeg, b.png relative to the taker cwd) / never read (d.jpeg, saved under /private/tmp) / inline', [sh.taken, sh.failed, sh.withFile, sh.readBack, sh.notRead, sh.inline], [4, 1, 3, 2, 1, 1])
     eq('screenshots left out as another ticket\'s', task.screenshotsOutsideRuns.leftOutForeign, 1)
     eq('findings vs ledger, run 1 (a report modified in the window)', [one.findings.length, sum(one.findings, 'major'), sum(one.findings, 'lines')], [1, 2, 1])
-    eq('user messages after done, run 1 (the harness text is not a person)', one.userAfterDone.map((x) => x.head), ['please change the title of the screen'])
+    eq('user messages after done, run 1 (the harness text is not a person; only a length is kept, never the text)', one.userAfterDone.map((x) => [x.chars, x.head]), [[37, undefined]])
+    if (renderMarkdown(report).includes('please change the title')) bad('the markdown prints the text of a user message')
     eq('commits after close, run 1', one.commitsAfterClose.list.map((x) => x.subject), ['demo commit'])
     eq('skills and agents never invoked, run 1', [one.neverSkills, one.neverAgents], [['root-cause'], ['task-converge']])
     eq('stages implemented / verified / implemented without devtools-verify, run 1 and run 2', [one.implementedStages, one.verifiedStages, one.implementedWithoutDevtools, two.implementedWithoutDevtools], [['1'], ['1'], [], ['2']])
@@ -955,6 +1008,14 @@ async function validateRunAudit() {
     const derived = runAudit({ ...base, transcripts: [] }).generatedFrom.transcriptPaths
     eq('without --transcripts exactly one derived directory is named', [derived.length, derived[0].endsWith(`/.claude/projects/${encodeProject(join(dir, 'repo'))}`)], [1, true])
     eq('an explicit --transcripts is used as given', report.generatedFrom.transcriptPaths, [join(dir, 'transcripts')])
+    // S-2: a write-like command is shown as the program name and the target path, never its text; S-3: a run of -e flags is read in linear time.
+    const secret = bashWrite('echo OPENAI_API_KEY=sk-proj-SECRET123 >> /synthetic/r/.env.local', { repoRoots: ['/synthetic/r'], taskDirs: [] })
+    eq('a Bash source edit shows the program and the path only', secret?.label, 'echo -> /synthetic/r/.env.local')
+    if (/SECRET|OPENAI/.test(bashWrite('cd /synthetic/r && TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 sed -i s/a/b/ f.txt', { repoRoots: ['/synthetic/r'], taskDirs: [] })?.label ?? '')) bad('a command label carries a secret-shaped word')
+    const started = Date.now()
+    bashWrite(`sed ${'-e -e '.repeat(100)}x`, { repoRoots: ['/synthetic/r'], taskDirs: [] })
+    bashWrite(`sed ${'-n -e s/a/b/ '.repeat(60)}x`, { repoRoots: ['/synthetic/r'], taskDirs: [] })
+    if (Date.now() - started > 1000) bad(`200 -e flags took ${Date.now() - started} ms: the sed regex backtracks`)
     const noSource = readFileSync(join(ROOT, 'scripts/run-audit.mjs'), 'utf8')
     if (/readdirSync\([^)]*\.claude\/projects['"`]\s*\)/.test(noSource) || /readdirSync\(\s*join\(homedir\(\),\s*['"]\.claude\/projects['"]\s*\)\s*\)/.test(noSource)) bad('the script lists ~/.claude/projects as a whole')
   } catch (error) {

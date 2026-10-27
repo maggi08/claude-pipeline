@@ -6,8 +6,9 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { reviewModel } from '../plugins/stage-pipeline/scripts/hooks/pipeline-state.mjs'
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const CASES = join(ROOT, 'evals/cases')
@@ -133,11 +134,14 @@ function applyLayer(layer, repo) {
 
 /**
  * A hash of the case's content: every file of its directory (path and bytes) with case.json taken without `provenFailing`.
- * `provenFailing` carries it, so a record is tied to the version of the case it was recorded on.
+ * `provenFailing` carries it, so a record is tied to the version of the case it was recorded on. A file under variants/ counts only when the record
+ * is that variant's (`on: variant:<name>`): a `--ref` or `--ablate` run never saw the variants, and keeping one applicable must not void such a record.
  */
 export function caseHash(caseDir) {
   const hash = createHash('sha256')
-  for (const file of walk(caseDir).map((path) => relative(caseDir, path).split('\\').join('/')).filter((path) => !path.endsWith('.DS_Store')).sort()) {
+  const proofOn = readCase(caseDir).provenFailing?.on ?? ''
+  const files = walk(caseDir).map((path) => relative(caseDir, path).split('\\').join('/')).filter((path) => !path.endsWith('.DS_Store') && (!path.startsWith('variants/') || path === `variants/${proofOn.replace(/^variant:/, '')}.json`))
+  for (const file of files.sort()) {
     hash.update(`${file}\0`)
     if (file === 'case.json') {
       const { provenFailing, ...rest } = readCase(caseDir)
@@ -291,6 +295,45 @@ export function lintCase(caseDir, source = SOURCE_PLUGIN) {
   }
 }
 
+// ── the plugin data directory of an archived plugin ──────────────────────────────────────────────────────────────────
+
+/**
+ * Tags before 0.19.0 have a `pluginDataDir()` that ignores STAGE_PIPELINE_DATA_DIR, and Claude Code sets CLAUDE_PLUGIN_DATA itself for the hooks of a
+ * `--plugin-dir` session, so such a plugin writes into the live data directory. Patches the copy of an archived plugin so that the function
+ * returns an absolute STAGE_PIPELINE_DATA_DIR first. Throws when `export function pluginDataDir() {` does not occur exactly once.
+ */
+export function patchDataDirOverride(pluginDir) {
+  const file = join(pluginDir, 'scripts/hooks/pipeline-state.mjs')
+  if (!existsSync(file)) throw new Error(`no scripts/hooks/pipeline-state.mjs in the archived plugin: cannot route its data directory away from the live one`)
+  const head = 'export function pluginDataDir() {'
+  const parts = readFileSync(file, 'utf8').split(head)
+  if (parts.length !== 2) throw new Error(`«${head}» occurs ${parts.length - 1} times in the archived pipeline-state.mjs, expected once: the data directory cannot be routed away from the live one`)
+  writeFileSync(file, `${parts[0]}${head}\n  const harnessDir = process.env.STAGE_PIPELINE_DATA_DIR\n  if (harnessDir && /^(?:\\/|[A-Za-z]:[\\\\/])/.test(harnessDir)) return harnessDir\n${parts[1]}`)
+}
+
+/**
+ * Applies the edit list of a variant (`{ file, find, replace } | { file, deleteLines: <regex> }`, paths relative to the plugin dir) in place. An edit that matches nothing
+ * (or, for `find`, not exactly once) throws: the plugin drifted and the variant no longer says what it claims.
+ */
+export function applyVariantEdits(dir, edits, label) {
+  for (const edit of edits) {
+    const file = join(dir, edit.file)
+    if (!existsSync(file)) throw new Error(`variant ${label}: no file ${edit.file} in the plugin`)
+    const text = readFileSync(file, 'utf8')
+    if (edit.deleteLines) {
+      const re = new RegExp(edit.deleteLines)
+      const lines = text.split('\n')
+      const kept = lines.filter((line) => !re.test(line))
+      if (kept.length === lines.length) throw new Error(`variant ${label}: /${edit.deleteLines}/ matches no line of ${edit.file}`)
+      writeFileSync(file, kept.join('\n'))
+    } else {
+      const parts = text.split(edit.find)
+      if (parts.length !== 2) throw new Error(`variant ${label}: «${edit.find.slice(0, 60)}» occurs ${parts.length - 1} times in ${edit.file}, expected once`)
+      writeFileSync(file, parts.join(edit.replace))
+    }
+  }
+}
+
 // ── the stream ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export function parseStream(stdout) {
@@ -303,8 +346,9 @@ export function parseStream(stdout) {
   })
 }
 
-const textOf = (content) =>
-  typeof content === 'string' ? content : Array.isArray(content) ? content.map((block) => (typeof block === 'string' ? block : block.text ?? '')).join('\n') : ''
+/** The text of a message `content` (a string, or an array of blocks); shared with scripts/run-audit.mjs. */
+export const textOf = (content) =>
+  typeof content === 'string' ? content : Array.isArray(content) ? content.map((block) => (typeof block === 'string' ? block : block?.text ?? '')).join('\n') : ''
 
 /** Every tool call of the stream with its result; `parent` is the Agent call a call was made under (null for the top-level session). */
 export function toolCalls(events) {
@@ -379,19 +423,30 @@ const negatedTail = (tail) => {
   const rest = tail.slice(bridged.length)
   return NEGATION.test(rest)
 }
-const KEPT_SECTION = /\b(kept|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен/i
-const ITEM = /^\s*(?:[-*•]|\d+[.)])\s+|^\s*\|(?![\s:|-]*$)|^\s*[*_`>]*\s*(?:[CMFm]-?\d+|#\d+|AC-[\d.]+)\b|^\s*[*_`>]*\s*(?:critical|major|minor|blocker)\b|^\s*(?:🔴|🟠|🟡|⚪)/i
+const KEPT_SECTION = /\b(kept|discarded|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен/i
+const ITEM = /^\s*(?:[-*•]|\d+[.)])\s+|^\s*\|(?![\s:|-]*$)|^\s*[*_`>]*\s*(?:[CMFm]-?\d+|#\d+|AC-[\d.]+)\b|^\s*[*_`>]*\s*(?:critical|major|minor|blocker)\b|^\s*(?:🔴|🟠|🟡|⚪)|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)?\s*\[(?:critical|major|minor|blocker)\]/i
+// A heading that is itself a finding («### M-1 (major) — src/a.ts:12 — …»): an id-led heading. It is judged as a line, and it does not open a «kept» section.
+const FINDING_HEADING = /^\s{0,3}#{1,6}\s+[*_`]*(?:[CMFm]-?\d+|#\d+)\b/
 
 /** The lines of a report that are findings in the ledger form: a list item, a table row or an id/severity-led line, outside the «kept / could not verify» sections. */
 function findingLines(text) {
   const lines = []
   let heading = ''
   text.split('\n').forEach((raw, index) => {
-    // A markdown heading or a short plain label line («Deliberately kept:») opens a section; a long prose line does not.
-    if (/^\s{0,3}#{1,6}\s/.test(raw) || (!ITEM.test(raw) && raw.trim() && raw.trim().length <= 80)) heading = raw
-    else if (ITEM.test(raw) && !KEPT_SECTION.test(heading)) lines.push({ text: raw, n: index + 1 })
+    const kept = KEPT_SECTION.test(heading)
+    if (FINDING_HEADING.test(raw)) {
+      if (!kept) lines.push({ text: raw, n: index + 1 })
+    } else if (/^\s{0,3}#{1,6}\s/.test(raw) || (!ITEM.test(raw) && raw.trim() && raw.trim().length <= 80)) {
+      // A markdown heading or a short plain label line («Deliberately kept:») opens a section; a long prose line does not.
+      heading = raw
+    } else if (ITEM.test(raw) && !kept) lines.push({ text: raw, n: index + 1 })
   })
   return lines
+}
+
+/** The finding lines for a spec in the report and in the final message, each graded on its own: the report's last «Could not verify» heading must not swallow the message. */
+export function findingMatchesIn(spec, ...texts) {
+  return texts.flatMap((text) => findingMatches(spec, text ?? ''))
 }
 
 /**
@@ -456,16 +511,43 @@ export function savedScreenshotPath(result, input = {}) {
   return /Saved screenshot to (\S+?)\.?(?:\s|$)/.exec(text)?.[1] ?? input.filePath ?? input.path ?? /[\w./~-]+\.(?:png|jpe?g|webp)/.exec(text)?.[0] ?? null
 }
 
+/** A path as a transcript names it, made comparable: a relative path against the taker's cwd (when known), macOS /private/tmp and /private/var folded to /tmp and /var. */
+export function shotKey(path, cwd) {
+  const full = !path.startsWith('/') && cwd ? resolve(cwd, path) : path
+  return full.replace(/^\/private(?=\/(?:tmp|var)\/)/, '')
+}
+
+/**
+ * The one screenshot matcher of the eval grader and of scripts/run-audit.mjs. `takes`: [{ path, cwd?, ts }], the path the tool SAYS it saved (savedScreenshotPath);
+ * `reads`: [{ path, ts }], every Read of the pool. A Read opens a take when the folded full paths are equal (a take with no known cwd keeps its relative path and is matched by
+ * `/` + that tail), never by a bare basename (`1440.png` is not `dark-1440.png`). A Read marks only the latest take of that path made before it: shooting the same file again
+ * overwrites the earlier image unseen. Returns the takes (ordered by ts) with `read` set.
+ */
+export function matchScreenshotReads(takes, reads) {
+  const marked = takes.map((take) => ({ ...take, key: shotKey(take.path, take.cwd), read: false })).sort((a, b) => a.ts - b.ts)
+  const keys = new Set(marked.map((take) => take.key))
+  const relativeKeys = [...keys].filter((key) => !key.startsWith('/')) // no cwd known: matched by the tail of the Read path
+  for (const read of [...reads].sort((a, b) => a.ts - b.ts)) {
+    const readKey = shotKey(read.path, null)
+    const key = keys.has(readKey) ? readKey : relativeKeys.find((k) => readKey.endsWith(`/${k.replace(/^\.\//, '')}`))
+    const before = key === undefined ? [] : marked.filter((take) => take.key === key && take.ts <= read.ts)
+    if (before.length) before.at(-1).read = true
+  }
+  return marked
+}
+
 /** Every screenshot a subagent took was later opened with Read (a screenshot nobody looks at proves nothing). */
 export function unreadScreenshots(calls) {
   const problems = []
+  const takes = []
   calls.forEach((call, index) => {
     if (!/take_screenshot$/.test(call.name) || call.isError) return
     const path = savedScreenshotPath(call.result, call.input)
     if (!path) return problems.push(`a screenshot with no file to open (call ${index + 1})`)
-    const opened = calls.slice(index + 1).some((later) => later.name === 'Read' && !later.isError && String(later.input.file_path ?? '').endsWith(path.split('/').pop()))
-    if (!opened) problems.push(`${path.split('/').pop()} was taken and never opened with Read`)
+    takes.push({ path, ts: index })
   })
+  const reads = calls.flatMap((call, index) => (call.name === 'Read' && !call.isError && call.input.file_path ? [{ path: String(call.input.file_path), ts: index }] : []))
+  for (const take of matchScreenshotReads(takes, reads)) if (!take.read) problems.push(`${take.path.split('/').pop()} was taken and never opened with Read`)
   return problems
 }
 
@@ -490,9 +572,9 @@ export function gradeAgent(spec, ctx) {
   ;(spec.expect ?? []).forEach((e, i) => mark(`E${i + 1}`, re(e.pattern).test(haystack), `not found: ${e.why} (/${e.pattern}/)`))
   ;(spec.forbid ?? []).forEach((e, i) => mark(`F${i + 1}`, !re(e.pattern).test(ctx.report), `extra in the report: ${e.why} (/${e.pattern}/)`))
   ;(spec.forbidSummary ?? []).forEach((e, i) => mark(`S${i + 1}`, !re(e.pattern).test(ctx.summary), `extra in the message: ${e.why} (/${e.pattern}/)`))
-  ;(spec.findings ?? []).forEach((g, i) => mark(`N${i + 1}`, findingMatches(g, haystack).length > 0, `no finding line: ${g.why} (${g.severity ?? 'any'} /${g.file}/${g.line !== undefined ? `:${g.line}` : ''})`))
+  ;(spec.findings ?? []).forEach((g, i) => mark(`N${i + 1}`, findingMatchesIn(g, ctx.report, ctx.summary).length > 0, `no finding line: ${g.why} (${g.severity ?? 'any'} /${g.file}/${g.line !== undefined ? `:${g.line}` : ''})`))
   ;(spec.findingsForbid ?? []).forEach((g, i) => {
-    const found = findingMatches(g, haystack)
+    const found = findingMatchesIn(g, ctx.report, ctx.summary)
     mark(`M${i + 1}`, found.length === 0, `finding that must not be raised: ${g.why} (${found[0]?.text.trim().slice(0, 120)})`)
   })
   ;(spec.files ?? []).forEach((c, i) => mark(`P${i + 1}`, re(c.pattern).test(readTree(c.path)), `${c.path}: ${c.why} (/${c.pattern}/)`))
@@ -573,7 +655,8 @@ export function acIdsFor(stagesText, stage, tag) {
   return ids
 }
 
-export const configValue = (configText, key) => new RegExp(`^[ \\t]*-[ \\t]*${key}:[ \\t]*[\`*]*([\\w.-]+)`, 'm').exec(configText)?.[1]
+/** A key of the fixture's pipeline config; `review_model` goes through the plugin's own reader (its `opus` default included), so the grader wants what the hook wants. */
+export const configValue = (configText, key) => (key === 'review_model' ? reviewModel(configText) : new RegExp(`^[ \\t]*-[ \\t]*${key}:[ \\t]*[\`*]*([\\w.-]+)`, 'm').exec(configText)?.[1])
 
 /**
  * The verdict on a decision case: the orchestrator ran as the main session until its first spawn or question. `ctx`: { calls (top-level), final, hooks, stagesText, configText }.

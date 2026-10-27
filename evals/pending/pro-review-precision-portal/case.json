@@ -1,6 +1,6 @@
 {
   "agent": "pro-review",
-  "why": "precision: the explicit portal container of the old dialog call is gone, and that is right - the shared Dialog resolves the container itself from the provider (src/ui/Dialog.tsx, src/app/Providers.tsx, the archive dialog next to it has never passed one). The report must not raise it, and must still find the real defect of the same file: the delete is not awaited, so the list is refetched before the guest is gone",
+  "why": "precision: the explicit portal container of the old dialog call is gone, and that is right - the shared Dialog resolves the container itself from the provider (src/ui/Dialog.tsx, src/app/Providers.tsx, the archive dialog next to it has never passed one). The report must not raise it, and must still find the real defect of the same file: the delete is not awaited, so the list is refetched before the guest is gone PENDING: awaits a discriminating proof - the recorded failure was a grader artifact (the bare model did find the unawaited delete and raised no portal trap), so the case does not yet fail on any comparison; move it back to evals/cases/ with a provenFailing record once a run that really fails exists.",
   "identity": {
     "repo": "guest-admin",
     "ticket": "GST-9",
@@ -23,16 +23,5 @@
       "file": "(portal|container)[^\\n]*(lost|removed|missing|dropped|no longer|not passed|wrong document)|(lost|removed|missing|dropped)[^\\n]*(portal|container)",
       "why": "the dialog gets its portal container from the provider, the explicit prop was redundant"
     }
-  ],
-  "provenFailing": {
-    "on": "ablate:agent:pro-review",
-    "date": "2026-10-27",
-    "plugin": "0.18.1@0494f328e",
-    "runs": 1,
-    "failed": 1,
-    "caseHash": "5a2c85ff4920483c",
-    "failures": [
-      "no finding line: removeGuest is not awaited: the list is refreshed (and the dialog closed) before the delete finishes, and a failure is silent (critical|major /"
-    ]
-  }
+  ]
 }

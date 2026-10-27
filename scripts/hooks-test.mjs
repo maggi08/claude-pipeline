@@ -5447,4 +5447,39 @@ rmSync(retroRoot, { recursive: true, force: true })
   for (const dir of [iso, fx, small]) rmSync(dir, { recursive: true, force: true })
 }
 
+// ── VT-3 final checks: retro's «Hook firings» is scoped to the retro targets and counts blocks (appended: D3) ──────────────────────────────────
+{
+  const scope = mkdtempSync(join(tmpdir(), 'retro-scope-'))
+  const repoA = join(scope, 'repo-a')
+  const repoB = join(scope, 'repo-b')
+  mkdirSync(join(repoA, '.git'), { recursive: true })
+  mkdirSync(join(repoB, '.git'), { recursive: true })
+  write(repoA, { 'T-1/STAGES.md': stages('T-1', 'T-1/feat/a') })
+  const at = '2026-10-27T10:00:00.000Z'
+  const row = (rule, repo, ts, extra = {}) => JSON.stringify({ rule, task: 'T-1', repo, ts, tool: 'Bash', read: false, event: 'PostToolUse', ...extra })
+  const logFile = join(scope, 'firings.jsonl')
+  // repo A: one journal-gate block naming three rules (one moment) and one force-guard denial; repo B: a block that must not be counted for A
+  writeFileSync(logFile, [
+    row('journal-gate/close', repoA, at), row('journal-gate/journal', repoA, at), row('journal-gate/report', repoA, at),
+    row('force-guard/ask-rule', repoA, '2026-10-27T10:05:00.000Z', { event: 'PreToolUse' }),
+    row('git-guard/normal-mode', repoB, at, { event: 'PreToolUse' }),
+  ].join('\n') + '\n')
+  const retroOf = (...extra) => spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), repoA, '--firings', logFile, ...extra], { encoding: 'utf8' }).stdout
+  const scoped = retroOf()
+  check('firings m-6: retro counts only the rows under the retro target', /- scope: rows under .*repo-a \(4 of 5 rows/.test(scoped) && !/git-guard\/normal-mode/.test(scoped), scoped.split('## Hook firings')[1])
+  check('firings m-6: a block that names three rules counts once in the headline (2 blocks, 4 rule rows) and once per rule in the table', /- blocks: 2 \(4 rule rows/.test(scoped) && /\| journal-gate\/close \| 1 \| 1 \| 0 \|/.test(scoped), scoped.split('## Hook firings')[1])
+  const machine = retroOf('--all')
+  check('firings m-6: --all is the machine view and counts the other repo too', /- scope: the whole machine \(--all\), 5 rows/.test(machine) && /git-guard\/normal-mode/.test(machine) && /- blocks: 3 \(5 rule rows/.test(machine), machine.split('## Hook firings')[1])
+  const bare = join(scope, 'bare')
+  write(bare, { 'T-2/STAGES.md': stages('T-2', 'T-2/feat/b') })
+  const unscoped = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), join(bare, 'T-2'), '--firings', logFile], { encoding: 'utf8' }).stdout
+  check('firings m-6: a task dir outside any git repo cannot say which repo it is: nothing is filtered and the section says so', /- scope: all 5 rows of the log/.test(unscoped), unscoped.split('## Hook firings')[1])
+  // the rows of a block written by the hook itself share one moment
+  const shared = mkdtempSync(join(tmpdir(), 'firings-block-'))
+  spawnSync(process.execPath, ['--input-type=module', '-e', `const { blockWith } = await import(${JSON.stringify(join(PLUGIN, 'hooks/firing.mjs'))}); blockWith(['journal-gate/close', 'journal-gate/journal', 'journal-gate/report'], 'x', { input: { tool_name: 'Bash', hook_event_name: 'PostToolUse' }, task: 'T-1', repo: '/r' })`], { encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: shared } })
+  const written = readFileSync(join(shared, 'firings.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+  check('firings m-6: blockWith stamps the three rows of one block with one moment', written.length === 3 && new Set(written.map((r) => r.ts)).size === 1, JSON.stringify(written.map((r) => r.ts)))
+  for (const dir of [scope, shared]) rmSync(dir, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)

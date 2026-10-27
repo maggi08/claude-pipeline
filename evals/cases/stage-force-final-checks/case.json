@@ -58,7 +58,7 @@
     "runs": 2,
     "failed": 2,
     "detection": "2/2",
-    "caseHash": "e06a93bc03c9fae9",
+    "caseHash": "87f1c4b92a3ea11d",
     "failures": [
       "pro-review model: the whole-branch review runs on review_model wanted opus, got none"
     ]

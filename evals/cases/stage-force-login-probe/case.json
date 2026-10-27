@@ -55,7 +55,7 @@
     "runs": 1,
     "failed": 1,
     "detection": "1/1",
-    "caseHash": "3c9ea58cf932409c",
+    "caseHash": "7c1d2a685c0576fa",
     "failures": [
       "trace: the auth probe opened the gated route in the plugin's browser before the batch (mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_page) befo"
     ]

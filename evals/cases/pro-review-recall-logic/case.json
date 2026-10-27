@@ -38,7 +38,6 @@
     "failed": 1,
     "caseHash": "ac4ea2b01cd072bf",
     "failures": [
-      "no finding line: error.reason.trim() throws when the service sends a number, null or no reason - the declared type is not what the samples show (critical|major ",
       "no finding line: the 404 check duplicates is404Error of src/shared/http/errors.ts (critical|major|minor /useGuestRegistration\\.ts[^\\n]*(is404Error|duplicat|alre"
     ]
   }

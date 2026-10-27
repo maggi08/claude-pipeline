@@ -2,26 +2,32 @@
 /**
  * Pipeline retro from the facts in task files, not from memory.
  *
- *   node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>]
+ *   node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all]
  *
  * Sources: `metrics:` lines from the journals of STAGES.md / STAGES-ARCHIVE.md (format —
  * /stage-check, Step 4.1), the stage pipeline checklists and the reports in checks/. Tasks from before
  * the `metrics:` line appeared give only checklists and reports — this is visible in the output too.
  * Hook firings come from `<plugin data>/firings.jsonl` (and its rotated `.1`), written by every block or deny of journal-gate, git-guard, agent-guard,
  * force-guard and frames-guard (hooks/firing.mjs): per rule, repeats per task (the same rule and task more than once), and firings on reads.
+ * The log is the whole machine's, so only the rows whose `repo` lies under a retro target are counted (a task dir or STAGES.md stands for the repo that contains it);
+ * `--all` is the machine view. When a target does not say which repo it belongs to (a task dir outside any git repo), nothing is filtered and the section says so.
+ * One block of a hook that names several rules (journal-gate, frames-guard) writes one row per rule at the same moment: the headline counts those as one block.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { FIRINGS_FILE } from './hooks/firing.mjs'
 import { pluginDataDir, readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
 import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
 const args = process.argv.slice(2)
 const firingsAt = args.indexOf('--firings')
+const allAt = args.indexOf('--all')
+const machineView = allAt >= 0
+if (machineView) args.splice(allAt, 1)
 const firingsFile = firingsAt >= 0 ? resolve(args.splice(firingsAt, 2)[1] ?? '') : join(pluginDataDir(), FIRINGS_FILE)
 const targets = args
 if (!targets.length || targets.includes('--help')) {
-  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>]')
+  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all]')
   process.exit(targets.length ? 0 : 2)
 }
 
@@ -249,13 +255,43 @@ function readFirings(file) {
   })
 }
 
-const firings = readFirings(firingsFile)
+const realOf = (path) => {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path).replace(/^\/private(?=\/(?:tmp|var)\/)/, '')
+  }
+}
+/** The repo a retro target belongs to: itself when it has a pipeline config or `.git`, else the nearest ancestor with `.git`; null when it cannot be told. */
+function repoOf(target) {
+  let dir = existsSync(target) && statSync(target).isFile() ? dirname(target) : target
+  for (;;) {
+    if (existsSync(join(dir, '.git')) || existsSync(join(dir, '.claude/pipeline.config.md'))) return realOf(dir)
+    const up = dirname(dir)
+    if (up === dir) return null
+    dir = up
+  }
+}
+const scopeRoots = targets.map((t) => repoOf(resolve(t)))
+const scoped = !machineView && scopeRoots.every(Boolean)
+const under = (path, roots) => roots.some((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep))
+const logged = readFirings(firingsFile)
+const firings = scoped ? logged.filter((row) => typeof row.repo === 'string' && under(realOf(row.repo), scopeRoots)) : logged
 console.log('')
 console.log('## Hook firings (blocks and denials, by rule)')
+console.log(
+  machineView
+    ? `- scope: the whole machine (--all), ${logged.length} rows`
+    : scoped
+      ? `- scope: rows under ${[...new Set(scopeRoots)].join(', ')} (${firings.length} of ${logged.length} rows in the log; --all for the machine view)`
+      : `- scope: all ${logged.length} rows of the log - a target here does not say which repo it belongs to (a task dir outside any git repo)`,
+)
 if (!firings.length) console.log('- none logged')
 else {
   const perRule = new Map()
   const perTask = new Map()
+  // A block that names several rules writes one row per rule at one moment (firing.mjs `blockWith`): same repo, task, event, tool and ts. Rows from before that shared moment may count as more blocks.
+  const blocks = new Map()
   for (const row of firings) {
     const entry = perRule.get(row.rule) ?? { count: 0, tasks: new Set(), reads: 0 }
     entry.count++
@@ -264,10 +300,12 @@ else {
     perRule.set(row.rule, entry)
     const key = `${row.task ?? '-'}\t${row.rule}`
     perTask.set(key, (perTask.get(key) ?? 0) + 1)
+    const block = [row.repo, row.task, row.event, row.tool, row.ts].join('\t')
+    blocks.set(block, (blocks.get(block) ?? true) && row.read === true)
   }
-  const reads = firings.filter((row) => row.read === true).length
-  console.log(`- firings: ${firings.length} in ${perRule.size} rules, ${reads} on reads (${pct(reads, firings.length)})`)
-  console.log('| Rule | Firings | Tasks | On reads |')
+  const readBlocks = [...blocks.values()].filter(Boolean).length
+  console.log(`- blocks: ${blocks.size} (${firings.length} rule rows: a block that names several rules counts once here, once per rule below) in ${perRule.size} rules, ${readBlocks} on reads (${pct(readBlocks, blocks.size)})`)
+  console.log('| Rule | Rows | Tasks | On reads |')
   console.log('|---|---|---|---|')
   for (const [rule, entry] of [...perRule.entries()].sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))) {
     console.log(`| ${rule} | ${entry.count} | ${entry.tasks.size} | ${entry.reads} |`)

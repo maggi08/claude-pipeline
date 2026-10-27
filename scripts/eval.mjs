@@ -39,7 +39,9 @@
  * an agent case runs as a real subagent under a thin haiku parent session (stream-json, --include-hook-events), so PreToolUse(Agent), SubagentStart,
  * SubagentStop and agent-guard fire as in production. The graded summary is the subagent's own result (the Agent tool_result), not the parent's retelling,
  * and the subagent's tool calls feed the trace graders. The plugin data directory is a fresh temp one per run (STAGE_PIPELINE_DATA_DIR: Claude Code overwrites
- * CLAUDE_PLUGIN_DATA for hooks, so that variable alone never reached them); nothing of the live data directory is read or written.
+ * CLAUDE_PLUGIN_DATA for hooks, so that variable alone never reached them). The working tree, --ablate and --variant runs carry a pluginDataDir() that honours the override;
+ * a `--ref` tag before 0.19.0 does not, so preparePlugin patches the archived scripts/hooks/pipeline-state.mjs (aborting when the function is not found exactly once);
+ * with that, nothing of the live data directory is read or written. Cases under evals/pending/ (awaiting a discriminating proof) are skipped by --list, --lint, validate.mjs and every run.
  *
  * Expectations in case.json (deterministic graders are the floor):
  *   expect / forbid       regexps over the report in checks/ (plus the final message for expect)
@@ -96,7 +98,7 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { wantedFor, loadProfile } from '../plugins/stage-pipeline/scripts/permission-profile.mjs'
 import {
-  CASES, ROOT, SOURCE_PLUGIN, STATIC_SERVER, appendLedger, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, readCase, readLedger,
+  CASES, ROOT, SOURCE_PLUGIN, STATIC_SERVER, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
   spentSince, subagentRun, toolCalls, walk,
 } from './eval-lib.mjs'
 
@@ -167,22 +169,10 @@ if (opts.flags.has('--lint')) {
 function applyVariant(dir, caseName, variant) {
   const path = join(CASES, caseName, 'variants', `${variant}.json`)
   if (!existsSync(path)) fail(`--variant ${variant}: no ${relative(ROOT, path)}`)
-  const { edits } = JSON.parse(readFileSync(path, 'utf8'))
-  for (const edit of edits) {
-    const file = join(dir, edit.file)
-    if (!existsSync(file)) fail(`variant ${variant}: no file ${edit.file} in the plugin`)
-    const text = readFileSync(file, 'utf8')
-    if (edit.deleteLines) {
-      const re = new RegExp(edit.deleteLines)
-      const lines = text.split('\n')
-      const kept = lines.filter((line) => !re.test(line))
-      if (kept.length === lines.length) fail(`variant ${variant}: /${edit.deleteLines}/ matches no line of ${edit.file}`)
-      writeFileSync(file, kept.join('\n'))
-    } else {
-      const parts = text.split(edit.find)
-      if (parts.length !== 2) fail(`variant ${variant}: «${edit.find.slice(0, 60)}» occurs ${parts.length - 1} times in ${edit.file}, expected once`)
-      writeFileSync(file, parts.join(edit.replace))
-    }
+  try {
+    applyVariantEdits(dir, JSON.parse(readFileSync(path, 'utf8')).edits, variant)
+  } catch (error) {
+    fail(error.message)
   }
 }
 
@@ -204,6 +194,13 @@ function preparePlugin({ overrides, ref, ablate, variant }) {
     execFileSync('tar', ['-x', '-C', base], { input: tar })
     cpSync(join(base, 'plugins/stage-pipeline'), dir, { recursive: true })
     rmSync(join(base, 'plugins'), { recursive: true, force: true })
+    // A tag before 0.19.0 ignores STAGE_PIPELINE_DATA_DIR and would write into the live data directory (M-2): route it to the harness's one.
+    try {
+      patchDataDirOverride(dir)
+    } catch (error) {
+      rmSync(base, { recursive: true, force: true })
+      fail(`--ref ${ref}: ${error.message}`)
+    }
   } else {
     cpSync(SOURCE_PLUGIN, dir, { recursive: true })
     sha = git(ROOT, 'rev-parse', 'HEAD').trim()
@@ -253,7 +250,8 @@ const resultsDir = join(RESULTS, invocation)
 mkdirSync(resultsDir, { recursive: true })
 const labelSlug = plugin.refLabel.replace(/[^\w=,:-]/g, '_')
 
-// Permissions as a user who applied the profile has them: the default groups allowed, `ask` not allowed (denied in dontAsk), `deny` denied.
+// Permissions as a user who applied the profile has them: the default groups allowed, `deny` denied, and every `ask` entry denied too: nobody answers a prompt in a run, and
+// without the entry an ask-gated command that a wider allow pattern covers (`git push *` under `git *`) would go through unasked, which production never does (S-1).
 const profile = loadProfile(SOURCE_PLUGIN)
 const wanted = wantedFor(plugin.dir, profile.defaultGroups, profile)
 const allowed = [...new Set([...wanted.allow, 'Agent', 'Task'])]
@@ -355,7 +353,7 @@ function runDecision(name, attempt, spec, world, dataDir) {
         '--settings', decisionSettings(world.work),
         '--output-format', 'stream-json', '--verbose', '--include-hook-events',
         '--allowedTools', ...allowed, 'AskUserQuestion', ...(world.mcp?.tools ?? []),
-        '--disallowedTools', ...wanted.deny,
+        '--disallowedTools', ...wanted.deny, ...wanted.ask,
         '--max-turns', String(spec.maxTurns ?? 15),
         '--max-budget-usd', String(spec.budgetUsd ?? 1),
       ],
@@ -419,7 +417,7 @@ function runAgent(name, attempt, spec, world, dataDir) {
       ...(main ? ['-p', world.prompt, '--agent', `stage-pipeline:${spec.agent}`] : ['-p', world.prompts.parent, '--model', 'haiku']), ...common, '--add-dir', plugin.dir, ...(world.mcp ? ['--mcp-config', world.mcp.path] : []),
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--allowedTools', ...allowed, ...(world.mcp?.tools ?? []),
-      '--disallowedTools', ...wanted.deny,
+      '--disallowedTools', ...wanted.deny, ...wanted.ask,
       '--max-turns', '8',
       '--max-budget-usd', String(spec.budgetUsd ?? 1),
     ],

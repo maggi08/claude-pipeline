@@ -32,15 +32,15 @@
  *   (reports in checks/ by modification time, critical/major against the lines of "Findings outcome"), user messages after the run closed, commits on the task branch after it closed,
  *   plugin skills and agents never invoked in it, and (once per task) stages that are not logic-only and show no devtools-verify: no report and no spawn naming the stage (a `[x] devtools-verify` box or a `metrics:` checkers entry alone is self-report: printed as «box only», not counted as covered).
  *
- * Transcripts, STAGES.md and reports are untrusted data (plugins/stage-pipeline/references/untrusted-content.md): they are parsed, never obeyed; only counts, ids, paths and short heads are printed.
+ * Transcripts, STAGES.md and reports are untrusted data (plugins/stage-pipeline/references/untrusted-content.md): they are parsed, never obeyed; only counts, ids, paths and short heads are printed - never the text of a command (a Bash source edit shows the program name and the target path) or of a person's message (a timestamp and a length).
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { savedScreenshotPath } from './eval-lib.mjs'
-import { rulesByHead } from './hook-rules.mjs'
+import { matchScreenshotReads, savedScreenshotPath, textOf } from './eval-lib.mjs'
+import { HOOKS, rulesByHead } from './hook-rules.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_PLUGIN = join(HERE, '../plugins/stage-pipeline')
@@ -77,9 +77,6 @@ function sessionFilesOf(path) {
     .sort()
     .map((name) => join(path, name))
 }
-
-const textOfContent = (content) =>
-  typeof content === 'string' ? content : Array.isArray(content) ? content.map((block) => (typeof block === 'string' ? block : block?.text ?? '')).join('\n') : ''
 
 // A user message that is a person's, not the harness's: not a tool result, not a system-reminder, a slash-command echo, a hook or task notification, a compact summary.
 const HARNESS_USER = /^\s*(?:<system-reminder>|<command-|<local-command|<task-notification|<user-prompt-submit-hook|Caveat:|\[Request interrupted|This session is being continued|\[Subagent hand-back\]|<bash-|<ide_)/
@@ -137,17 +134,17 @@ function readTranscript(file, needles) {
       if (Array.isArray(content)) {
         for (const b of content) {
           if (b?.type !== 'tool_result') continue
-          const t = textOfContent(b.content)
+          const t = textOf(b.content)
           if (b.is_error && DENIAL_HEAD.test(t.slice(0, 200)) && /stage-pipeline/.test(t.slice(0, 400))) {
             events.push({ ...base, kind: 'denial', event: (t.match(/^\s*([\w:.-]+)\s+hook/i) ?? [])[1] ?? '', tool: '', text: t.slice(0, 600) })
           } else if (watched.has(b.tool_use_id)) events.push({ ...base, kind: 'result', id: b.tool_use_id, isError: Boolean(b.is_error), saved: b.is_error ? null : savedScreenshotPath(t, {}) })
         }
       }
       if (!o.isSidechain && !o.isMeta && !o.isCompactSummary) {
-        const human = Array.isArray(content) ? (content.some((b) => b?.type === 'tool_result') ? '' : textOfContent(content)) : typeof content === 'string' ? content : ''
+        const human = Array.isArray(content) ? (content.some((b) => b?.type === 'tool_result') ? '' : textOf(content)) : typeof content === 'string' ? content : ''
         const command = human.match(/<command-name>\/?([^<\s]+)<\/command-name>/)?.[1]
         if (command) events.push({ ...base, kind: 'command', name: command.replace(/^stage-pipeline:/, '') })
-        if (human.trim() && !HARNESS_USER.test(human)) events.push({ ...base, kind: 'user', head: human.replace(/\s+/g, ' ').trim().slice(0, 80) })
+        if (human.trim() && !HARNESS_USER.test(human)) events.push({ ...base, kind: 'user', chars: human.trim().length })
       }
     }
   }
@@ -339,7 +336,7 @@ const HOOK_RULES = (() => {
 function denialLabel(e) {
   const byHead = rulesByHead(e.text, HOOK_RULES)
   if (byHead.length) return { rule: byHead.join('|') }
-  const id = e.text.match(/\b(?:journal-gate|git-guard|agent-guard|force-guard|frames-guard)\/[a-z0-9]+(?:-[a-z0-9]+)*/)?.[0]
+  const id = e.text.match(new RegExp(`\\b(?:${HOOKS.join('|')})/[a-z0-9]+(?:-[a-z0-9]+)*`))?.[0]
   if (id) return { rule: id }
   const head = e.text.replace(/^.*?\bhook (?:error|blocking error):\s*/i, '').replace(/^stage-pipeline:\s*/, '').replace(/\s+/g, ' ').slice(0, 70)
   return { rule: `${e.event || 'hook'}${e.tool ? `:${e.tool}` : ''}`, head }
@@ -401,7 +398,7 @@ function auditRun(w, ctx) {
     mid: { confirmedAt: iso(confirmedAt), confirmedExact: w.confirmedAt != null, asksTotal: asks.length, afterConfirmed: midRun.map((e) => ({ at: iso(e.ts), question: e.input.question })) },
     sourceEdits,
     screenshots: screenshotCounts(events, ctx.readsAll),
-    userAfterDone: after.map((e) => ({ at: iso(e.ts), head: e.head })),
+    userAfterDone: after.map((e) => ({ at: iso(e.ts), chars: e.chars })),
     commitsAfterClose: commits,
     neverSkills: ctx.skills.filter((s) => !ownSkills.has(s) && !spawned.has(s)),
     neverAgents: ctx.agents.filter((a) => !spawned.has(a)),
@@ -412,6 +409,18 @@ function auditRun(w, ctx) {
 }
 
 
+/**
+ * The name of the program a command runs (the first word of its first segment that is not `cd`, `export` or a `VAR=value`): the only part of a command the digest prints, next to the target path.
+ * The rest of a command line is untrusted text that may hold a secret (`echo KEY=... >> .env`), so it is never copied into a digest (S-2).
+ */
+const commandName = (command) => {
+  for (const segment of command.split(/&&|\|\||[;|\n]/)) {
+    const word = segment.trim().split(/\s+/).find((w) => w && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
+    if (word && !['cd', 'export', 'set', 'time', 'sudo'].includes(word)) return word.replace(/^.*\//, '').replace(/[^\w.+-]/g, '').slice(0, 24) || 'command'
+  }
+  return 'command'
+}
+
 /** Heredoc bodies and quoted text are data, not commands: dropped before the command is read for writes. */
 const withoutBodies = (command) => command.replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2\b/g, '<<$2').replace(/'[^'\n]*'|"[^"\n]*"/g, "''")
 
@@ -420,11 +429,11 @@ const withoutBodies = (command) => command.replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\
  * `repo` - a target under a given repo; `relative` - a target path relative to a cwd the digest does not know (counted with source, a guess); `opaque` - a write-like command with no readable
  * target (`python3 - <<EOF`, `git apply`, `sed -i` on a variable); `other` - an absolute path under none of the given repos.
  */
-function bashWrite(command, { repoRoots, taskDirs }) {
+export function bashWrite(command, { repoRoots, taskDirs }) {
   const bare = withoutBodies(command)
   const targets = []
   for (const m of bare.matchAll(/(?:^|[^>&0-9<=-])>{1,2}\s*([^\s|;&<>()]+)/g)) targets.push(m[1])
-  for (const m of bare.matchAll(/\bsed\s+(?:-[a-zA-Z]+\s+|-e\s+\S+\s+)*-[a-zA-Z]*i\S*\s+(?:'[^']*'|\S+)\s+([^\s|;&]+)/g)) targets.push(m[1])
+  for (const m of bare.matchAll(/\bsed\s+(?:-(?!e\s)[a-zA-Z]+\s+|-e\s+\S+\s+)*-[a-zA-Z]*i\S*\s+(?:'[^']*'|\S+)\s+([^\s|;&]+)/g)) targets.push(m[1])
   for (const m of bare.matchAll(/\btee\s+(?:-a\s+)?([^\s|;&]+)/g)) targets.push(m[1])
   for (const m of bare.matchAll(/\b(?:cp|mv)\s+(?:-\w+\s+)*\S+\s+([^\s|;&]+)/g)) targets.push(m[1])
   const real = targets.filter((t) => !/^\/dev\//.test(t) && !t.startsWith('&') && t !== "''")
@@ -435,13 +444,13 @@ function bashWrite(command, { repoRoots, taskDirs }) {
   const base = cd && !cd.startsWith('$') ? abs(cd) : null
   const known = real.map((t) => (base && base.startsWith('/') && !abs(t).startsWith('/') && !t.startsWith('$') ? join(base, abs(t)) : abs(t)))
   const inRepo = known.filter((t) => repoRoots.some((r) => t.startsWith(`${r}/`)))
-  if (inRepo.length) return { where: 'repo', label: `${bare.replace(/\s+/g, ' ').slice(0, 60)} -> ${inRepo[0]}` }
+  if (inRepo.length) return { where: 'repo', label: `${commandName(bare)} -> ${inRepo[0]}` }
   const relative = known.filter((t) => !t.startsWith('/') && !t.startsWith('$'))
-  if (relative.length) return { where: 'relative', label: `${bare.replace(/\s+/g, ' ').slice(0, 60)} -> ${relative[0]}` }
+  if (relative.length) return { where: 'relative', label: `${commandName(bare)} -> ${relative[0]}` }
   const elsewhere = known.filter((t) => t.startsWith('/') && !NOT_SOURCE(t) && !taskDirs.some((d) => t.startsWith(`${d}/`)) && !t.startsWith(`${home}/.claude/`))
-  if (elsewhere.length) return { where: 'other', label: `${bare.replace(/\s+/g, ' ').slice(0, 60)} -> ${elsewhere[0]}` }
+  if (elsewhere.length) return { where: 'other', label: `${commandName(bare)} -> ${elsewhere[0]}` }
   if (known.length) return null
-  if (/\bgit\s+(?:apply|checkout\s+--|restore|mv|rm|reset\s+--hard|cherry-pick|revert|merge|rebase)\b|\bsed\s+(?:-\S+\s+)*-[a-zA-Z]*i|\bperl\s+-[a-zA-Z]*i|prettier\s+(?:.*\s)?--write|--fix\b|\b(?:python3?|node)\s+-?\s*<<|\b(?:rm|mv|cp|touch|patch|install)\s/.test(bare)) return { where: 'opaque', label: bare.replace(/\s+/g, ' ').slice(0, 60) }
+  if (/\bgit\s+(?:apply|checkout\s+--|restore|mv|rm|reset\s+--hard|cherry-pick|revert|merge|rebase)\b|\bsed\s+(?:-\S+\s+)*-[a-zA-Z]*i|\bperl\s+-[a-zA-Z]*i|prettier\s+(?:.*\s)?--write|--fix\b|\b(?:python3?|node)\s+-?\s*<<|\b(?:rm|mv|cp|touch|patch|install)\s/.test(bare)) return { where: 'opaque', label: commandName(bare) }
   return null
 }
 
@@ -455,12 +464,6 @@ function implementedStages(spawns) {
   return [...found].sort((a, b) => Number(a) - Number(b))
 }
 
-/** A path as the transcript names it, made comparable: relative paths against the taker's cwd, macOS /private/tmp and /private/var as /tmp and /var. */
-function shotKey(path, cwd) {
-  const full = !path.startsWith('/') && cwd ? resolve(cwd, path) : path
-  return full.replace(/^\/private(?=\/(?:tmp|var)\/)/, '')
-}
-
 /**
  * Screenshots taken in the events, against the Reads of the same files (`readsAll` - every Read of the pool, with its time).
  * The file is the one the tool SAYS it saved («Saved screenshot to …», which rewrites x.jpg to x.jpeg when `format` is jpeg), the requested filePath only when the result has no such line.
@@ -471,22 +474,9 @@ function screenshotCounts(events, readsAll) {
   const failed = new Set(events.filter((e) => e.kind === 'result' && e.isError).map((e) => e.id))
   const savedOf = new Map(events.filter((e) => e.kind === 'result' && !e.isError && e.saved).map((e) => [e.id, e.saved]))
   const ok = taken.filter((e) => !failed.has(e.id))
-  const files = new Map() // key -> [{ ts, read }]
   const pathOf = (e) => (e.input.filePath ? savedOf.get(e.id) ?? e.input.filePath : null) // no filePath asked: the image comes back inline, whatever the server also wrote to a temp file
   const inline = ok.filter((e) => !pathOf(e)).length
-  for (const e of ok.filter((x) => pathOf(x)).sort((a, b) => a.ts - b.ts)) {
-    const key = shotKey(pathOf(e), e.cwd)
-    files.set(key, [...(files.get(key) ?? []), { ts: e.ts, read: false }])
-  }
-  const relative = [...files.keys()].filter((key) => !key.startsWith('/')) // no cwd known: matched by the tail of the Read path
-  for (const r of [...readsAll].sort((a, b) => a.ts - b.ts)) {
-    const rk = shotKey(r.path, null)
-    const key = files.has(rk) ? rk : relative.find((k) => rk.endsWith(`/${k.replace(/^\.\//, '')}`))
-    // a Read marks the latest take of that path before it
-    const before = (key ? files.get(key) : []).filter((t) => t.ts <= r.ts)
-    if (before.length) before.at(-1).read = true
-  }
-  const withFile = [...files.values()].flat()
+  const withFile = matchScreenshotReads(ok.filter((x) => pathOf(x)).map((e) => ({ path: pathOf(e), cwd: e.cwd, ts: e.ts })), readsAll)
   const bySource = {}
   for (const e of ok) {
     const k = `${e.session}${e.agentId ? `#agent-${e.agentId}` : ''}`
@@ -749,7 +739,7 @@ function renderRun(run, lines) {
   lines.push(`- findings vs ledger (reports whose last modification falls in the window): ${f.length} reports; critical ${sum(f, 'critical')}, major ${sum(f, 'major')}; ledger lines ${sum(f, 'lines')} (fixed ${sum(f, 'fixed')}, false ${sum(f, 'false')}, blocker ${sum(f, 'blocker')}, user ${sum(f, 'user')}, no outcome ${sum(f, 'none')})`)
   for (const r of f.filter((x) => x.critical + x.major > x.lines)) lines.push(`  - ${r.file}: critical ${r.critical}, major ${r.major}, ledger lines ${r.lines}${r.hasLedger ? '' : ' (no "Findings outcome" section)'}`)
   lines.push(`- user messages after done: ${run.closed ? run.userAfterDone.length : 'n/a (run not closed)'}`)
-  for (const m of run.userAfterDone.slice(0, 5)) lines.push(`  - ${m.at}: "${m.head}"`)
+  for (const m of run.userAfterDone.slice(0, 5)) lines.push(`  - ${m.at}: ${m.chars} characters`)
   lines.push(`- commits after close: ${run.commitsAfterClose.list.length}${run.commitsAfterClose.note ? ` (${run.commitsAfterClose.note})` : ''}`)
   for (const c of run.commitsAfterClose.list.slice(0, 8)) lines.push(`  - ${c.sha} ${c.at.slice(0, 10)} ${c.repo}: ${c.subject}`)
   lines.push(`- plugin skills never invoked in the run (${run.neverSkills.length}): ${run.neverSkills.join(', ') || 'none'}`)
