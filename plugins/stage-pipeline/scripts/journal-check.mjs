@@ -35,8 +35,13 @@ import {
   CLOSED_WORD,
   DEAD_CODE_REMOVE,
   DOCTOR_LINE,
+  EFFECT_NEXT_TO_VERIFY,
   LEDGER_HEADING,
   NO_VISUAL_REFERENCE,
+  READBACK_PROOF,
+  REQUEST_PROOF,
+  RERUN_REPORT,
+  RERUN_SCREEN,
   STAGE_FILE,
   SUMMARY_STANDARD,
   UNVERIFIED_HEADING,
@@ -639,7 +644,7 @@ export function languageViolation(text, name, language) {
 }
 
 /** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
-export function reportViolations(path, language = null, { fresh = false, strict = false, map = false } = {}) {
+export function reportViolations(path, language = null, { fresh = false, strict = false, map = false, v020 = false } = {}) {
   const read = reportRead(path)
   const name = basename(path)
   if (read.problem === 'missing') return []
@@ -647,7 +652,107 @@ export function reportViolations(path, language = null, { fresh = false, strict 
   const { text } = read
   // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
   const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
-  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map)].filter(Boolean)
+  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map), ...(v020 ? [...effectViolations(text, name, dirname(dirname(path))), ...rerunViolations(text, name, dirname(dirname(path)))] : [])].filter(Boolean)
+}
+
+/** The AC ids the task's STAGES.md and STAGES-ARCHIVE.md tag `[effect]` (stage 9: a criterion whose action sends something to the server). */
+export function effectCriteria(taskDir) {
+  const ids = new Set()
+  for (const line of journalText(taskDir).split('\n')) {
+    // Only a criterion definition line (`- AC-x.y …` / `- \`AC-x.y\` …`) is tagged; the tag stands outside backticks, next to the verifier tag.
+    const head = line.match(/^\s*[-*]\s+`?AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)`?(.*)$/)
+    if (!head) continue
+    const rest = head[2].replace(/`[^`]*`/g, '')
+    if (EFFECT_NEXT_TO_VERIFY.test(rest)) ids.add(head[1])
+  }
+  return ids
+}
+
+/** The criteria a report passes, for the `[effect]` rule: the verdict stands right after the id (`AC-x.y — PASS`, `AC-x.y: PASS`, a compact `4.5 PASS` run). The word elsewhere on the line and a line under "Could not verify" are not a PASS. */
+function passedIds(text, wanted) {
+  const passed = new Set()
+  let unverified = false
+  for (const line of text.split('\n')) {
+    if (/^#/.test(line)) unverified = /could not verify|не удалось проверить/i.test(line)
+    if (unverified || !line.includes('PASS')) continue
+    for (const match of line.matchAll(PASS_RUN)) for (const [id] of match[1].matchAll(/\d+[a-z]?(?:\.\d+[a-z]?)+/g)) if (wanted.has(id)) passed.add(id)
+    if (/\bFAIL\b/.test(line)) continue
+    for (const id of wanted) if (new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)[\\s\x60*]*[|:—–-]*[\\s*]*PASS\\b`).test(line)) passed.add(id)
+  }
+  return passed
+}
+
+/** Every line that names `AC-<id>`, each with the detail lines under it (up to 6, to a blank line, a heading or another criterion). */
+function mentionsOf(text, id) {
+  const lines = text.split('\n')
+  const own = new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)`)
+  const found = []
+  for (const [index, line] of lines.entries()) {
+    if (!own.test(line)) continue
+    found.push(line)
+    for (const next of lines.slice(index + 1, index + 7)) {
+      if (!next.trim() || /^#/.test(next) || /AC-\d/.test(next)) break
+      found.push(next)
+    }
+  }
+  return found.join('\n')
+}
+
+/**
+ * VT-4 0.20 (stage 9): a PASS on an `[effect]` criterion names the request (`METHOD /path … status`) and a read-back (a reload or a second view).
+ * Precedents: a contract that did not persist, a status and a questionnaire that were not saved — the screen showed the new state, the server never got it.
+ * FAIL, not checked and deferred criteria are not touched.
+ */
+export function effectViolations(text, name, taskDir = null) {
+  if (reportChecker(name) !== 'devtools-verify' || !taskDir || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
+  const effects = effectCriteria(taskDir)
+  if (!effects.size) return []
+  const found = []
+  for (const id of passedIds(text, effects)) {
+    const evidence = mentionsOf(text, id)
+    const missing = [!REQUEST_PROOF.test(evidence) && 'the request (`METHOD /path … status`, from list_network_requests / get_network_request)', !READBACK_PROOF.test(evidence) && 'the read-back (after a reload or from a second view)'].filter(Boolean)
+    if (missing.length)
+      found.push({
+        rule: 'no-effect-proof',
+        id: name,
+        message:
+          `checks/${name}: AC-${id} is tagged [effect] and gets a PASS, but the report names no ${missing.join(' and no ')}. A screen that shows the new state does not prove the server got it ` +
+          '(skill devtools-verify, "Effects"; the Russian forms are in references/language.md). A criterion you could not prove is `not checked` or goes to "Could not verify", not PASS.',
+      })
+  }
+  return found
+}
+
+/** The re-run artifact a `fixed` line cites, or null: a recheck report that exists in `checks/` (not the report itself) or a screenshot under `screens/`. */
+function citedRerun(entry, name, taskDir) {
+  for (const word of entry.split(/[^\w./-]+/).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
+    if (word.length > 200) continue
+    const base = word.split('/').pop()
+    if (RERUN_REPORT.test(word) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
+    if (RERUN_SCREEN.test(word) && (!taskDir || [join(taskDir, word), join(taskDir, 'checks', word), join(taskDir, 'checks', 'screens', base), word].some((path) => existsSync(path)))) return word
+  }
+  return null
+}
+
+/**
+ * VT-4 0.20 (stage 9): a `fixed` outcome in a devtools-verify report cites a re-run artifact — the recheck report (`devtools-verify-<stage>-r<k>.md`, `…-fresh.md`)
+ * or a `checks/screens/` path. `fixed: file:line` alone says the code changed, not that the page now behaves (the fix recheck went by `file:line` only).
+ */
+export function rerunViolations(text, name, taskDir = null) {
+  if (reportChecker(name) !== 'devtools-verify') return []
+  const found = []
+  for (const entry of ledgerEntries(text) ?? []) {
+    if (disposition(entry) !== 'fixed' || citedRerun(entry, name, taskDir)) continue
+    const shown = entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').slice(0, 90)
+    found.push({
+      rule: 'no-rerun',
+      id: name,
+      message:
+        `checks/${name}: "${shown}" — a runtime finding is closed as fixed only with a re-run artifact: the recheck report \`checks/devtools-verify-<stage>-r<k>.md\` (or \`-fresh.md\`) that exists, ` +
+        'or a `checks/screens/` path (stage-check, Step 3.2). `fixed: file:line` shows the code changed, not that the page behaves.',
+    })
+  }
+  return found
 }
 
 /** The "Visual reference" of the stage a report belongs to (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), or null. */
@@ -794,7 +899,7 @@ const closedForceFingerprints = (taskDir) =>
  * Snapshot v1 (0.12–0.13) kept only lines with ✅ and skip: at the first look of a new version all current lines are
  * added to it, except 0.12 violations that appeared after the snapshot — those keep reminding about themselves. `reports` are the names of reports caught at the first look: the language is checked only for reports outside this set
  * (the file path and creation time are unreliable: Edit replaces a file through rename). Reports written before that moment do not need an outcome: a task in progress
- * does not have to rewrite closed stages. `ledgerOld` are the reports there at the 0.18 migration (the 0.18 report rules, stages 4 and 5 of VT-1), `since018` and `forceSeen` —
+ * does not have to rewrite closed stages. `ledgerOld` are the reports there at the 0.18 migration (the 0.18 report rules, stages 4 and 5 of VT-1), `runtimeOld` — those there at the 0.20 one (stages 8 and 9 of VT-1), `since018` and `forceSeen` —
  * the day of that migration and the Force headings there then, dated before that day (`releaseGate`).
  */
 export function baselineInfo(dataDir, taskDir) {
@@ -804,6 +909,7 @@ export function baselineInfo(dataDir, taskDir) {
     ledgerSince: snapshot.ledgerSince,
     reports: new Set(snapshot.reports),
     ledgerOld: new Set(snapshot.ledgerOld),
+    runtimeOld: new Set(snapshot.runtimeOld),
     since: snapshot.since018,
     forceSeen: new Set(snapshot.forceSeen),
     since0182: snapshot.since0182,
@@ -827,6 +933,8 @@ export function baselineInfo(dataDir, taskDir) {
       // VT-1 0.18 (D7): the reports already there are old for the 0.18 report rules — the stage 4 ones (a bare `[live: user-side]`, the `doctor:` / `auth:` lines)
       // and the stage 5 ones (weak dismissals, a critical needs a fresh report); only a report written after this migration is judged by them.
       ledgerOld: Array.isArray(data.ledgerOld) ? data.ledgerOld : reportNames(taskDir),
+      // VT-4 0.20 (stage 9): the reports already there are old for the three 0.20 report rules (the `map:` line, the `[effect]` proof, the re-run artifact of `fixed`).
+      runtimeOld: Array.isArray(data.runtimeOld) && Array.isArray(data.ledgerOld) ? data.runtimeOld : reportNames(taskDir),
       // The day of this migration and the Force runs already open or closed, dated before it: the receipts rules and the ticket-titled rule apply only to a run
       // opened after them (`releaseGate`).
       since018,
@@ -866,6 +974,7 @@ export function baselineInfo(dataDir, taskDir) {
     liveSeen: true,
     dismissSeen: true,
     ledgerOld: reportNames(taskDir),
+    runtimeOld: reportNames(taskDir),
     since018: localDate(new Date(now)),
     forceSeen: forceKeysBefore(text, localDate(new Date(now))),
     since0182: localDate(new Date(now)),
@@ -1086,12 +1195,14 @@ function main(args) {
   const language = journal.text === undefined ? null : taskLanguage(journal.text)
   // The stage 5 rules (weak dismissals, a critical needs a fresh report) apply to reports that were not there at the first look: the same `ledgerOld` as the hook reads.
   // Read-only (a manual run writes no snapshot); with no snapshot yet every report counts as new.
-  const ledgerOld = new Set(readBaseline(pluginDataDir(), taskDir)?.ledgerOld ?? [])
+  const snapshot = readBaseline(pluginDataDir(), taskDir)
+  const ledgerOld = new Set(snapshot?.ledgerOld ?? [])
+  const runtimeOld = new Set(snapshot?.runtimeOld ?? [])
   const reports = reportNames(taskDir).flatMap((name) => {
     const path = join(taskDir, 'checks', name)
     const strict = !ledgerOld.has(name)
     // Summary and geometry are rules for new reports: old ones lack them by construction, without --ledger it is noise.
-    const all = reportViolations(path, language, { strict }).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
+    const all = reportViolations(path, language, { strict, v020: !runtimeOld.has(name) }).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
     return args.includes('--ledger') && reportChecker(name)
       ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...reportLedgerViolations(taskDir, name, { complete: true, strict })]
       : all

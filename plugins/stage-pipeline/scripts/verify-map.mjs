@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { configRoot, mainRoot, readConfig } from './hooks/pipeline-state.mjs'
@@ -11,6 +11,7 @@ import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATU
  * devtools-verify drives). One script holds it, the skills call it instead of restating the rules. Read-only except `--init`, which writes the README once.
  *
  *   node verify-map.mjs --changed [--base <ref>] [--feature-map <FEATURE-MAP.md>] [--cwd <dir>]
+ *   node verify-map.mjs --radius <file>… [--depth N] [--feature-map <FEATURE-MAP.md>] [--cwd <dir>]
  *   node verify-map.mjs --init [--language en|ru] [--cwd <dir>]
  *   node verify-map.mjs --lint <feature-file>
  *
@@ -24,6 +25,12 @@ import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATU
  *     map: <dir> · <N> features
  *     route /orders/:id — mapped: orders          route /new — unmapped
  *     feature touched: orders                      warning: <why>
+ * --radius  `--radius <file>… [--depth N] [--feature-map <FEATURE-MAP.md>]`: the live radius of a fix that touches shared modules. The importers of the given files (a static
+ *   grep of import specifiers, like root-cause Step 3, followed up to page files, at most `--depth` hops, default 4) → the routes of those pages (the `--changed` mapping) →
+ *   the map features of those routes with the primary path of each (the first entry of the feature file's "How to get to it"). No map: the routes only. Output, one line each:
+ *     radius: <N> module(s) → <M> file(s), depth <= 4 · <map dir> | no map — routes only
+ *     route /orders/:id — mapped: orders (via pages/orders/[id].vue)     route /legacy — unmapped (via pages/legacy.vue)
+ *     feature orders — primary path: Header → «Orders» (features/orders.md)
  * --init     writes the README from the config values only (dev url, app marker, baseline routes, breakpoints, e2e); a value the config lacks is the explicit
  *   "not set" slot. Never overwrites an existing README. Exit 0 also when it left one alone.
  * --lint     a feature file has the header line (`Routes:` and `Status: draft | verified <date> <sha>`), the four sections, and no file paths. Exit 1 with one line per problem.
@@ -301,6 +308,154 @@ export function changedReport({ top, config, base = null, featureMap = null, map
   return { lines, code: 0 }
 }
 
+// --- live radius ---
+
+const SOURCE_EXT = /\.(?:vue|tsx?|jsx?|mjs|cjs|mts|cts|svelte|astro)$/
+const RESOLVE_EXT = ['', '.vue', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.svelte', '.astro', '/index.vue', '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/index.mjs']
+const ALIAS_PREFIX = /^(?:@@?|~~?)\/|^#(?=[\w/])/
+const IMPORT_SPEC = /(?:\bimport|\bexport)\b[^'"`;]*?\bfrom\s*['"]([^'"\n]+)['"]|\bimport\s*['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/g
+const FILE_CAP = 20000
+const SIZE_CAP = 512 * 1024
+const noExt = (file) => file.replace(SOURCE_EXT, '')
+
+function sourceFiles(top) {
+  const listed = git(top, 'ls-files', '--cached', '--others', '--exclude-standard')
+  if (listed === null) throw new Error('git ls-files failed — not a git checkout')
+  return listed.split('\n').filter((file) => SOURCE_EXT.test(file) && !file.endsWith('.d.ts') && !/(?:^|\/)(?:node_modules|dist|\.nuxt|\.next|\.output|build|coverage)\//.test(file)).slice(0, FILE_CAP)
+}
+
+/** The reverse import graph of the repo's source files: `file → Set<importer>`. Relative specifiers are resolved exactly, `@/` `~/` `#` aliases by the end of the path; a `<Name>` tag of a `.vue` file names a Nuxt auto-imported component. */
+export function importGraph(top, files = sourceFiles(top)) {
+  const set = new Set(files)
+  const byBase = new Map()
+  for (const file of files) {
+    const stem = noExt(file)
+    for (const key of new Set([basename(stem), basename(stem) === 'index' ? basename(dirname(stem)) : null].filter(Boolean))) byBase.set(key, [...(byBase.get(key) ?? []), file])
+  }
+  const importers = new Map()
+  const link = (target, importer) => {
+    if (target === importer) return
+    const known = importers.get(target) ?? new Set()
+    known.add(importer)
+    importers.set(target, known)
+  }
+  const components = files.filter((file) => file.endsWith('.vue') && /^[A-Z]/.test(basename(file))).map((file) => ({ file, name: basename(file, '.vue') }))
+  for (const file of files) {
+    let text
+    try {
+      if (statSync(join(top, file)).size > SIZE_CAP) continue
+      text = readFileSync(join(top, file), 'utf8')
+    } catch {
+      continue
+    }
+    for (const match of text.matchAll(IMPORT_SPEC)) {
+      const spec = match[1] ?? match[2] ?? match[3] ?? match[4]
+      if (!spec) continue
+      if (spec.startsWith('.')) {
+        const base = join(dirname(file), spec).split(sep).join('/')
+        const hit = RESOLVE_EXT.map((ext) => `${base}${ext}`).find((candidate) => set.has(candidate))
+        if (hit) link(hit, file)
+      } else if (ALIAS_PREFIX.test(spec)) {
+        const path = spec.replace(ALIAS_PREFIX, '').replace(/\.(?:vue|[mc]?[jt]sx?)$/, '').replace(/\/index$/, '')
+        const last = basename(path)
+        for (const candidate of byBase.get(last) ?? []) {
+          const stem = noExt(candidate).replace(/\/index$/, '')
+          if (stem === path || stem.endsWith(`/${path}`)) link(candidate, file)
+        }
+      }
+    }
+    if (file.endsWith('.vue') || file.endsWith('.tsx') || file.endsWith('.jsx'))
+      for (const { file: component, name } of components) {
+        const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
+        if (component !== file && (text.includes(`<${name}`) || text.includes(`<${kebab}`)) && new RegExp(`<(?:${name}|${kebab})(?=[\\s/>])`).test(text)) link(component, file)
+      }
+  }
+  return importers
+}
+
+/** The first entry of a feature file's "How to get to it": the primary path the recheck drives. `null` — the file has no such entry. */
+export function primaryPath(text) {
+  const lines = text.split('\n')
+  const start = lines.findIndex((line) => MAP_FEATURE_SECTIONS[1][1].test(line))
+  if (start < 0) return null
+  for (const line of lines.slice(start + 1)) {
+    if (/^##\s/.test(line)) break
+    const item = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/)
+    if (item) return item[1].trim()
+  }
+  return null
+}
+
+export function radiusReport({ top, config, files, depth = 4, featureMap = null, mapRoots = [top], graph = null }) {
+  let dir
+  try {
+    dir = mapDir(config)
+  } catch (error) {
+    return { lines: [`verify-map: ${error.message}`], code: 2 }
+  }
+  const targets = [...new Set(files.map((file) => file.split(sep).join('/')))]
+  if (!targets.length) return { lines: ['verify-map: --radius needs at least one file'], code: 2 }
+  let importers
+  try {
+    importers = graph ?? importGraph(top)
+  } catch (error) {
+    return { lines: [`verify-map: ${error.message}`], code: 2 }
+  }
+  // breadth-first from the changed modules up to the pages, at most `depth` hops
+  const hops = new Map(targets.map((file) => [file, 0]))
+  const via = new Map()
+  let next = []
+  for (let frontier = targets, hop = 1; frontier.length && hop <= depth; hop += 1, frontier = next) {
+    next = []
+    for (const file of frontier)
+      for (const importer of importers.get(file) ?? []) {
+        if (hops.has(importer)) continue
+        hops.set(importer, hop)
+        via.set(importer, file)
+        next.push(importer)
+      }
+  }
+  const readme = mapReadme(mapRoots, config)
+  const features = readme ? readMap(readme) : null
+  const routes = new Map()
+  const warnings = []
+  const unknown = []
+  for (const file of hops.keys()) {
+    const result = routeOfFile(file, top)
+    if (!result) {
+      if (/\.(?:vue|svelte|tsx|jsx)$/.test(file)) unknown.push(file)
+      continue
+    }
+    if (result.warning) warnings.push(result.warning)
+    else if (result.route !== undefined) routes.set(normalizeRoute(result.route), { route: result.route, file })
+  }
+  const rows = featureMap ? featureMapRows(readText(featureMap) ?? '') : []
+  const known = new Map()
+  for (const row of rows) {
+    const key = row.route.startsWith('/') ? row.route.replace(/`/g, '').split(/\s/)[0] : null
+    if (!key) continue
+    if (row.id) known.set(normalizeRoute(key), row.id)
+    const named = [...hops.keys()].find((file) => rowNamesFile(row.files, file))
+    if (named) routes.set(normalizeRoute(key), { route: key, file: named })
+  }
+  if (!routes.size && unknown.length && !rows.length)
+    warnings.push(`${unknown.slice(0, 3).join(', ')}${unknown.length > 3 ? ` and ${unknown.length - 3} more` : ''}: no nuxt.config / next.config above and no --feature-map row names ${unknown.length > 1 ? 'them' : 'it'} — routes are not derived (React Router and other routers: pass --feature-map)`)
+  const lines = [`radius: ${targets.length} module${targets.length === 1 ? '' : 's'} → ${hops.size - targets.length} importer file${hops.size - targets.length === 1 ? '' : 's'}, depth <= ${depth} · ${features ? dir : 'no map — routes only'}`]
+  const touched = new Map()
+  for (const [key, { route, file }] of routes) {
+    const feature = features ? (featureFor(features, route) ?? (known.has(key) ? features.find((entry) => entry.id === known.get(key)) : undefined)) : undefined
+    if (feature) touched.set(feature.id, feature)
+    lines.push(`route ${route} — ${features ? (feature ? `mapped: ${feature.id}` : 'unmapped') : 'no map'} (via ${file})`)
+  }
+  for (const feature of touched.values()) {
+    const path = primaryPath(readText(join(dirname(readme), feature.file)) ?? '')
+    lines.push(`feature ${feature.id} — primary path: ${path ?? 'none written — see the feature file'} (${feature.file})`)
+  }
+  for (const warning of warnings) lines.push(`warning: ${warning}`)
+  if (!routes.size && !warnings.length) lines.push('no page imports these modules within the depth')
+  return { lines, code: 0 }
+}
+
 export function readmeText({ config, language = 'en', base, branch, date, widths = null }) {
   const t = MAP_TEXT[language] ?? MAP_TEXT.en
   const slot = t.notSet
@@ -404,11 +559,22 @@ function main(args) {
     const featureMap = flag('--feature-map')
     out(changedReport({ top, config, base: flag('--base') ?? null, featureMap: featureMap ? resolve(featureMap) : null, mapRoots: [top, mainRoot(cwd)] }))
   }
+  if (args.includes('--radius')) {
+    const at = args.indexOf('--radius')
+    const named = []
+    for (const arg of args.slice(at + 1)) {
+      if (arg.startsWith('--')) break
+      named.push(relative(top, resolve(realpathSync(cwd), arg)))
+    }
+    const featureMap = flag('--feature-map')
+    const depth = Number.parseInt(flag('--depth') ?? '4', 10)
+    out(radiusReport({ top, config, files: named, depth: Number.isInteger(depth) && depth > 0 ? Math.min(depth, 12) : 4, featureMap: featureMap ? resolve(featureMap) : null, mapRoots: [top, mainRoot(cwd)] }))
+  }
   if (args.includes('--init')) {
     const language = flag('--language') ?? configValue(config, 'language') ?? 'en'
     out(initReadme({ top, config, language: language === 'ru' ? 'ru' : 'en' }))
   }
-  console.error('Usage: node verify-map.mjs --changed [--base <ref>] [--feature-map <file>] | --init [--language en|ru] | --lint <feature-file>')
+  console.error('Usage: node verify-map.mjs --changed [--base <ref>] [--feature-map <file>] | --radius <file>… [--depth N] [--feature-map <file>] | --init [--language en|ru] | --lint <feature-file>')
   process.exit(2)
 }
 

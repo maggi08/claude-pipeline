@@ -510,3 +510,17 @@ export const NO_VALUE = /^(?:—|-|–|none|no|нет|n\/a)$/i
 export const ENTRY_POINTS_HEADING = /^##\s*(?:Entry points|Точки входа)\s*$/i
 export const ENTRY_ROUTE_COLUMN = /^(?:Route|Маршрут)/i
 export const ENTRY_FILES_COLUMN = /^(?:Files|Файлы)/i
+
+// --- proof of effects and re-observation (stage 9) ---
+
+/** The `[effect]` tag of an acceptance criterion, next to the verifier tag: `— [verify: devtools-verify] [effect]` (Russian form: language.md). */
+export const EFFECT_TAG = /\[(?:effect|эффект)\]/i
+/** The tag in its place on a criterion line: right beside the verifier tag, either order. */
+export const EFFECT_NEXT_TO_VERIFY = /\[verify:[^\]]*\]\s*\[(?:effect|эффект)\]|\[(?:effect|эффект)\]\s*\[verify:[^\]]*\]/i
+/** A request line in a report: `POST /api/contracts → 201 …` — a method, a path (or a URL) and a status code within the same line; the status is read after the whole path token, a digit inside the path (`/orders/123`) is not one. */
+export const REQUEST_PROOF = /\b(?:GET|POST|PUT|PATCH|DELETE)[ \t]+(?:https?:\/\/\S+|\/\S*)(?=\s|$)[^\n]{0,160}?(?<![\d.])[1-5]\d\d(?![\d.])/
+/** The read-back of an effect: the state read again after a reload or from a second view (either language). */
+export const READBACK_PROOF = /read[- ]?back|after\s+(?:a\s+|the\s+)?(?:page\s+)?(?:reload|refresh)|reload(?:ed)?|second\s+(?:view|tab|page|session)|another\s+(?:view|tab)|перезагруз|обновлени[ея]\s+страницы|прочита\w*\s+(?:обратно|заново|снова)|чтени[ея]\s+после|втор(?:ой|ом|ая)\s+(?:вкладк|вид|страниц|сесси)|друго[йм]\s+(?:вкладк|виде|вид)/i
+/** A re-run artifact a runtime `fixed` cites: the recheck report (`devtools-verify-<stage>-r<k>.md`, `…-fresh.md`) or a screenshot under `checks/screens/`. */
+export const RERUN_REPORT = /devtools-verify[\w.-]*-(?:r\d+|fresh[\w-]*)\.md$/i
+export const RERUN_SCREEN = /(?:^|\/)screens\/[\w.-]+\.(?:png|jpe?g|webp)$/i

@@ -225,10 +225,12 @@ for (const task of tasks) {
   // The language is checked only for a report that did not exist when the task was first seen: an old report is not rewritten, however it is edited.
   // The 0.18 report rules — the honest live form and the `doctor:` / `auth:` lines (stage 4), weak dismissals and a critical needing a fresh report (stage 5) — look only at
   // reports that were not there at the 0.18 migration (`ledgerOld`): a report written under 0.16 after the first look stays editable without a made-up `doctor:` line.
-  const { reports: known, ledgerOld } = baselineInfo(pluginDataDir(), task.dir)
+  // The 0.20 report rules (the `map:` line, the `[effect]` proof, the re-run artifact of `fixed`) look only at reports that were not there at the 0.20 migration (`runtimeOld`).
+  const { reports: known, ledgerOld, runtimeOld } = baselineInfo(pluginDataDir(), task.dir)
   const reports = written.flatMap((path) => {
     const after018 = !ledgerOld.has(basename(path))
-    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: Boolean(mapReadme([state.worktree, state.root], state.config)) })
+    const after020 = !runtimeOld.has(basename(path))
+    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme([state.worktree, state.root], state.config)), v020: after020 })
   })
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)

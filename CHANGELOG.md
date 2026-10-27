@@ -5,6 +5,27 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.20.0 — 2026-10-27
+
+### A verify map per repo, proof that effects reached the server, repro first, a live radius (VT-1, stages 8–9, lane VT-4)
+
+**A verify map: user journeys per repo, driven and kept fresh by devtools-verify (stage 8).**
+- A repo can hold `.claude/verify/` (the `verify_map:` key of "Task state"): a `README.md` (instance, baseline preconditions, driving conventions, proof rules, the feature list) and `features/<id>.md` (routes, how a user gets there, how to drive it with Chrome DevTools MCP, gotchas). No README, no map: every command below prints one line and devtools-verify behaves as before.
+- `scripts/verify-map.mjs --changed` maps the changed page files to routes and to map features (Nuxt and Next by file, React Router through the FEATURE-MAP entry table, any other router a warning, never a guess). `--init` writes the README from the config values only (what the config lacks is the explicit "not set"). `--lint` checks a feature file: header line, four sections, no code paths.
+- devtools-verify reads the matching feature files, reaches the stage by the user path, drives every relevant entry point, writes the `map:` line and a `## Map` section (corrections and the `draft → verified` flip, which the orchestrator applies). feature-checker drafts feature files, pipeline-init offers the README.
+
+**A PASS on a server effect carries the request and a read-back (stage 9).**
+- stage-plan turns every cell of the state × action table that sends something to the server into a criterion tagged `[effect]` (the Russian tag is in `references/language.md`) next to the verifier. devtools-verify loads `list_network_requests` and `get_network_request`; its PASS on such a criterion names the request (`POST /api/contracts → 201 {status: signed}`) and a read-back after a reload or from a second view.
+- journal-gate rejects a new devtools-verify report that PASSes an `[effect]` criterion (tags read from STAGES.md and STAGES-ARCHIVE.md) without both, and names what is missing. FAIL, not checked and deferred criteria are not touched.
+
+**`fixed` on a runtime finding cites a re-run artifact (stage 9).** A `fixed` line in a devtools-verify report names a recheck report that exists (`checks/devtools-verify-<stage>-r<k>.md`, or `-fresh.md`) or a `checks/screens/` path; `fixed: file:line` alone is rejected. stage-check, Step 3.2 names the short recheck report `-r<k>`.
+
+**root-cause reproduces a runtime defect before it names a cause (stage 9).** Step 1 launches devtools-verify in repro mode: the broken state observed twice with a reset in between, `not reproduced (2 attempts, <route>)` otherwise; after the fix the same path twice with the same cross-check. From inside stage-implement the repro request goes back to the orchestrator in `Not done`. "Three failed fixes" asks for the premise the failed rounds shared and the observation that would refute it.
+
+**A live radius (stage 9).** `verify-map.mjs --radius <file>…` follows the static importers of the given modules up to the page files (bounded depth), maps them to routes and to map features with each feature's primary path; with no map it prints the routes only. When a fix touches a shared module, the stage-check recheck prompt carries that output and the checker drives each listed path; the final checks send screens of changed shared modules outside the stages to devtools-verify.
+
+**Old tasks are not retrofitted.** The `map:`, `[effect]` and re-run rules apply only to reports written after the plugin first saw the task on this version (a new `runtimeOld` mark in the task snapshot, migrated lazily); reports already on disk stay valid.
+
 ## 0.19.0 — 2026-10-27
 
 ### The plugin keeps a log of its own firings; the final pro-review names its model (VT-3, stages 6–7)

@@ -3424,7 +3424,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     const newReport = reportGate('devtools-verify-3.md')
     check('M-1: a report written after the migration — the live-bare and both no-doctor rules fire (fresh/strict wiring of journal-gate)', newReport.decision === 'block' && /without a reason/.test(newReport.text) && /no `doctor:` line/.test(newReport.text) && /no `auth:` line/.test(newReport.text), newReport.text)
     // R8: the EN keys pass, end to end and on the report function.
-    write(mApp, { '.claude/tasks/T-70/checks/devtools-verify-3.md': REPORT_016.replace('stage 2', 'stage 3').replace('\ngeometry', '\ndoctor: ok — http://localhost:3000 answers on / 200\nauth: not logged in — /orders → redirected to /login\n\ngeometry').replace('[live: user-side]', '[live: user-side — the profile is not logged in; /orders → redirected to /login]') + '\n## Findings outcome\n- M-1 — fixed: src/Card.vue:12\n' })
+    write(mApp, { '.claude/tasks/T-70/checks/devtools-verify-3.md': REPORT_016.replace('stage 2', 'stage 3').replace('\ngeometry', '\ndoctor: ok — http://localhost:3000 answers on / 200\nauth: not logged in — /orders → redirected to /login\n\ngeometry').replace('[live: user-side]', '[live: user-side — the profile is not logged in; /orders → redirected to /login]') + '\n## Findings outcome\n- M-1 — fixed: src/Card.vue:12 — re-run checks/devtools-verify-3-r1.md\n', '.claude/tasks/T-70/checks/devtools-verify-3-r1.md': '# devtools-verify, stage 3, recheck\n' })
     const enKeys = reportGate('devtools-verify-3.md')
     check('R8 EN: a fresh report with the English `doctor:` / `auth:` lines and the honest form passes journal-gate', enKeys.decision !== 'block', enKeys.text)
     check('R8 EN: reportViolations with fresh — no no-doctor for the English keys', !jc.reportViolations(join(tdir, 'checks/devtools-verify-3.md'), null, { fresh: true }).some(({ rule }) => rule === 'no-doctor'))
@@ -5699,6 +5699,166 @@ rmSync(retroRoot, { recursive: true, force: true })
   check('M3 verify-map --changed: a short path does not match a longer row path (substring)', !/^route \/cart/m.test(shortOut.stdout) && /^warning: pages\/a\.tsx/m.test(shortOut.stdout), shortOut.stdout)
   writeFileSync(fmShort, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| cart | desktop | /cart | src/pages/a.tsx:3 |\n\n## Data architecture\n')
   check('M3 verify-map --changed: a row path ending with the changed file on a segment boundary matches', /^route \/cart — mapped: cart$/m.test(vm(rrShort, '--changed', '--feature-map', fmShort).stdout))
+
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+}
+
+// ── stage 9 (VT-4): proof of effects, re-observation, live radius — the three 0.20 report rules behind `runtimeOld` ──────────────
+{
+  const dirs = []
+  const put = (root, file, text) => {
+    mkdirSync(dirname(join(root, file)), { recursive: true })
+    writeFileSync(join(root, file), text)
+  }
+  const JOURNAL = '# T-90: task\nLanguage: en\nBranch: `T-90/feat/a`\n\n## Status: stage 9\n\n## Stages\n\n### Stage 9: effects  [status: in-progress]\n- `AC-9.1` WHEN the contract is signed THEN POST /api/contracts saves it — [verify: devtools-verify] [effect]\n- `AC-9.2` WHEN the page opens THEN the title shows — [verify: devtools-verify]\n- `AC-9.3` WHEN the status changes THEN it persists — [verify: devtools-verify] [эффект]\n'
+  const head = '# devtools-verify — stage 9\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not needed — no auth-gated criteria\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n\n## Stage criteria\n'
+  const tail9 = '\n## Could not verify\n- nothing\n'
+  const taskA = mkdtempSync(join(tmpdir(), 'effects-task-'))
+  dirs.push(taskA)
+  put(taskA, 'STAGES.md', JOURNAL)
+  const eff = (criteria) => jc.effectViolations(`${head}${criteria}${tail9}`, 'devtools-verify-9.md', taskA).filter(({ rule }) => rule === 'no-effect-proof')
+
+  // AC-9.1 incident: the screen showed the new state, no request, no read-back
+  check('AC-9.1 incident: a PASS on an [effect] criterion with neither a request nor a read-back is rejected', eff('- `AC-9.1` — PASS, the card shows «Signed» (screenshot `checks/screens/a.png`)\n').length === 1)
+  const noReadback = eff('- `AC-9.1` — PASS, `POST /api/contracts → 201 {status: signed}`\n')
+  check('AC-9.1 incident: a request without a read-back is rejected and the message names the read-back', noReadback.length === 1 && /read-back/.test(noReadback[0].message) && !/no the request/.test(noReadback[0].message), JSON.stringify(noReadback))
+  const noRequest = eff('- `AC-9.1` — PASS, read-back after reload: the card shows «Signed»\n')
+  check('AC-9.1 incident: a read-back without a request is rejected and the message names the request', noRequest.length === 1 && /the request/.test(noRequest[0].message))
+  check('AC-9.1 legitimate: a PASS with the request and a read-back after a reload passes', eff('- `AC-9.1` — PASS, `POST /api/contracts → 201 {status: signed}`; read-back after reload: the card shows «Signed»\n').length === 0)
+  check('AC-9.1 legitimate: the proof may sit in detail lines under the PASS, a second view is a read-back', eff('- `AC-9.1` — PASS\n  - POST /api/contracts 201, body status=signed\n  - read from a second view: /contracts lists it as signed\n').length === 0)
+  check('AC-9.1 legitimate: the Russian read-back (\u0447\u0442\u0435\u043d\u0438\u0435 \u043f\u043e\u0441\u043b\u0435 \u043f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438) passes', eff('- `AC-9.1` — PASS, `POST /api/contracts → 201`; \u0447\u0442\u0435\u043d\u0438\u0435 \u043f\u043e\u0441\u043b\u0435 \u043f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: \u00ab\u041f\u043e\u0434\u043f\u0438\u0441\u0430\u043d\u00bb\n').length === 0)
+  check('AC-9.1 legitimate: the Russian tag [effect] of AC-9.3 is read too — a bare PASS on it is rejected', eff('- `AC-9.3` — PASS, the status is shown\n').length === 1)
+  check('AC-9.1: FAIL, not checked and a PASS on an untagged criterion are not touched', eff('- `AC-9.1` — FAIL, no request after the click\n- `AC-9.3` — not checked, no stand\n- `AC-9.2` — PASS, title «Contracts» at 1440\n').length === 0)
+  check('AC-9.1: two tagged criteria are judged apart — one proven, one bare', eff('- `AC-9.1` — PASS, `POST /api/contracts → 201`; read-back after reload: signed\n- `AC-9.3` — PASS, the status is shown\n').length === 1)
+  put(taskA, 'STAGES-ARCHIVE.md', '### Stage 8: old  [status: done]\n- `AC-8.1` WHEN saved THEN PUT /api/x — [verify: devtools-verify] [effect]\n')
+  check('AC-9.1: a tag in STAGES-ARCHIVE.md counts too', jc.effectViolations(`${head}- \`AC-8.1\` — PASS, the form closed\n${tail9}`, 'devtools-verify-9.md', taskA).length === 1)
+  check('AC-9.1: a task without any [effect] tag is left alone', (() => { const t = mkdtempSync(join(tmpdir(), 'effects-none-')); dirs.push(t); put(t, 'STAGES.md', JOURNAL.replace(/ \[effect\]| \[эффект\]/g, '')); return jc.effectViolations(`${head}- \`AC-9.1\` — PASS, bare\n${tail9}`, 'devtools-verify-9.md', t).length === 0 })())
+  check('AC-9.1: a skipped report and a non-devtools-verify report are left alone', jc.effectViolations('# devtools-verify\nskip: MCP unavailable\n- `AC-9.1` — PASS\n', 'devtools-verify-9.md', taskA).length === 0 && jc.effectViolations(`${head}- \`AC-9.1\` — PASS\n`, 'pro-review-9.md', taskA).length === 0)
+  put(taskA, 'checks/devtools-verify-9.md', `${head}- \`AC-9.1\` — PASS, the card shows «Signed»\n${tail9}`)
+  const rv = (options) => jc.reportViolations(join(taskA, 'checks/devtools-verify-9.md'), null, options).filter(({ rule }) => rule === 'no-effect-proof')
+  check('AC-9.1 gate: through reportViolations the rule fires with v020 and is silent without it (old report)', rv({ fresh: true, v020: true }).length === 1 && rv({ fresh: true }).length === 0)
+
+  // AC-9.2: a runtime `fixed` cites a re-run artifact that exists
+  const fixedReport = (line) => `${head}- \`AC-9.2\` — PASS, title «Contracts»\n${tail9}\n## Findings outcome\n${line}\n`
+  const rerun = (line, task = taskA) => jc.rerunViolations(fixedReport(line), 'devtools-verify-9.md', task).filter(({ rule }) => rule === 'no-rerun')
+  put(taskA, 'checks/devtools-verify-9-r1.md', '# devtools-verify — stage 9, recheck\n')
+  put(taskA, 'checks/screens/after-fix.png', 'png')
+  check('AC-9.2 incident: `fixed: file:line` alone in a devtools-verify ledger is rejected', rerun('- M-1 — fixed: src/Card.vue:12').length === 1)
+  check('AC-9.2 incident: a cited recheck report that does not exist is rejected', rerun('- M-1 — fixed: src/Card.vue:12 — re-run checks/devtools-verify-9-r7.md').length === 1)
+  check('AC-9.2 incident: the report citing itself is not a re-run', rerun('- M-1 — fixed: src/Card.vue:12 — re-run checks/devtools-verify-9.md').length === 1)
+  check('AC-9.2 legitimate: `fixed: file:line — re-run checks/devtools-verify-9-r1.md` passes', rerun('- M-1 — fixed: src/Card.vue:12 — re-run checks/devtools-verify-9-r1.md').length === 0)
+  check('AC-9.2 legitimate: a `-fresh.md` report that exists passes', (() => { put(taskA, 'checks/devtools-verify-9-fresh.md', '# fresh\n'); return rerun('- M-1 — fixed: src/Card.vue:12, rechecked in devtools-verify-9-fresh.md').length === 0 })())
+  check('AC-9.2 legitimate: a `checks/screens/` path that exists passes', rerun('- M-1 — fixed: src/Card.vue:12 — after the fix: checks/screens/after-fix.png').length === 0)
+  check('AC-9.2 legitimate: the Russian outcome with the recheck report passes', rerun('- M-1 — исправлено: src/Card.vue:12 — перепроверка checks/devtools-verify-9-r1.md').length === 0)
+  check('AC-9.2: false / blocker outcomes and a pro-review `fixed` are not touched', rerun('- M-1 — false: measured 12px at 1440, src/Card.vue:12\n- M-2 — B1: needs the stand').length === 0 && jc.rerunViolations(fixedReport('- M-1 — fixed: src/Card.vue:12'), 'pro-review-9.md', taskA).length === 0)
+  put(taskA, 'checks/devtools-verify-9.md', fixedReport('- M-1 — fixed: src/Card.vue:12'))
+  const rr = (options) => jc.reportViolations(join(taskA, 'checks/devtools-verify-9.md'), null, options).filter(({ rule }) => rule === 'no-rerun')
+  check('AC-9.2 gate: through reportViolations the rule fires with v020 and is silent without it (old report)', rr({ v020: true }).length === 1 && rr({}).length === 0)
+
+  // the mark: a fresh snapshot lists the reports on disk in runtimeOld; a 0.18 snapshot without it is migrated lazily and the reports there stay old
+  const mData = mkdtempSync(join(tmpdir(), 'v020-data-'))
+  dirs.push(mData)
+  const info = jc.baselineInfo(mData, taskA)
+  check('0.20 mark: a fresh snapshot carries runtimeOld with the reports already on disk', info.runtimeOld.has('devtools-verify-9.md') && !info.runtimeOld.has('devtools-verify-10.md'))
+  const mFile = snapshotFile(mData, taskA)
+  const snap = JSON.parse(readFileSync(mFile, 'utf8'))
+  delete snap.runtimeOld
+  snap.ledgerOld = ['marker.md']
+  writeFileSync(mFile, JSON.stringify(snap))
+  put(taskA, 'checks/devtools-verify-11.md', '# later\n')
+  const migrated = jc.baselineInfo(mData, taskA)
+  check('0.20 mark: a 0.18 snapshot (no runtimeOld) is migrated — reports on disk then are old, ledgerOld keeps its own set', migrated.runtimeOld.has('devtools-verify-11.md') && migrated.ledgerOld.has('marker.md') && !migrated.ledgerOld.has('devtools-verify-11.md'))
+  put(taskA, 'checks/devtools-verify-12.md', '# newer\n')
+  check('0.20 mark: a report written after the migration is new for the 0.20 rules (the set does not grow)', !jc.baselineInfo(mData, taskA).runtimeOld.has('devtools-verify-12.md'))
+
+  // end to end through journal-gate: old report stays valid, a new one is judged; the stage 8 `map:` rule sits behind the same mark
+  {
+    const mRoot = mkdtempSync(join(tmpdir(), 'v020-'))
+    dirs.push(mRoot)
+    const mApp = join(mRoot, 'app')
+    repoAt(mApp, 'main')
+    const tdir = join(mApp, '.claude/tasks/T-90')
+    write(mApp, {
+      '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+      '.claude/tasks/T-90/STAGES.md': JOURNAL,
+      '.claude/verify/README.md': '# Verify map — fx\nBase: abc · Updated: 2026-10-25\n## Features (sweep order)\n- [orders](features/orders.md) — /orders\n',
+    })
+    git(mApp, 'checkout', '-qb', 'T-90/feat/a')
+    jc.baselineInfo(DATA, tdir)
+    const file = snapshotFile(DATA, tdir)
+    const old = JSON.parse(readFileSync(file, 'utf8'))
+    delete old.runtimeOld
+    writeFileSync(file, JSON.stringify(old))
+    const BAD = `${head}- \`AC-9.1\` — PASS, the card shows «Signed»\n${tail9}\n## Findings outcome\n- M-1 — fixed: src/Card.vue:12\n`
+    write(mApp, { '.claude/tasks/T-90/checks/devtools-verify-8.md': BAD })
+    const reportGate = (name) => runHook('journal-gate.mjs', { cwd: mApp, tool_name: 'Write', tool_input: { file_path: join(tdir, 'checks', name) } })
+    const oldEdit = reportGate('devtools-verify-8.md')
+    check('0.20 gate, old report stays valid: a report already on disk at the first look of 0.20 is not rejected for the effect proof, the re-run artifact or the map: line', !/\[effect\]|re-run artifact|`map:` line/.test(oldEdit.text), oldEdit.text)
+    check('0.20 gate: the migration listed it in runtimeOld', JSON.parse(readFileSync(file, 'utf8')).runtimeOld.includes('devtools-verify-8.md'))
+    write(mApp, { '.claude/tasks/T-90/checks/devtools-verify-9.md': BAD })
+    const fresh = reportGate('devtools-verify-9.md')
+    check('0.20 gate, incident: a new report with an [effect] PASS without proof, a bare fixed and no map: line is rejected for all three rules', fresh.decision === 'block' && /\[effect\]/.test(fresh.text) && /re-run artifact/.test(fresh.text) && /`map:` line/.test(fresh.text), fresh.text)
+    write(mApp, { '.claude/tasks/T-90/checks/devtools-verify-9-r1.md': '# devtools-verify — stage 9, recheck\n' })
+    const GOOD = BAD.replace('the card shows «Signed»', '`POST /api/contracts → 201`; read-back after reload: «Signed»').replace('geometry 1440', 'map: orders · entries 1/1 · drift 0\ngeometry 1440').replace('fixed: src/Card.vue:12', 'fixed: src/Card.vue:12 — re-run checks/devtools-verify-9-r1.md')
+    write(mApp, { '.claude/tasks/T-90/checks/devtools-verify-9.md': GOOD })
+    const legit = reportGate('devtools-verify-9.md')
+    check('0.20 gate, legitimate: the same report with the request, the read-back, the re-run artifact and the map: line passes', !/\[effect\]|re-run artifact|`map:` line/.test(legit.text), legit.text)
+  }
+
+  // AC-9.4 support: verify-map.mjs --radius
+  {
+    const VM = join(PLUGIN, 'verify-map.mjs')
+    const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
+    const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' })
+    const CONFIG = '# Pipeline config — fx\n## Project\n- slug: fx\n## Task state\n- task_path: .claude/tasks/\n'
+    const FEATURE = '# orders\nRoutes: /orders/:orderId · Auth: yes · Platforms: desktop · Status: draft\nThe user can use orders.\n## Sub-features\n- `orders-open`\n## How to get to it (user POV)\n- Header → «Orders» → open an order\n- Deep link from push\n## Driving it with Chrome DevTools MCP\n- **Header entry.** click `link "Orders"`.\n## Gotchas\n- none\n'
+    const mk = (withMap) => {
+      const root = mkdtempSync(join(tmpdir(), 'radius-'))
+      dirs.push(root)
+      gitIn(root, 'init', '-q')
+      const files = {
+        '.claude/pipeline.config.md': CONFIG,
+        'nuxt.config.ts': 'export default {}\n',
+        'components/shared/InfoBlock.vue': '<template><div/></template>\n',
+        'components/shared/Wrapper.vue': '<template><InfoBlock/></template>\n<script setup>import InfoBlock from "./InfoBlock.vue"</script>\n',
+        'pages/orders/[id].vue': '<script setup>import Wrapper from "@/components/shared/Wrapper.vue"</script>\n<template><Wrapper/></template>\n',
+        'pages/legacy.vue': '<script setup>import InfoBlock from "~/components/shared/InfoBlock.vue"</script>\n<template><InfoBlock/></template>\n',
+        'pages/unrelated.vue': '<template><p>x</p></template>\n',
+      }
+      if (withMap) Object.assign(files, { '.claude/verify/README.md': '# Verify map — fx\n## Features (sweep order)\n- [orders](features/orders.md) — /orders/:orderId\n', '.claude/verify/features/orders.md': FEATURE })
+      for (const [file, text] of Object.entries(files)) put(root, file, text)
+      gitIn(root, 'add', '-A')
+      gitIn(root, 'commit', '-q', '-m', 'base')
+      return root
+    }
+    const mapped = mk(true)
+    const out = vm(mapped, '--radius', 'components/shared/InfoBlock.vue')
+    check('radius: a shared module imported by two pages (one mapped, one not) lists both routes, through a nested shared module and an alias', /^route \/orders\/:id — mapped: orders \(via pages\/orders\/\[id\]\.vue\)$/m.test(out.stdout) && /^route \/legacy — unmapped \(via pages\/legacy\.vue\)$/m.test(out.stdout) && !/unrelated/.test(out.stdout), out.stdout + out.stderr)
+    check('radius: the mapped feature is listed once with its primary path (the first entry of "How to get to it")', /^feature orders — primary path: Header → «Orders» → open an order \(features\/orders\.md\)$/m.test(out.stdout) && (out.stdout.match(/^feature /gm) ?? []).length === 1, out.stdout)
+    check('radius: the first line counts modules and importer files and names the map', /^radius: 1 module → \d+ importer files?, depth <= 4 · \.claude\/verify$/m.test(out.stdout) && out.status === 0, out.stdout)
+    const bare = mk(false)
+    const bareOut = vm(bare, '--radius', 'components/shared/InfoBlock.vue')
+    check('radius: no map — the routes only, no mapped / feature lines, exit 0', bareOut.status === 0 && /^radius: .*no map — routes only$/m.test(bareOut.stdout) && /^route \/orders\/:id — no map/m.test(bareOut.stdout) && /^route \/legacy — no map/m.test(bareOut.stdout) && !/^feature |mapped/m.test(bareOut.stdout), bareOut.stdout)
+    const deep = vm(mapped, '--radius', 'components/shared/InfoBlock.vue', '--depth', '1')
+    check('radius: --depth bounds the climb — at depth 1 the page behind Wrapper is not reached', /^route \/legacy/m.test(deep.stdout) && !/^route \/orders/m.test(deep.stdout), deep.stdout)
+    check('radius: a page file given directly is its own route', /^route \/legacy — unmapped \(via pages\/legacy\.vue\)$/m.test(vm(mapped, '--radius', 'pages/legacy.vue').stdout))
+    const none = vm(mapped, '--radius', 'pages/unrelated.vue', 'components/shared/Missing.vue')
+    check('radius: several files; a module nobody imports gives no extra route', none.status === 0 && /^route \/unrelated/m.test(none.stdout) && !/^route \/orders/m.test(none.stdout), none.stdout)
+    check('radius: no file given is exit 2', vm(mapped, '--radius').status === 2)
+  }
+
+  // pro-review round 1: a digit in the path is not the status; the verdict is the word right after the id
+  const reqOnly = (line) => eff(`- \`AC-9.1\` — PASS, ${line}; read-back after reload: signed\n`).length
+  check('AC-9.1 round 1: a digit run inside the path is not the status', reqOnly('POST /api/x/123 sent, no status') === 1 && reqOnly('GET /api/v1/items?limit=100 returned list') === 1)
+  check('AC-9.1 round 1: the status after the whole path counts', reqOnly('POST /api/x/123 → 201') === 0 && reqOnly('GET /api/v1/items?limit=100 200') === 0)
+  check('AC-9.1 round 1: not checked and Could not verify wordings with the word PASS are not a PASS', eff('- `AC-9.1` — not checked: no PASS possible without a stand\n').length === 0 && jc.effectViolations(`${head}## Could not verify\n- AC-9.1: cannot give PASS, the stand has no API\n`, 'devtools-verify-9.md', taskA).length === 0)
+  check('AC-9.1 round 1: AC-9.1 — PASS and AC-9.1: PASS without proof still fail', eff('- AC-9.1 — PASS\n').length === 1 && eff('- AC-9.1: PASS\n').length === 1)
+  // round 2: only a criterion definition line carries the tag, outside backticks, next to the verifier
+  const tagged = (text) => { const t = mkdtempSync(join(tmpdir(), 'effects-tag-')); dirs.push(t); put(t, 'STAGES.md', text); return [...jc.effectCriteria(t)].sort().join(',') }
+  check('AC-9.1 round 2: the quoted tag in a criterion prose tags nothing', tagged('- `AC-9.1` WHEN an `[effect]` AC gets a PASS without a request THEN the hook rejects it \u2014 [verify: pro-review]\n') === '')
+  check('AC-9.1 round 2: a decision line and a journal line with the tag tag nothing', tagged('- K9.2 Both new report rules (AC-9.1 the `[effect]` PASS, AC-9.2 the re-run)\nAC-3.1 \u2705 done; AC-3.4 [effect] deferred\n') === '')
+  check('AC-9.1 round 2: a criterion line with the tag next to the verifier is tagged, either order', tagged('- `AC-3.2` WHEN saved THEN POST /api/x \u2014 [verify: devtools-verify] [effect]\n- AC-3.3 WHEN saved THEN PUT /api/y \u2014 [effect] [verify: devtools-verify]\n') === '3.2,3.3')
+  check('AC-9.1 round 2: the Russian tag is tagged', tagged('- `AC-3.5` WHEN saved THEN POST /api/z \u2014 [verify: devtools-verify] [\u044d\u0444\u0444\u0435\u043a\u0442]\n') === '3.5')
 
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
 }
