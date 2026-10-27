@@ -17,8 +17,8 @@
  * look at the task: old tasks and closed stages do not have to be rewritten.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
@@ -40,8 +40,9 @@ import {
   NO_VISUAL_REFERENCE,
   READBACK_PROOF,
   REQUEST_PROOF,
-  RERUN_REPORT,
+  PARTIAL_RUN,
   RERUN_SCREEN,
+  RERUN_SUFFIX,
   STAGE_FILE,
   SUMMARY_STANDARD,
   UNVERIFIED_HEADING,
@@ -443,9 +444,7 @@ function criticalWithoutFresh(entry, severity, name, taskDir) {
   if (severity !== 'critical') return null
   const cited = citedFresh(entry)
   // The fresh report belongs to the dismissed finding's checker and stage: `pro-review-3.md` is confirmed by `pro-review-3-fresh*.md`, not by any `*-fresh*.md` of the task.
-  const checker = reportChecker(name)
-  const token = checker ? name.slice(name.indexOf(checker) + checker.length).match(/^-([\w]+?)(?=[-.]|$)/)?.[1] : null
-  const expected = checker ? `${checker}${token ? `-${token}` : ''}` : null
+  const expected = ownReport(name)
   const ownFresh = cited && (!expected || cited.startsWith(`${expected}-`))
   const shown = entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').slice(0, 90)
   if (ownFresh && cited !== name && (!taskDir || existsSync(join(taskDir, 'checks', cited)))) return null
@@ -578,7 +577,8 @@ export function runtimeViolations(text, name, taskDir = null, fresh = false, map
   const found = []
   // A stage with a "Visual reference" — a typography comparison with a neighbouring section: the prototype matched the code, and "too bold" and "different buttons"
   // the user saw next to the rest of the dashboard.
-  const reference = taskDir && stageReference(taskDir, name)
+  const partial = PARTIAL_RUN.test(name)
+  const reference = !partial && taskDir && stageReference(taskDir, name)
   if (reference && !/^[ \t]*(?:[-*][ \t]*)?`?style-diff\b/im.test(text)) {
     found.push({
       rule: 'no-style-diff',
@@ -588,7 +588,8 @@ export function runtimeViolations(text, name, taskDir = null, fresh = false, map
         'of the new section with the reference one (skill devtools-verify, step "Visual reference"). A difference without a user decision is a major finding.',
     })
   }
-  if (!/^[ \t]*(?:[-*][ \t]*)?`?geometry\b/im.test(text)) {
+  // a recheck (`-r<k>`) and a repro report look at the findings they were asked about: the geometry rules stay with the full runs; `doctor:` and `auth:` below apply to both
+  if (!partial && !/^[ \t]*(?:[-*][ \t]*)?`?geometry\b/im.test(text)) {
     found.push({
       rule: 'no-geometry',
       id: name,
@@ -658,7 +659,8 @@ export function reportViolations(path, language = null, { fresh = false, strict 
 /** The AC ids the task's STAGES.md and STAGES-ARCHIVE.md tag `[effect]` (stage 9: a criterion whose action sends something to the server). */
 export function effectCriteria(taskDir) {
   const ids = new Set()
-  for (const line of journalText(taskDir).split('\n')) {
+  for (const whole of journalText(taskDir).split(/\r?\n/)) {
+    const line = whole.slice(0, RULE_LINE_MAX)
     // Only a criterion definition line (`- AC-x.y …` / `- \`AC-x.y\` …`) is tagged; the tag stands outside backticks, next to the verifier tag.
     const head = line.match(/^\s*[-*]\s+`?AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)`?(.*)$/)
     if (!head) continue
@@ -672,19 +674,24 @@ export function effectCriteria(taskDir) {
 function passedIds(text, wanted) {
   const passed = new Set()
   let unverified = false
-  for (const line of text.split('\n')) {
-    if (/^#/.test(line)) unverified = /could not verify|не удалось проверить/i.test(line)
+  for (const whole of text.split(/\r?\n/)) {
+    const line = whole.slice(0, RULE_LINE_MAX)
+    if (/^#/.test(line)) unverified = UNVERIFIED_HEADING.test(line)
     if (unverified || !line.includes('PASS')) continue
+    // one pass per line: the dotted-id run of PASS_RUN (a table row `| AC-x | PASS |` has none), then the id-named form with one separator class
     for (const match of line.matchAll(PASS_RUN)) for (const [id] of match[1].matchAll(/\d+[a-z]?(?:\.\d+[a-z]?)+/g)) if (wanted.has(id)) passed.add(id)
     if (/\bFAIL\b/.test(line)) continue
-    for (const id of wanted) if (new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)[\\s\x60*]*[|:—–-]*[\\s*]*PASS\\b`).test(line)) passed.add(id)
+    for (const id of wanted) if (new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)[\\s\x60*|:—–-]*PASS\\b`).test(line)) passed.add(id)
   }
   return passed
 }
 
+// a line is read up to this many characters by the rules of the hook: a pasted wall of text must not cost the hook its 5 s
+const RULE_LINE_MAX = 2000
+
 /** Every line that names `AC-<id>`, each with the detail lines under it (up to 6, to a blank line, a heading or another criterion). */
 function mentionsOf(text, id) {
-  const lines = text.split('\n')
+  const lines = text.split(/\r?\n/).map((line) => line.slice(0, RULE_LINE_MAX))
   const own = new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)`)
   const found = []
   for (const [index, line] of lines.entries()) {
@@ -716,22 +723,43 @@ export function effectViolations(text, name, taskDir = null) {
         rule: 'no-effect-proof',
         id: name,
         message:
-          `checks/${name}: AC-${id} is tagged [effect] and gets a PASS, but the report names no ${missing.join(' and no ')}. A screen that shows the new state does not prove the server got it ` +
+          `checks/${name}: AC-${id} is tagged [effect] and gets a PASS, but the report does not name ${missing.join(' and ')}. A screen that shows the new state does not prove the server got it ` +
           '(skill devtools-verify, "Effects"; the Russian forms are in references/language.md). A criterion you could not prove is `not checked` or goes to "Could not verify", not PASS.',
       })
   }
   return found
 }
 
-/** The re-run artifact a `fixed` line cites, or null: a recheck report that exists in `checks/` (not the report itself) or a screenshot under `screens/`. */
+/** The checker and stage token of a report name: `devtools-verify-5-r1.md` → `devtools-verify-5`, `pro-review-3.md` → `pro-review-3`; `null` — not a checker report. */
+function ownReport(name) {
+  const checker = reportChecker(name)
+  if (!checker) return null
+  const token = name.slice(name.indexOf(checker) + checker.length).match(/^-([\w]+?)(?=[-.]|$)/)?.[1]
+  return `${checker}${token ? `-${token}` : ''}`
+}
+
+/**
+ * The re-run artifact a `fixed` line cites, or null: a recheck report of the SAME checker and stage that exists in this task's `checks/` (`-r<k>`, `-fresh`, `-recheck[-<k>]`; not the report itself),
+ * or a screenshot `checks/screens/<file>` / `screens/<file>` that exists inside this task's `checks/screens/` (no absolute path, no `..`, no symlink out of it).
+ */
 function citedRerun(entry, name, taskDir) {
+  const own = ownReport(name)
   for (const word of entry.split(/[^\w./-]+/).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
     if (word.length > 200) continue
     const base = word.split('/').pop()
-    if (RERUN_REPORT.test(word) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
-    if (RERUN_SCREEN.test(word) && (!taskDir || [join(taskDir, word), join(taskDir, 'checks', word), join(taskDir, 'checks', 'screens', base), word].some((path) => existsSync(path)))) return word
+    if (own && base.startsWith(`${own}-`) && RERUN_SUFFIX.test(base.slice(own.length + 1)) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
+    if (RERUN_SCREEN.test(word) && (!taskDir || screenExists(taskDir, base))) return word
   }
   return null
+}
+
+function screenExists(taskDir, file) {
+  try {
+    const dir = realpathSync(join(taskDir, 'checks', 'screens'))
+    return realpathSync(join(dir, file)).startsWith(`${dir}${sep}`)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -773,7 +801,8 @@ const VALUE =
 // The evidence for a criterion is looked for in the next 300 characters of its segment: a tail to the end of a long line is a quadratic scan.
 const TAIL_MAX = 300
 // At most 80 ids in a list: an unbounded run makes the scan from every id quadratic on a long line of ids without PASS.
-const PASS_RUN = /((?:`?(?:AC-)?\d+[a-z]?(?:\.\d+[a-z]?)+`?\s*(?:(?:,|и|and|\/)\s*)?){1,80})(?:[—–:|-]\s*)?\**PASS\b\**/g
+// An id ends where its digit run ends (`(?!\d|\.\d)`): without it "01.10.2026" split as "01.1" + "0.2026" and a line of k dates backtracked over 2^k partitions (22 dates: seconds).
+const PASS_RUN = /((?:`?(?:AC-)?\d+[a-z]?(?:\.\d+[a-z]?)+(?!\d|\.\d)`?\s*(?:(?:,|и|and|\/)\s*)?){1,80})(?:[—–:|-]\s*)?\**PASS\b\**/g
 
 /**
  * Criteria that have only bare PASS in a checker report: no mention of the criterion carries

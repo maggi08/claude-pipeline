@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { configRoot, mainRoot, readConfig } from './hooks/pipeline-state.mjs'
@@ -15,11 +15,13 @@ import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATU
  *   node verify-map.mjs --init [--language en|ru] [--cwd <dir>]
  *   node verify-map.mjs --lint <feature-file>
  *
- * The map directory is `verify_map:` of the config's "Task state" section (default `.claude/verify/`, relative to the repo root; the local config overrides the shared one).
- * No `README.md` there means no map: every mode but `--init` prints one `verify-map: no map …` line and exits 0, so the hooks and devtools-verify behave as before.
+ * The map directory is `verify_map:` of the config's "Task state" section (default `.claude/verify/`, relative to the repo root; the local config overrides the shared one;
+ * `verify_map: —` turns the map off). The README is looked for in the worktree, the config root and the main tree (`mapRoots`, the same list the journal hook uses).
+ * No `README.md` there means no map: `--changed` prints one `verify-map: no map …` line, `--radius` prints the routes only, `--lint` needs no map, and the hooks
+ * and devtools-verify behave as before. The map is repo data, not an authority: `--radius` pastes a primary path of at most 200 characters, absolute URLs dropped.
  *
  * --changed  changed page files (git diff against `--base`, default HEAD plus the working tree, plus untracked files) → routes → mapped / unmapped.
- *   Nuxt (`nuxt.config.*` above the file) and Next (`next.config.*`, app and pages router) route by file; params `[id]` / `:id` / `{id}` are one form, Next route groups `(group)` are dropped.
+ *   Nuxt (`nuxt.config.*` above the file) and Next (`next.config.*`, app and pages router) route by file; params `[id]` / `:id` / `{id}` are one form, route groups `(group)` are dropped (Next and Nuxt).
  *   React Router has no file routing: with `--feature-map` the routes come from the "Entry points" rows of the task's FEATURE-MAP whose Files cell names a changed file.
  *   Any other router is a `warning:` line, never a guess. Output, one line each:
  *     map: <dir> · <N> features
@@ -31,9 +33,10 @@ import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATU
  *     radius: <N> module(s) → <M> file(s), depth <= 4 · <map dir> | no map — routes only
  *     route /orders/:id — mapped: orders (via pages/orders/[id].vue)     route /legacy — unmapped (via pages/legacy.vue)
  *     feature orders — primary path: Header → «Orders» (features/orders.md)
- * --init     writes the README from the config values only (dev url, app marker, baseline routes, breakpoints, e2e); a value the config lacks is the explicit
- *   "not set" slot. Never overwrites an existing README. Exit 0 also when it left one alone.
- * --lint     a feature file has the header line (`Routes:` and `Status: draft | verified <date> <sha>`), the four sections, and no file paths. Exit 1 with one line per problem.
+ * --init     writes the README from the SHARED config only (never `pipeline.config.local.md`: the README is committed), values the config has (dev url without userinfo, app marker,
+ *   baseline routes, breakpoints, e2e without leading `KEY=value`); a value the config lacks is the explicit "not set" slot. Never overwrites an existing README, never writes
+ *   through a symlink that leaves the repo. Exit 0 also when it left one alone.
+ * --lint     a feature file has the header line (`Routes:` and `Status: draft | verified <date> <sha>`), the four sections, no file paths and no absolute http(s) URL. Exit 1 with one line per problem.
  * Exit 2: usage or an unreadable input.
  */
 
@@ -68,22 +71,35 @@ const git = (cwd, ...args) => {
   }
 }
 
-/** The value of `- <key>: <value>` in a config text (the first occurrence: the local config is read before the shared one). `null` — absent or a placeholder. */
-export function configValue(text, key, keepAngle = false) {
+/** The cleaned value of `- <key>: <value>` (the first occurrence: the local config is read before the shared one), `undefined` — the key is absent. */
+function rawValue(text, key) {
   const raw = text.match(new RegExp(`^[ \\t]*-[ \\t]*${key}[ \\t]*:[ \\t]*(.*)$`, 'm'))?.[1]
-  if (raw === undefined) return null
-  const value = raw.replace(/[ \t]+#.*$/, '').trim().replace(/^`+|`+$/g, '').trim()
+  return raw === undefined ? undefined : raw.replace(/[ \t]#.*$/, '').trim().replace(/^`+|`+$/g, '').trim()
+}
+
+/** The value of `- <key>: <value>` in a config text. `null` — absent or a placeholder. */
+export function configValue(text, key, keepAngle = false) {
+  const value = rawValue(text, key)
+  if (value === undefined) return null
   return !value || NO_VALUE.test(value) || (!keepAngle && /^<.*>$/.test(value)) ? null : value
 }
 
-/** The map directory from a config text: relative to the repo root, inside it. Throws on an absolute path or a `..` escape. */
+/** The map directory from a config text: relative to the repo root, inside it; `null` — `verify_map: —` turns the map off. Throws on an absolute path or a `..` escape. */
 export function mapDir(config) {
+  const own = rawValue(config, 'verify_map')
+  if (own !== undefined && NO_VALUE.test(own)) return null
   const value = configValue(config, 'verify_map') ?? '.claude/verify/'
   if (isAbsolute(value) || value.split(/[\\/]/).includes('..')) throw new Error(`verify_map: "${value}" must be a path inside the repo`)
   return value.replace(/^\.\//, '').replace(/\/+$/, '')
 }
 
-/** The README of the map, or null: `roots` are the checkouts to look in (the worktree, then the main tree whose `.claude/` is excluded). */
+/** The checkouts a map README is looked for in, deduplicated: the worktree, the config root, the main tree (whose `.claude/` may be excluded). One list for the hook and the CLI. */
+export function mapRoots(cwd) {
+  const top = git(cwd, 'rev-parse', '--show-toplevel')?.trim() ?? resolve(cwd)
+  return [...new Set([top, configRoot(cwd, top), mainRoot(cwd)].filter(Boolean))]
+}
+
+/** The README of the map, or null: `roots` are the checkouts to look in (see `mapRoots`). */
 export function mapReadme(roots, config) {
   let dir
   try {
@@ -91,6 +107,7 @@ export function mapReadme(roots, config) {
   } catch {
     return null
   }
+  if (dir === null) return null
   for (const root of roots.filter(Boolean)) {
     const path = join(root, dir, 'README.md')
     if (isFile(path)) return path
@@ -139,7 +156,7 @@ export function routeOfFile(file, top) {
   if (framework === 'nuxt') {
     const match = rel.match(/^(?:layers\/[^/]+\/)?(?:(?:app|src)\/)?pages\/(.+)\.(?:vue|tsx?|jsx?|md)$/)
     if (!match) return { framework }
-    const segments = match[1].replace(/\.(?:client|server)$/, '').split('/').map((segment) => param(segment) ?? segment)
+    const segments = match[1].replace(/\.(?:client|server)$/, '').split('/').filter((segment) => !/^\(.+\)$/.test(segment)).map((segment) => param(segment) ?? segment)
     if (segments.at(-1) === 'index') segments.pop()
     return { route: display(segments), framework }
   }
@@ -240,10 +257,47 @@ function rowNamesFile(cell, file) {
 }
 
 function changedFiles(top, base) {
-  const tracked = git(top, 'diff', '--name-only', '--diff-filter=ACMRT', base ?? 'HEAD')
+  // `--base` is resolved to a commit first: an option-like value never reaches `git diff` (`--output=<file>` would truncate a file).
+  const resolved = base === null ? 'HEAD' : git(top, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`)?.trim()
+  if (!resolved) throw new Error(`--base ${base.slice(0, 80)} is not a commit`)
+  const tracked = git(top, 'diff', '--name-only', '--diff-filter=ACMRT', resolved, '--')
   if (tracked === null) throw new Error(`git diff against ${base ?? 'HEAD'} failed`)
   const untracked = git(top, 'ls-files', '--others', '--exclude-standard') ?? ''
   return [...new Set(`${tracked}\n${untracked}`.split('\n').map((line) => line.trim()).filter(Boolean))]
+}
+
+/**
+ * The routes of a list of files, one reader for `--changed` and `--radius`: file routing (Nuxt, Next) first; React Router and anything else without it only through the
+ * FEATURE-MAP "Entry points" rows whose Files cell names a file of `rowFiles` (default: the files with no route of their own). Every file that stays without a route
+ * and passes `warnable` is named in one `warnings` line, never a guess. `known`: route key → FEATURE-MAP row id.
+ */
+function collectRoutes({ top, files, rows, rowFiles = null, warnable = () => true }) {
+  const routes = new Map()
+  const warnings = []
+  const unknown = []
+  for (const file of files) {
+    const result = routeOfFile(file, top)
+    if (!result) {
+      if (/\.(?:vue|svelte|tsx|jsx)$/.test(file)) unknown.push(file)
+      continue
+    }
+    if (result.warning) warnings.push(result.warning)
+    else if (result.route !== undefined) routes.set(normalizeRoute(result.route), { route: result.route, file })
+  }
+  const known = new Map()
+  for (const row of rows) {
+    const key = row.route.startsWith('/') ? row.route.replace(/`/g, '').split(/\s/)[0] : null
+    if (!key) continue
+    if (row.id) known.set(normalizeRoute(key), row.id)
+    const named = (rowFiles ?? unknown).find((file) => rowNamesFile(row.files, file))
+    if (named) routes.set(normalizeRoute(key), { route: key, file: named })
+  }
+  const unrouted = unknown.filter((file) => warnable(file) && ![...routes.values()].some((entry) => entry.file === file))
+  if (unrouted.length)
+    warnings.push(
+      `${unrouted.slice(0, 8).join(', ')}${unrouted.length > 8 ? ` and ${unrouted.length - 8} more` : ''}: no nuxt.config / next.config above and no FEATURE-MAP "Entry points" row names ${unrouted.length > 1 ? 'them' : 'it'} — routes are not derived (React Router and other routers: pass --feature-map)`,
+    )
+  return { routes, warnings, known }
 }
 
 export function changedReport({ top, config, base = null, featureMap = null, mapRoots = [top] }) {
@@ -254,6 +308,7 @@ export function changedReport({ top, config, base = null, featureMap = null, map
   } catch (error) {
     return { lines: [`verify-map: ${error.message}`], code: 2 }
   }
+  if (dir === null) return { lines: ['verify-map: no map — verify_map is off in the config, nothing to match'], code: 0 }
   const readme = mapReadme(mapRoots, config)
   if (!readme) return { lines: [`verify-map: no map — ${dir}/README.md is absent, nothing to match`], code: 0 }
   const features = readMap(readme)
@@ -263,35 +318,9 @@ export function changedReport({ top, config, base = null, featureMap = null, map
   } catch (error) {
     return { lines: [`verify-map: ${error.message}`], code: 2 }
   }
-  const routes = new Map()
-  const warnings = []
-  const unknown = []
-  for (const file of files) {
-    if (file.startsWith(`${dir}/`)) continue
-    const result = routeOfFile(file, top)
-    if (!result) {
-      if (/\.(?:vue|svelte|tsx|jsx)$/.test(file)) unknown.push(file)
-      continue
-    }
-    if (result.warning) warnings.push(result.warning)
-    else if (result.route !== undefined) routes.set(normalizeRoute(result.route), { route: result.route, file })
-  }
-  // React Router and anything else without file routing: only the FEATURE-MAP rows of the task can say which routes a changed file serves.
   const rows = featureMap ? featureMapRows(readText(featureMap) ?? '') : []
-  const known = new Map()
-  for (const row of rows) {
-    const key = row.route.startsWith('/') ? row.route.replace(/`/g, '').split(/\s/)[0] : null
-    if (!key) continue
-    if (row.id) known.set(normalizeRoute(key), row.id)
-    const named = unknown.find((file) => rowNamesFile(row.files, file))
-    if (named) routes.set(normalizeRoute(key), { route: key, file: named })
-  }
-  const unrouted = unknown.filter((file) => ![...routes.values()].some((entry) => entry.file === file))
-  if (unrouted.length)
-    warnings.push(
-      `${unrouted.slice(0, 3).join(', ')}${unrouted.length > 3 ? ` and ${unrouted.length - 3} more` : ''}: no nuxt.config / next.config above and no FEATURE-MAP "Entry points" row names ${unrouted.length > 1 ? 'them' : 'it'} — routes are not derived (React Router and other routers: pass --feature-map)`,
-    )
-  lines.push(`map: ${dir} · ${features.length} feature${features.length === 1 ? '' : 's'}`)
+  const { routes, warnings, known } = collectRoutes({ top, files: files.filter((file) => !file.startsWith(`${dir}/`)), rows })
+  lines.push(`map: ${dir} · ${features.length} feature${features.length === 1 ? '' : 's'} · README ${resolve(readme)}`)
   const touched = new Set()
   for (const [key, { route }] of routes) {
     const feature = featureFor(features, route) ?? (known.has(key) ? features.find((entry) => entry.id === known.get(key)) : undefined)
@@ -313,9 +342,12 @@ export function changedReport({ top, config, base = null, featureMap = null, map
 const SOURCE_EXT = /\.(?:vue|tsx?|jsx?|mjs|cjs|mts|cts|svelte|astro)$/
 const RESOLVE_EXT = ['', '.vue', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.svelte', '.astro', '/index.vue', '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/index.mjs']
 const ALIAS_PREFIX = /^(?:@@?|~~?)\/|^#(?=[\w/])/
-const IMPORT_SPEC = /(?:\bimport|\bexport)\b[^'"`;]*?\bfrom\s*['"]([^'"\n]+)['"]|\bimport\s*['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/g
+const IMPORT_SPEC = /(?:\bimport|\bexport)\b[^'"`;]{0,2000}?\bfrom\s*['"]([^'"\n]+)['"]|\bimport\s*['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/g
 const FILE_CAP = 20000
 const SIZE_CAP = 512 * 1024
+// the import regex reads at most this much of a file: a lazy scan over a long file with no `;` and no quote is quadratic
+const SCAN_CAP = 200 * 1024
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const noExt = (file) => file.replace(SOURCE_EXT, '')
 
 function sourceFiles(top) {
@@ -343,8 +375,10 @@ export function importGraph(top, files = sourceFiles(top)) {
   for (const file of files) {
     let text
     try {
-      if (statSync(join(top, file)).size > SIZE_CAP) continue
-      text = readFileSync(join(top, file), 'utf8')
+      // a FIFO, a device or a symlink to one is not read: stat says size 0 for them and the read blocks or never ends
+      const stat = statSync(join(top, file))
+      if (!stat.isFile() || stat.size > SIZE_CAP) continue
+      text = readFileSync(join(top, file), 'utf8').slice(0, SCAN_CAP)
     } catch {
       continue
     }
@@ -367,21 +401,28 @@ export function importGraph(top, files = sourceFiles(top)) {
     if (file.endsWith('.vue') || file.endsWith('.tsx') || file.endsWith('.jsx'))
       for (const { file: component, name } of components) {
         const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
-        if (component !== file && (text.includes(`<${name}`) || text.includes(`<${kebab}`)) && new RegExp(`<(?:${name}|${kebab})(?=[\\s/>])`).test(text)) link(component, file)
+        if (component !== file && (text.includes(`<${name}`) || text.includes(`<${kebab}`)) && new RegExp(`<(?:${escapeRegExp(name)}|${escapeRegExp(kebab)})(?=[\\s/>])`).test(text)) link(component, file)
       }
   }
   return importers
 }
 
-/** The first entry of a feature file's "How to get to it": the primary path the recheck drives. `null` — the file has no such entry. */
+const PRIMARY_PATH_MAX = 200
+/** The map is repo data, not an instruction: a path put into a recheck prompt has no absolute URL (the checker navigates only inside the dev URL) and a length cap. */
+const safePath = (path) => {
+  const plain = path.replace(/\bhttps?:\/\/\S*/gi, '(url dropped)')
+  return plain.length > PRIMARY_PATH_MAX ? `${plain.slice(0, PRIMARY_PATH_MAX)}…` : plain
+}
+
+/** The first entry of a feature file's "How to get to it": the primary path the recheck drives (capped, absolute URLs dropped). `null` — the file has no such entry. */
 export function primaryPath(text) {
-  const lines = text.split('\n')
+  const lines = text.split(/\r?\n/)
   const start = lines.findIndex((line) => MAP_FEATURE_SECTIONS[1][1].test(line))
   if (start < 0) return null
   for (const line of lines.slice(start + 1)) {
     if (/^##\s/.test(line)) break
     const item = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/)
-    if (item) return item[1].trim()
+    if (item) return safePath(item[1].trim())
   }
   return null
 }
@@ -403,7 +444,6 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
   }
   // breadth-first from the changed modules up to the pages, at most `depth` hops
   const hops = new Map(targets.map((file) => [file, 0]))
-  const via = new Map()
   let next = []
   for (let frontier = targets, hop = 1; frontier.length && hop <= depth; hop += 1, frontier = next) {
     next = []
@@ -411,36 +451,15 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
       for (const importer of importers.get(file) ?? []) {
         if (hops.has(importer)) continue
         hops.set(importer, hop)
-        via.set(importer, file)
         next.push(importer)
       }
   }
   const readme = mapReadme(mapRoots, config)
   const features = readme ? readMap(readme) : null
-  const routes = new Map()
-  const warnings = []
-  const unknown = []
-  for (const file of hops.keys()) {
-    const result = routeOfFile(file, top)
-    if (!result) {
-      if (/\.(?:vue|svelte|tsx|jsx)$/.test(file)) unknown.push(file)
-      continue
-    }
-    if (result.warning) warnings.push(result.warning)
-    else if (result.route !== undefined) routes.set(normalizeRoute(result.route), { route: result.route, file })
-  }
   const rows = featureMap ? featureMapRows(readText(featureMap) ?? '') : []
-  const known = new Map()
-  for (const row of rows) {
-    const key = row.route.startsWith('/') ? row.route.replace(/`/g, '').split(/\s/)[0] : null
-    if (!key) continue
-    if (row.id) known.set(normalizeRoute(key), row.id)
-    const named = [...hops.keys()].find((file) => rowNamesFile(row.files, file))
-    if (named) routes.set(normalizeRoute(key), { route: key, file: named })
-  }
-  if (!routes.size && unknown.length && !rows.length)
-    warnings.push(`${unknown.slice(0, 3).join(', ')}${unknown.length > 3 ? ` and ${unknown.length - 3} more` : ''}: no nuxt.config / next.config above and no --feature-map row names ${unknown.length > 1 ? 'them' : 'it'} — routes are not derived (React Router and other routers: pass --feature-map)`)
-  const lines = [`radius: ${targets.length} module${targets.length === 1 ? '' : 's'} → ${hops.size - targets.length} importer file${hops.size - targets.length === 1 ? '' : 's'}, depth <= ${depth} · ${features ? dir : 'no map — routes only'}`]
+  // an importer the climb ended at (none of its own importers is in the radius: no page above it within the depth) that gets no route is a warning, whatever rows matched: the legacy screens outside the task are what the radius is for
+  const { routes, warnings, known } = collectRoutes({ top, files: [...hops.keys()], rows, rowFiles: [...hops.keys()], warnable: (file) => hops.get(file) > 0 && ![...(importers.get(file) ?? [])].some((importer) => hops.has(importer)) })
+  const lines = [`radius: ${targets.length} module${targets.length === 1 ? '' : 's'} → ${hops.size - targets.length} importer file${hops.size - targets.length === 1 ? '' : 's'}, depth <= ${depth} · ${features ? `${dir} · README ${resolve(readme)}` : 'no map — routes only'}`]
   const touched = new Map()
   for (const [key, { route, file }] of routes) {
     const feature = features ? (featureFor(features, route) ?? (known.has(key) ? features.find((entry) => entry.id === known.get(key)) : undefined)) : undefined
@@ -456,6 +475,10 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
   return { lines, code: 0 }
 }
 
+/** The README is committed: a URL carries no `user:password@`, a command no leading `NAME=value` environment assignment (a token often lives there). */
+const plainUrl = (text) => (text === null ? null : text.replace(/\b(https?:\/\/)[^/\s@]*@/gi, '$1'))
+const plainCommand = (text) => (text === null ? null : plainUrl(text.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, '')))
+
 export function readmeText({ config, language = 'en', base, branch, date, widths = null }) {
   const t = MAP_TEXT[language] ?? MAP_TEXT.en
   const slot = t.notSet
@@ -466,13 +489,13 @@ export function readmeText({ config, language = 'en', base, branch, date, widths
     `# ${t.title} — ${value('slug') ?? slot}`,
     `${t.base}: ${base ?? slot}${branch ? ` (${branch})` : ''} · ${t.updated}: ${date}`,
     `## ${t.instance}`,
-    `- ${t.dev}: ${dev.url ?? slot}`,
+    `- ${t.dev}: ${plainUrl(dev.url) ?? slot}`,
     `- ${t.marker}: ${dev.marker ?? slot}`,
     `- ${t.routes}: ${dev.routes ?? slot}`,
     `- ${t.ready}`,
     `## ${t.preconditions}`,
     `- ${t.auth}: ${slot}`,
-    `- ${t.e2e}: ${value('e2e') ?? slot}`,
+    `- ${t.e2e}: ${plainCommand(value('e2e')) ?? slot}`,
     `- ${t.playwright}: ${slot}`,
     `- ${t.data}: ${slot}`,
     `- ${t.writes}: ${slot}`,
@@ -499,6 +522,34 @@ function devServerConfigOf(config) {
   return { url: own('url'), marker: own('app_marker', true), routes: own('verify_routes') }
 }
 
+const insideOf = (base, target) => target === base || target.startsWith(`${base}${sep}`)
+
+/** Why `path` may not be written, or null: the nearest existing part of it (a symlink included) must resolve inside the repo; a broken symlink is named. */
+function symlinkProblem(top, path) {
+  let root
+  try {
+    root = realpathSync(top)
+  } catch {
+    return null
+  }
+  for (let at = path; ; at = dirname(at)) {
+    let exists = true
+    try {
+      lstatSync(at)
+    } catch {
+      exists = false
+    }
+    if (exists) {
+      try {
+        return insideOf(root, realpathSync(at)) ? null : `${relative(top, at) || '.'} is a symlink that leaves the repo`
+      } catch {
+        return `${relative(top, at) || '.'} is a broken symlink`
+      }
+    }
+    if (dirname(at) === at) return null
+  }
+}
+
 export function initReadme({ top, config, language = 'en' }) {
   let dir
   try {
@@ -506,20 +557,30 @@ export function initReadme({ top, config, language = 'en' }) {
   } catch (error) {
     return { lines: [`verify-map: ${error.message}`], code: 2 }
   }
+  if (dir === null) return { lines: ['verify-map: verify_map is off in the config — nothing written'], code: 0 }
   const path = join(top, dir, 'README.md')
+  const problem = symlinkProblem(top, path)
+  if (problem) return { lines: [`verify-map: ${problem} — nothing written`], code: 2 }
   if (existsSync(path)) return { lines: [`verify-map: ${dir}/README.md exists — left as it is`], code: 0 }
   const sha = git(top, 'rev-parse', '--short', 'HEAD')?.trim() ?? null
   const branch = git(top, 'symbolic-ref', '--short', '-q', 'HEAD')?.trim() ?? null
   const widths = configValue(config, 'breakpoints')
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, readmeText({ config, language, base: sha, branch, date: new Date().toISOString().slice(0, 10), widths }), { flag: 'wx' })
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, readmeText({ config, language, base: sha, branch, date: new Date().toISOString().slice(0, 10), widths }), { flag: 'wx' })
+  } catch (error) {
+    if (error.code === 'EEXIST') return { lines: [`verify-map: ${dir}/README.md exists — left as it is`], code: 0 }
+    return { lines: [`verify-map: cannot write ${dir}/README.md — ${error.code ?? error.message}`], code: 2 }
+  }
   return { lines: [`verify-map: wrote ${dir}/README.md from the config (values the config lacks are marked "${(MAP_TEXT[language] ?? MAP_TEXT.en).notSet}")`], code: 0 }
 }
+
+const LINT_LINE_MAX = 2000
 
 /** The problems of a feature file, `[{ line, message }]`: header line, the four sections, file paths. */
 export function lintFeature(text) {
   const problems = []
-  const lines = text.split('\n')
+  const lines = text.split(/\r?\n/)
   if (!/^#[ \t]+\S/.test(lines[0] ?? '')) problems.push({ line: 1, message: 'the first line must be the feature name as a "# " heading' })
   const header = lines.slice(1, 12).find((line) => MAP_ROUTES_FIELD.test(line))
   if (!header) problems.push({ line: 2, message: 'no header line with "Routes: <route> · Auth: … · Platforms: … · Status: draft | verified <date> <sha>"' })
@@ -528,7 +589,10 @@ export function lintFeature(text) {
     if (!MAP_STATUS_FIELD.test(header)) problems.push({ line: lines.indexOf(header) + 1, message: 'the header line has no "Status: draft | verified <date> <sha>"' })
   }
   for (const [name, pattern] of MAP_FEATURE_SECTIONS) if (!pattern.test(text)) problems.push({ line: 0, message: `no "## ${name}" section` })
-  lines.forEach((line, at) => {
+  lines.forEach((whole, at) => {
+    const line = whole.slice(0, LINT_LINE_MAX)
+    const url = line.match(/\bhttps?:\/\/\S*/i)
+    if (url) problems.push({ line: at + 1, message: `absolute URL "${url[0].slice(0, 60)}" — the map holds routes of the dev URL; another origin is never a path to drive` })
     const found = line.replace(FRAMEWORK_NAME, ' ').match(FILE_PATH)
     if (found) problems.push({ line: at + 1, message: `file path "${found[0]}" — the map is user-facing and holds routes and what the user sees, not code paths` })
   })
@@ -554,10 +618,11 @@ function main(args) {
   const cwd = resolve(flag('--cwd') ?? process.cwd())
   const top = git(cwd, 'rev-parse', '--show-toplevel')?.trim() ?? cwd
   const root = configRoot(cwd, top) ?? top
+  const roots = mapRoots(cwd)
   const config = readConfig(root)
   if (args.includes('--changed')) {
     const featureMap = flag('--feature-map')
-    out(changedReport({ top, config, base: flag('--base') ?? null, featureMap: featureMap ? resolve(featureMap) : null, mapRoots: [top, mainRoot(cwd)] }))
+    out(changedReport({ top, config, base: flag('--base') ?? null, featureMap: featureMap ? resolve(featureMap) : null, mapRoots: roots }))
   }
   if (args.includes('--radius')) {
     const at = args.indexOf('--radius')
@@ -568,11 +633,13 @@ function main(args) {
     }
     const featureMap = flag('--feature-map')
     const depth = Number.parseInt(flag('--depth') ?? '4', 10)
-    out(radiusReport({ top, config, files: named, depth: Number.isInteger(depth) && depth > 0 ? Math.min(depth, 12) : 4, featureMap: featureMap ? resolve(featureMap) : null, mapRoots: [top, mainRoot(cwd)] }))
+    out(radiusReport({ top, config, files: named, depth: Number.isInteger(depth) && depth > 0 ? Math.min(depth, 12) : 4, featureMap: featureMap ? resolve(featureMap) : null, mapRoots: roots }))
   }
   if (args.includes('--init')) {
-    const language = flag('--language') ?? configValue(config, 'language') ?? 'en'
-    out(initReadme({ top, config, language: language === 'ru' ? 'ru' : 'en' }))
+    // the README is committed: it is built from the shared config only, never from the gitignored local one
+    const shared = readText(join(root, '.claude/pipeline.config.md')) ?? ''
+    const language = flag('--language') ?? configValue(shared, 'language') ?? 'en'
+    out(initReadme({ top, config: shared, language: language === 'ru' ? 'ru' : 'en' }))
   }
   console.error('Usage: node verify-map.mjs --changed [--base <ref>] [--feature-map <file>] | --radius <file>… [--depth N] [--feature-map <file>] | --init [--language en|ru] | --lint <feature-file>')
   process.exit(2)

@@ -68,7 +68,7 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 ## Task state
 - task_path: .claude/tasks/     # in the repo: STAGES.md / specs/ / checks/ / DESIGN-QUESTIONS.md by ticket
 - memory_path: .claude/memory/  # in the repo: project memory (decisions/pitfalls of this repo)
-- verify_map: .claude/verify/   # optional: the repo's verify map (user journeys per feature that devtools-verify drives); no README.md there — no map, the pipeline behaves as without it. Rules: ${CLAUDE_PLUGIN_ROOT}/skills/devtools-verify, "Verify map"
+- verify_map: .claude/verify/   # optional: the repo's verify map (user journeys per feature that devtools-verify drives); `verify_map: —` turns the map off even where a README exists; no README.md there — no map, the pipeline behaves as without it. Rules: ${CLAUDE_PLUGIN_ROOT}/skills/devtools-verify, "Verify map"
 
 ## Commands
 - dev: <yarn dev>
@@ -134,7 +134,7 @@ After the config is written, create the README of the repo's verify map — the 
 node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-map.mjs --init [--language ru]
 ```
 
-The script writes **only the README, and only from values the config already has** (the dev URL, `app_marker`, `verify_routes`, `breakpoints`, `e2e`, the slug); a value the config lacks stays an explicit `not set` slot (the Russian form is in `${CLAUDE_PLUGIN_ROOT}/references/language.md`) that the user or a later task fills in — do not guess auth, data or stand rules to make the README look complete. It never overwrites an existing README. It creates no `features/` files: those come from `feature-checker`. Say in the summary that the README was written and which slots are `not set`. The user declines the map — skip this step; a repo without `<verify_map>/README.md` has no map and nothing changes for it.
+The script writes **only the README, and only from values the shared `pipeline.config.md` already has** (never `pipeline.config.local.md`, the README is committed; a URL loses its `user:password@`, a command its leading `NAME=value`; the map holds no passwords or tokens — name where they live, an env var or a vault item) (the dev URL, `app_marker`, `verify_routes`, `breakpoints`, `e2e`, the slug); a value the config lacks stays an explicit `not set` slot (the Russian form is in `${CLAUDE_PLUGIN_ROOT}/references/language.md`) that the user or a later task fills in — do not guess auth, data or stand rules to make the README look complete. It never overwrites an existing README. It creates no `features/` files: those come from `feature-checker`. Say in the summary that the README was written and which slots are `not set`. The user declines the map — skip this step; a repo without `<verify_map>/README.md` has no map and nothing changes for it.
 
 ## After generation
 

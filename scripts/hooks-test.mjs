@@ -5645,7 +5645,7 @@ rmSync(retroRoot, { recursive: true, force: true })
   const withPath = lint(FEATURE('orders', '/orders', ' · see components/orders/OrderList.vue:12'))
   check('AC-8.3 --lint: a file path inside the file fails, with its line', withPath.status === 1 && /f\.md:\d+ — file path "components\/orders\/OrderList\.vue/.test(withPath.stdout), withPath.stdout)
   check('AC-8.3 --lint: a bare file name with a source extension fails too', lint(FEATURE('orders', '/orders', ' · OrderList.vue')).status === 1)
-  check('AC-8.3 --lint: routes, URLs and request paths are not file paths', lint(FEATURE('orders', '/orders/[id]', ' · POST /api/orders 201 · https://stand.example/app/orders · Next.js')).status === 0, lint(FEATURE('orders', '/orders/[id]', ' · POST /api/orders 201 · https://stand.example/app/orders · Next.js')).stdout)
+  check('AC-8.3 --lint: routes and request paths are not file paths (an absolute URL is flagged since 9a, see AC-9a.7)', lint(FEATURE('orders', '/orders/[id]', ' · POST /api/orders 201 · /app/orders · Next.js')).status === 0, lint(FEATURE('orders', '/orders/[id]', ' · POST /api/orders 201 · /app/orders · Next.js')).stdout)
   const noSection = lint(FEATURE('orders', '/orders').replace('## Gotchas\n- Store created on SSR: assert after hydration.\n', ''))
   check('AC-8.3 --lint: a missing section fails and is named', noSection.status === 1 && /no "## Gotchas" section/.test(noSection.stdout), noSection.stdout)
   const noHeader = lint(FEATURE('orders', '/orders').replace(/Routes:.*\n/, ''))
@@ -5835,7 +5835,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     const out = vm(mapped, '--radius', 'components/shared/InfoBlock.vue')
     check('radius: a shared module imported by two pages (one mapped, one not) lists both routes, through a nested shared module and an alias', /^route \/orders\/:id — mapped: orders \(via pages\/orders\/\[id\]\.vue\)$/m.test(out.stdout) && /^route \/legacy — unmapped \(via pages\/legacy\.vue\)$/m.test(out.stdout) && !/unrelated/.test(out.stdout), out.stdout + out.stderr)
     check('radius: the mapped feature is listed once with its primary path (the first entry of "How to get to it")', /^feature orders — primary path: Header → «Orders» → open an order \(features\/orders\.md\)$/m.test(out.stdout) && (out.stdout.match(/^feature /gm) ?? []).length === 1, out.stdout)
-    check('radius: the first line counts modules and importer files and names the map', /^radius: 1 module → \d+ importer files?, depth <= 4 · \.claude\/verify$/m.test(out.stdout) && out.status === 0, out.stdout)
+    check('radius: the first line counts modules and importer files and names the map', /^radius: 1 module → \d+ importer files?, depth <= 4 · \.claude\/verify · README \/\S+\/\.claude\/verify\/README\.md$/m.test(out.stdout) && out.status === 0, out.stdout)
     const bare = mk(false)
     const bareOut = vm(bare, '--radius', 'components/shared/InfoBlock.vue')
     check('radius: no map — the routes only, no mapped / feature lines, exit 0', bareOut.status === 0 && /^radius: .*no map — routes only$/m.test(bareOut.stdout) && /^route \/orders\/:id — no map/m.test(bareOut.stdout) && /^route \/legacy — no map/m.test(bareOut.stdout) && !/^feature |mapped/m.test(bareOut.stdout), bareOut.stdout)
@@ -5859,6 +5859,284 @@ rmSync(retroRoot, { recursive: true, force: true })
   check('AC-9.1 round 2: a decision line and a journal line with the tag tag nothing', tagged('- K9.2 Both new report rules (AC-9.1 the `[effect]` PASS, AC-9.2 the re-run)\nAC-3.1 \u2705 done; AC-3.4 [effect] deferred\n') === '')
   check('AC-9.1 round 2: a criterion line with the tag next to the verifier is tagged, either order', tagged('- `AC-3.2` WHEN saved THEN POST /api/x \u2014 [verify: devtools-verify] [effect]\n- AC-3.3 WHEN saved THEN PUT /api/y \u2014 [effect] [verify: devtools-verify]\n') === '3.2,3.3')
   check('AC-9.1 round 2: the Russian tag is tagged', tagged('- `AC-3.5` WHEN saved THEN POST /api/z \u2014 [verify: devtools-verify] [\u044d\u0444\u0444\u0435\u043a\u0442]\n') === '3.5')
+
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+}
+
+// ── stage 9a (VT-4): the final-check catch-up — route groups, one radius and one map-root reader, map as untrusted input, hardened rules ──
+{
+  const VM = join(PLUGIN, 'verify-map.mjs')
+  const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
+  const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' })
+  const dirs = []
+  const put = (root, file, text) => {
+    mkdirSync(dirname(join(root, file)), { recursive: true })
+    writeFileSync(join(root, file), text)
+  }
+  const mkRepo = (files) => {
+    const root = mkdtempSync(join(tmpdir(), 'v9a-'))
+    dirs.push(root)
+    gitIn(root, 'init', '-q')
+    for (const [file, text] of Object.entries(files)) put(root, file, text)
+    gitIn(root, 'add', '-A')
+    gitIn(root, 'commit', '-q', '-m', 'base')
+    return root
+  }
+  const CONFIG = '# Pipeline config — fx\n## Project\n- slug: fx\n## Task state\n- task_path: .claude/tasks/\n## Dev server\n- url: http://localhost:3000\n- verify_routes: /, /orders\n'
+  const README = '# Verify map — fx\nBase: abc (main) · Updated: 2026-10-25\n## Features (sweep order)\n- [orders](features/orders.md) — /orders/:orderId\n'
+  const FEATURE = (extra = '', header = 'Routes: /orders/:orderId · Auth: yes · Platforms: desktop · Status: draft') =>
+    `# orders\n${header}\nThe user can use orders.\n## Sub-features\n- \`orders-open\`\n## How to get to it (user POV)\n- Header → «Orders»${extra}\n## Driving it with Chrome DevTools MCP\n- **Header entry.** click \`link "Orders"\`.\n## Gotchas\n- none\n`
+  const mapFiles = { '.claude/pipeline.config.md': CONFIG, '.claude/verify/README.md': README, '.claude/verify/features/orders.md': FEATURE() }
+
+  // AC-9a.1 (K9a.1): Nuxt route groups are dropped, as Next's are; R5: Nuxt [[id]] / [...slug] and the Next pages router
+  const nuxt = mkRepo({ ...mapFiles, 'nuxt.config.ts': 'export default {}\n', 'pages/index.vue': '<template/>', 'components/Info.vue': '<template/>' })
+  put(nuxt, 'pages/(shop)/(auth)/orders/[id].vue', '<script setup>import Info from "~/components/Info.vue"</script><template><Info/></template>')
+  put(nuxt, 'pages/(shop)/index.vue', '<template/>')
+  put(nuxt, 'pages/items/[[id]].vue', '<template/>')
+  put(nuxt, 'pages/docs/[...slug].vue', '<template/>')
+  const nuxtOut = vm(nuxt, '--changed')
+  check('AC-9a.1 incident: --changed, Nuxt pages under route groups — /orders/:id is mapped: orders, no (group) in any route', /^route \/orders\/:id — mapped: orders$/m.test(nuxtOut.stdout) && !/\(shop\)|\(auth\)/.test(nuxtOut.stdout), nuxtOut.stdout)
+  check('AC-9a.1 legitimate: a group-only index is the root; Nuxt [[id]] and [...slug] are parameters', /^route \/ — unmapped$/m.test(nuxtOut.stdout) && /^route \/items\/:id — unmapped$/m.test(nuxtOut.stdout) && /^route \/docs\/:slug — unmapped$/m.test(nuxtOut.stdout), nuxtOut.stdout)
+  const nuxtRadius = vm(nuxt, '--radius', 'components/Info.vue')
+  check('AC-9a.1 incident: --radius gives the same route for a page under route groups', /^route \/orders\/:id — mapped: orders \(via pages\/\(shop\)\/\(auth\)\/orders\/\[id\]\.vue\)$/m.test(nuxtRadius.stdout), nuxtRadius.stdout)
+  const nextPages = mkRepo({ ...mapFiles, 'next.config.js': 'module.exports = {}\n', 'pages/index.tsx': 'export default 1\n' })
+  put(nextPages, 'pages/about.tsx', 'export default 1\n')
+  put(nextPages, 'pages/blog/[slug].tsx', 'export default 1\n')
+  put(nextPages, 'pages/_app.tsx', 'export default 1\n')
+  put(nextPages, 'pages/api/x.ts', 'export default 1\n')
+  const nextPagesOut = vm(nextPages, '--changed')
+  check('R5 verify-map --changed, Next pages router: /about and /blog/:slug are routes, _app and api are not', /^route \/about — unmapped$/m.test(nextPagesOut.stdout) && /^route \/blog\/:slug — unmapped$/m.test(nextPagesOut.stdout) && !/_app|api/.test(nextPagesOut.stdout), nextPagesOut.stdout)
+
+  // AC-9a.2 (K9a.2): --radius names every importer it cannot route, with or without FEATURE-MAP rows
+  const rr = mkRepo({
+    ...mapFiles,
+    'package.json': '{"dependencies":{"react-router-dom":"6"}}\n',
+    'src/shared/Info.tsx': 'export const Info = () => null\n',
+    'src/components/Panel.tsx': 'import { Info } from "../shared/Info"\nexport const Panel = () => null\n',
+    'src/pages/Cart.tsx': 'import { Panel } from "../components/Panel"\nimport { Info } from "../shared/Info"\nexport default 1\n',
+    'src/pages/Legacy.tsx': 'import { Info } from "../shared/Info"\nexport default 2\n',
+  })
+  const fm = join(rr, 'FEATURE-MAP.md')
+  writeFileSync(fm, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| cart | desktop | /cart | src/pages/Cart.tsx:3 |\n\n## Data architecture\n')
+  const withRows = vm(rr, '--radius', 'src/shared/Info.tsx', '--feature-map', fm)
+  check('AC-9a.2 incident: one FEATURE-MAP row matched, the legacy importer without a row is still named in a warning', /^route \/cart /m.test(withRows.stdout) && /^warning: .*src\/pages\/Legacy\.tsx/m.test(withRows.stdout), withRows.stdout)
+  check('AC-9a.2 legitimate: an intermediate component under a routed page is not named', !/Panel\.tsx/.test(withRows.stdout.split('\n').filter((line) => /^warning/.test(line)).join('\n')), withRows.stdout)
+  const noRows = vm(rr, '--radius', 'src/shared/Info.tsx')
+  check('AC-9a.2: without rows both unrouted importers are named', /^warning: .*src\/pages\/Cart\.tsx/m.test(noRows.stdout) && /src\/pages\/Legacy\.tsx/.test(noRows.stdout), noRows.stdout)
+  writeFileSync(fm, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| cart | desktop | /cart | src/pages/Cart.tsx:3 |\n| legacy | desktop | /legacy | src/pages/Legacy.tsx |\n')
+  check('AC-9a.2 legitimate: every importer has a row — no warning', !/^warning/m.test(vm(rr, '--radius', 'src/shared/Info.tsx', '--feature-map', fm).stdout))
+
+  // AC-9a.3 (K9a.3): one map-root reader — a worktree with its own config, the README only in the main tree
+  const { mapReadme, mapRoots, mapDir } = await import(join(PLUGIN, 'verify-map.mjs'))
+  {
+    const main = mkdtempSync(join(tmpdir(), 'v9a-main-'))
+    dirs.push(main)
+    repoAt(main, 'main')
+    write(main, { '.claude/pipeline.config.md': CONFIG, '.claude/verify/README.md': README })
+    const wt = `${main}-wt`
+    dirs.push(wt)
+    git(main, 'worktree', 'add', '-q', wt, '-b', 'T-91/feat/a')
+    write(wt, { '.claude/pipeline.config.md': CONFIG })
+    const roots = mapRoots(wt)
+    check('AC-9a.3 incident: mapRoots of a worktree with its own config lists the worktree and the main tree, deduplicated', roots.length === 2 && roots[0] === realpathSync(wt) && roots.includes(realpathSync(main)) && new Set(roots).size === roots.length, JSON.stringify(roots))
+    check('AC-9a.3 incident: the README that lives only in the main tree is found through mapRoots (what the hook asks)', Boolean(mapReadme(roots, CONFIG)) && mapReadme([wt], CONFIG) === null)
+    const wtOut = vm(wt, '--changed')
+    check('AC-9a.3: --changed in that worktree finds the map and prints the README absolute path', new RegExp(`^map: \\.claude/verify · 1 feature · README ${realpathSync(main).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.claude/verify/README\\.md$`, 'm').test(wtOut.stdout), wtOut.stdout + wtOut.stderr)
+    check('AC-9a.3 legitimate: a plain repo gives one root', mapRoots(nuxt).length === 1)
+    // the hook side, end to end: the worktree's own task, a new devtools-verify report without map:
+    const tdir = join(wt, '.claude/tasks/T-91')
+    write(wt, { '.claude/tasks/T-91/STAGES.md': '# T-91: task\nLanguage: en\nBranch: `T-91/feat/a`\n\n## Status: stage 1\n\n## Stages\n\n### Stage 1: x  [status: in-progress]\n- `AC-1.1` WHEN opened THEN the title shows — [verify: devtools-verify]\n' })
+    jc.baselineInfo(DATA, tdir)
+    const REPORT = '# devtools-verify — stage 1\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not needed — no auth-gated criteria\ngeometry 1440: overflow 0 · zero-gap 0 · clipped 0\n\n## Stage criteria\n- `AC-1.1` — PASS, title «Orders» at 1440, `h1` 32px\n\n## Could not verify\n- nothing\n'
+    write(wt, { '.claude/tasks/T-91/checks/devtools-verify-1.md': REPORT })
+    const gateOut = runHook('journal-gate.mjs', { cwd: wt, tool_name: 'Write', tool_input: { file_path: join(tdir, 'checks/devtools-verify-1.md') } })
+    check('AC-9a.3 incident (hook): the worktree\'s new devtools-verify report without map: is rejected — the hook sees the main tree\'s README', gateOut.decision === 'block' && /`map:` line/.test(gateOut.text), gateOut.text)
+    write(wt, { '.claude/tasks/T-91/checks/devtools-verify-1.md': REPORT.replace('geometry 1440', 'map: orders · entries 1/1 · drift 0\ngeometry 1440') })
+    const gateOk = runHook('journal-gate.mjs', { cwd: wt, tool_name: 'Write', tool_input: { file_path: join(tdir, 'checks/devtools-verify-1.md') } })
+    check('AC-9a.3 legitimate (hook): the same report with the map: line passes', !/`map:` line/.test(gateOk.text), gateOk.text)
+  }
+
+  // K9a.4: `verify_map: —` turns the map off
+  check('K9a.4 incident: README present and `verify_map: —` — mapReadme is null and mapDir says off', mapReadme([nuxt], `${CONFIG}- verify_map: —\n`) === null && mapDir(`${CONFIG}- verify_map: —\n`) === null && mapDir(`${CONFIG}- verify_map: none\n`) === null)
+  check('K9a.4 legitimate: no key and a custom directory still resolve', mapDir(CONFIG) === '.claude/verify' && mapDir(`${CONFIG}- verify_map: docs/vm/\n`) === 'docs/vm')
+  const offRepo = mkRepo({ ...mapFiles, '.claude/pipeline.config.md': `${CONFIG}- verify_map: —\n`, 'nuxt.config.ts': 'export default {}\n' })
+  put(offRepo, 'pages/new.vue', '<template/>')
+  const offOut = vm(offRepo, '--changed')
+  check('K9a.4: --changed with the map off prints the single no-map line, --init writes nothing', offOut.status === 0 && /^verify-map: no map/.test(offOut.stdout) && offOut.stdout.trim().split('\n').length === 1 && /off/.test(vm(offRepo, '--init').stdout) && readFileSync(join(offRepo, '.claude/verify/README.md'), 'utf8') === README, offOut.stdout)
+
+  // AC-9a.4 (K9a.5): the re-run citation names the same checker and stage, or a screen inside this task's checks/screens/
+  {
+    const task = mkdtempSync(join(tmpdir(), 'v9a-task-'))
+    dirs.push(task)
+    for (const file of ['devtools-verify-3-r1.md', 'devtools-verify-5-r1.md', 'devtools-verify-5-fresh.md', 'devtools-verify-5-recheck.md', 'devtools-verify-5-recheck-2.md', 'devtools-verify-5-repro.md', 'pro-review-5-r1.md']) put(task, `checks/${file}`, '# recheck\n')
+    put(task, 'checks/screens/ok.png', 'png')
+    const outside = mkdtempSync(join(tmpdir(), 'v9a-outside-'))
+    dirs.push(outside)
+    put(outside, 'screens/old.png', 'png')
+    symlinkSync(join(outside, 'screens/old.png'), join(task, 'checks/screens/link.png'))
+    const body = (line) => `# devtools-verify — stage 5\nFindings: critical 0 · major 1 · minor 0\n\n## Findings outcome\n${line}\n`
+    const bad = (line, name = 'devtools-verify-5.md') => jc.rerunViolations(body(line), name, task).filter(({ rule }) => rule === 'no-rerun').length
+    check('AC-9a.4 incident: a stage 5 report citing the stage 3 recheck is rejected', bad('- M-1 — fixed: src/Card.vue:12 — re-run checks/devtools-verify-3-r1.md') === 1)
+    check('AC-9a.4 incident: another checker\'s r1 report (pro-review-5-r1.md) is not a devtools-verify re-run', bad('- M-1 — fixed: src/Card.vue:12 — re-run checks/pro-review-5-r1.md') === 1)
+    check('AC-9a.4 incident: a screen that does not exist, one outside checks/, an absolute one and a ../ one are rejected', bad('- M-1 — fixed: a.vue:12 — checks/screens/none.png') === 1 && bad('- M-1 — fixed: a.vue:12 — screens/../../x/screens/old.png') === 1 && bad(`- M-1 — fixed: a.vue:12 — ${join(outside, 'screens/old.png')}`) === 1 && bad('- M-1 — fixed: a.vue:12 — ../elsewhere/screens/old.png') === 1)
+    check('AC-9a.4 incident: a screen that is a symlink out of checks/screens/ is rejected', bad('- M-1 — fixed: a.vue:12 — checks/screens/link.png') === 1)
+    check('AC-9a.4 incident: a -recheck citation that does not exist is rejected', bad('- M-1 — fixed: a.vue:12 — checks/devtools-verify-5-recheck-9.md') === 1)
+    check('AC-9a.4 legitimate: r1, fresh, recheck, recheck-2 of the same stage and a screen of this task pass', ['devtools-verify-5-r1.md', 'devtools-verify-5-fresh.md', 'devtools-verify-5-recheck.md', 'devtools-verify-5-recheck-2.md'].every((name) => bad(`- M-1 — fixed: a.vue:12 — re-run checks/${name}`) === 0) && bad('- M-1 — fixed: a.vue:12 — checks/screens/ok.png') === 0 && bad('- M-1 — fixed: a.vue:12 — screens/ok.png') === 0)
+    check('AC-9a.4 legitimate: the Russian outcome with the same stage recheck passes (\u0438\u0441\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e)', bad('- M-1 — \u0438\u0441\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e: src/Card.vue:12 — \u043f\u0435\u0440\u0435\u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 checks/devtools-verify-5-recheck.md') === 0)
+    check('AC-9a.4: -repro is not a re-run artifact (it is the before-fix observation)', bad('- M-1 — fixed: a.vue:12 — checks/devtools-verify-5-repro.md') === 1)
+    check('AC-9a.4: the report itself (a -r1 report citing itself) is not its own re-run', bad('- M-1 — fixed: a.vue:12 — checks/devtools-verify-5-r1.md', 'devtools-verify-5-r1.md') === 1)
+  }
+
+  // K9a.6: -r<k> and -repro reports are partial runs — no geometry / style-diff rules; doctor: and auth: stay
+  {
+    const task = mkdtempSync(join(tmpdir(), 'v9a-partial-'))
+    dirs.push(task)
+    put(task, 'STAGES.md', '# T-92: task\n\n## Stages\n\n### Stage 5: x  [status: in-progress]\nVisual reference: prototype/orders.html\n- `AC-5.1` WHEN opened THEN shown — [verify: devtools-verify]\n')
+    const hasGeometry = (text, name, fresh = true) => jc.runtimeViolations(text, name, task, fresh).map(({ rule }) => rule)
+    const repro = '# devtools-verify — stage 5, repro\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: ok\n\n## Readings\n- before: 12px · after: 12px\n'
+    check('K9a.6 incident: a -r1 and a -repro report without geometry or style-diff lines pass the runtime rules', !hasGeometry(repro, 'devtools-verify-5-r1.md').length && !hasGeometry(repro, 'devtools-verify-5-repro.md').length, JSON.stringify(hasGeometry(repro, 'devtools-verify-5-r1.md')))
+    check('K9a.6 legitimate: the full report of the same stage still needs geometry and style-diff', ['no-geometry', 'no-style-diff'].every((rule) => hasGeometry(repro, 'devtools-verify-5.md').includes(rule)))
+    check('K9a.6: doctor: and auth: still apply to a -r1 report', hasGeometry('# devtools-verify — stage 5, recheck\nFindings: critical 0 · major 0 · minor 0\n', 'devtools-verify-5-r1.md').filter((rule) => rule === 'no-doctor').length === 2)
+    check('K9a.6: -fresh and -recheck are not partial runs by name (the fresh pass is a full one)', hasGeometry(repro, 'devtools-verify-5-fresh.md').includes('no-geometry'))
+  }
+
+  // AC-9a.5 (K9a.8): --base resolves to a commit before it reaches git diff
+  {
+    const base = mkRepo({ ...mapFiles, 'nuxt.config.ts': 'export default {}\n', 'pages/index.vue': '<template/>' })
+    const victim = join(base, 'pwned.txt')
+    const opt = vm(base, '--changed', '--base', `--output=${victim}`)
+    check('AC-9a.5 incident: an option-like --base exits 2, names the base and writes nothing', opt.status === 2 && /is not a commit/.test(opt.stdout) && !existsSync(victim), opt.stdout + opt.stderr)
+    check('AC-9a.5: a dash-leading and an unknown --base both exit 2', vm(base, '--changed', '--base', '-p').status === 2 && vm(base, '--changed', '--base', 'no-such-ref').status === 2)
+    check('AC-9a.5 legitimate: HEAD and a branch name still work as --base', vm(base, '--changed', '--base', 'HEAD').status === 0 && vm(base, '--changed', '--base', git(base, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).status === 0)
+  }
+
+  // K9a.9: --init from the shared config only, no credentials, no write through a symlink out of the repo
+  {
+    const initRepo = mkRepo({ '.claude/pipeline.config.md': `${CONFIG.replace('http://localhost:3000', 'https://user:pw@stand.example')}- e2e: E2E_TOKEN=tok_shared pnpm test:e2e\n` })
+    put(initRepo, '.claude/pipeline.config.local.md', '## Dev server\n- url: https://admin:s3cret@staging.internal.example\n- e2e: E2E_TOKEN=tok_live_123 pnpm e2e:local\n')
+    check('K9a.9 incident: --init exits 0', vm(initRepo, '--init').status === 0)
+    const text = readFileSync(join(initRepo, '.claude/verify/README.md'), 'utf8')
+    check('K9a.9 incident: the README holds nothing of the gitignored local config and no userinfo or leading KEY=value', !/s3cret|tok_live|staging\.internal|pw@|E2E_TOKEN|tok_shared/.test(text) && text.includes('- Dev: https://stand.example\n') && text.includes('- E2E command: pnpm test:e2e\n'), text)
+    const linked = mkRepo({ '.claude/pipeline.config.md': CONFIG })
+    const away = mkdtempSync(join(tmpdir(), 'v9a-away-'))
+    dirs.push(away)
+    symlinkSync(away, join(linked, '.claude/verify'))
+    const linkOut = vm(linked, '--init')
+    check('K9a.9 incident: --init refuses a map directory that is a symlink out of the repo and writes nothing there', linkOut.status === 2 && /symlink that leaves the repo/.test(linkOut.stdout) && !existsSync(join(away, 'README.md')), linkOut.stdout + linkOut.stderr)
+    const broken = mkRepo({ '.claude/pipeline.config.md': CONFIG })
+    mkdirSync(join(broken, '.claude/verify'), { recursive: true })
+    symlinkSync(join(broken, 'nowhere.md'), join(broken, '.claude/verify/README.md'))
+    const brokenOut = vm(broken, '--init')
+    check('K9a.9 incident: a broken README symlink is one line, no stack trace', brokenOut.status === 2 && /broken symlink/.test(brokenOut.stdout) && brokenOut.stdout.trim().split('\n').length === 1 && !/\n\s+at /.test(brokenOut.stderr), brokenOut.stdout + brokenOut.stderr)
+    const plain = mkRepo({ '.claude/pipeline.config.md': CONFIG })
+    check('K9a.9 legitimate: a plain repo gets its README, a second --init leaves it', vm(plain, '--init').status === 0 && /left as it is/.test(vm(plain, '--init').stdout))
+  }
+
+  // AC-9a.6 / K9a.7: the map is repo data — --radius caps the primary path and drops absolute URLs, --lint flags them
+  {
+    const evil = `${' very long step'.repeat(30)} https://evil.example/other-site open it`
+    const rad = mkRepo({ ...mapFiles, '.claude/verify/features/orders.md': FEATURE().replace('- Header → «Orders»', `- Header → «Orders» ${evil}`), 'nuxt.config.ts': 'export default {}\n', 'components/Info.vue': '<template/>', 'pages/orders/[id].vue': '<script setup>import Info from "~/components/Info.vue"</script><template><Info/></template>' })
+    const out = vm(rad, '--radius', 'components/Info.vue')
+    const feature = out.stdout.split('\n').find((line) => line.startsWith('feature orders'))
+    check('K9a.7 incident: the primary path printed by --radius has no absolute URL and is at most 200 characters plus the ellipsis', Boolean(feature) && !/https?:\/\//.test(feature) && feature.replace(/^feature orders — primary path: /, '').replace(/ \(features\/orders\.md\)$/, '').length <= 201, feature)
+    check('K9a.7 legitimate: a short plain primary path is printed as it is', /primary path: Header → «Orders» \(features\/orders\.md\)$/m.test(vm(mkRepo({ ...mapFiles, 'nuxt.config.ts': 'export default {}\n', 'components/Info.vue': '<template/>', 'pages/orders/[id].vue': '<script setup>import Info from "~/components/Info.vue"</script><template><Info/></template>' }), '--radius', 'components/Info.vue').stdout))
+    const lintFile = join(rad, 'f.md')
+    writeFileSync(lintFile, FEATURE(' · open https://evil.example/x'))
+    const lint = spawnSync(process.execPath, [VM, '--lint', lintFile], { encoding: 'utf8', timeout: 30_000 })
+    check('K9a.7 incident: --lint flags an absolute http(s) URL with its line', lint.status === 1 && /absolute URL "https:\/\/evil\.example\/x"/.test(lint.stdout), lint.stdout)
+    writeFileSync(lintFile, FEATURE(' · deep link /orders?from=push'))
+    check('K9a.7 legitimate: --lint passes a route with a query', spawnSync(process.execPath, [VM, '--lint', lintFile], { encoding: 'utf8' }).status === 0)
+    // R7: a header without Status, a header without a route
+    writeFileSync(lintFile, FEATURE('', 'Routes: /orders · Auth: yes · Platforms: desktop'))
+    const noStatus = spawnSync(process.execPath, [VM, '--lint', lintFile], { encoding: 'utf8' })
+    check('R7 --lint: a header line without Status: is named', noStatus.status === 1 && /no "Status: draft \| verified/.test(noStatus.stdout), noStatus.stdout)
+    writeFileSync(lintFile, FEATURE('', 'Routes: orders · Auth: yes · Platforms: desktop · Status: draft'))
+    const noRoute = spawnSync(process.execPath, [VM, '--lint', lintFile], { encoding: 'utf8' })
+    check('R7 --lint: a header line without a route (no leading /) is named', noRoute.status === 1 && /names no route/.test(noRoute.stdout), noRoute.stdout)
+    // K9a.10: a very long line is cut before the path regex
+    writeFileSync(lintFile, FEATURE(` ${'[a]'.repeat(30000)}`))
+    const started = Date.now()
+    const longLint = spawnSync(process.execPath, [VM, '--lint', lintFile], { encoding: 'utf8', timeout: 30_000 })
+    check('K9a.10 --lint: a feature line of 90 000 characters is read in well under 5 s (8 s+ before)', longLint.status !== null && Date.now() - started < 5000, `${Date.now() - started} ms`)
+  }
+
+  // K9a.10: CLI hardening of the radius walk — a file name with regex characters, a FIFO, an import-less file with no semicolons
+  {
+    const hard = mkRepo({ 'nuxt.config.ts': 'export default {}\n', 'components/B(.vue': '<template/>', 'components/A(x+x+)+y.vue': '<template/>', 'pages/p.vue': `<template><B( /><A(x+x+)+y /><Axxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx!</template>`, 'shared.ts': 'export const s = 1\n' })
+    const hardOut = vm(hard, '--radius', 'shared.ts')
+    check('K9a.10 incident: component files named B(.vue and A(x+x+)+y.vue do not break or stall --radius', hardOut.status === 0, hardOut.stdout + hardOut.stderr)
+    const fifo = join(tmpdir(), `v9a-fifo-${process.pid}`)
+    const made = spawnSync('mkfifo', [fifo])
+    if (made.status === 0) {
+      symlinkSync(fifo, join(hard, 'evil.ts'))
+      const began = Date.now()
+      const fifoOut = vm(hard, '--radius', 'shared.ts')
+      check('K9a.10 incident: a symlink to a FIFO is skipped, --radius does not block', fifoOut.status === 0 && Date.now() - began < 10_000, `${fifoOut.status} ${Date.now() - began} ms ${fifoOut.stderr}`)
+      rmSync(fifo, { force: true })
+    }
+    const flat = mkRepo({ 'nuxt.config.ts': 'export default {}\n', 'shared.ts': 'export const s = 1\n', 'big.ts': 'export const a = 1\n'.repeat(27_000) })
+    const began = Date.now()
+    const flatOut = vm(flat, '--radius', 'shared.ts')
+    check('K9a.10 incident: a 513 KB file with no semicolon and no quote is scanned in a bounded time (more than 8 s before)', flatOut.status === 0 && Date.now() - began < 8000, `${flatOut.status} ${Date.now() - began} ms`)
+  }
+
+  // K9a.10 / R2 / R3: the report rules of the hook — CRLF, long lines, table-row verdicts, the 22-date line
+  {
+    const task = mkdtempSync(join(tmpdir(), 'v9a-rules-'))
+    dirs.push(task)
+    const JOURNAL = '# T-93: task\nLanguage: en\n\n## Stages\n\n### Stage 9: effects  [status: in-progress]\n- `AC-9.1` WHEN signed THEN POST /api/contracts saves it — [verify: devtools-verify] [effect]\n'
+    put(task, 'STAGES.md', JOURNAL)
+    const head = '# devtools-verify — stage 9\nFindings: critical 0 · major 0 · minor 0\n\n## Stage criteria\n'
+    const eff = (criteria, journal) => {
+      if (journal) put(task, 'STAGES.md', journal)
+      const found = jc.effectViolations(`${head}${criteria}`, 'devtools-verify-9.md', task).length
+      put(task, 'STAGES.md', JOURNAL)
+      return found
+    }
+    check('K9a.10 incident: a CRLF journal and a CRLF report still apply the [effect] rule', eff('- `AC-9.1` — PASS, the card shows signed\r\n', JOURNAL.replace(/\n/g, '\r\n')) === 1)
+    check('K9a.10 legitimate: the CRLF report with the request and the read-back passes', eff('- `AC-9.1` — PASS, `POST /api/contracts → 201`; read-back after reload: signed\r\n', JOURNAL.replace(/\n/g, '\r\n')) === 0)
+    check('R2 incident: a table row `| AC-9.1 | PASS |` without proof is rejected', eff('| Criterion | Verdict | Evidence |\n|---|---|---|\n| AC-9.1 | PASS | the card shows signed |\n') === 1)
+    check('R2 legitimate: the table row with the request and the read-back passes', eff('| Criterion | Verdict | Evidence |\n|---|---|---|\n| AC-9.1 | PASS | POST /api/contracts → 201; read-back after reload: signed |\n') === 0)
+    let began = Date.now()
+    const dates = Array.from({ length: 24 }, (_, i) => `${String((i % 28) + 1).padStart(2, '0')}.10.2026`).join(' ')
+    const dated = `- AC-9.1 PASS — the table lists rows dated ${dates}\n`
+    jc.barePasses(dated)
+    eff(dated)
+    check('K9a.10 incident: a PASS line with 24 dotted dates is read in under 1 s by both readers (about 10 s each before)', Date.now() - began < 1000, `${Date.now() - began} ms`)
+    began = Date.now()
+    eff(`- AC-9.1 ${' *'.repeat(50_000)}x PASS\n`)
+    put(task, 'STAGES.md', `${JOURNAL}- AC-9.2 x${' [verify:'.repeat(30_000)}\n`)
+    jc.effectCriteria(task)
+    put(task, 'STAGES.md', JOURNAL)
+    check('K9a.10 incident: a 100 KB line of "*" and a 270 KB line of "[verify:" cost the hook less than 1 s', Date.now() - began < 1000, `${Date.now() - began} ms`)
+    const bare = jc.barePasses('- AC-3.1 PASS\n- AC-3.2 PASS, `a.ts:12` measured 12px\n')
+    check('K9a.10 legitimate: PASS_RUN still reads ids — a bare PASS is found, a measured one is not', bare.length === 1 && bare[0] === 'AC-3.1', JSON.stringify(bare))
+    check('K9a.12: the [effect] message reads "does not name the request", not "names no the request"', (() => { const message = jc.effectViolations(`${head}- \`AC-9.1\` — PASS, shown\n`, 'devtools-verify-9.md', task)[0]?.message ?? ''; return /does not name the request/.test(message) && !/no the/.test(message) })())
+    check('K9a.12: EFFECT_TAG is gone from markers.mjs', !('EFFECT_TAG' in markers))
+    // R3: a missing checks/screens/ file and a -recheck citation through the full ledger reader
+    put(task, 'checks/devtools-verify-9-recheck.md', '# recheck\n')
+    const rerun = (line) => jc.rerunViolations(`# devtools-verify — stage 9\nFindings: critical 0 · major 1 · minor 0\n\n## Findings outcome\n${line}\n`, 'devtools-verify-9.md', task).length
+    check('R3 incident: a fixed that cites a checks/screens/ file that is not on disk is rejected', rerun('- M-1 — fixed: a.vue:12 — checks/screens/missing.png') === 1)
+    check('R3 legitimate: a fixed that cites an existing -recheck report passes', rerun('- M-1 — fixed: a.vue:12 — checks/devtools-verify-9-recheck.md') === 0)
+  }
+
+  // review item: an -r1 report written through the hook is not bounced for geometry it was not asked for
+  {
+    const mRoot = mkdtempSync(join(tmpdir(), 'v9a-hook-'))
+    dirs.push(mRoot)
+    const mApp = join(mRoot, 'app')
+    repoAt(mApp, 'main')
+    const tdir = join(mApp, '.claude/tasks/T-94')
+    write(mApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-94/STAGES.md': '# T-94: task\nLanguage: en\nBranch: `T-94/feat/a`\n\n## Status: stage 1\n\n## Stages\n\n### Stage 1: x  [status: in-progress]\n- `AC-1.1` WHEN opened THEN the title shows — [verify: devtools-verify]\n' })
+    git(mApp, 'checkout', '-qb', 'T-94/feat/a')
+    jc.baselineInfo(DATA, tdir)
+    write(mApp, { '.claude/tasks/T-94/checks/devtools-verify-1-r1.md': '# devtools-verify — stage 1, recheck\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not needed — no auth-gated criteria\n\n## Stage criteria\n- `AC-1.1` — PASS, title «Orders» at 1440, `h1` 32px\n\n## Could not verify\n- nothing\n' })
+    const r1 = runHook('journal-gate.mjs', { cwd: mApp, tool_name: 'Write', tool_input: { file_path: join(tdir, 'checks/devtools-verify-1-r1.md') } })
+    check('K9a.6 gate: a new -r1 report with doctor:, auth: and no geometry lines passes the hook', !/geometry/.test(r1.text), r1.text)
+    write(mApp, { '.claude/tasks/T-94/checks/devtools-verify-1.md': '# devtools-verify — stage 1\nFindings: critical 0 · major 0 · minor 0\ndoctor: ok — http://localhost:3000 answers\nauth: not needed — no auth-gated criteria\n\n## Stage criteria\n- `AC-1.1` — PASS, title «Orders» at 1440, `h1` 32px\n\n## Could not verify\n- nothing\n' })
+    const full = runHook('journal-gate.mjs', { cwd: mApp, tool_name: 'Write', tool_input: { file_path: join(tdir, 'checks/devtools-verify-1.md') } })
+    check('K9a.6 gate: the full report of the same stage without geometry is still rejected', full.decision === 'block' && /geometry/.test(full.text), full.text)
+  }
 
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
 }

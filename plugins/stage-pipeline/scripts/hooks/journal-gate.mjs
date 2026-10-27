@@ -206,13 +206,16 @@ const { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJour
 const { gateCloseViolations } = await import('../ci-gates.mjs')
 const { finalReviewViolations } = await import('../receipts.mjs')
 const { CLOSED_WORD, forceHeadings, forceKey } = await import('../markers.mjs')
-const { mapReadme } = await import('../verify-map.mjs')
+const { mapReadme, mapRoots } = await import('../verify-map.mjs')
 const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-digest.mjs')
 
 const messages = []
 const context = []
 // One moment for every row this call writes: they are one block (one `decision: 'block'` below), and retro counts the rows that share a moment as one.
 const at = new Date().toISOString()
+// the same roots the verify-map CLI looks in: the worktree, the config root, the main tree
+let roots = null
+const rootsOnce = () => (roots ??= mapRoots(state.worktree))
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
   // The report is the one written by this edit: for Write/Edit its path, for Bash the reports that changed during the call.
@@ -230,7 +233,7 @@ for (const task of tasks) {
   const reports = written.flatMap((path) => {
     const after018 = !ledgerOld.has(basename(path))
     const after020 = !runtimeOld.has(basename(path))
-    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme([state.worktree, state.root], state.config)), v020: after020 })
+    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme(rootsOnce(), state.config)), v020: after020 })
   })
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
