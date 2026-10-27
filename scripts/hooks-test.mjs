@@ -5323,4 +5323,128 @@ rmSync(retroRoot, { recursive: true, force: true })
   rmSync(b, { recursive: true, force: true })
 }
 
+// ── VT-3 stage 7a: hook firings log (AC-7.2) ─────────────────────────────────
+// Every block or deny of the five hooks appends {rule, task, repo, ts, tool, read} to <plugin data>/firings.jsonl: IDs and paths only, rotated, and a failing write never changes the verdict.
+{
+  const { isRead, readOnlyBash } = await import(join(PLUGIN, 'hooks/firing.mjs'))
+  const iso = mkdtempSync(join(tmpdir(), 'firings-iso-'))
+  const fx = mkdtempSync(join(tmpdir(), 'firings-fx-'))
+  const fxApp = join(fx, 'app')
+  const fxHome = join(fx, 'home')
+  repoAt(fxApp, 'main')
+  write(fxHome, { '.claude/settings.json': JSON.stringify({ permissions: { ask: ['Bash(pkill *)', 'Bash(git push *)'] } }) })
+  write(fxApp, {
+    '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+    '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force: '## Force-прогон 2026-10-03\nПодтверждено: 03.10.2026 — да\n\n' }),
+    '.claude/tasks/T-10/STAGES.md': stages('T-10', 'T-10/feat/n'),
+    '.claude/tasks/T-11/STAGES.md': stages('T-11', 'T-11/feat/u', { force: '## Force-прогон 2026-10-20\nРежим: автономный.\n\n' }),
+  })
+  const hookRun = (name, input, env = {}) =>
+    spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], {
+      input: JSON.stringify({ cwd: fxApp, ...input }),
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fxHome, CLAUDE_PROJECT_DIR: fxApp, STAGE_PIPELINE_DATA_DIR: iso, ...env },
+    })
+  const rowsIn = (dir, name = 'firings.jsonl') => {
+    try {
+      return readFileSync(join(dir, name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    } catch {
+      return []
+    }
+  }
+  const bash = (command) => ({ tool_name: 'Bash', hook_event_name: 'PreToolUse', tool_input: { command } })
+  const agent = (subagent_type, prompt, model) => ({ tool_name: 'Agent', hook_event_name: 'PreToolUse', tool_input: { subagent_type, prompt, ...(model ? { model } : {}) } })
+  const last = () => rowsIn(iso).at(-1)
+  const top = realpathSync(fxApp)
+
+  git(fxApp, 'checkout', '-qb', 'T-9/feat/f')
+  const killed = hookRun('force-guard.mjs', bash('pkill -f vite'))
+  check('firings AC-7.2: pkill in force — denied as before and a row force-guard/kill-by-name with task, repo, ts, tool', killed.stdout.includes('permissionDecision":"deny"') && last()?.rule === 'force-guard/kill-by-name' && last().task === 'T-9' && last().repo === top && last().tool === 'Bash' && last().read === false && !Number.isNaN(Date.parse(last().ts)), JSON.stringify(last()))
+  hookRun('force-guard.mjs', bash('git push origin T-9/feat/f'))
+  check('firings AC-7.2: git push under an ask rule — force-guard/ask-rule', last()?.rule === 'force-guard/ask-rule' && last().task === 'T-9', JSON.stringify(last()))
+  hookRun('git-guard.mjs', bash('git commit -am "x\n\nCo-Authored-By: C <c@d.e>"'))
+  check('firings AC-7.2: a signature in a force commit — git-guard/service-trailer', last()?.rule === 'git-guard/service-trailer' && last().task === 'T-9', JSON.stringify(last()))
+  hookRun('agent-guard.mjs', agent('stage-pipeline:pro-review', 'Ticket T-9, whole-branch mode.', 'sonnet'))
+  check('firings AC-7.2: whole-branch pro-review off review_model — agent-guard/review-model, tool Agent', last()?.rule === 'agent-guard/review-model' && last().tool === 'Agent', JSON.stringify(last()))
+  git(fxApp, 'checkout', '-q', 'main')
+  git(fxApp, 'checkout', '-qb', 'T-10/feat/n')
+  hookRun('git-guard.mjs', bash('git add -A'))
+  check('firings AC-7.2: git add in normal mode — git-guard/normal-mode', last()?.rule === 'git-guard/normal-mode' && last().task === 'T-10', JSON.stringify(last()))
+  git(fxApp, 'checkout', '-q', 'main')
+  git(fxApp, 'checkout', '-qb', 'T-11/feat/u')
+  hookRun('agent-guard.mjs', agent('stage-pipeline:stage-implement', 'Ticket T-11, stage 1, implement mode'))
+  check('firings AC-7.2: stage-implement before the interview is confirmed — agent-guard/no-confirmed', last()?.rule === 'agent-guard/no-confirmed' && last().task === 'T-11', JSON.stringify(last()))
+  git(fxApp, 'checkout', '-q', 'main')
+  git(fxApp, 'checkout', '-q', 'T-9/feat/f')
+
+  // IDs and paths only: neither a command nor a reason text reaches the log
+  const raw = readFileSync(join(iso, 'firings.jsonl'), 'utf8')
+  check('firings: no command text, message or file content in the log', !/pkill|vite|git push|Co-Authored|noreply|stage-pipeline:|review_model/.test(raw), raw.slice(0, 300))
+  check('firings legit: an allowed call (a clean read-only command in force) writes no row', (() => {
+    const before = rowsIn(iso).length
+    hookRun('force-guard.mjs', bash('ls -la'))
+    hookRun('git-guard.mjs', bash('git status'))
+    return rowsIn(iso).length === before
+  })())
+
+  // the verdict does not depend on the log: a data directory that cannot be created gives the same denial
+  const blocker = join(fx, 'not-a-dir')
+  writeFileSync(blocker, 'x')
+  const withLog = hookRun('force-guard.mjs', bash('pkill -f vite'))
+  const noLog = hookRun('force-guard.mjs', bash('pkill -f vite'), { STAGE_PIPELINE_DATA_DIR: join(blocker, 'sub') })
+  check('firings AC-7.2: a log that cannot be written keeps the verdict (same stdout, exit 0)', noLog.status === 0 && noLog.stdout === withLog.stdout && noLog.stdout.includes('"deny"'), noLog.stdout.slice(0, 120) + noLog.stderr.slice(0, 120))
+  const noLogAgent = hookRun('agent-guard.mjs', agent('stage-pipeline:pro-review', 'Ticket T-9, whole-branch mode.', 'sonnet'), { STAGE_PIPELINE_DATA_DIR: join(blocker, 'sub') })
+  check('firings: a log that cannot be written keeps the agent-guard denial too', noLogAgent.status === 0 && noLogAgent.stdout.includes('"deny"'), noLogAgent.stdout.slice(0, 120))
+
+  // rotation: past the cap the file becomes .1 and a new one starts; nothing grows without a bound
+  const small = mkdtempSync(join(tmpdir(), 'firings-rot-'))
+  for (let n = 0; n < 12; n++) hookRun('force-guard.mjs', bash('pkill -f vite'), { STAGE_PIPELINE_DATA_DIR: small, STAGE_PIPELINE_FIRINGS_MAX: '700' })
+  const live = rowsIn(small)
+  const old = rowsIn(small, 'firings.jsonl.1')
+  const size = (name) => {
+    try {
+      return statSync(join(small, name)).size
+    } catch {
+      return 0
+    }
+  }
+  check('firings AC-7.2: rotation - past the size cap the log becomes firings.jsonl.1 and a new file starts', old.length > 0 && live.length > 0 && size('firings.jsonl') < 700 + 400 && size('firings.jsonl.1') < 700 + 400, `live ${live.length} (${size('firings.jsonl')} B), old ${old.length} (${size('firings.jsonl.1')} B)`)
+  check('firings: rotation keeps one older generation only', !existsSync(join(small, 'firings.jsonl.2')) && live.length + old.length <= 12)
+
+  // retro.mjs prints the counts per rule, the repeats per task and the firings on reads, from the rows the hooks wrote
+  const retroTask = join(fx, 'retro-task')
+  write(retroTask, { 'STAGES.md': stages('T-9', 'T-9/feat/f') })
+  const reads = [{ rule: 'journal-gate/journal', task: 'T-3', repo: '/r', ts: new Date().toISOString(), tool: 'Bash', read: true, event: 'PostToolUse' }]
+  appendFileSync(join(iso, 'firings.jsonl'), `${reads.map((row) => JSON.stringify(row)).join('\n')}\nnot json\n`)
+  const printed = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroTask], { encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: iso } }).stdout
+  check('firings AC-7.2: retro prints firings per rule', /## Hook firings/.test(printed) && /\| force-guard\/kill-by-name \| 2 \| 1 \| 0 \|/.test(printed) && /\| force-guard\/ask-rule \| 1 \| 1 \| 0 \|/.test(printed), printed.split('## Hook firings')[1])
+  check('firings AC-7.2: retro prints repeats per task (same rule, same task, more than once)', /- T-9 \/ force-guard\/kill-by-name: 2/.test(printed) && !/- T-9 \/ force-guard\/ask-rule/.test(printed), printed.split('Repeats per task')[1])
+  check('firings AC-7.2: retro prints firings on reads', /- journal-gate\/journal: 1 of 1/.test(printed), printed.split('Firings on reads')[1])
+  check('firings legit: retro on an empty data directory says none logged and keeps the other sections', (() => {
+    const out = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroTask], { encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: join(fx, 'empty') } }).stdout
+    return /- none logged/.test(out) && /## Fix-loop/.test(out) && /## Checkers/.test(out)
+  })())
+  check('firings: retro --firings reads another file', /\| journal-gate\/journal \| 1 \|/.test(spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroTask, '--firings', join(iso, 'firings.jsonl')], { encoding: 'utf8' }).stdout))
+
+  // what counts as a read: the call changes nothing, judged from the input only
+  check('firings: Read, Grep and Glob are reads', ['Read', 'Grep', 'Glob'].every((tool_name) => isRead({ tool_name })) && !isRead({ tool_name: 'Edit' }) && !isRead({ tool_name: 'Agent' }))
+  check('firings: read-only Bash is a read (cat, ls | wc, git status/log/diff, sed -n, a /dev/null redirect)', ['cat a.md', 'ls -la | wc -l', 'git status', 'git log --oneline -5', 'git diff HEAD', "sed -n '1,5p' f", 'grep -rn x . 2>/dev/null', 'git status && git diff'].every(readOnlyBash))
+  check('firings legit: Bash that writes or runs code is not a read (git commit, rm, a redirect, sed -i, node, a subshell, tee)', ['git commit -m x', 'git add -A', 'rm -rf x', 'cat a > b', 'sed -i s/a/b/ f', 'node x.mjs', 'echo $(rm x)', 'ls | tee out', 'cat a && rm a', ''].every((command) => !readOnlyBash(command)))
+  check('firings: git branch, remote, config, worktree and stash are reads only in a listing form', ['git branch', 'git branch --list', 'git branch -a', 'git branch -vv', 'git stash list', 'git stash show -p', 'git config --get user.name', 'git config --list', 'git remote -v', 'git remote show origin', 'git worktree list', 'find . -name x', 'sort a'].every(readOnlyBash))
+  check('firings legit: git branch NAME, branch -D, stash, stash pop, config KEY VALUE, remote add, worktree add, find -delete/-exec/-fprint and sort -o are not reads', ['git branch feature', 'git branch -D x', 'git stash', 'git stash push', 'git stash pop', 'git config user.name x', 'git remote add o u', 'git remote remove o', 'git worktree add ../x', 'git worktree remove x', 'find . -delete', 'find . -exec rm {} \\;', 'find . -name x -execdir ls \\;', 'find . -ok rm {} \\;', 'find . -fprint out', 'sort -o out a', 'sort a -o out', 'sort --output=out a'].every((command) => !readOnlyBash(command)))
+
+  // every rule ID of the hooks wrote a row somewhere in this suite (the fixtures above and all the earlier ones ran against the one data directory)
+  const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : DATA
+  const written = new Set([...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)].map((row) => row.rule))
+  const ids = new Set()
+  for (const hookName of ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard']) {
+    for (const m of readFileSync(join(PLUGIN, 'hooks', `${hookName}.mjs`), 'utf8').matchAll(new RegExp(`'(${hookName}/[a-z0-9-]+)'`, 'g'))) ids.add(m[1])
+  }
+  for (const id of [...ids].sort()) check(`firings AC-7.2: ${id} wrote a row in this suite`, written.has(id))
+  check('firings: the suite found the rule IDs it should (21 at this stage, never fewer)', ids.size >= 21, `${ids.size}`)
+  check('firings: every row of the suite has the fields retro needs', [...rowsIn(suiteDir)].every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
+
+  for (const dir of [iso, fx, small]) rmSync(dir, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)

@@ -1,0 +1,63 @@
+{
+  "kind": "decision",
+  "why": "the opening interview of a force run on a plan whose criteria sit behind a sign-in, with the browser redirecting to the sign-in page: the batch carries the login item and names the route",
+  "identity": {
+    "repo": "booking-app",
+    "ticket": "BKG-4",
+    "user": "Nadia Hollis",
+    "email": "nadia.hollis@booking-app.dev",
+    "branch": "feature"
+  },
+  "serve": {
+    "dir": "public"
+  },
+  "mcp": [
+    "chrome-devtools"
+  ],
+  "mcpServers": {
+    "chrome-devtools": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "{stubs}/browser-stub.mjs"
+      ],
+      "env": {}
+    }
+  },
+  "prompt": "/stage-pipeline:stage-force BKG-4",
+  "maxTurns": 25,
+  "budgetUsd": 0.8,
+  "timeoutSec": 600,
+  "forbidAgents": [
+    "stage-implement"
+  ],
+  "trace": [
+    {
+      "tool": "mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_page)",
+      "before": "AskUserQuestion",
+      "why": "the auth probe opened the gated route in the plugin's browser before the batch"
+    }
+  ],
+  "askQuestion": [
+    {
+      "pattern": "/bookings",
+      "why": "the login item names the route"
+    },
+    {
+      "pattern": "log ?in|sign ?in|logged|signed",
+      "why": "the batch has a login item"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.17.0",
+    "date": "2026-10-27",
+    "plugin": "0.17.0@8bbb0ce84",
+    "runs": 1,
+    "failed": 1,
+    "detection": "1/1",
+    "caseHash": "3c9ea58cf932409c",
+    "failures": [
+      "trace: the auth probe opened the gated route in the plugin's browser before the batch (mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_page) befo"
+    ]
+  }
+}

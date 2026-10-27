@@ -1,8 +1,8 @@
-import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync, utimesSync } from 'node:fs'
 import { join, dirname, basename, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
@@ -683,6 +683,8 @@ const FROZEN_CASES = new Set([
   'stage-implement-reuse',
 ])
 const FORBID_FAMILY = ['forbid', 'findingsForbid', 'forbidSummary', 'filesForbid', 'traceForbid']
+// A decision case (the orchestrator's choices) forbids a spawn or a tool instead of a report text.
+const DECISION_FORBID_FAMILY = ['forbidAgents', 'forbidTools', 'traceForbid', 'forbidSummary']
 
 async function validateEvals() {
   const casesDir = join(ROOT, 'evals/cases')
@@ -694,6 +696,10 @@ async function validateEvals() {
     if (!spec) continue
     if (spec.kind === 'routing') {
       if (!spec.forbidSkills?.length) fail(where, 'a routing case needs forbidSkills: a skill that must not be picked for this phrase')
+    } else if (spec.kind === 'decision') {
+      if (spec.agent) fail(where, 'a decision case runs the orchestrator skill as the main session: no `agent`')
+      if (!DECISION_FORBID_FAMILY.some((key) => spec[key]?.length)) fail(where, `no forbid: a decision case needs at least one of ${DECISION_FORBID_FAMILY.join(' / ')} — what the orchestrator must not spawn, call or say`)
+      if (!['expectAgents', 'askQuestion', 'agentPrompts', 'agentModel'].some((key) => spec[key]?.length)) fail(where, 'a decision case needs a positive grader: expectAgents / askQuestion / agentPrompts / agentModel')
     } else if (!FORBID_FAMILY.some((key) => spec[key]?.length)) {
       fail(where, `no forbid: add at least one of ${FORBID_FAMILY.join(' / ')} — what the agent must not do or say`)
     }
@@ -701,8 +707,12 @@ async function validateEvals() {
       const proof = spec.provenFailing
       if (!proof || !proof.on || !proof.date || !Array.isArray(proof.failures) || !proof.failures.length) {
         fail(where, 'a case added after 0494f32 needs `provenFailing` {on, date, plugin, runs, failed, caseHash, failures}: its failing run on the previous tag or with the skill ablated (node scripts/eval.mjs --ref <tag> --record-failing <case>)')
-      } else if (!Number.isInteger(proof.runs) || proof.runs < 1 || proof.failed !== proof.runs) {
-        fail(where, `provenFailing must have failed === runs (every recorded run failed on the comparison); got runs ${proof.runs}, failed ${proof.failed}`)
+      } else if (/^variant:/.test(proof.on) && !existsSync(join(casesDir, name, 'variants', `${proof.on.slice(8)}.json`))) {
+        fail(where, `provenFailing.on is ${proof.on}, but evals/cases/${name}/variants/${proof.on.slice(8)}.json does not exist`)
+      } else if (/^variant:/.test(proof.on) ? !(Number.isInteger(proof.runs) && proof.runs >= 3 && Number.isInteger(proof.failed) && proof.failed >= 2 && proof.failed <= proof.runs) : !Number.isInteger(proof.runs) || proof.runs < 1 || proof.failed !== proof.runs) {
+        fail(where, /^variant:/.test(proof.on) ? `a variant's provenFailing needs runs >= 3 and failed >= 2 (a hand-made edit may be got around by a model, so the proof is a rate); got runs ${proof.runs}, failed ${proof.failed}` : `provenFailing must have failed === runs (every recorded run failed on the comparison); got runs ${proof.runs}, failed ${proof.failed}`)
+      } else if (/^variant:/.test(proof.on) && proof.detection !== `${proof.failed}/${proof.runs}`) {
+        fail(where, `a variant's provenFailing must state its detection rate: "detection": "${proof.failed}/${proof.runs}", written by --record-failing; got ${JSON.stringify(proof.detection)}`)
       } else {
         const { caseHash } = await import('./eval-lib.mjs')
         if (proof.caseHash !== caseHash(join(casesDir, name))) fail(where, 'provenFailing.caseHash does not match the case: the case changed since the failing run was recorded — record it again (node scripts/eval.mjs --ref <tag> --record-failing <case>)')
@@ -716,7 +726,7 @@ async function validateEvals() {
 
 async function validateEvalSelfTests(names) {
   // Loaded here, not at the top: scripts/hooks-test.mjs runs copies of this file in directories that have no eval harness.
-  const { findingMatches, gradeAgent, lintCase, unreadScreenshots } = await import('./eval-lib.mjs')
+  const { acIdsFor, decisionSettings, findingMatches, gradeAgent, gradeDecision, lintCase, unreadScreenshots } = await import('./eval-lib.mjs')
   const here = 'scripts/eval-lib.mjs'
   // AC-6.1: a copy of a case with a planted word is aborted, and the original passes.
   const probe = names.find((name) => existsSync(join(ROOT, 'evals/cases', name, 'base/CLAUDE.md'))) ?? names[0]
@@ -770,6 +780,201 @@ async function validateEvalSelfTests(names) {
   const shot = call('mcp__plugin_stage-pipeline_chrome-devtools__take_screenshot', { filePath: '/w/shot-1440.png' })
   if (unreadScreenshots([shot, call('Read', { file_path: '/w/shot-1440.png' })]).length) fail(here, 'screenshot grader self-test: an opened screenshot was reported')
   if (!unreadScreenshots([shot, call('Read', { file_path: '/w/other.png' })]).length) fail(here, 'screenshot grader self-test: an unopened screenshot passed')
+  // Decision graders: spawn types, the tagged AC IDs in a prompt, the model parameter, forbidden tools, the question text.
+  const stagesText = '### Stage 1: A  [status: todo]\nAcceptance criteria:\n- `AC-1.1` x - [verify: figma-compare]\n- `AC-1.2` y - [verify: devtools-verify]\n- `AC-1.3` z - [verify: pro-review, devtools-verify]\n### Stage 2: B\n- `AC-2.1` w - [verify: devtools-verify]\n'
+  if (acIdsFor(stagesText, 1, 'devtools-verify').join() !== 'AC-1.2,AC-1.3' || acIdsFor(stagesText, 1, 'figma-compare').join() !== 'AC-1.1') fail(here, 'decision grader self-test: acIdsFor did not take the IDs of the stage by the verifier tag')
+  const spawn = (type, prompt, model) => call('Agent', { subagent_type: `stage-pipeline:${type}`, prompt, ...(model ? { model } : {}) })
+  const decided = (spec, calls, extra = {}) => gradeDecision(spec, { calls, hooks: [], final: '', stagesText, configText: '- review_model: opus', ...extra }).failures.length
+  const dv = { agent: 'devtools-verify', acs: { tag: 'devtools-verify', stage: 1 } }
+  if (decided({ expectAgents: ['devtools-verify'], agentPrompts: [dv] }, [spawn('devtools-verify', 'AC-1.2 and AC-1.3 at 1440')])) fail(here, 'decision grader self-test: a complete spawn was failed')
+  if (!decided({ expectAgents: ['devtools-verify'] }, [spawn('pro-review', 'x')])) fail(here, 'decision grader self-test: a missing agent passed')
+  if (!decided({ forbidAgents: ['proto-compare'] }, [spawn('proto-compare', 'x')])) fail(here, 'decision grader self-test: a forbidden agent passed')
+  if (!decided({ agentPrompts: [dv] }, [spawn('devtools-verify', 'only AC-1.2')])) fail(here, 'decision grader self-test: a prompt missing a tagged AC ID passed')
+  if (!decided({ agentPrompts: [dv] }, [spawn('devtools-verify', 'AC-1.2, AC-1.30')])) fail(here, 'decision grader self-test: AC-1.30 was taken for AC-1.3')
+  const review = { agentModel: [{ agent: 'pro-review', model: 'config:review_model', why: 'x' }] }
+  if (decided(review, [spawn('pro-review', 'x', 'opus')])) fail(here, 'decision grader self-test: the right model was failed')
+  if (!decided(review, [spawn('pro-review', 'x')]) || !decided(review, [spawn('pro-review', 'x', 'sonnet')])) fail(here, 'decision grader self-test: a missing or wrong model passed')
+  if (!decided({ forbidTools: [{ tool: 'AskUserQuestion', why: 'x' }] }, [call('AskUserQuestion', { questions: [] })])) fail(here, 'decision grader self-test: a forbidden tool passed')
+  const ask = { askQuestion: [{ pattern: '/orders', why: 'x' }] }
+  if (decided(ask, [call('AskUserQuestion', { questions: [{ question: 'Log in at /orders?' }] })]) || !decided(ask, [call('AskUserQuestion', { questions: [{ question: 'Log in?' }] })])) fail(here, 'decision grader self-test: the question text grader is wrong')
+  if (decided(ask, [], { final: 'log in at /orders' }) || !decided(ask, [], { final: 'nothing' })) fail(here, 'decision grader self-test: the final-text fallback is wrong')
+  // The harness hook that ends a decision session must deny the call and stop the session.
+  const holder = mkdtempSync(join(tmpdir(), 'gate-probe-'))
+  try {
+    const settings = JSON.parse(readFileSync(decisionSettings(holder), 'utf8'))
+    const hook = settings.hooks?.PreToolUse?.[0]
+    const out = spawnSync(process.execPath, [hook?.hooks?.[0]?.command.match(/"(.+)"/)?.[1] ?? ''], { input: '{}', encoding: 'utf8' })
+    const verdict = (() => { try { return JSON.parse(out.stdout) } catch { return {} } })()
+    if (!/Agent/.test(hook?.matcher ?? '') || !/AskUserQuestion/.test(hook?.matcher ?? '') || verdict.continue !== false || verdict.hookSpecificOutput?.permissionDecision !== 'deny') fail(here, 'decision harness self-test: the stop hook must match Agent|Task|AskUserQuestion and answer deny + continue:false')
+  } finally {
+    rmSync(holder, { recursive: true, force: true })
+  }
+}
+
+/**
+ * VT-3 stage 7: the plugin's own correction loop, on the dev side.
+ * - hook rule IDs: every ID a hook emits has an entry in scripts/hook-rules.json with an incident and a legitimate fixture of hooks-test.mjs (scripts/hook-rules.mjs);
+ * - rule -> enforcer table: every imperative of the SKILL.md files maps to a hook rule, a script or `prose`, and the prose count may not pass its baseline (scripts/rule-enforcers.mjs);
+ * - docs-vs-tree: unknown slash commands, broken relative links and broken anchors in the READMEs, ROLLOUT, CHANGELOG (links only) and references (scripts/docs-tree.mjs).
+ * Each has a free self-test: the check must fail on a doctored copy.
+ */
+async function validateCorrectionLoop() {
+  const here = 'scripts/validate.mjs'
+  const { checkHookRules, readHookSources } = await import('./hook-rules.mjs')
+  const enforcers = await import('./rule-enforcers.mjs')
+  const { checkDocs, markdownUnder, DEV_COMMANDS } = await import('./docs-tree.mjs')
+  // A dev-repo command is a dev skill of this repo (`.claude/skills/<name>/SKILL.md`, not a plugin skill): each one named in DEV_COMMANDS must exist there.
+  for (const name of DEV_COMMANDS) if (!existsSync(join(ROOT, '.claude/skills', name, 'SKILL.md'))) fail('scripts/docs-tree.mjs', `DEV_COMMANDS names /${name}, but .claude/skills/${name}/SKILL.md does not exist`)
+  const pluginDir = 'plugins/stage-pipeline'
+
+  // hook rule IDs
+  const testSource = readFileSync(join(ROOT, 'scripts/hooks-test.mjs'), 'utf8')
+  const sources = readHookSources(ROOT)
+  const map = readJson('scripts/hook-rules.json')
+  for (const error of checkHookRules({ sources, map, testSource })) fail(error.split(': ')[0], error.slice(error.indexOf(': ') + 2))
+  const known = new Set(Object.keys(map?.rules ?? {}))
+  {
+    const one = Object.keys(map?.rules ?? {})[0]
+    const base = { sources, map, testSource }
+    const rule = (extra) => checkHookRules({ ...base, ...extra }).length
+    if (rule({ sources: { ...sources, 'git-guard.mjs': `${sources['git-guard.mjs']}\ndeny('git-guard/invented-rule')` } }) !== 1) fail(here, 'hook-rules self-test: a rule ID with no map entry was not reported')
+    if (one && rule({ map: { rules: { ...map.rules, [one]: { ...map.rules[one], incident: ['a fixture that is not in hooks-test'] } } } }) !== 1) fail(here, 'hook-rules self-test: an entry naming a missing fixture was not reported')
+    if (one && rule({ map: { rules: { ...map.rules, [one]: { incident: map.rules[one].incident, head: map.rules[one].head } } } }) !== 1) fail(here, 'hook-rules self-test: an entry without a legitimate fixture was not reported')
+    if (one && rule({ map: { rules: { ...map.rules, [one]: { ...map.rules[one], head: undefined } } } }) !== 1) fail(here, 'hook-rules self-test: a rule with no message head was not reported')
+    if (one && rule({ map: { rules: { ...map.rules, [one]: { ...map.rules[one], head: 'a head that no hook writes' } } } }) !== 1) fail(here, 'hook-rules self-test: a head that is not in the hooks was not reported')
+  }
+
+  // rule -> enforcer table
+  const extracted = enforcers.extractAll(join(ROOT, pluginDir, 'skills'))
+  if (process.argv.includes('--update-enforcers')) {
+    const before = enforcers.readTable()
+    const next = enforcers.updatedTable(extracted, before, { raise: process.argv.includes('--raise-enforcer-baseline') })
+    enforcers.writeTable(next)
+    console.log(`scripts/rule-enforcers.json updated: prose baseline ${before.proseBaseline} -> ${next.proseBaseline}`)
+  }
+  const table = enforcers.readTable()
+  const exists = (path) => existsSync(join(ROOT, path))
+  for (const error of enforcers.checkEnforcers(extracted, table, { knownRules: known, exists })) fail(error.file, error.message)
+  {
+    // AC-7.3: a prose-only imperative added to stage-check fails until the table maps it
+    const skillText = readFileSync(join(ROOT, pluginDir, 'skills/stage-check/SKILL.md'), 'utf8')
+    const added = 'You must never close a stage on the strength of a green lint alone.'
+    const doctored = `${skillText.replace(/\n+$/, '')}\n\n${added}\n`
+    const mine = { 'stage-check': enforcers.extractImperatives(doctored) }
+    // The table of stage-check as it is, with anything unmapped counted as accepted prose: the self-test is about the one added sentence, whatever else is open.
+    const ownRules = Object.fromEntries(extracted['stage-check'].map((item) => [enforcers.keyOf('stage-check', item.hash), table.rules[enforcers.keyOf('stage-check', item.hash)] ?? { to: 'prose', baseline: true }]))
+    const ownTable = { proseBaseline: Object.values(ownRules).filter((rule) => rule.to === 'prose').length, rules: ownRules }
+    const run = (items, withTable) => enforcers.checkEnforcers(items, withTable, { knownRules: known, exists })
+    const hash = enforcers.hashOf(added)
+    if (run({ 'stage-check': extracted['stage-check'] }, ownTable).length) fail(here, 'rule-enforcers self-test: the untouched stage-check text does not pass its own table')
+    const unmapped = run(mine, ownTable)
+    if (!unmapped.some((error) => error.file.includes('stage-check/SKILL.md:') && /no enforcer/.test(error.message))) fail(here, 'rule-enforcers self-test: a prose-only imperative added to stage-check was not reported with skill and line')
+    const asProse = { ...ownTable, rules: { ...ownTable.rules, [enforcers.keyOf('stage-check', hash)]: { to: 'prose' } } }
+    if (!run(mine, asProse).some((error) => /baseline/.test(error.message))) fail(here, 'rule-enforcers self-test: a new prose-only imperative passed the prose baseline')
+    const asScript = { ...ownTable, rules: { ...ownTable.rules, [enforcers.keyOf('stage-check', hash)]: { to: `script:${pluginDir}/scripts/floor-guard.mjs` } } }
+    if (run(mine, asScript).length) fail(here, 'rule-enforcers self-test: an imperative mapped to an existing script was still reported')
+    const toGhost = { ...ownTable, rules: { ...ownTable.rules, [enforcers.keyOf('stage-check', hash)]: { to: 'hook:git-guard/ghost' } } }
+    if (!run(mine, toGhost).some((error) => /not a rule ID/.test(error.message))) fail(here, 'rule-enforcers self-test: a hook target that is no rule ID passed')
+  }
+
+  // docs-vs-tree
+  const skills = readdirSync(join(ROOT, pluginDir, 'skills')).filter((name) => existsSync(join(ROOT, pluginDir, 'skills', name, 'SKILL.md')))
+  const files = [...['README.md', 'ROLLOUT.md', 'CHANGELOG.md', `${pluginDir}/README.md`].map((path) => join(ROOT, path)), ...markdownUnder(join(ROOT, pluginDir, 'references'))].filter((path) => existsSync(path))
+  // CHANGELOG is history: it names commands that no longer exist and placeholders like "/skill", so only its links and anchors are checked.
+  const commandsIn = (file) => !file.endsWith(`${sep}CHANGELOG.md`)
+  for (const failure of checkDocs({ root: ROOT, files, skills, commandsIn })) fail(failure.where, failure.message)
+  {
+    const dir = mkdtempSync(join(tmpdir(), 'docs-tree-'))
+    try {
+      writeFileSync(join(dir, 'other.md'), '# Other\n\n## A section\n')
+      writeFileSync(join(dir, 'README.md'), '# Title\n\nRun /stage-check, /audit-runs, then /stage-chek.\n\nSee [ok](#title), [ok2](other.md#a-section), [gone](#no-such-heading), [bad](other.md#nope) and [file](missing.md).\n')
+      const got = checkDocs({ root: dir, files: [join(dir, 'README.md')], skills })
+      const hit = (pattern) => got.some((item) => pattern.test(item.message) && /^README\.md:\d+$/.test(item.where))
+      if (!hit(/unknown slash command `\/stage-chek`/) || got.some((item) => /`\/stage-check`|`\/audit-runs`/.test(item.message))) fail(here, 'docs-tree self-test: an unknown slash command was not reported (or a known one was)')
+      if (!hit(/broken anchor.*no-such-heading/) || !hit(/broken anchor.*nope/) || got.some((item) => /#title|a-section/.test(item.message))) fail(here, 'docs-tree self-test: a broken anchor was not reported (or a good one was)')
+      if (!hit(/broken link.*missing\.md/)) fail(here, 'docs-tree self-test: a broken relative link was not reported')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+
+/**
+ * VT-3 stage 7b: `scripts/run-audit.mjs` counts what the transcripts show; this is its free self-test, on SYNTHETIC transcripts in scripts/fixtures/run-audit/ (two runs of a made-up task TK-1,
+ * a session of another task, three subagents). The fixtures are under scripts/ and not under evals/ because they are not eval cases (evals/cases/* is checked case by case as blind, graded cases);
+ * the leak and ticket-id scan of validate (`scanProjectIds`) is run over them here as over evals/**. Each count of the digest is checked against the number the fixture was built to give.
+ */
+async function validateRunAudit() {
+  const here = 'scripts/validate.mjs'
+  const fixtures = join(ROOT, 'scripts/fixtures/run-audit')
+  scanProjectIds(walkAll(fixtures), new Set(['TK-1', 'OT-2']))
+  const { runAudit, encodeProject, renderMarkdown } = await import('./run-audit.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'run-audit-'))
+  const bad = (what) => fail(here, `run-audit self-test: ${what}`)
+  try {
+    cpSync(fixtures, dir, { recursive: true })
+    // the fixtures name /synthetic/repo; the copy lives elsewhere, so the paths are pointed at it
+    for (const file of walkAll(join(dir, 'transcripts'))) if (file.endsWith('.jsonl')) writeFileSync(file, readFileSync(file, 'utf8').replaceAll('/synthetic/repo', join(dir, 'repo')))
+    const checks = join(dir, 'repo/tasks/TK-1/checks')
+    utimesSync(join(checks, 'pro-review-1.md'), new Date('2026-03-02T13:00:00Z'), new Date('2026-03-02T13:00:00Z'))
+    utimesSync(join(checks, 'pro-review-2.md'), new Date('2026-03-05T12:00:00Z'), new Date('2026-03-05T12:00:00Z'))
+    const git = (...args) => execFileSync('git', ['-C', join(dir, 'repo'), '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { stdio: 'ignore', env: { ...process.env, GIT_COMMITTER_DATE: '2026-03-03T12:00:00Z', GIT_AUTHOR_DATE: '2026-03-03T12:00:00Z' } })
+    git('init', '-q', '-b', 'feat/TK-1/demo')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'demo commit')
+    const base = { repos: [join(dir, 'repo')], transcripts: [join(dir, 'transcripts')], tasks: ['TK-1'], plugin: join(dir, 'plugin') }
+    const report = runAudit(base)
+    const task = report.tasks[0]
+    const [one, two] = task.runs
+    const eq = (what, got, want) => {
+      if (JSON.stringify(got) !== JSON.stringify(want)) bad(`${what}: got ${JSON.stringify(got)}, wanted ${JSON.stringify(want)}`)
+    }
+    if (!task || task.error || task.runs.length !== 2) return bad(`two runs were expected: ${JSON.stringify(task?.error ?? task?.runs?.length)}`)
+    eq('sessions read (the session of another task is not)', [report.generatedFrom.sessionFiles, task.sessionsRead.length], [2, 1])
+    eq('stages without devtools-verify', [task.devtools.uiStages, task.devtools.without.map((x) => x.stage), task.devtools.without.filter((x) => x.skipped).map((x) => x.stage)], [3, ['2', '4'], ['4']])
+    eq('a stage with only a ticked devtools-verify box is not covered and is listed as box only', [task.devtools.without.map((x) => x.stage), task.devtools.boxOnly.map((x) => x.stage)], [['2', '4'], ['2']])
+    eq('spawns of run 1 (the foreign spawn is left out)', one.spawns.map((x) => [x.type.replace(/^stage-pipeline:/, ''), x.model, x.promptChars]), [['stage-implement', null, 44], ['devtools-verify', 'sonnet', 57], ['pro-review', null, 33]])
+    eq('hook denials of run 1 (rule by the message head; an unknown message by its hook event)', one.denials.map((x) => x.rule).sort(), ['PostToolUse:Edit', 'git-guard/normal-mode', 'journal-gate/close|journal-gate/journal|journal-gate/report'])
+    eq('AskUserQuestion after Confirmed, run 1 / run 2', [one.mid.asksTotal, one.mid.afterConfirmed.length, two.mid.afterConfirmed.length], [1, 1, 1])
+    eq('orchestrator edits to source, run 1 (one Edit in the repo, one Bash sed -i; task-dir edits are not source)', [one.sourceEdits.filter((x) => x.tool === 'Edit' && x.where === 'repo').length, one.sourceEdits.filter((x) => x.tool === 'Bash').map((x) => x.where), one.sourceEdits.filter((x) => x.tool !== 'Bash').length], [1, ['relative'], 1])
+    const sh = one.screenshots
+    eq('screenshots taken / failed / with a file / read back (a.png saved as a.jpeg, b.png relative to the taker cwd) / never read (d.jpeg, saved under /private/tmp) / inline', [sh.taken, sh.failed, sh.withFile, sh.readBack, sh.notRead, sh.inline], [4, 1, 3, 2, 1, 1])
+    eq('screenshots left out as another ticket\'s', task.screenshotsOutsideRuns.leftOutForeign, 1)
+    eq('findings vs ledger, run 1 (a report modified in the window)', [one.findings.length, sum(one.findings, 'major'), sum(one.findings, 'lines')], [1, 2, 1])
+    eq('user messages after done, run 1 (the harness text is not a person)', one.userAfterDone.map((x) => x.head), ['please change the title of the screen'])
+    eq('commits after close, run 1', one.commitsAfterClose.list.map((x) => x.subject), ['demo commit'])
+    eq('skills and agents never invoked, run 1', [one.neverSkills, one.neverAgents], [['root-cause'], ['task-converge']])
+    eq('stages implemented / verified / implemented without devtools-verify, run 1 and run 2', [one.implementedStages, one.verifiedStages, one.implementedWithoutDevtools, two.implementedWithoutDevtools], [['1'], ['1'], [], ['2']])
+    if (!renderMarkdown(report).includes('git-guard/normal-mode')) bad('the markdown does not carry the rule ID of a denial')
+    // a session given explicitly is one more run, with every event of it
+    const withSession = runAudit({ ...base, sessions: [join(dir, 'transcripts/s1.jsonl')] })
+    eq('a session given explicitly is audited as a run of its own', [withSession.tasks[0].runs.length, withSession.tasks[0].runs[2]?.heading.startsWith('session s1'), withSession.tasks[0].runs[2]?.spawns.length], [3, true, 4])
+    // inputs: explicit paths; the derived project directory is one directory named from the repo path, and an explicit --transcripts wins over it
+    eq('the encoding of a repo path', encodeProject('/Users/x/my.repo_1'), '-Users-x-my-repo-1')
+    const derived = runAudit({ ...base, transcripts: [] }).generatedFrom.transcriptPaths
+    eq('without --transcripts exactly one derived directory is named', [derived.length, derived[0].endsWith(`/.claude/projects/${encodeProject(join(dir, 'repo'))}`)], [1, true])
+    eq('an explicit --transcripts is used as given', report.generatedFrom.transcriptPaths, [join(dir, 'transcripts')])
+    const noSource = readFileSync(join(ROOT, 'scripts/run-audit.mjs'), 'utf8')
+    if (/readdirSync\([^)]*\.claude\/projects['"`]\s*\)/.test(noSource) || /readdirSync\(\s*join\(homedir\(\),\s*['"]\.claude\/projects['"]\s*\)\s*\)/.test(noSource)) bad('the script lists ~/.claude/projects as a whole')
+  } catch (error) {
+    bad(`threw ${error?.stack ?? error}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+const sum = (items, key) => items.reduce((total, item) => total + (item[key] ?? 0), 0)
+
+// The fixtures of hooks-test copy validate.mjs alone into a throwaway repo, where nothing of this repo's dev tooling exists. That copy is told by its having no scripts/hooks-test.mjs
+// (the dev repo always has it); only there the dev checks are skipped. In the dev repo a missing module is a failure, not a reason to check less.
+const STANDALONE_COPY = !existsSync(join(ROOT, 'scripts/hooks-test.mjs'))
+if (!STANDALONE_COPY) {
+  const missing = ['hook-rules.mjs', 'rule-enforcers.mjs', 'docs-tree.mjs', 'run-audit.mjs'].filter((name) => !existsSync(join(ROOT, 'scripts', name)))
+  for (const name of missing) fail('scripts/validate.mjs', `scripts/${name} is missing: the release rule, the rule -> enforcer table, docs-vs-tree and the run-audit self-test need it`)
+  const noFixtures = !existsSync(join(ROOT, 'scripts/fixtures/run-audit'))
+  if (noFixtures) fail('scripts/validate.mjs', 'scripts/fixtures/run-audit is missing: the run-audit self-test needs it')
+  if (!missing.some((name) => name !== 'run-audit.mjs')) await validateCorrectionLoop()
+  if (!missing.includes('run-audit.mjs') && !noFixtures) await validateRunAudit()
 }
 
 await validateEvals()

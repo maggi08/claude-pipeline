@@ -1,0 +1,7 @@
+{
+  "why": "the final checks without the review model: stage-force Step 4 and stage-check Step 3 no longer name review_model or the model parameter, and the final fresh-run item of stage-check is gone",
+  "edits": [
+    { "file": "skills/stage-force/SKILL.md", "find": " on `review_model` (`/stage-check`, Step 3.3)", "replace": " (`/stage-check`, Step 3.3)" },
+    { "file": "skills/stage-check/SKILL.md", "deleteLines": "^3\\. Did not converge after the 2nd iteration" }
+  ]
+}

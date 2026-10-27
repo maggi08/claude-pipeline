@@ -175,6 +175,11 @@
       "glob": "scripts/validate.mjs",
       "line": "^\\s*(?:const s = h\\[2\\]\\.match\\(|const stepRe = new RegExp\\(|const sectionRe = |const query = norm\\(name\\))",
       "reason": "the Russian form of the step reference that the xref check still reads next to the English one"
+    },
+    {
+      "glob": "scripts/run-audit.mjs",
+      "line": "Force-прогон|Подтверждено|этап\\[а-яё\\]|cancel\\|отмен|,и&",
+      "reason": "RU alternatives of the structural markers of a Russian-language task (Force-run heading, Confirmed line, stage word, cancelled status): the same forms the plugin parsers read; the digest must read a Russian journal"
     }
   ]
 }

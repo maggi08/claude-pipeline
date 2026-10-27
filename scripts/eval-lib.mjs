@@ -262,7 +262,7 @@ export function buildWorld({ caseDir, name, spec, plugin }) {
   const vars = serve ? { port: serve.port } : {}
   const repo = buildRepo(caseDir, work, identity, spec.base, vars)
   const checks = `tasks/${identity.ticket}/checks`
-  const routing = spec.kind === 'routing'
+  const routing = spec.kind === 'routing' || spec.kind === 'decision'
   const filled = serve ? spec.prompt.replaceAll('{port}', String(serve.port)) : spec.prompt
   const prompt = routing || spec.requireReport === false ? filled : `${filled}\n\nSave the report to ${checks}/ following the report naming convention.`
   const prompts = routing ? { prompt } : { prompt, parent: launchPrompt(spec.agent, prompt) }
@@ -447,13 +447,21 @@ export function harnessProblems(events, { allowed = [], mcpNames = [] } = {}) {
   return problems
 }
 
+/**
+ * Where a take_screenshot call's frame really went. The server says so («Saved screenshot to …/x.jpeg.») and rewrites an extension that does not match `format` (x.jpg + jpeg -> x.jpeg),
+ * so the requested `filePath` is only the fallback. Shared by the eval grader and by scripts/run-audit.mjs.
+ */
+export function savedScreenshotPath(result, input = {}) {
+  const text = String(result ?? '')
+  return /Saved screenshot to (\S+?)\.?(?:\s|$)/.exec(text)?.[1] ?? input.filePath ?? input.path ?? /[\w./~-]+\.(?:png|jpe?g|webp)/.exec(text)?.[0] ?? null
+}
+
 /** Every screenshot a subagent took was later opened with Read (a screenshot nobody looks at proves nothing). */
 export function unreadScreenshots(calls) {
   const problems = []
   calls.forEach((call, index) => {
     if (!/take_screenshot$/.test(call.name) || call.isError) return
-    // The server says where the frame really went («Saved screenshot to …/x.jpeg.»): it rewrites an extension that does not match `format` (x.jpg → x.jpeg).
-    const path = /Saved screenshot to (\S+?)\.?(?:\s|$)/.exec(call.result ?? '')?.[1] ?? call.input.filePath ?? call.input.path ?? /[\w./~-]+\.(?:png|jpe?g|webp)/.exec(call.result ?? '')?.[0]
+    const path = savedScreenshotPath(call.result, call.input)
     if (!path) return problems.push(`a screenshot with no file to open (call ${index + 1})`)
     const opened = calls.slice(index + 1).some((later) => later.name === 'Read' && !later.isError && String(later.input.file_path ?? '').endsWith(path.split('/').pop()))
     if (!opened) problems.push(`${path.split('/').pop()} was taken and never opened with Read`)
@@ -519,6 +527,104 @@ export function gradeAgent(spec, ctx) {
     const lines = ctx.summary.trim().split('\n').length
     mark('L1', lines <= spec.maxSummaryLines, `summary is ${lines} lines against a cap of ${spec.maxSummaryLines} — it bloats the main context`)
   }
+  return { failures, marks }
+}
+
+// ── decision cases ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Harness-only PreToolUse hook of a decision case (passed through `--settings`, never part of the plugin): the first Agent/Task or AskUserQuestion call of the
+ * orchestrator is denied AND ends the session (`continue: false`). `continue: false` alone does not stop the call — the subagents still launched in the background
+ * (measured, Claude Code 2.1.296) — and a deny alone leaves the orchestrator reacting; together the tool does not run and the session ends after that assistant
+ * message. The tool_use blocks of the message are already in the stream, so a parallel batch of spawns is captured whole and no subagent runs. The plugin's own
+ * agent-guard sits on the same matcher and still runs (two PreToolUse:Agent hook starts per call).
+ */
+export const SPAWN_STOP_HOOK = `process.stdin.on('data', () => {})
+process.stdin.on('end', () => {
+  process.stdout.write(JSON.stringify({
+    continue: false,
+    stopReason: 'session ends here',
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Not available in this session.' },
+  }))
+})
+`
+
+export function decisionSettings(work) {
+  const dir = join(work, 'hk')
+  mkdirSync(dir, { recursive: true })
+  const script = join(dir, 'gate.mjs')
+  writeFileSync(script, SPAWN_STOP_HOOK)
+  const path = join(dir, 'settings.json')
+  writeFileSync(path, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Agent|Task|AskUserQuestion', hooks: [{ type: 'command', command: `node "${script}"`, timeout: 5 }] }] } }))
+  return path
+}
+
+const SPAWN_TOOLS = ['Agent', 'Task']
+export const spawnType = (call) => String(call.input?.subagent_type ?? '').replace(/^stage-pipeline:/, '')
+
+/** The `AC-*` IDs of a stage in STAGES.md whose `[verify: …]` tag list names `tag`. */
+export function acIdsFor(stagesText, stage, tag) {
+  const block = new RegExp(`^### Stage ${stage}\\b[^\\n]*\\n([\\s\\S]*?)(?=^###? |(?![\\s\\S]))`, 'm').exec(stagesText)?.[1] ?? ''
+  const ids = []
+  for (const line of block.split('\n')) {
+    const m = /`(AC-[\w.]+)`.*\[verify:\s*([^\]]*)\]/.exec(line)
+    if (m && m[2].split(/[,;]/).map((t) => t.trim()).includes(tag)) ids.push(m[1])
+  }
+  return ids
+}
+
+export const configValue = (configText, key) => new RegExp(`^[ \\t]*-[ \\t]*${key}:[ \\t]*[\`*]*([\\w.-]+)`, 'm').exec(configText)?.[1]
+
+/**
+ * The verdict on a decision case: the orchestrator ran as the main session until its first spawn or question. `ctx`: { calls (top-level), final, hooks, stagesText, configText }.
+ *   expectAgents    [name]       subagent types that must be spawned
+ *   forbidAgents    [name]       subagent types that must not
+ *   agentPrompts    [{ agent, acs?: { tag, stage }, contains?: [{ pattern, why }] }]  — the prompt of that agent carries every `[verify: <tag>]` AC ID of the stage and each pattern
+ *   agentModel      [{ agent, model | "config:<key>", why }]  — the `model` parameter of that agent's call (config:<key> reads the fixture's pipeline config)
+ *   forbidTools     [{ tool, input?, why }]  — top-level tools the orchestrator must not call (AskUserQuestion)
+ *   askQuestion     [{ pattern, why }]  — over the AskUserQuestion input; the final text when the tool did not run
+ * and the generic trace / traceForbid / expect / forbidSummary / hooks of gradeAgent over the same calls.
+ */
+export function gradeDecision(spec, ctx) {
+  const generic = gradeAgent(spec, { repo: ctx.repo ?? '', report: '', summary: ctx.final ?? '', calls: ctx.calls, hooks: ctx.hooks, snapshot: {} })
+  const failures = [...generic.failures]
+  const marks = [...generic.marks]
+  const mark = (id, ok, message) => {
+    marks.push(`${id}${ok ? '+' : '-'}`)
+    if (!ok) failures.push(message)
+  }
+  const spawns = ctx.calls.filter((call) => SPAWN_TOOLS.includes(call.name))
+  const forAgent = (name) => spawns.filter((call) => spawnType(call) === name)
+  ;(spec.expectAgents ?? []).forEach((name, i) => mark(`A${i + 1}`, forAgent(name).length > 0, `agent ${name} was not spawned (spawned: ${spawns.map(spawnType).join(', ') || 'none'})`))
+  ;(spec.forbidAgents ?? []).forEach((name, i) => mark(`B${i + 1}`, forAgent(name).length === 0, `agent ${name} was spawned but must not be`))
+  ;(spec.agentPrompts ?? []).forEach((p, i) => {
+    const prompts = forAgent(p.agent).map((call) => String(call.input.prompt ?? ''))
+    const wanted = p.acs ? acIdsFor(ctx.stagesText ?? '', p.acs.stage, p.acs.tag) : []
+    const missing = []
+    if (p.acs && !wanted.length) missing.push(`the fixture has no [verify: ${p.acs.tag}] AC in stage ${p.acs.stage} (broken case)`)
+    const prompt = prompts[0]
+    if (prompt === undefined) missing.push(`no ${p.agent} call`)
+    else {
+      for (const id of wanted) if (!new RegExp(`(?<![\\w.-])${id.replaceAll('.', '\\.')}(?![\\w-])`).test(prompt)) missing.push(`${id} missing`)
+      for (const c of p.contains ?? []) if (!new RegExp(c.pattern, 'i').test(prompt)) missing.push(`${c.why} (/${c.pattern}/)`)
+    }
+    mark(`R${i + 1}`, !missing.length, `${p.agent} prompt: ${missing.join('; ')}`)
+  })
+  ;(spec.agentModel ?? []).forEach((m, i) => {
+    const want = m.model.startsWith('config:') ? configValue(ctx.configText ?? '', m.model.slice(7)) : m.model
+    const calls = forAgent(m.agent)
+    const got = calls.map((call) => String(call.input.model ?? '').toLowerCase())
+    mark(`O${i + 1}`, Boolean(calls.length) && Boolean(want) && got.every((model) => model && (model.includes(want.toLowerCase()) || want.toLowerCase().includes(model))), `${m.agent} model: ${m.why ?? ''} wanted ${want}, got ${got.map((model) => model || 'none').join(', ') || 'no call'}`)
+  })
+  ;(spec.forbidTools ?? []).forEach((t, i) => {
+    const hit = ctx.calls.find((call) => toolMatches(t, call))
+    mark(`Y${i + 1}`, !hit, `${t.tool} was called: ${t.why}`)
+  })
+  ;(spec.askQuestion ?? []).forEach((q, i) => {
+    const asks = ctx.calls.filter((call) => call.name === 'AskUserQuestion')
+    const text = asks.length ? asks.map((call) => JSON.stringify(call.input)).join('\n') : ctx.final ?? ''
+    mark(`Z${i + 1}`, new RegExp(q.pattern, 'i').test(text), `${asks.length ? 'AskUserQuestion input' : 'final text (the tool did not run)'}: ${q.why} (/${q.pattern}/)`)
+  })
   return { failures, marks }
 }
 

@@ -1,0 +1,6 @@
+{
+  "why": "stage-force Step 0 without the auth probe: every line that names the probe is gone (its paragraph, its steps, the taxonomy row and the sample assumptions), and so are the sample login assumptions",
+  "edits": [
+    { "file": "skills/stage-force/SKILL.md", "deleteLines": "[Pp]robe|^   - login \"not now\"|The login is made in the window" }
+  ]
+}

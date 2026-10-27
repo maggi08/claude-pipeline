@@ -10,6 +10,7 @@
  *   node scripts/eval.mjs --ref stage-pipeline--v0.18.0 devtools-verify-console   # the plugin as of a git tag
  *   node scripts/eval.mjs --ablate skill:pro-review pro-review-clean-ac            # the plugin without a skill (`skill:<n>`), as a bare model (`agent:<n>`: the agent keeps its
  *                                                                                  # frontmatter and loses its body, its skill goes too), or without both (<n>; the agent then cannot launch)
+ *   node scripts/eval.mjs --variant no-devtools-verify stage-check-ui-stage         # the plugin with the edit list of evals/cases/<case>/variants/<name>.json applied (one case; `provenFailing.on` = `variant:<name>`)
  *   node scripts/eval.mjs --ref <tag> --record-failing <new-case>                   # writes `provenFailing` into the case
  *   node scripts/eval.mjs --budget-usd 20 --budget-since 2026-10-25T00:00:00Z       # skip runs that would pass the lane budget
  *
@@ -74,7 +75,8 @@
  *
  * New-case rule: a case added after 0494f32 carries `provenFailing` in case.json — its failing run on the previous tag (--ref) or with
  * the skill/agent ablated (--ablate), written by --record-failing with `runs`, `failed` and `caseHash` (the content of the case); validate.mjs fails a case
- * without it, with failed !== runs, or whose hash no longer matches. A harness failure (an MCP server not connected, an allowed tool denied, a server that did not start)
+ * without it, with failed !== runs, or whose hash no longer matches. A `--variant` is a hand-made edit a model may get around, so its record is a rate instead:
+ * the counts are those of the whole recording invocation (never a picked run), `--runs 3` at least with 2 or more failing, and `detection` ("2/3") says so. A harness failure (an MCP server not connected, an allowed tool denied, a server that did not start)
  * is marked `W-` in the ledger and never recorded as a grade.
  * A `trace` grader takes `before: <tool regex>`: only the calls ahead of the first call of that tool count.
  *
@@ -94,7 +96,7 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { wantedFor, loadProfile } from '../plugins/stage-pipeline/scripts/permission-profile.mjs'
 import {
-  CASES, ROOT, SOURCE_PLUGIN, STATIC_SERVER, appendLedger, buildWorld, caseHash, git, gradeAgent, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, readCase, readLedger,
+  CASES, ROOT, SOURCE_PLUGIN, STATIC_SERVER, appendLedger, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, readCase, readLedger,
   spentSince, subagentRun, toolCalls, walk,
 } from './eval-lib.mjs'
 
@@ -116,6 +118,7 @@ function parseArgs(argv) {
       result.overrides[agent] = model
     } else if (arg === '--ref') result.ref = value(arg)
     else if (arg === '--ablate') result.ablate = value(arg)
+    else if (arg === '--variant') result.variant = value(arg)
     else if (arg === '--budget-usd') result.budget = Number(value(arg))
     else if (arg === '--budget-since') result.budgetSince = value(arg)
     else if (['--list', '--lint', '--record-failing'].includes(arg)) result.flags.add(arg)
@@ -124,8 +127,8 @@ function parseArgs(argv) {
   }
   if (!Number.isInteger(result.runs) || result.runs < 1) fail('--runs expects an integer ≥ 1')
   if (result.budget !== undefined && !(result.budget > 0)) fail('--budget-usd expects a positive number')
-  if (result.ref && result.ablate) fail('--ref and --ablate do not combine: pick one comparison')
-  if (result.flags.has('--record-failing') && !(result.ref || result.ablate)) fail('--record-failing needs --ref <tag> or --ablate <name>: the failing run is the point')
+  if ([result.ref, result.ablate, result.variant].filter(Boolean).length > 1) fail('--ref, --ablate and --variant do not combine: pick one comparison')
+  if (result.flags.has('--record-failing') && !(result.ref || result.ablate || result.variant)) fail('--record-failing needs --ref <tag>, --ablate <name> or --variant <name>: the failing run is the point')
   return result
 }
 
@@ -158,10 +161,36 @@ if (opts.flags.has('--lint')) {
 }
 
 /**
+ * A variant of the plugin: `evals/cases/<case>/variants/<name>.json` = { why, edits: [{ file, find, replace } | { file, deleteLines: <regex> }] }, paths relative to the plugin.
+ * An edit that matches nothing (or, for `find`, not exactly once) aborts the run: the plugin drifted and the variant no longer says what it claims.
+ */
+function applyVariant(dir, caseName, variant) {
+  const path = join(CASES, caseName, 'variants', `${variant}.json`)
+  if (!existsSync(path)) fail(`--variant ${variant}: no ${relative(ROOT, path)}`)
+  const { edits } = JSON.parse(readFileSync(path, 'utf8'))
+  for (const edit of edits) {
+    const file = join(dir, edit.file)
+    if (!existsSync(file)) fail(`variant ${variant}: no file ${edit.file} in the plugin`)
+    const text = readFileSync(file, 'utf8')
+    if (edit.deleteLines) {
+      const re = new RegExp(edit.deleteLines)
+      const lines = text.split('\n')
+      const kept = lines.filter((line) => !re.test(line))
+      if (kept.length === lines.length) fail(`variant ${variant}: /${edit.deleteLines}/ matches no line of ${edit.file}`)
+      writeFileSync(file, kept.join('\n'))
+    } else {
+      const parts = text.split(edit.find)
+      if (parts.length !== 2) fail(`variant ${variant}: «${edit.find.slice(0, 60)}» occurs ${parts.length - 1} times in ${edit.file}, expected once`)
+      writeFileSync(file, parts.join(edit.replace))
+    }
+  }
+}
+
+/**
  * The plugin under test, copied to a neutral directory (`<tmp>/pl-XXXX/stage-pipeline`, so the path does not carry the repo name):
  * the working tree, a git tag (`git archive`, never a worktree of this checkout), or either without a skill/agent; `--model` rewrites `model:`.
  */
-function preparePlugin({ overrides, ref, ablate }) {
+function preparePlugin({ overrides, ref, ablate, variant }) {
   const base = mkdtempSync(join(tmpdir(), 'pl-'))
   const dir = join(base, 'stage-pipeline')
   let sha
@@ -201,6 +230,10 @@ function preparePlugin({ overrides, ref, ablate }) {
       if (kind === 'both') rmSync(agent, { force: true })
     }
   }
+  if (variant) {
+    if (selected.length !== 1) fail('--variant takes exactly one case: the edit list lives in that case')
+    applyVariant(dir, selected[0], variant)
+  }
   for (const [agent, model] of Object.entries(overrides)) {
     const path = join(dir, 'agents', `${agent}.md`)
     if (!existsSync(path)) fail(`no agent ${agent}`)
@@ -208,7 +241,7 @@ function preparePlugin({ overrides, ref, ablate }) {
     if (!/^model: .*$/m.test(text)) fail(`agent ${agent} has no model field in its frontmatter`)
     writeFileSync(path, text.replace(/^model: .*$/m, `model: ${model}`))
   }
-  const refLabel = ref ? `ref:${ref}` : ablate ? `ablate:${ablate}` : Object.keys(overrides).length ? `model:${Object.entries(overrides).map(([a, m]) => `${a}=${m}`).join(',')}` : 'working-tree'
+  const refLabel = ref ? `ref:${ref}` : variant ? `variant:${variant}` : ablate ? `ablate:${ablate}` : Object.keys(overrides).length ? `model:${Object.entries(overrides).map(([a, m]) => `${a}=${m}`).join(',')}` : 'working-tree'
   const version = JSON.parse(readFileSync(join(dir, '.claude-plugin/plugin.json'), 'utf8')).version
   return { dir, base, sha, version, refLabel }
 }
@@ -302,6 +335,70 @@ function startServer(world) {
   throw new Error(`the static server on :${world.serve.port} did not start, or another listener holds the port`)
 }
 
+/**
+ * A decision case: the orchestrator skill runs as the MAIN session on the production default model (no --model), for a few turns, on a blind STAGES tree.
+ * A harness-only PreToolUse hook (`--settings`) ends the session at the first Agent/Task or AskUserQuestion call, so the first batch of spawns is captured whole
+ * and no subagent runs. The spawn inputs and the questions are graded from the stream.
+ */
+function runDecision(name, attempt, spec, world, dataDir) {
+  let server
+  try {
+    server = startServer(world)
+  } catch (error) {
+    return { failures: [`harness: ${error.message}`], marks: ['W-'], harness: true, seconds: 0, cost: 0, models: [], body: `# ${name} (${plugin.refLabel}, run ${attempt})\n\n## Failures\n\n- harness: ${error.message}\n`, stdout: '' }
+  }
+  let ran
+  try {
+    ran = runClaude(
+      [
+        '-p', world.prompt, ...common, '--add-dir', plugin.dir, ...(world.mcp ? ['--mcp-config', world.mcp.path] : []),
+        '--settings', decisionSettings(world.work),
+        '--output-format', 'stream-json', '--verbose', '--include-hook-events',
+        '--allowedTools', ...allowed, 'AskUserQuestion', ...(world.mcp?.tools ?? []),
+        '--disallowedTools', ...wanted.deny,
+        '--max-turns', String(spec.maxTurns ?? 15),
+        '--max-budget-usd', String(spec.budgetUsd ?? 1),
+      ],
+      world.repo, spec.timeoutSec ?? 600, dataDir,
+    )
+  } finally {
+    server?.kill()
+  }
+  const { result, seconds } = ran
+  const events = parseStream(result.stdout)
+  const final = events.filter((event) => event.type === 'result').pop() ?? {}
+  const calls = toolCalls(events).filter((call) => call.parent === null)
+  const hooks = hookEvents(events)
+  const models = Object.keys(final.modelUsage ?? {})
+  const failures = []
+  let harness = false
+  const harnessFail = (message) => {
+    harness = true
+    failures.push(message)
+  }
+  // A run cut by the stop hook or by --max-turns / --max-budget-usd is the normal end; a run that never started is not.
+  const stoppedByLimit = /^error_max_(turns|budget)/.test(final.subtype ?? '')
+  if (!events.length || !models.length || (final.is_error && !stoppedByLimit && !/hook|stop/i.test(String(final.result ?? '')) && !calls.some((call) => ['Agent', 'Task', 'AskUserQuestion'].includes(call.name)))) {
+    harnessFail(`claude: code ${result.status}, ${final.subtype ?? ''} ${String(final.result ?? result.stderr ?? '').trim().slice(0, 300)}`)
+  }
+  // K7.6: no subagent runs. A SubagentStart hook or an event under an Agent call means the stop hook did not hold.
+  if (hooks.some((hook) => hook.startsWith('SubagentStart')) || events.some((event) => event.parent_tool_use_id)) harnessFail('a subagent ran: the spawn stop hook did not hold')
+  for (const problem of harnessProblems(events, { allowed: [...allowed, 'AskUserQuestion', ...(world.mcp?.tools ?? [])], mcpNames: (world.mcp?.tools ?? []).map((tool) => tool.slice('mcp__'.length)) })) harnessFail(problem)
+  const read = (path) => (existsSync(join(world.repo, path)) ? readFileSync(join(world.repo, path), 'utf8') : '')
+  const graded = gradeDecision(spec, {
+    repo: world.repo, calls, hooks, final: String(final.result ?? ''),
+    stagesText: read(`tasks/${world.identity.ticket}/STAGES.md`), configText: read('.claude/pipeline.config.md'),
+  })
+  failures.push(...graded.failures)
+  const trace = calls.map((call) => `- ${call.name}${call.denied ? ' [denied]' : call.isError ? ' [error]' : ''}: ${JSON.stringify(call.input).slice(0, ['Agent', 'Task', 'AskUserQuestion'].includes(call.name) ? 1500 : 160)}`)
+  const hookCounts = Object.entries(hooks.reduce((acc, event) => ({ ...acc, [event]: (acc[event] ?? 0) + 1 }), {})).map(([event, n]) => `${event}×${n}`)
+  const cost = final.total_cost_usd ?? 0
+  const body =
+    `# ${name} (${plugin.refLabel}, run ${attempt})\n\nModels: ${models.join(', ') || '—'} · $${cost.toFixed(3)} · ${seconds}s · turns ${final.num_turns ?? '?'} · end: ${final.subtype ?? '—'}\n\n` +
+    `## Failures\n\n${failures.map((f) => `- ${f}`).join('\n') || '—'}\n\n## Hook events\n\n${hookCounts.join(', ') || '—'}\n\n## Orchestrator calls (${trace.length})\n\n${trace.join('\n') || '—'}\n\n## Final text\n\n${final.result ?? ''}\n`
+  return { failures, marks: graded.marks, harness, seconds, cost, models, body, stdout: result.stdout }
+}
+
 function runAgent(name, attempt, spec, world, dataDir) {
   const readIfExists = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null)
   const snapshot = Object.fromEntries((spec.unchanged ?? []).map((path) => [path, readIfExists(join(world.repo, path))]))
@@ -386,7 +483,7 @@ function runCase(name, attempt) {
   try {
     const hits = lintWorld(world, spec)
     if (hits.length) return { aborted: hits }
-    const run = spec.kind === 'routing' ? runRouting(name, attempt, spec, world, dataDir) : runAgent(name, attempt, spec, world, dataDir)
+    const run = spec.kind === 'routing' ? runRouting(name, attempt, spec, world, dataDir) : spec.kind === 'decision' ? runDecision(name, attempt, spec, world, dataDir) : runAgent(name, attempt, spec, world, dataDir)
     const saved = join(resultsDir, `${name}--${labelSlug}--${attempt}.md`)
     writeFileSync(saved, run.body)
     writeFileSync(join(resultsDir, `${name}--${labelSlug}--${attempt}.jsonl`), run.stdout ?? '')
@@ -472,14 +569,19 @@ function recordFailing() {
   if (selected.length !== 1) fail('--record-failing takes exactly one case')
   const [row] = table
   const path = join(CASES, selected[0], 'case.json')
-  if (!row?.ran || row.passed > 0 || row.harness > 0) {
-    console.error(`\n✘ not recorded: ${!row?.ran ? 'no run happened' : row.passed > 0 ? `${row.passed} of ${row.ran} runs PASSED on ${plugin.refLabel} — the case does not tell the versions apart` : 'a run failed for a harness reason, not a grade'}`)
+  // A reference or an ablation is a clean break: every run must fail. A variant is a hand-made edit that a model may still get around: three runs at least, two or more failing,
+  // and the counts written are those of this whole invocation (a favourable run is never picked out).
+  const isVariant = Boolean(opts.variant)
+  const failedRuns = row ? row.ran - row.passed : 0
+  const enough = isVariant ? row?.ran >= 3 && failedRuns >= 2 : row?.passed === 0
+  if (!row?.ran || !enough || row.harness > 0) {
+    console.error(`\n✘ not recorded: ${!row?.ran ? 'no run happened' : row.harness > 0 ? 'a run failed for a harness reason, not a grade' : isVariant ? `${failedRuns} of ${row.ran} runs failed on ${plugin.refLabel}; a variant needs at least 3 runs (--runs 3) and 2 failing` : `${row.passed} of ${row.ran} runs PASSED on ${plugin.refLabel} — the case does not tell the versions apart`}`)
     rmSync(plugin.base, { recursive: true, force: true })
     process.exit(1)
   }
   const spec = readCase(join(CASES, selected[0]))
   const failures = [...new Set(row.failures.flat().map((message) => message.slice(0, 160)))].slice(0, 6)
-  spec.provenFailing = { on: plugin.refLabel, date: new Date().toISOString().slice(0, 10), plugin: `${plugin.version}@${plugin.sha.slice(0, 9)}`, runs: row.ran, failed: row.ran - row.passed, caseHash: caseHash(join(CASES, selected[0])), failures }
+  spec.provenFailing = { on: plugin.refLabel, date: new Date().toISOString().slice(0, 10), plugin: `${plugin.version}@${plugin.sha.slice(0, 9)}`, runs: row.ran, failed: row.ran - row.passed, detection: `${row.ran - row.passed}/${row.ran}`, caseHash: caseHash(join(CASES, selected[0])), failures }
   writeFileSync(path, `${JSON.stringify(spec, null, 2)}\n`)
   console.log(`\n✔ recorded provenFailing (${plugin.refLabel}, ${row.ran} run(s)) in ${relative(ROOT, path)}`)
 }

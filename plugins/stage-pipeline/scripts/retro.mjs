@@ -2,20 +2,26 @@
 /**
  * Pipeline retro from the facts in task files, not from memory.
  *
- *   node retro.mjs <repo | task_dir | STAGES.md> [...]
+ *   node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>]
  *
  * Sources: `metrics:` lines from the journals of STAGES.md / STAGES-ARCHIVE.md (format —
  * /stage-check, Step 4.1), the stage pipeline checklists and the reports in checks/. Tasks from before
  * the `metrics:` line appeared give only checklists and reports — this is visible in the output too.
+ * Hook firings come from `<plugin data>/firings.jsonl` (and its rotated `.1`), written by every block or deny of journal-gate, git-guard, agent-guard,
+ * force-guard and frames-guard (hooks/firing.mjs): per rule, repeats per task (the same rule and task more than once), and firings on reads.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
-import { readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
+import { FIRINGS_FILE } from './hooks/firing.mjs'
+import { pluginDataDir, readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
 import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
-const targets = process.argv.slice(2)
+const args = process.argv.slice(2)
+const firingsAt = args.indexOf('--firings')
+const firingsFile = firingsAt >= 0 ? resolve(args.splice(firingsAt, 2)[1] ?? '') : join(pluginDataDir(), FIRINGS_FILE)
+const targets = args
 if (!targets.length || targets.includes('--help')) {
-  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...]')
+  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>]')
   process.exit(targets.length ? 0 : 2)
 }
 
@@ -222,3 +228,56 @@ const oversized = stagesSizes.filter((task) => task.kb > STAGES_BUDGET_KB).sort(
 console.log('')
 console.log(`## STAGES.md larger than ${STAGES_BUDGET_KB} KB (read by every session — archive the done stages, /stage-check Step 4.2)`)
 console.log(oversized.length ? oversized.map((task) => `- ${task.ticket}: ${task.kb} KB`).join('\n') : '- none')
+
+/** Rows of the firings log: the rotated generation first, then the live file. A line that is not a row with a rule is skipped. */
+function readFirings(file) {
+  return [`${file}.1`, file].flatMap((path) => {
+    try {
+      return readFileSync(path, 'utf8')
+        .split('\n')
+        .flatMap((line) => {
+          try {
+            const row = JSON.parse(line)
+            return row && typeof row.rule === 'string' ? [row] : []
+          } catch {
+            return []
+          }
+        })
+    } catch {
+      return []
+    }
+  })
+}
+
+const firings = readFirings(firingsFile)
+console.log('')
+console.log('## Hook firings (blocks and denials, by rule)')
+if (!firings.length) console.log('- none logged')
+else {
+  const perRule = new Map()
+  const perTask = new Map()
+  for (const row of firings) {
+    const entry = perRule.get(row.rule) ?? { count: 0, tasks: new Set(), reads: 0 }
+    entry.count++
+    entry.tasks.add(row.task ?? '-')
+    if (row.read === true) entry.reads++
+    perRule.set(row.rule, entry)
+    const key = `${row.task ?? '-'}\t${row.rule}`
+    perTask.set(key, (perTask.get(key) ?? 0) + 1)
+  }
+  const reads = firings.filter((row) => row.read === true).length
+  console.log(`- firings: ${firings.length} in ${perRule.size} rules, ${reads} on reads (${pct(reads, firings.length)})`)
+  console.log('| Rule | Firings | Tasks | On reads |')
+  console.log('|---|---|---|---|')
+  for (const [rule, entry] of [...perRule.entries()].sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))) {
+    console.log(`| ${rule} | ${entry.count} | ${entry.tasks.size} | ${entry.reads} |`)
+  }
+  const repeats = [...perTask.entries()].filter(([, count]) => count > 1).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  console.log('')
+  console.log('Repeats per task (the same rule fired for the same task more than once — a rule the agent does not learn from):')
+  console.log(repeats.length ? repeats.map(([key, count]) => `- ${key.replace('\t', ' / ')}: ${count}`).join('\n') : '- none')
+  const onReads = [...perRule.entries()].filter(([, entry]) => entry.reads).sort((a, b) => b[1].reads - a[1].reads)
+  console.log('')
+  console.log('Firings on reads (a rule that stops a call which changes nothing):')
+  console.log(onReads.length ? onReads.map(([rule, entry]) => `- ${rule}: ${entry.reads} of ${entry.count}`).join('\n') : '- none')
+}

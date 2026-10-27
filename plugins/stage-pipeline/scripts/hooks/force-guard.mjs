@@ -1,3 +1,4 @@
+import { denyTool } from './firing.mjs'
 import { askMatch, askRules, nameKill } from './permission-rules.mjs'
 import { readHookInput, readPipelineState } from './pipeline-state.mjs'
 
@@ -32,6 +33,7 @@ if (!task?.forceActive) process.exit(0)
 
 if (killer) {
   deny(
+    'force-guard/kill-by-name',
     `stage-pipeline: force run ${task.ticket} — \`${killer}\` kills processes by name, including ones that are not yours (the user's dev server, a neighbouring session), ` +
       'and is in ask: the run would wait for confirmation until the user comes back. Stop only what you started yourself, and by PID: ' +
       'at launch `<command> > <log> 2>&1 & echo $!`, at the end `kill <PID>`; a background Bash task by its id. If you did not save the PID — ' +
@@ -39,6 +41,7 @@ if (killer) {
   )
 }
 deny(
+  'force-guard/ask-rule',
   `stage-pipeline: force run ${task.ticket} — \`${asked.command}\` falls under the ask rule \`${asked.rule}\` (${asked.source}): ` +
     'the call would wait for confirmation, and in force the user is not at the screen. Do not look for a way around it by doing the same action with another command. ' +
     'Skip an action that force does not do (push, PR, reset --hard, clean — /stage-force, Step 3). If a criterion cannot be closed without it — ' +
@@ -46,9 +49,6 @@ deny(
     'and carry on with what does not depend on it (/stage-force, Step 2).',
 )
 
-function deny(reason) {
-  process.stdout.write(
-    JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }),
-  )
-  process.exit(0)
+function deny(rule, reason) {
+  denyTool(rule, reason, { input, task: task.ticket, repo: state.worktree })
 }

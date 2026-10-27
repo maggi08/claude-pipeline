@@ -1,0 +1,17 @@
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  color: var(--ink);
+  max-width: 320px;
+}
+.tile__buy {
+  background: var(--accent);
+  color: var(--surface);
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 16px;
+}

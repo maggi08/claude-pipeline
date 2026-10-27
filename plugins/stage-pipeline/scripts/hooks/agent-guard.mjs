@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CONFIRMED_LINE, MODE_WORD } from '../markers.mjs'
+import { denyTool } from './firing.mjs'
 import { openForceBlock, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
 
 /**
@@ -38,6 +39,7 @@ if (agent === 'pro-review' && WHOLE_BRANCH.test(toolInput.prompt ?? '')) {
   const got = String(toolInput.model || agentModel('pro-review')).toLowerCase()
   if (!got.includes(want) && !want.includes(got)) {
     deny(
+      'agent-guard/review-model',
       `stage-pipeline: whole-branch pro-review runs on review_model — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
         `Repeat the same call with model: "${want}" (stage-check, Step 3.3).`,
     )
@@ -49,6 +51,7 @@ if (agent === 'stage-implement') {
   const block = task && openForceBlock(task.stages)
   if (block && (block.date ? block.date >= CONFIRM_SINCE : block.unreadDate) && !CONFIRMED_LINE.test(block.body)) {
     deny(
+      'agent-guard/no-confirmed',
       `stage-pipeline: block "${block.heading.replace(/^## /, '')}" of task ${task.ticket} has no \`Confirmed:\` line (stage-force, Step 0). ` +
         'The interview is done — add `Confirmed: <date> — interview answers` to the block (if there were no questions, `— no questions`) and launch again. ' +
         'Do not ask the user for a separate confirmation: the answers to the batch are the start of the run.',
@@ -66,9 +69,7 @@ function agentModel(name) {
   }
 }
 
-function deny(reason) {
-  process.stdout.write(
-    JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }),
-  )
-  process.exit(0)
+function deny(rule, reason) {
+  const task = state.tasks.find((candidate) => candidate.current)
+  denyTool(rule, reason, { input, task: task?.ticket, repo: state.worktree })
 }

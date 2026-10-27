@@ -1,0 +1,34 @@
+{
+  "why": "stage-force without its never-ask rule: the description promises a question at an open fork, Step 2 sends a fork the Force run block leaves open to the user before the maker starts, the decide-yourself paragraph is gone and the blocker list is a list of questions",
+  "edits": [
+    {
+      "file": "skills/stage-force/SKILL.md",
+      "find": "## Step 2. Mid-run — no questions",
+      "replace": "## Step 2. Mid-run — forks go to the user"
+    },
+    {
+      "file": "skills/stage-force/SKILL.md",
+      "find": "So from here on there is no `AskUserQuestion`, and no turn that ends with a question and waits for an answer.",
+      "replace": "A fork the Force run block does not decide — a number or a default the stage leaves open — is put to the user with `AskUserQuestion` before `stage-implement` starts, the recommended option first."
+    },
+    {
+      "file": "skills/stage-force/SKILL.md",
+      "deleteLines": "^\\*\\*Decidable and reversible — decide yourself\\.\\*\\*"
+    },
+    {
+      "file": "skills/stage-force/SKILL.md",
+      "find": "commits run without stops to the end of all stages",
+      "replace": "commits run to the end of all stages, asking the user at every fork the plan leaves open"
+    },
+    {
+      "file": "skills/stage-force/SKILL.md",
+      "find": "**Cannot be decided for the user — a blocker.** These are:",
+      "replace": "**Anything the plan leaves open — ask the user with `AskUserQuestion` before the maker starts.** For example:"
+    },
+    {
+      "file": "skills/stage-force/SKILL.md",
+      "find": "in force an escalation is a blocker.",
+      "replace": "in force an escalation is a question to the user."
+    }
+  ]
+}
