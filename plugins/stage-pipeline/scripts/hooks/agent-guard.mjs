@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CONFIRMED_LINE, MODE_WORD } from '../markers.mjs'
 import { denyTool } from './firing.mjs'
-import { openForceBlock, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
+import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
 
 /**
  * Two rules for launching subagents that the orchestrator keeps only in memory — and loses
@@ -58,7 +58,36 @@ if (agent === 'stage-implement') {
     )
   }
 }
+if (agent === 'stage-implement') {
+  const task = state.tasks.find((candidate) => candidate.current)
+  const verdict = task && !task.unreadable ? await planVerdict(state, task, toolInput.prompt ?? '') : null
+  if (verdict) deny(verdict)
+}
 process.exit(0)
+
+/**
+ * plan-check at the spawn of `stage-implement` in implement mode (VT-5 stage 10, K10.3): the stage's problems plus the Force block items.
+ * The stage comes from the prompt (`Stage N`, `stage number: N`), else the first stage that is not done. Fix-mode spawns are not checked,
+ * and a crash or an unreadable file never denies. The import is lazy: pro-review spawns do not pay for it.
+ */
+async function planVerdict(state, task, prompt) {
+  try {
+    if (/(?:\bmode|режим)\s*:?\s*\**fix\b|\bfix\s+mode\b/i.test(prompt)) return null
+    const { checkPlan, format, stageForSpawn } = await import('../plan-check.mjs')
+    const stage = stageForSpawn(task.stages, prompt)
+    if (stage === null) return null
+    const result = checkPlan(task.stages, { taskDir: task.dir, dataDir: pluginDataDir(), roots: [state.root], config: state.config, stage })
+    if (!result.problems.length) return null
+    const lines = result.problems.map(format)
+    return (
+      `stage-pipeline: plan-check finds ${result.problems.length} problem(s) for stage ${stage} of task ${task.ticket} (stage-force, Step 0):\n${lines.join('\n')}\n` +
+      'Fix the lines in STAGES.md and log what you decided alone under "⚠ Awaiting user confirmation", or mark the criteria `[blocked: B<n>]`, then launch again. ' +
+      `Check it yourself: node \${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs <STAGES.md> --stage ${stage}.`
+    )
+  } catch {
+    return null
+  }
+}
 
 function agentModel(name) {
   try {

@@ -22,6 +22,8 @@ Force moves all the questions to the start: they are collected ONCE, then the ru
 
 Read STAGES.md in full, the "Orientation" header of FEATURE-MAP.md (its other sections only if a stage requires them), DESIGN-QUESTIONS.md and the "⚠ Awaiting user confirmation" block. Go through ALL the stages of the plan and write out everything you would ask at their kickoffs in the regular mode. After the batch is answered, asking is no longer possible (Step 2): a question that would surface on stage 4 is asked now, otherwise it becomes a blocker and stage 4 will not be done.
 
+Before the taxonomy, run the plan lint and read it: `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs <STAGES.md>` — a criterion without a verifier, a reference that points nowhere, an open `[Gap]` are questions or assumptions of this batch, not surprises of stage 4. Then, after the auth probe below (the probe pass takes its result for the login premise) and before the batch is written, the probe pass of `references/interview.md`: one read-only subagent checks the observable premises, and the orchestrator writes the blocker forecast per stage and gives every question its fallback.
+
 Blockers of the previous run (the `Blockers:` line of a closed "Force run" block) go into the batch first: a new run starts with the answers to them. An answered blocker gets `Lifted: <who> <date> — <answer>` on its own line (a who of at most 4 words, the answer after the date; Step 2 names the field): only that field lifts it in a block dated 2026-10-26 or later, words in its description never do; in a block dated before 2026-10-26, put the field on the blocker's own line.
 
 **Taxonomy first, questions second.** The batch is the only collection point for the whole run, and a missed category costs not one stage but the whole run: there will be nowhere to ask before the end of the task. So do not rely on the needed thing coming to mind by itself — go through the fixed list and give every category a status: **Clear / Partially / Not covered**:
@@ -63,7 +65,7 @@ Then ask the selected ones **in one batch** (`AskUserQuestion` — up to 4 quest
 - edge cases the plan is silent about;
 - things that cannot be derived from the design source and the code.
 
-**Every question with a choice carries your recommendation** — as the first option and with a one-line reason ("I suggest A, because it is already done in adaptive"). In force mode the user answers once for the whole task: a question without a recommendation shifts onto them work you can do by reading the code and the source.
+**Every question with a choice carries your recommendation** — as the first option and with a one-line reason ("I suggest A, because it is already done in adaptive") — **and its fallback**: `if you don't answer: <X>, because <Y>`, where X is the assumption the block will record (with `Rollback:` and `Basis:`) and Y is why it is the cheapest reversible option. In force mode the user answers once for the whole task: a question without a recommendation shifts onto them work you can do by reading the code and the source.
 
 **The "state × action" tables of the plan go into the interview whole** (stage-plan, Step 3): a row where the action saves nothing or loses data is seen by the user before the start.
 
@@ -82,6 +84,11 @@ Interview answers: <decision — what it affects>
 Assumptions: <what is accepted — why — Rollback: how to roll back and what it costs — Basis: path:line | quote | guess>
 Unresolved: <taxonomy categories with status Partially/Not covered that did not make it into the batch — and where they went: assumption / DESIGN-QUESTIONS.md / "Awaiting user confirmation">
 Boundaries: <what we explicitly do NOT do in this task>
+Stage dependencies: <stage N waits for stage M — why; or `none`>
+Taxonomy: <all 12 categories above, each with its status: Screens and states — Clear; Copy and i18n — Partially → assumption A2; …>
+Checked before start: <fact — evidence> (from the probe, `references/interview.md`)
+Not proven: <premises the probe could not observe — and where each went>
+Blocker forecast: <per stage: what from `Not proven:` / Environment and access would end it in a blocker — and its fallback; `none`>
 Confirmed: <date> — interview answers
 Blockers: <empty while there are none; format — Step 2>
 ```

@@ -224,6 +224,46 @@ export const NOT_CLOSED = /не\s+завершён|not\s+completed/i
 
 /** The `Confirmed:` line (or the Russian form) in the Force block. */
 export const CONFIRMED_LINE = /^[ \t]*(?:[-*][ \t]*)?\**(?:Подтвержд[её]н[оа]?|Confirmed)\**\s*:/im
+/** The field names of a Force block, for cutting a multi-line field (`Taxonomy:`) at the next field. */
+const FORCE_FIELD_NAMES =
+  'Mode|Режим|Interview answers|Ответы интервью|Assumptions|Допущения|Unresolved|Незакрытое|Boundaries|Границы|Confirmed|Подтверждено|Подтверждён|Blockers|Блокеры|Stage dependencies|Зависимости этапов|Taxonomy|Таксономия|Checked before start|Проверено до старта|Not proven|Не доказано|Blocker forecast|Прогноз блокеров'
+export const FORCE_FIELD_LINE = new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?\\**(?:${FORCE_FIELD_NAMES})\\**\\s*:`, 'i')
+const forceField = (names) => new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?\\**(?:${names})\\**\\s*:`, 'im')
+/** The `Stage dependencies:` line of a Force block (VT-5 stage 10): which stage waits for which, written by the orchestrator at the interview. */
+export const STAGE_DEPENDENCIES_LINE = forceField('Stage dependencies|Зависимости этапов')
+/** The `Taxonomy:` line: the 12 interview categories, each with its status. */
+export const TAXONOMY_LINE = forceField('Taxonomy|Таксономия')
+/** The interview probe's lines: `Checked before start: <fact> — <evidence>` and `Not proven:` (references/interview.md of stage-force). */
+export const CHECKED_BEFORE_LINE = forceField('Checked before start|Проверено до старта')
+export const NOT_PROVEN_LINE = forceField('Not proven|Не доказано')
+/**
+ * The 12 categories of the interview taxonomy (stage-force, Step 0), in both languages. `test` finds a category by either name in a `Taxonomy:` line;
+ * the short Russian names are matched as whole words.
+ */
+const word = (source) => new RegExp(`(?<![\\wа-яё])(?:${source})(?![\\wа-яё])`, 'i')
+export const TAXONOMY_CATEGORIES = [
+  { en: 'Screens and states', ru: 'Экраны и состояния', test: word('screens\\s+and\\s+states|экраны\\s+и\\s+состояния') },
+  { en: 'Copy and i18n', ru: 'Тексты и i18n', test: word('copy\\s+and\\s+i18n|тексты\\s+и\\s+i18n') },
+  { en: 'Permissions and gating', ru: 'Доступы и гейтинг', test: word('permissions\\s+and\\s+gating|доступы\\s+и\\s+гейтинг') },
+  { en: 'Breakpoints', ru: 'Брейкпоинты', test: word('breakpoints|брейкпоинты') },
+  { en: 'Motion', ru: 'Анимация', test: word('motion|анимация') },
+  { en: 'A11y', ru: 'A11y', test: word('a11y') },
+  { en: 'Data', ru: 'Данные', test: word('data|данные') },
+  { en: 'Platform parity', ru: 'Паритет платформ', test: word('platform\\s+parity|паритет\\s+платформ') },
+  { en: 'Look', ru: 'Вид', test: word('look|вид') },
+  { en: 'Terminology', ru: 'Терминология', test: word('terminology|терминология') },
+  { en: 'Boundaries', ru: 'Границы', test: word('boundaries|границы') },
+  { en: 'Environment and access', ru: 'Окружение и доступ', test: word('environment\\s+and\\s+access|окружение\\s+и\\s+доступ') },
+]
+/** `Pairs checked: N` (or the Russian form) under "Shared elements" — the overlap scan was done even when the table has no rows. Group 1 is the number. */
+export const PAIRS_CHECKED = /(?:pairs\s+checked|проверено\s+пар)\s*:?\s*\**(\d+)/i
+/** A stage field line, by its names in the two languages (`Acceptance criteria:`, `State × action:`). */
+export const ACCEPTANCE_FIELD = /^[ \t]*(?:[-*][ \t]*)?\**(?:Acceptance criteria|Критерии приёмки)\**\s*:/im
+export const STATE_ACTION_FIELD = /(?:^|\n)[ \t]*(?:[-*][ \t]*)?\**(?:State\s*[×x]\s*action|Состояние\s*[×x]\s*действие)\**\s*:/i
+/** The "Design source coverage" and "Shared elements" sections. */
+export const COVERAGE_SECTION = /^## (?:Design source coverage|Покрытие дизайн-источника)/m
+export const SHARED_SECTION = /^## (?:Shared elements|Общие элементы)/m
+
 /** The word "mode" in a subagent prompt: `Mode: whole-branch` (or the Russian form). */
 export const MODE_WORD = 'режим|mode'
 

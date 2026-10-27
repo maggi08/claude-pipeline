@@ -6388,4 +6388,282 @@ rmSync(retroRoot, { recursive: true, force: true })
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
 }
 
+// ── VT-5 stage 10: plan-check and the stage-implement spawn ──────────────────
+{
+  const { checkPlan, stageForSpawn } = await import(join(PLUGIN, 'plan-check.mjs'))
+  const pcRoot = mkdtempSync(join(tmpdir(), 'plan-check-test-'))
+  const pc = join(pcRoot, 'app')
+  repoAt(pc, 'main')
+  git(pc, 'checkout', '-qb', 'P-1/feat/x')
+  const TODAY = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+  const CATEGORIES = 'Screens and states — Clear; Copy and i18n — Clear; Permissions and gating — Clear; Breakpoints — Clear; Motion — Clear; A11y — Clear; Data — Clear; Platform parity — Clear; Look — Clear; Terminology — Clear; Boundaries — Clear; Environment and access — Clear'
+  const force = (heading, { deps = true, taxonomy = true } = {}) =>
+    `${heading}\nMode: autonomous.\nInterview answers: none\nAssumptions:\n- accepted X — Rollback: cheap, revert the line — Basis: guess\n` +
+    `${deps ? 'Stage dependencies: none\n' : ''}${taxonomy ? `Taxonomy: ${CATEGORIES}\n` : ''}Boundaries: none\nConfirmed: ${TODAY} — no questions\n\n`
+  const plan = ({ acs, extra = '', forceBlock = force(`## Force run ${TODAY}`), earlier = '' }) =>
+    `# P-1: task\nBranch: \`P-1/feat/x\`\nLanguage: en\n\n## Status: stage 1\n${earlier}\n${forceBlock}## Stages\n\n### Stage 1: logic  [status: in-progress]  logic-only\nWhat exists:\n${extra}Acceptance criteria:\n${acs}\n`
+  const GOOD_AC = '- `AC-1.1` WHEN a is read THEN it is 1 — [verify: pro-review]\n- `AC-1.2` WHEN b THEN c — [verify: devtools-verify]\n'
+  const taskFile = join(pc, '.claude/tasks/P-1/STAGES.md')
+  const setPlan = (text) => write(pc, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/P-1/STAGES.md': text })
+  const opts = (dataDir) => ({ taskDir: join(pc, '.claude/tasks/P-1'), dataDir, roots: [pc], config: '' })
+  const messages = (result) => result.problems.map((finding) => finding.message).join('\n')
+  // A data dir whose first look already happened on a plan with no Force block yet: a block written after that is a new run (a block present at the first look is a run in progress, D7).
+  const primed = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plan-check-data-'))
+    checkPlan('# P-1: task\n\n### Stage 9: other  [status: todo]  logic-only\nAcceptance criteria:\n', opts(dir))
+    return dir
+  }
+  const spawn = (prompt) => runHook('agent-guard.mjs', { cwd: pc, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt } })
+
+  // AC-10.2: an AC without a verifier and a path:line that does not resolve — both listed, the spawn for that stage denied.
+  const badPlan = plan({ acs: '- `AC-1.1` WHEN a is read THEN it is 1\n' + GOOD_AC.split('\n')[1] + '\n', extra: '- the old handler lives at src/missing.ts:12\n' })
+  const bad = checkPlan(badPlan, opts(primed()))
+  check('plan-check: a new stage with an AC without a verifier and an unresolved path:line — both are problems', /AC-1\.1: no `\[verify/.test(messages(bad)) && /src\/missing\.ts:12/.test(messages(bad)), messages(bad))
+  check('plan-check: the summary line carries AC count and references resolved 0/1', bad.stages.length === 1 && bad.stages[0].summary.acs === 2 && bad.stages[0].summary.refs.join('/') === '0/1', JSON.stringify(bad.stages))
+  // The first look of the task comes before the stage is written (a stage already in the plan at the first look of a running run is old, D7).
+  setPlan('# P-1: task\nBranch: `P-1/feat/x`\n\n## Stages\n\n### Stage 9: other  [status: done]  logic-only\nAcceptance criteria:\n')
+  spawn('Ticket P-1, stage 9, mode implement')
+  setPlan(badPlan)
+  const denied = spawn('Ticket P-1, stage 1, mode implement')
+  check('agent-guard: stage-implement for a stage with plan-check problems — denied, both named', denied.decision === 'deny' && /AC-1\.1/.test(denied.text) && /src\/missing\.ts:12/.test(denied.text) && /Awaiting user confirmation/.test(denied.text) && /\[blocked: B<n>\]/.test(denied.text), denied.text)
+  check('agent-guard: a fix-mode spawn for the same stage — allowed (fix mode is not checked)', spawn('Ticket P-1, stage 1, mode: fix\nFindings: AC-1.1 a.ts:3').decision === 'allow')
+  setPlan(plan({ acs: GOOD_AC, extra: '- reads src/a.ts:1\n' }))
+  check('agent-guard: a clean plan — allowed', spawn('Ticket P-1, stage 1, mode implement').decision === 'allow')
+  check('stageForSpawn: "stage number: 3" and no number → the first open stage', stageForSpawn('### Stage 2: a  [status: done]\n### Stage 3: b  [status: todo]\n', 'stage number: 3') === '3' && stageForSpawn('### Stage 2: a  [status: done]\n### Stage 3: b  [status: todo]\n', 'implement it') === '3')
+  // A plan the hook cannot read as a plan never denies (fail open).
+  setPlan('# P-1: task\nBranch: `P-1/feat/x`\n\nno stages here\n')
+  check('agent-guard: no stage to check — allowed', spawn('Ticket P-1, stage 1, mode implement').decision === 'allow')
+
+  // AC-10.3: a new Force block without `Stage dependencies:` is a problem; an old block gets a warning only.
+  const noDeps = checkPlan(plan({ acs: GOOD_AC, forceBlock: force(`## Force run ${TODAY}`, { deps: false }) }), opts(primed()))
+  check('plan-check: a new Force block without `Stage dependencies:` — reported as a problem', noDeps.problems.some((finding) => finding.rule === 'force-no-dependencies'), messages(noDeps))
+  const noTax = checkPlan(plan({ acs: GOOD_AC, forceBlock: force(`## Force run ${TODAY}`).replace('Environment and access — Clear', '') }), opts(primed()))
+  check('plan-check: a `Taxonomy:` line missing a category — reported with the category named', noTax.problems.some((finding) => finding.rule === 'force-taxonomy' && /Environment and access/.test(finding.message)), messages(noTax))
+  check('plan-check: a new Force block with every field — no Force problem', !noDeps.problems.some((finding) => finding.rule === 'force-taxonomy') && !checkPlan(plan({ acs: GOOD_AC }), opts(primed())).problems.some((finding) => finding.scope === 'force'))
+  // The first look at an old plan (a dated line from before today) writes the snapshot; the old Force block (a date before the first sight) gets warnings only.
+  const oldData = mkdtempSync(join(tmpdir(), 'plan-check-data-'))
+  const oldPlan = plan({ acs: '- `AC-1.1` WHEN a THEN b\n', earlier: '- 2026-09-01 plan written\n', forceBlock: force('## Force run 2026-09-02', { deps: false, taxonomy: false }) })
+  const old = checkPlan(oldPlan, opts(oldData))
+  check('plan-check: an old plan — no problems, the same findings as warnings', old.problems.length === 0 && old.warnings.some((finding) => finding.rule === 'ac-no-verifier') && old.warnings.some((finding) => finding.rule === 'force-no-dependencies'), `${messages(old)}\n${JSON.stringify(old.warnings.map((finding) => finding.rule))}`)
+  const again = checkPlan(oldPlan + '\n### Stage 2: later  [status: todo]  logic-only\nAcceptance criteria:\n- `AC-2.1` WHEN x THEN y\n', opts(oldData))
+  check('plan-check: a stage added after the first look is new — its missing verifier is a problem, the old stage stays a warning', again.problems.some((finding) => finding.stage === '2' && finding.rule === 'ac-no-verifier') && !again.problems.some((finding) => finding.stage === '1'), messages(again))
+  rmSync(pcRoot, { recursive: true, force: true })
+}
+
+// ── VT-5 stage 10, fix round 1: D7 incident + legitimate pairs for the plan-check rules ──────────────────────────────────────────────────
+{
+  const { checkPlan, stageForSpawn, siblingRepos } = await import(join(PLUGIN, 'plan-check.mjs'))
+  const fxRoot = mkdtempSync(join(tmpdir(), 'plan-check-fx-'))
+  const fx = join(fxRoot, 'app')
+  repoAt(fx, 'main')
+  git(fx, 'checkout', '-qb', 'P-2/feat/x')
+  const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1}\n`).join('')
+  write(fx, {
+    'packages/shared/src/guests-information/utils/guestSourceCell.ts': lines(98),
+    'plugins/p/scripts/j.mjs': lines(40),
+    'p1/x/util.ts': lines(5),
+    'p2/x/util.ts': lines(5),
+    '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+  })
+  git(fx, 'add', '-A')
+  git(fx, 'commit', '-qm', 'files')
+  const D = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+  const EN = 'Screens and states — Clear; Copy and i18n — Clear; Permissions and gating — Clear; Breakpoints — Clear; Motion — Clear; A11y — Clear; Data — Clear; Platform parity — Clear; Look — Clear; Terminology — Clear; Boundaries — Clear; Environment and access — Clear'
+  const RU = 'Экраны и состояния — ясно; Тексты и i18n — ясно; Доступы и гейтинг — ясно; Брейкпоинты — ясно; Анимация — ясно; A11y — ясно; Данные — ясно; Паритет платформ — ясно; Вид — ясно; Терминология — ясно; Границы — ясно; Окружение и доступ — ясно'
+  const taskDir = join(fx, '.claude/tasks/P-2')
+  const fresh = () => mkdtempSync(join(tmpdir(), 'plan-check-fxdata-'))
+  const opts = (extra = {}) => ({ taskDir, dataDir: null, roots: [fx], config: '', ...extra })
+  const rules = (result, level = 'problems') => result[level].map((finding) => finding.rule)
+  const msgs = (result, level = 'problems') => result[level].map((finding) => finding.message).join('\n')
+  const forceEn = (heading, body = '') => `${heading}\nMode: autonomous.\nAssumptions:\n- accepted X — Rollback: cheap — Basis: guess\n${body}Stage dependencies: none\nTaxonomy: ${EN}\nConfirmed: ${D} — no questions\n\n`
+  const mk = ({ stages, sections = '', force = forceEn(`## Force run ${D}`), earlier = '' }) => `# P-2: task\nBranch: \`P-2/feat/x\`\n\n## Status: stage 1\n${earlier}\n${force}${sections}## Stages\n\n${stages}`
+  const logicStage = (n, acs, extra = '') => `### Stage ${n}: s${n}  [status: todo]  logic-only\nWhat exists:\n${extra}Acceptance criteria:\n${acs}\n`
+  const ac = (id, tag = ' — [verify: pro-review]') => `- \`AC-${id}\` WHEN a THEN b${tag}\n`
+
+  // M-1: a run already going at the first look is old whatever its date; a block or a stage added after the first look is new.
+  {
+    const dataDir = fresh()
+    const live = mk({ stages: logicStage(1, ac('1.1', '')), force: `## Force run ${D}\nMode: autonomous.\nAssumptions:\n- accepted X — Rollback: cheap — Basis: guess\nConfirmed: ${D} — no questions\n\n` })
+    const first = checkPlan(live, opts({ dataDir }))
+    check('plan-check D7: a run in progress at the first look (open, confirmed, dated the same day, no new fields) — no problems, the same findings as warnings', first.problems.length === 0 && rules(first, 'warnings').includes('force-no-dependencies') && rules(first, 'warnings').includes('ac-no-verifier'), msgs(first))
+    const second = checkPlan(`${live}\n### Stage 2: later  [status: todo]  logic-only\nAcceptance criteria:\n${ac('2.1', '')}`, opts({ dataDir }))
+    check('plan-check D7: a stage added after the first look of a running plan is new — its missing verifier is a problem, stage 1 stays a warning', rules(second).join() === 'ac-no-verifier' && second.problems[0].stage === '2', msgs(second))
+    const third = checkPlan(live.replace(`## Stages`, `## Force run ${D} (2)\nMode: autonomous.\nConfirmed: ${D} — no questions\n\n## Stages`), opts({ dataDir }))
+    check('plan-check D7: a second Force block written after the first look is a new run — no `Stage dependencies:` is a problem', rules(third).includes('force-no-dependencies') && rules(third).includes('force-no-taxonomy'), msgs(third))
+  }
+
+  // M-2: catch-up stage ids and the wording of the fix mode.
+  {
+    const text = `### Stage 1: a  [status: done]\n### Stage 2c: catch-up  [status: todo]\n### Stage 3: c  [status: todo]\n`
+    check('stageForSpawn: "stage 2c" keeps the letter', stageForSpawn(text, 'Ticket P-2, stage 2c, mode: implement') === '2c' && stageForSpawn(text, 'Stage 2c.') === '2c')
+    check('stageForSpawn: a closed stage named first does not win over the open one named next', stageForSpawn(text, 'Stage 1 is closed; now implement stage 3') === '3' && stageForSpawn(text, 'Stage 9 does not exist') === null)
+    const dataDir = fresh()
+    const base = mk({ stages: logicStage(1, ac('1.1')) })
+    checkPlan(base, opts({ dataDir }))
+    const withCatchUp = `${base}### Stage 1c: catch-up  [status: todo]  logic-only\nAcceptance criteria:\n${ac('1c.1', '')}`
+    const caught = checkPlan(withCatchUp, opts({ dataDir, stage: '1c' }))
+    check('plan-check: a catch-up stage "1c" added after the first look — its missing verifier is a problem', rules(caught).join() === 'ac-no-verifier' && caught.problems[0].stage === '1c', msgs(caught))
+    // the hook: the spawn for the catch-up stage is denied, a fix-mode spawn in any wording is not
+    const hookRepo = join(fxRoot, 'hook')
+    repoAt(hookRepo, 'main')
+    git(hookRepo, 'checkout', '-qb', 'P-2/feat/x')
+    const setHook = (stagesText) => write(hookRepo, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/P-2/STAGES.md': stagesText })
+    const spawnHook = (prompt) => runHook('agent-guard.mjs', { cwd: hookRepo, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt } })
+    setHook(base)
+    check('agent-guard: a clean first stage — allowed (the first look is taken)', spawnHook('Ticket P-2, stage 1, mode: implement').decision === 'allow')
+    setHook(withCatchUp)
+    const denied = spawnHook('Ticket P-2, stage 1c, mode: implement')
+    check('agent-guard: a spawn for catch-up stage "1c" with a criterion without a verifier — denied', denied.decision === 'deny' && /AC-1c\.1/.test(denied.text), denied.text)
+    for (const prompt of ['Fix mode. Ticket P-2, stage 1c', 'Ticket P-2, stage 1c. In fix mode, findings: AC-1c.1', 'Mode: fix (round 2)\nTicket P-2 stage 1c', 'Режим: fix. Этап 1c']) {
+      check(`agent-guard: fix-mode wording "${prompt.slice(0, 24).replace(/\n/g, ' ')}" — not checked`, spawnHook(prompt).decision === 'allow')
+    }
+  }
+
+  // M-3: the new Force fields end the Assumptions list; a bullet Taxonomy keeps its "Boundaries" category.
+  {
+    const cats = EN.split('; ').map((entry) => `- ${entry.replace(' — ', ': ')}\n`).join('')
+    const block = `## Force run ${D}\nMode: autonomous.\nAssumptions:\n- accepted X — Rollback: cheap — Basis: guess\nChecked before start:\n- the \`status\` field is on dev — GET /api/orders/1 → 200\nNot proven:\n- the stand is writable — not observable\nBlocker forecast:\n- stage 1 — none\nStage dependencies: none\nTaxonomy:\n${cats}Confirmed: ${D} — no questions\n\n`
+    const result = checkPlan(mk({ stages: logicStage(1, ac('1.1')), force: block }), opts())
+    check('plan-check/decisions: probe bullets (`Checked before start:`, `Not proven:`, `Blocker forecast:`) after `Assumptions:` are not assumptions; a bullet Taxonomy naming Boundaries is complete', result.problems.length === 0, msgs(result))
+    const bare = block.replace(' — Rollback: cheap', '')
+    check('plan-check: an assumption without a rollback cost is still a problem (incident)', rules(checkPlan(mk({ stages: logicStage(1, ac('1.1')), force: bare }), opts())).join() === 'assumption-no-rollback')
+  }
+
+  // M-4: references in the live forms.
+  {
+    const ref = (path, line) => checkPlan(mk({ stages: logicStage(1, ac('1.1'), `- see ${path}:${line}\n`) }), opts())
+    const pkg = ref('guests-information/utils/guestSourceCell.ts', 19)
+    check('plan-check refs: a package-relative path resolves by its unique suffix among tracked files', pkg.problems.length === 0 && pkg.stages[0].summary.refs.join('/') === '1/1', msgs(pkg))
+    const plug = ref('scripts/j.mjs', 3)
+    check('plan-check refs: a plugin-relative path resolves by its unique suffix', plug.problems.length === 0 && plug.stages[0].summary.refs.join('/') === '1/1', msgs(plug))
+    check('plan-check refs: a missing file with the right directories is still a problem', rules(ref('guests-information/utils/nope.ts', 3)).join() === 'unresolved-ref')
+    check('plan-check refs: a line beyond the end of the file found by suffix is a problem', rules(ref('guests-information/utils/guestSourceCell.ts', 999)).join() === 'unresolved-ref')
+    const elided = ref('apps/dashboard/.../X.tsx', 8)
+    check('plan-check refs: an elided path (`...`) is a warning, not a problem', elided.problems.length === 0 && rules(elided, 'warnings').includes('ref-unverifiable'), msgs(elided, 'warnings'))
+    const ambiguous = ref('x/util.ts', 2)
+    check('plan-check refs: an ambiguous suffix is a warning, not a problem', ambiguous.problems.length === 0 && rules(ambiguous, 'warnings').includes('ref-unverifiable'), msgs(ambiguous, 'warnings'))
+  }
+
+  // M-5 / m-1: duplicate ids, open forks and their closing forms.
+  {
+    const dup = checkPlan(mk({ stages: logicStage(1, ac('1.1')) + logicStage(2, ac('1.1')) }), opts())
+    check('plan-check: the same AC id in two stages — duplicate-ac', rules(dup).includes('duplicate-ac'), msgs(dup))
+    check('plan-check: distinct ids — no duplicate-ac', !rules(checkPlan(mk({ stages: logicStage(1, ac('1.1')) + logicStage(2, ac('2.1')) }), opts())).includes('duplicate-ac'))
+    const forkRules = (line) => rules(checkPlan(mk({ stages: logicStage(1, ac('1.1'), `${line}\n`) }), opts()))
+    for (const open of ['[Gap] what does the screen show, e.g. a placeholder?', '[Gap] raised at kickoff 2026-10-28: empty list state?', '[Ambiguity] copy of the header (A1 says nothing)', '[Gap] see Header.tsx for the layout']) {
+      check(`plan-check open-fork incident: "${open.slice(0, 44)}"`, forkRules(open).join() === 'open-fork', forkRules(open).join())
+    }
+    for (const closed of ['[Gap] empty state → closed by src/a.ts:1', '[Ambiguity] header copy — resolved: decided in the interview batch', '~~[Gap] empty state~~', '[Gap] empty state → A3', '[Gap] skin — closed by node-id 12:34', '[Gap] retry — out of stage', '[Gap] empty state [blocked: B1]', '[Gap] пустое состояние — закрыт интервью', '[Ambiguity] текст — решён: допущение A2']) {
+      check(`plan-check open-fork legitimate (closing form): "${closed.slice(0, 44)}"`, forkRules(closed).length === 0, forkRules(closed).join())
+    }
+  }
+
+  // M-5: UI stage without a visual reference.
+  {
+    const ui = (extra) => `### Stage 1: card  [status: todo]\nWhat exists:\n${extra}Acceptance criteria:\n${ac('1.1')}`
+    check('plan-check: a UI stage without `Visual reference:` — no-visual-reference', rules(checkPlan(mk({ stages: ui('') }), opts())).includes('no-visual-reference'))
+    check('plan-check: a UI stage with `Visual reference:` — no problem; a logic-only stage without it — no problem', !rules(checkPlan(mk({ stages: ui('Visual reference: apps/web/Card.tsx (section Header)\n') }), opts())).includes('no-visual-reference') && !rules(checkPlan(mk({ stages: logicStage(1, ac('1.1')) }), opts())).includes('no-visual-reference'))
+    check('plan-check: `Visual reference: —` on a UI stage — no-visual-reference', rules(checkPlan(mk({ stages: ui('Visual reference: —\n') }), opts())).includes('no-visual-reference'))
+  }
+
+  // M-5: Force block fields.
+  {
+    const noTax = checkPlan(mk({ stages: logicStage(1, ac('1.1')), force: forceEn(`## Force run ${D}`).replace(/Taxonomy:[^\n]*\n/, '') }), opts())
+    check('plan-check: a Force block with no `Taxonomy:` line — force-no-taxonomy', rules(noTax).join() === 'force-no-taxonomy', msgs(noTax))
+    check('plan-check: a Force block with all fields — no problem', checkPlan(mk({ stages: logicStage(1, ac('1.1')) }), opts()).problems.length === 0)
+    const ru = (drop = '') => mk({
+      stages: `### Этап 1: первый  [status: todo]  logic-only\nЧто есть:\nКритерии приёмки:\n${ac('1.1')}`,
+      force: `## Force-прогон ${D}\nРежим: автономный.\nДопущения:\n- принято X — Откат: дёшево, одна строка — Основание: догадка\n${drop.includes('deps') ? '' : 'Зависимости этапов: нет\n'}${drop.includes('tax') ? '' : `Таксономия: ${RU}\n`}Подтверждено: ${D} — без вопросов\n\n`,
+    })
+    const okRu = checkPlan(ru(), opts())
+    check('plan-check ru: a Russian plan (Force block, dependencies, taxonomy and criteria fields in Russian) — no problems, the stage is read', okRu.problems.length === 0 && okRu.stages.length === 1 && okRu.stages[0].summary.acs === 1, msgs(okRu))
+    const badRu = checkPlan(ru('deps tax'), opts())
+    check('plan-check ru: a Russian Force block without the dependencies and taxonomy fields — both reported', rules(badRu).includes('force-no-dependencies') && rules(badRu).includes('force-no-taxonomy'), msgs(badRu))
+    const noRollRu = checkPlan(ru().replace(' — Откат: дёшево, одна строка', ''), opts())
+    check('plan-check ru: a Russian assumption without a rollback cost — assumption-no-rollback', rules(noRollRu).join() === 'assumption-no-rollback', msgs(noRollRu))
+  }
+
+  // M-5 / m-4: plan-level tables.
+  {
+    const coverage = (cell) => `## Design source coverage\n| Item | Stage |\n|---|---|\n| header | ${cell} |\n| footer | 1 |\n\n`
+    const sharedEmpty = '## Shared elements\n| Element | Stages | Owner | Where |\n|---|---|---|---|\n\n'
+    const stages = logicStage(1, ac('1.1'))
+    check('plan-check: an empty Stage cell in "Design source coverage" — coverage-empty-stage', rules(checkPlan(mk({ stages, sections: coverage('') }), opts())).join() === 'coverage-empty-stage')
+    check('plan-check: a filled Stage cell — no problem', checkPlan(mk({ stages, sections: coverage('1') }), opts()).problems.length === 0)
+    check('plan-check: "Shared elements" with no rows and no `Pairs checked:` — shared-elements-empty', rules(checkPlan(mk({ stages, sections: sharedEmpty }), opts())).join() === 'shared-elements-empty')
+    check('plan-check: an empty "Shared elements" with `Pairs checked: 6` (and the Russian form) — no problem', checkPlan(mk({ stages, sections: `${sharedEmpty}Pairs checked: 6\n\n` }), opts()).problems.length === 0 && checkPlan(mk({ stages, sections: `${sharedEmpty}Проверено пар: 6\n\n` }), opts()).problems.length === 0)
+    check('plan-check: "Shared elements" with a row — no problem', checkPlan(mk({ stages, sections: '## Shared elements\n| Element | Stages | Owner | Where |\n|---|---|---|---|\n| wrapper | 1, 2 | 1 | src/a.ts |\n\n' }), opts()).problems.length === 0)
+    // m-4: one catch-up stage in an old plan does not make its old sections hard
+    const dataDir = fresh()
+    const oldText = mk({ stages, sections: coverage(''), earlier: '- 2026-09-01 plan written\n', force: forceEn('## Force run 2026-09-02') })
+    checkPlan(oldText, opts({ dataDir }))
+    const grown = checkPlan(`${oldText}### Stage 2: catch-up  [status: todo]  logic-only\nAcceptance criteria:\n${ac('2.1')}`, opts({ dataDir }))
+    check('plan-check: a catch-up stage in an old plan — the old coverage row stays a warning', grown.problems.length === 0 && rules(grown, 'warnings').includes('coverage-empty-stage'), msgs(grown))
+  }
+
+  // M-5 / m-3: a sibling repo missing on this machine.
+  {
+    const cfg = '- ui kit: `../ui-kit`\n- playground: `../src/module`\n'
+    check('siblingRepos reads the names in the config', siblingRepos(cfg, fx).length === 2)
+    const refs = (path) => checkPlan(mk({ stages: logicStage(1, ac('1.1'), `- see ${path}:3\n`) }), opts({ config: cfg }))
+    const into = refs('ui-kit/src/x.ts')
+    check('plan-check A4: a ref into a missing sibling repo (`ui-kit/…`) is a warning, with the sibling-missing note', into.problems.length === 0 && rules(into, 'warnings').includes('unresolved-ref') && rules(into, 'warnings').includes('sibling-missing'), msgs(into))
+    const own = refs('src/missing.ts')
+    check('plan-check A4: a missing file of THIS repo stays a problem though a sibling is missing, and `../src/module` is no sibling', rules(own).join() === 'unresolved-ref' && !rules(own, 'warnings').some((rule) => rule === 'sibling-missing' && /\/src\b/.test(msgs(own, 'warnings'))), msgs(own))
+    check('plan-check A4: no sibling in the config — an unresolved ref is a problem', rules(checkPlan(mk({ stages: logicStage(1, ac('1.1'), '- see ui-kit/src/x.ts:3\n') }), opts())).join() === 'unresolved-ref')
+  }
+
+  // m-5: the whole JSON report reaches a pipe.
+  {
+    const bigPlan = mk({ stages: logicStage(1, Array.from({ length: 1500 }, (_, i) => ac(`1.${i + 1}`, '')).join('')) })
+    mkdirSync(taskDir, { recursive: true })
+    writeFileSync(join(taskDir, 'STAGES.md'), bigPlan)
+    const run = spawnSync(process.execPath, [join(PLUGIN, 'plan-check.mjs'), join(taskDir, 'STAGES.md'), '--json'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, CLAUDE_PLUGIN_DATA: fresh() } })
+    let parsed = null
+    try {
+      parsed = JSON.parse(run.stdout)
+    } catch {
+      // cut output
+    }
+    check('plan-check CLI: a piped --json report over 64 KB is whole', run.stdout.length > 70000 && parsed?.stages?.[0]?.summary?.acs === 1500, `${run.stdout.length} bytes, status ${run.status}`)
+  }
+  rmSync(fxRoot, { recursive: true, force: true })
+}
+
+// ── VT-5 stage 10, fix round 2 (O-1): the plan snapshot is taken by journal-gate before the edit lands, never at whichever call reaches plan-check first ──────────
+{
+  const root = mkdtempSync(join(tmpdir(), 'plan-check-o1-'))
+  const app = join(root, 'app')
+  repoAt(app, 'main')
+  git(app, 'checkout', '-qb', 'P-3/feat/x')
+  write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', 'src/a.ts': 'x\n' })
+  git(app, 'add', '-A')
+  git(app, 'commit', '-qm', 'files')
+  const day = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+  const tax = 'Screens and states — Clear; Copy and i18n — Clear; Permissions and gating — Clear; Breakpoints — Clear; Motion — Clear; A11y — Clear; Data — Clear; Platform parity — Clear; Look — Clear; Terminology — Clear; Boundaries — Clear; Environment and access — Clear'
+  const header = '# P-3: task\nBranch: `P-3/feat/x`\nLanguage: en\n\n## Status: stage 1\n\n'
+  const stages = '## Stages\n\n### Stage 1: s  [status: todo]  logic-only\nWhat exists:\n- reads src/a.ts:1\nAcceptance criteria:\n- `AC-1.1` WHEN a THEN b — [verify: pro-review]\n'
+  const forceOld = `## Force run ${day}\nMode: autonomous.\nAssumptions:\n- accepted X — Rollback: cheap — Basis: guess\nConfirmed: ${day} — no questions\n\n`
+  const pre = (tool_name, file) => runHook('journal-gate.mjs', { cwd: app, tool_name, hook_event_name: 'PreToolUse', tool_input: { file_path: file } })
+  const spawn = (prompt) => runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt } })
+
+  // Incident: a new task — Write creates STAGES.md, an Edit adds an open confirmed Force block without `Stage dependencies:`, the first plan-check call is the spawn.
+  const newFile = join(app, '.claude/tasks/P-3/STAGES.md')
+  pre('Write', newFile) // the file is absent: an empty plan is snapshotted
+  write(app, { '.claude/tasks/P-3/STAGES.md': `${header}${stages}` })
+  pre('Edit', newFile)
+  write(app, { '.claude/tasks/P-3/STAGES.md': `${header}${forceOld}${stages}` })
+  const denied = spawn('Ticket P-3, stage 1, mode implement')
+  check('plan-check O-1 incident: a new task (Write creates STAGES.md, then an Edit adds an open Force block without `Stage dependencies:`) — the spawn is denied', denied.decision === 'deny' && /Stage dependencies/.test(denied.text), denied.text)
+
+  // Legitimate (M-1 form): the confirmed open block was in STAGES.md before any hook call; the first post-install Edit takes the snapshot, so the spawn is allowed.
+  git(app, 'checkout', '-qb', 'P-4/feat/x')
+  write(app, { '.claude/tasks/P-4/STAGES.md': `${header.replaceAll('P-3', 'P-4')}${forceOld}${stages}` })
+  pre('Edit', join(app, '.claude/tasks/P-4/STAGES.md'))
+  write(app, { '.claude/tasks/P-4/STAGES.md': `${header.replaceAll('P-3', 'P-4')}${forceOld}## Journal\n- ${day} a line\n\n${stages}` })
+  const allowed = spawn('Ticket P-4, stage 1, mode implement')
+  check('plan-check O-1 legitimate: a running confirmed block already in STAGES.md before the first hook call — the first Edit snapshots it, the spawn is allowed', allowed.decision === 'allow', allowed.text)
+  rmSync(root, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)

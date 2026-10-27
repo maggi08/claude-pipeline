@@ -7,10 +7,11 @@
  *
  * Only new lines (D7): a line in the task's base snapshot is not touched, see `baselineInfo`.
  */
-import { AWAITING_SECTION } from './markers.mjs'
+import { AWAITING_SECTION, FORCE_FIELD_LINE } from './markers.mjs'
 
 const ITEM = /^\s*(?:[-*]|\d+\.)\s+\S/
-const FIELD_LINE = /^\s*(?:[-*]\s*)?\**(?:Unresolved|Незакрытое|Boundaries|Границы|Confirmed|Подтверждено|Blockers|Блокеры|Interview answers|Ответы интервью|Mode|Режим)\**\s*:/i
+// Every Force field ends the Assumptions list: one list of names (markers.mjs), so a field added there is known here too.
+const FIELD_LINE = FORCE_FIELD_LINE
 const ASSUMPTIONS_LINE = /^\s*(?:[-*]\s*)?\**(?:Assumptions|Допущения)\**\s*:/i
 const EMPTY_ITEM = /^\s*(?:[-*]|\d+\.)\s+(?:\**(?:none|нет|n\/a|—|-)\**\.?\s*$|\[x\]|~~|✅)/i
 

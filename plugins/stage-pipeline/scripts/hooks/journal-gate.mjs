@@ -125,6 +125,16 @@ if (pre && tool !== 'Bash') {
     const heading = freshestForceHeading(readBounded(file).text ?? '')?.[0] ?? null
     saveStamp(writeStampPath, { file, heading })
   }
+  if (basename(file) === 'STAGES.md') {
+    // The plan snapshot (VT-5 stage 10, D7) is the first look at the plan: taken here, before the edit lands, and only when none exists. A Write that creates the file
+    // snapshots an empty plan, so a new task's stages and Force blocks are all new. Needs only the stage numbers and Force headings; fails open.
+    try {
+      const { readPlanSnapshot, takePlanSnapshot } = await import('../plan-check.mjs')
+      if (!readPlanSnapshot(pluginDataDir(), dirname(file))) takePlanSnapshot(pluginDataDir(), dirname(file), readBounded(file).text ?? '')
+    } catch {
+      // no plan snapshot now — plan-check takes it at its first call
+    }
+  }
   const dir = basename(dirname(file)) === 'checks' ? dirname(dirname(file)) : dirname(file)
   const { baselineName, snapshotCurrent } = await import('../baseline-file.mjs')
   for (const text of readDataFiles(pluginDataDir(), baselineName(dir))) {
