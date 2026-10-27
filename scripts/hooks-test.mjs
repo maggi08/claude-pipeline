@@ -6310,4 +6310,82 @@ rmSync(retroRoot, { recursive: true, force: true })
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
 }
 
+// ── stage 9c (VT-4): B3 Nuxt component names, B4 non-component chains, workspace imports ──
+{
+  const VM = join(PLUGIN, 'verify-map.mjs')
+  const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
+  const dirs = []
+  const mk = (files) => {
+    const root = mkdtempSync(join(tmpdir(), 'v9c-'))
+    dirs.push(root)
+    const g = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'ignore' })
+    g('init', '-q')
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, file)), { recursive: true })
+      writeFileSync(join(root, file), text)
+    }
+    g('add', '-A')
+    g('commit', '-q', '-m', 'base')
+    return root
+  }
+  const CFG = '# Pipeline config — fx\n## Project\n- slug: fx\n## Task state\n- task_path: .claude/tasks/\n## Dev server\n- url: http://localhost:3000\n'
+
+  // AC-9c.1: every Nuxt name of a component
+  const nuxt = mk({
+    '.claude/pipeline.config.md': CFG,
+    'nuxt.config.ts': 'export default {}\n',
+    'components/base/Spinner.vue': '<template/>',
+    'components/base/BaseButton.vue': '<template/>',
+    'pages/a.vue': '<template><BaseSpinner/></template>',
+    'pages/b.vue': '<template><base-spinner/></template>',
+    'pages/c.vue': '<template><LazyBaseSpinner/></template>',
+    'pages/d.vue': '<template><BaseButton/></template>',
+    'pages/e.vue': '<template><lazy-base-spinner /></template>',
+    'pages/f.vue': '<template><BaseSpinnerX/></template>',
+  })
+  const names = vm(nuxt, '--radius', 'components/base/Spinner.vue').stdout
+  check('AC-9c.1: BaseSpinner, base-spinner, LazyBaseSpinner and lazy-base-spinner all reach components/base/Spinner.vue', ['/a', '/b', '/c', '/e'].every((route) => new RegExp(`^route ${route} `, 'm').test(names)), names)
+  check('AC-9c.1 legitimate: BaseSpinnerX is another component, BaseButton is not Spinner', !/^route \/(?:d|f) /m.test(names), names)
+  check('AC-9c.1: prefix dedupe — components/base/BaseButton.vue is <BaseButton/>, not <BaseBaseButton/>', /^route \/d /m.test(vm(nuxt, '--radius', 'components/base/BaseButton.vue').stdout))
+
+  // AC-9c.2: a FEATURE-MAP row whose files are .ts is matched by --changed
+  const ts = mk({
+    '.claude/pipeline.config.md': CFG,
+    '.claude/verify/README.md': '# Verify map — fx\nBase: abc (main) · Updated: 2026-10-25\n## Features (sweep order)\n- [orders](features/orders.md) — /orders\n',
+    '.claude/verify/features/orders.md': '# orders\nRoutes: /orders · Auth: yes · Platforms: desktop · Status: draft\nx\n## Sub-features\n- `a`\n## How to get to it (user POV)\n- Header\n## Driving it with Chrome DevTools MCP\n- x\n## Gotchas\n- none\n',
+    'src/router.ts': 'export default []\n',
+  })
+  writeFileSync(join(ts, 'src/router.ts'), 'export default [1]\n')
+  writeFileSync(join(ts, 'src/router.test.ts'), 'export {}\n')
+  const tsFm = join(ts, 'FEATURE-MAP.md')
+  writeFileSync(tsFm, '# Feature map: x\n## Entry points\n| ID | Platform | Route/screen | Files |\n|---|---|---|---|\n| orders | desktop | /orders | src/router.ts:3 |\n')
+  const tsOut = vm(ts, '--changed', '--feature-map', tsFm).stdout
+  check('AC-9c.2: --changed matches a FEATURE-MAP row whose files are .ts', /^route \/orders — mapped: orders$/m.test(tsOut) && !/^warning/m.test(tsOut), tsOut)
+
+  // AC-9c.3 and AC-9c.4: a .ts chain names where it stopped; workspace imports resolve through package.json names
+  const chain = mk({
+    '.claude/pipeline.config.md': CFG,
+    'src/util.ts': 'export const u = 1\n',
+    'src/api.ts': 'import { u } from "./util"\nexport const a = u\n',
+    'src/router.ts': 'import { a } from "./api"\nexport default a\n',
+  })
+  const chainOut = vm(chain, '--radius', 'src/util.ts').stdout
+  check('AC-9c.3: a .ts chain with no page names the file it stopped at, not "no page imports"', /^warning: src\/router\.ts/m.test(chainOut) && !/src\/api\.ts/.test(chainOut) && !/no page imports/.test(chainOut), chainOut)
+  const ws = mk({
+    '.claude/pipeline.config.md': CFG,
+    'packages/shared/package.json': '{"name":"@scope/shared","main":"dist/index.js"}\n',
+    'packages/shared/src/index.ts': 'export * from "./utils/x"\n',
+    'packages/shared/src/utils/x.ts': 'export const x = 1\n',
+    'packages/shared/src/utils/y.ts': 'export const y = 1\n',
+    'apps/web/src/pages/P.tsx': 'import { x } from "@scope/shared"\nexport default x\n',
+    'apps/web/src/pages/Q.tsx': 'import { y } from "@scope/shared/utils/y"\nexport default y\n',
+    'apps/web/src/pages/R.tsx': 'import { z } from "@other/shared"\nexport default z\n',
+  })
+  const wsOut = vm(ws, '--radius', 'packages/shared/src/utils/x.ts').stdout
+  check('AC-9c.4: a bare workspace import resolves to the package entry and through its re-export to P.tsx', /apps\/web\/src\/pages\/P\.tsx/.test(wsOut) && !/R\.tsx/.test(wsOut), wsOut)
+  check('AC-9c.4: a sub-path import (@scope/shared/utils/y) resolves under src/', /Q\.tsx/.test(vm(ws, '--radius', 'packages/shared/src/utils/y.ts').stdout))
+
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+}
+
 process.exit(failed ? 1 : 0)

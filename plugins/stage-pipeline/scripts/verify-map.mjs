@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { configRoot, mainRoot, parseDevServer, readBounded, readConfig } from './hooks/pipeline-state.mjs'
 import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATURE_SECTIONS, MAP_ROUTES_FIELD, MAP_STATUS_FIELD, MAP_TEXT, NO_VALUE } from './markers.mjs'
@@ -284,6 +284,9 @@ function changedFiles(top, base) {
   return [...new Set(`${tracked}\n${untracked}`.split('\n').map((line) => line.trim()).filter(Boolean))]
 }
 
+const ROW_CANDIDATE = /\.(?:vue|svelte|tsx|jsx|ts|js|mts|mjs)$/
+const TEST_FILE = /\.d\.ts$|\.(?:test|spec|stories)\.[cm]?[jt]sx?$|(?:^|\/)__(?:tests|mocks|snapshots)__\//
+
 /**
  * The routes of a list of files, one reader for `--changed` and `--radius`: file routing (Nuxt, Next) first; React Router and anything else without it only through the
  * FEATURE-MAP "Entry points" rows whose Files cell names a file of `rowFiles` (default: the files with no route of their own). Every file that stays without a route
@@ -291,14 +294,17 @@ function changedFiles(top, base) {
  */
 function collectRoutes({ top, files, rows, rowFiles = null, classify = () => 'warning', nameFramework = false }) {
   const routes = new Map()
+  const candidates = new Set()
   const warnings = []
   const notes = []
   const unknown = []
   const layouts = new Set()
   for (const file of files) {
     const result = routeOfFile(file, top)
+    // every changed source file (a `.ts` router, a `.js` module) may be named by a FEATURE-MAP row; only a component file is named as unrouted
+    if (ROW_CANDIDATE.test(file) && !TEST_FILE.test(file)) candidates.add(file)
     if (!result) {
-      if (/\.(?:vue|svelte|tsx|jsx)$/.test(file)) unknown.push(file)
+      if (/\.(?:vue|svelte|tsx|jsx)$/.test(file) || (nameFramework && candidates.has(file))) unknown.push(file)
       continue
     }
     // a file of a known framework that is not a page (a layout, `app.vue`, `_app.tsx`): named only where the caller asks (the radius), as such
@@ -310,11 +316,12 @@ function collectRoutes({ top, files, rows, rowFiles = null, classify = () => 'wa
     else if (result.route !== undefined) routes.set(normalizeRoute(result.route), { route: result.route, file })
   }
   const known = new Map()
+  const fileRouted = new Set([...routes.values()].map((entry) => entry.file))
   for (const row of rows) {
     const key = rowRoute(row.route)
     if (!key) continue
     if (row.id) known.set(normalizeRoute(key), row.id)
-    const named = (rowFiles ?? unknown).find((file) => rowNamesFile(row.files, file))
+    const named = (rowFiles ?? [...candidates].filter((file) => !routes.has(file) && !fileRouted.has(file))).find((file) => rowNamesFile(row.files, file))
     if (named) routes.set(normalizeRoute(key), { route: key, file: named })
   }
   const routed = new Set([...routes.values()].map((entry) => entry.file))
@@ -395,6 +402,84 @@ function sourceFiles(top) {
   return listed.split('\n').filter((file) => SOURCE_EXT.test(file) && !file.endsWith('.d.ts') && !/(?:^|\/)(?:node_modules|dist|\.nuxt|\.next|\.output|build|coverage)\//.test(file)).slice(0, FILE_CAP)
 }
 
+const kebabOf = (name) => name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
+const pascalOf = (segment) => segment.split(/[-_.\s]+/).filter(Boolean).map((part) => part[0].toUpperCase() + part.slice(1)).join('')
+
+/**
+ * Every tag name a Nuxt auto-imported component answers to: the file name when it starts with a capital (the bare match kept), the PascalCase of the path under `components/` with
+ * Nuxt's prefix dedupe (`base/BaseButton.vue` → `BaseButton`, `base/Spinner.vue` → `BaseSpinner`, `x/index.vue` → `X`), each name's kebab form, and `Lazy` + each (`lazy-…`).
+ */
+function componentNames(file) {
+  const names = new Set()
+  const stem = basename(file, '.vue')
+  if (/^[A-Z]/.test(stem)) names.add(stem)
+  const under = file.match(/(?:^|\/)components\/(.+)\.vue$/)
+  if (under) {
+    const parts = under[1].split('/')
+    const leaf = parts.pop()
+    const prefix = parts.map(pascalOf).join('')
+    const own = leaf === 'index' ? '' : pascalOf(leaf)
+    const name = own.startsWith(prefix) ? own : `${prefix}${own}`
+    if (name) names.add(name)
+  }
+  for (const name of [...names]) names.add(kebabOf(name))
+  for (const name of [...names]) names.add(/^[a-z]/.test(name) ? `lazy-${name}` : `Lazy${name}`)
+  return [...names]
+}
+
+const PACKAGE_CAP = 500
+const PACKAGE_SIZE_CAP = 64 * 1024
+
+/** The first string a package.json entry field holds: a string, or the first of `source`, `import`, `module`, `default`, `require` found down an `exports` condition object. */
+function entryString(value, depth = 0) {
+  if (typeof value === 'string') return value
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 4) return null
+  for (const key of ['source', 'import', 'module', 'default', 'require']) {
+    const found = entryString(value[key], depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+/** The packages of the repo by their `name` field: every `package.json` outside `node_modules` (bounded count and size, no network) → `name → { dir, entries }`. */
+function workspacePackages(top) {
+  const listed = git(top, 'ls-files', '--cached', '--others', '--exclude-standard', '--', '*package.json') ?? ''
+  const packages = new Map()
+  for (const file of listed.split('\n').filter((file) => basename(file) === 'package.json' && !/(?:^|\/)node_modules\//.test(file)).slice(0, PACKAGE_CAP)) {
+    let json
+    try {
+      const stat = statSync(join(top, file))
+      if (!stat.isFile() || stat.size > PACKAGE_SIZE_CAP) continue
+      json = JSON.parse(readFileSync(join(top, file), 'utf8'))
+    } catch {
+      continue
+    }
+    if (!json || typeof json.name !== 'string' || !json.name) continue
+    const dir = dirname(file) === '.' ? '' : dirname(file)
+    const exportsRoot = json.exports && typeof json.exports === 'object' && !Array.isArray(json.exports) && '.' in json.exports ? json.exports['.'] : json.exports
+    const declared = [json.source, entryString(exportsRoot), json.module, json.main].filter((entry) => typeof entry === 'string')
+    const entries = [...declared, 'src/index', 'index'].map((entry) => posix.normalize(posix.join(dir, entry.replace(/^\.\//, ''))))
+    if (!packages.has(json.name)) packages.set(json.name, { dir, entries })
+  }
+  return packages
+}
+
+/** A bare import (`@scope/pkg`, `@scope/pkg/sub`) of a package of this repo → the file it reaches: the package entry, or the sub-path (as written, then under `src/`). */
+function resolveWorkspace(packages, spec, set) {
+  if (!packages.size) return null
+  const parts = spec.split('/')
+  const nameLength = spec.startsWith('@') ? 2 : 1
+  const pkg = packages.get(parts.slice(0, nameLength).join('/'))
+  if (!pkg) return null
+  const sub = parts.slice(nameLength).join('/')
+  const candidates = sub ? [posix.join(pkg.dir, sub), posix.join(pkg.dir, 'src', sub)] : pkg.entries
+  for (const base of candidates) {
+    const hit = RESOLVE_EXT.map((ext) => `${base}${ext}`).find((candidate) => set.has(candidate))
+    if (hit) return hit
+  }
+  return null
+}
+
 /** The reverse import graph of the repo's source files: `file → Set<importer>`. Relative specifiers are resolved exactly, `@/` `~/` `#` aliases by the end of the path; a `<Name>` tag of a `.vue` file names a Nuxt auto-imported component. */
 export function importGraph(top, files = sourceFiles(top)) {
   const set = new Set(files)
@@ -410,7 +495,8 @@ export function importGraph(top, files = sourceFiles(top)) {
     known.add(importer)
     importers.set(target, known)
   }
-  const components = files.filter((file) => file.endsWith('.vue') && /^[A-Z]/.test(basename(file))).map((file) => ({ file, name: basename(file, '.vue') }))
+  const components = files.filter((file) => file.endsWith('.vue')).map((file) => ({ file, names: componentNames(file) })).filter(({ names }) => names.length)
+  const workspaces = workspacePackages(top)
   for (const file of files) {
     let text
     try {
@@ -428,6 +514,9 @@ export function importGraph(top, files = sourceFiles(top)) {
         const base = join(dirname(file), spec).split(sep).join('/')
         const hit = RESOLVE_EXT.map((ext) => `${base}${ext}`).find((candidate) => set.has(candidate))
         if (hit) link(hit, file)
+      } else if (!ALIAS_PREFIX.test(spec)) {
+        const hit = resolveWorkspace(workspaces, spec, set)
+        if (hit) link(hit, file)
       } else if (ALIAS_PREFIX.test(spec)) {
         const path = spec.replace(ALIAS_PREFIX, '').replace(/\.(?:vue|[mc]?[jt]sx?)$/, '').replace(/\/index$/, '')
         const last = basename(path)
@@ -438,10 +527,8 @@ export function importGraph(top, files = sourceFiles(top)) {
       }
     }
     if (file.endsWith('.vue') || file.endsWith('.tsx') || file.endsWith('.jsx'))
-      for (const { file: component, name } of components) {
-        const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
-        if (component !== file && (text.includes(`<${name}`) || text.includes(`<${kebab}`)) && new RegExp(`<(?:${escapeRegExp(name)}|${escapeRegExp(kebab)})(?=[\\s/>])`).test(text)) link(component, file)
-      }
+      for (const { file: component, names } of components)
+        if (component !== file && names.some((name) => text.includes(`<${name}`)) && new RegExp(`<(?:${names.map(escapeRegExp).join('|')})(?=[\\s/>])`).test(text)) link(component, file)
   }
   return importers
 }
@@ -499,8 +586,10 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
   // an importer in the radius that gets no route is a warning, whatever rows matched (the legacy screens outside the task are what the radius is for); one whose in-radius importers are all routed
   // is covered through them, but is named on its own `note:` line: a route table or a page can hide a page of its own behind it
   const { routes, warnings, notes, known } = collectRoutes({ top, files: [...hops.keys()], rows, rowFiles: [...hops.keys()], nameFramework: true, classify: (file, routed) => {
-    if (hops.get(file) === 0) return null
+    if (hops.get(file) === 0 || TEST_FILE.test(file)) return null
     const above = [...(importers.get(file) ?? [])].filter((importer) => hops.has(importer))
+    // a module that is not a component is named only where the climb stopped (no importer in the radius), not on the way up
+    if (!/\.(?:vue|svelte|tsx|jsx)$/.test(file) && above.length) return null
     return !above.length || !above.every((importer) => routed.has(importer)) ? 'warning' : { note: above[0] }
   } })
   const lines = [`radius: ${targets.length} module${targets.length === 1 ? '' : 's'} → ${hops.size - targets.length} importer file${hops.size - targets.length === 1 ? '' : 's'}, depth <= ${depth} · ${features ? `${dir} · README ${resolve(readme)}` : 'no map — routes only'}`]
@@ -517,6 +606,7 @@ export function radiusReport({ top, config, files, depth = 4, featureMap = null,
   for (const warning of warnings) lines.push(`warning: ${warning}`)
   for (const note of notes) lines.push(`note: ${note}`)
   if (!routes.size && !warnings.length && !notes.length) lines.push('no page imports these modules within the depth')
+  else if (!routes.size && warnings.length) lines.push(`no page reached — the climb stopped at the file${warnings.length > 1 ? 's' : ''} named above (hop files with no importer in the radius)`)
   return { lines, code: 0 }
 }
 
