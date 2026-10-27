@@ -850,6 +850,21 @@ async function validateEvalSelfTests(names) {
   expectMatches('a finding under «Итог находок» is dropped', portal, '## Итог находок\n\n- M-1 major src/DeleteGuestModal.tsx:12 — исправлено', 0)
   expectMatches('a finding under «Отброшено при перепроверке» is dropped', portal, '## Отброшено при перепроверке\n\n### M-9 (major) — DeleteGuestModal.tsx:12', 0)
   if (!gradeAgent({ findingsForbid: [{ ...portal, why: 'x' }] }, { repo: ROOT, report: '### 🟠 M-1 `DeleteGuestModal.tsx:12` — x', summary: 'Summary: 🔴 0 · 🟠 1', calls: [] }).failures.length) fail(here, 'finding grader self-test: findingsForbid passed a report with the forbidden finding in an emoji-led heading')
+  // VT-3 branch review (fresh 2) M-1: the neighbouring shapes: a severity word before the id, no id at all, a numbered heading, an emoji inside the bracket.
+  expectMatches('a heading with a severity word before the id', { ...portal, severity: 'minor' }, '### 🟡 minor m-4 `DeleteGuestModal.tsx:12` — x', 1)
+  expectMatches('a heading with a severity and no id', portal, '### 🟠 Major — `DeleteGuestModal.tsx:12` — x', 1)
+  expectMatches('a numbered emoji heading', { ...portal, severity: 'minor' }, '### 1. 🟡 `DeleteGuestModal.tsx:12` — x', 1)
+  expectMatches('a bracket with an emoji and a word', portal, '[🟠 Major] src/DeleteGuestModal.tsx:12 — x', 1)
+  expectMatches('a bold bracket with an emoji only', { ...portal, severity: 'any' }, '**[🟡] `DeleteGuestModal.tsx:12` — x**', 1)
+  expectMatches('a group heading with no file:line stays a heading', portal, '## 🟠 Major\n\n### 🟡 Minor (2)\n\nprose DeleteGuestModal.tsx:12', 0)
+  expectMatches('a severity heading under «Discarded»', portal, '## Discarded at the re-check\n\n### 🟠 Major — `DeleteGuestModal.tsx:12` — dropped', 0)
+  for (const [shape, report] of [['an emoji-led heading with a severity word', '### 🟡 minor m-4 `DeleteGuestModal.tsx:12` — x'], ['an emoji bracket line', '[🟠 Major] src/DeleteGuestModal.tsx:12 — x']]) {
+    if (!gradeAgent({ findingsForbid: [{ ...portal, severity: 'any', why: 'x' }] }, { repo: ROOT, report, summary: 'Summary: 🔴 0 · 🟠 1', calls: [] }).failures.length) fail(here, `finding grader self-test: findingsForbid passed a report with the forbidden finding in ${shape}`)
+  }
+  // m-2: «Отклонение» (a deviation) is not a kept section, and a report's H1 title opens none. «Отклонено» still is one.
+  expectMatches('a finding under a ru H1 title with «Отклонение»', portal, '# Figma compare: Stage 09 «Отклонение продажи» ↔ реализация\n\n| 1 | **major** | `DeleteGuestModal.tsx:12` | x |', 1)
+  expectMatches('a finding under «Отклонения от макета»', portal, '## Отклонения от макета\n\n- major: src/DeleteGuestModal.tsx:12 — x', 1)
+  expectMatches('a finding under «Отклонено» is dropped', portal, '## Отклонено\n\n- major: src/DeleteGuestModal.tsx:12 — x', 0)
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
   // Trace graders: a denied call does not count; every screenshot must be opened.

@@ -423,10 +423,12 @@ const negatedTail = (tail) => {
   const rest = tail.slice(bridged.length)
   return NEGATION.test(rest)
 }
-const KEPT_SECTION = /\b(kept|discarded|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен|не удалось проверить|итог находок|отброшено/i
-const ITEM = /^\s*(?:[-*•]|\d+[.)])\s+|^\s*\|(?![\s:|-]*$)|^\s*[*_`>]*\s*(?:[CMFm]-?\d+|#\d+|AC-[\d.]+)\b|^\s*[*_`>]*\s*(?:critical|major|minor|blocker)\b|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)?\s*\[(?:critical|major|minor|blocker)\]/i
-// A heading that is itself a finding («### M-1 (major) — src/a.ts:12 — …»): an id-led heading. It is judged as a line, and it does not open a «kept» section.
-const FINDING_HEADING = /^\s{0,3}#{1,6}\s+[*_`]*\s*(?:(?:🔴|🟠|🟡|⚪)\s*)?(?:\[(?:critical|major|minor|blocker)\]\s*)?[*_`]*(?:[CMFm]-?\d+|#\d+)\b/i
+const KEPT_SECTION = /\b(kept|discarded|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен[оыа]?(?![а-яё])|не удалось проверить|итог находок|отброшено/i
+const ITEM = /^\s*(?:[-*•]|\d+[.)])\s+|^\s*\|(?![\s:|-]*$)|^\s*[*_`>]*\s*(?:[CMFm]-?\d+|#\d+|AC-[\d.]+)\b|^\s*[*_`>]*\s*(?:critical|major|minor|blocker)\b|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)?\s*\[(?=[^\]\n]*(?:🔴|🟠|🟡|⚪|critical|major|minor|blocker|nit))\s*(?:🔴|🟠|🟡|⚪)?\s*(?:critical|major|minor|blocker|nit)?\s*\]/i
+// A heading that is itself a finding. It is judged as a line, and it does not open a «kept» section. Two forms:
+// an id-led heading («### M-1 (major) — …», «### 🟡 minor m-4 …», «### 1. 🟠 M-2 …»), and a heading led by a severity mark (an emoji, a word, or a bracket with either)
+// that carries a `file:line` token even without an id («### 🟠 Major — `a.ts:26-34` — …»). A group heading («## 🟠 Major», «### 🟡 Minor (2)») has no `file:line`, so it stays a heading.
+const FINDING_HEADING = /^\s{0,3}#{1,6}\s+(?:\d+[.)]\s+)?[*_`]*\s*(?:(?:🔴|🟠|🟡|⚪)\s*)?(?:\[\s*(?:🔴|🟠|🟡|⚪)?\s*(?:critical|major|minor|blocker|nit)?\s*\]\s*|(?:critical|major|minor|blocker|nit)\b[\s*_`]*)?[*_`]*(?:[CMFm]-?\d+|#\d+)\b|^\s{0,3}#{1,6}\s+(?:\d+[.)]\s+)?[*_`]*\s*(?:🔴|🟠|🟡|⚪|\[(?=[^\]\n]*(?:🔴|🟠|🟡|⚪|critical|major|minor|blocker|nit))|(?:critical|major|minor|blocker|nit)\b)(?=.*[\w./-]+\.\w{1,5}:\d+)/i
 
 /** The lines of a report that are findings in the ledger form: a list item, a table row or an id/severity-led line, outside the «kept / could not verify» sections. */
 function findingLines(text) {
@@ -439,7 +441,8 @@ function findingLines(text) {
     } else if (/^\s{0,3}#{1,6}\s/.test(raw) || (!ITEM.test(raw) && raw.trim().length <= 80 && /:[\s*_`]*$/.test(raw.trim()))) {
       // A markdown heading or a short label line that ends with «:» («Deliberately kept:», «**Discarded:**») opens a section.
       // Any other plain line (prose, or a counters line such as «Summary: 🔴 0 · 🟠 1. Discarded at the re-check: 0.») leaves the section as it was.
-      heading = raw
+      // A report's H1 title is not a section: a title such as «# … Отклонение …» must not drop the findings under it.
+      heading = /^\s{0,3}#\s/.test(raw) ? '' : raw
     } else if (ITEM.test(raw) && !kept) lines.push({ text: raw, n: index + 1 })
   })
   return lines

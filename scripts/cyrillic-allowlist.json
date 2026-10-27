@@ -114,6 +114,11 @@
     },
     {
       "glob": "scripts/validate.mjs",
+      "line": "^\\s*(?:// m-2: «Отклонение»|expectMatches\\('a finding under (?:a ru H1 title with «Отклонение»|«Отклонения от макета»|«Отклонено» is dropped)')",
+      "reason": "the Russian noun for a deviation against the kept marker for a dismissed item, as the finding grader's self-test feeds them"
+    },
+    {
+      "glob": "scripts/validate.mjs",
       "line": "^\\s*expectMatches\\('a finding (?:after «Не удалось проверить» is dropped|under «Итог находок» is dropped|under «Отброшено при перепроверке» is dropped)'",
       "reason": "the Russian section markers of a report, as the finding grader's self-test feeds them"
     },
