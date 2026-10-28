@@ -105,6 +105,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Config gate command: none | `none` | `нет` |
 | Config field, kit overrides off | `kit_overrides: off` (also `false`, `no`, `disabled`) | `kit_overrides: нет` |
 | Config field | `language: en` | `language: ru` |
+| Run digest heading (the maker's stored items, `run-digest.mjs`; the count in the short view) | `### From the maker's hand-backs (N)` | `### Из отчётов исполнителя (N)` |
 | FEATURE-MAP header | `# Feature map: …` / `Date:` / `Repos:` / `Base:` | `# Feature map: …` / `Дата:` / `Репо:` / `База:` |
 | FEATURE-MAP section (read by figma-compare, proto-compare, stage-force, stage-implement) | `## Orientation` | `## Ориентация` |
 | FEATURE-MAP Orientation fields | `Essence:`, `Entry points:`, `Data:`, `Flags:`, `Careful:` | `Суть:`, `Точки входа:`, `Данные:`, `Флаги:`, `Осторожно:` |

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CONFIRMED_LINE, MODE_WORD } from '../markers.mjs'
+import { CONFIRMED_LINE, MODE_WORD, NO_GATE_COMMAND } from '../markers.mjs'
 import { denyTool } from './firing.mjs'
 import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
 
@@ -63,7 +63,23 @@ if (agent === 'stage-implement') {
   const verdict = task && !task.unreadable ? await planVerdict(state, task, toolInput.prompt ?? '') : null
   if (verdict) deny(verdict)
 }
+// K11.1 (VT-1 stage 11): the spawn is allowed — the tree is recorded for the stop hook to compare the hand-back with. A denied spawn records nothing.
+if (agent === 'stage-implement' && typeof input.session_id === 'string' && input.session_id) await recordSpawn(state, toolInput.prompt ?? '', input.session_id, input.cwd ?? process.cwd())
 process.exit(0)
+
+/** The spawn snapshot (maker.mjs, `takeSnapshot`): never throws and never denies. The import is lazy, like plan-check's. */
+async function recordSpawn(state, prompt, session, cwd) {
+  try {
+    const { stageOf, takeSnapshot } = await import('../maker.mjs')
+    const task = state.tasks.find((candidate) => candidate.current)
+    // the config's own words for "no command" (markers.mjs `NO_GATE_COMMAND`, the Russian one included), a trailing comment after them too; `off` is the old spelling
+    const command = (/^[ \t]*-[ \t]*type_check:[ \t]*[`*]*([^\n]*)$/im.exec(state.config ?? '')?.[1] ?? '').trim()
+    const typeCheck = Boolean(command) && !NO_GATE_COMMAND.test(command) && !/^off(?![a-z])/i.test(command)
+    takeSnapshot(pluginDataDir(), { session, cwd, ticket: task?.ticket ?? null, stage: stageOf(prompt), taskDir: task?.dir ?? null, typeCheck, config: state.config ?? null })
+  } catch {
+    // no snapshot: the stop hook does not judge this maker
+  }
+}
 
 /**
  * plan-check at the spawn of `stage-implement` in implement mode (VT-5 stage 10, K10.3): the stage's problems plus the Force block items.

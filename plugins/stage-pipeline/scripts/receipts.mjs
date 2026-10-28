@@ -41,7 +41,7 @@ const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
  * The Force block of the task when the rules apply to it: `{ date, start, block, stages }` (start — midnight of the run date, ms; with no readable date, of the day
  * the snapshot recorded; stages — the STAGES.md text), else null.
  */
-function receiptRun(dataDir, taskDir) {
+export function receiptRun(dataDir, taskDir) {
   const stages = readTaskFile(taskDir, 'STAGES.md')
   if (stages === null) return null
   const block = lastForceBlock(stages)

@@ -69,7 +69,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|unreadable|noRuntime|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort|browser): ",
+      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|unreadable|noRuntime|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort|browser|maker|makerShort|makerKinds|makerLine): ",
       "reason": "run digest headings and lines written for a ru task (the ones before 0.18.1 byte for byte as before; `browser` is the session browser line of 0.18.1)"
     },
     {

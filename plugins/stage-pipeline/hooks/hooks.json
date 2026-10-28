@@ -63,6 +63,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "stage-implement",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/maker-guard.mjs\"",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PostToolUse": [

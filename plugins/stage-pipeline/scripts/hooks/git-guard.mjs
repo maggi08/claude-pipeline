@@ -40,6 +40,7 @@ const { journalText, openLedgers, readTaskFile, reportNames } = await import('..
 const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
 const { PARITY_TABLE } = await import('../markers.mjs')
 const { commitVerdict, finishPending, savePending } = await import('../receipts.mjs')
+const { commitMakerVerdict } = await import('../maker.mjs')
 const { commitScope, gitInvocations } = await import('./git-command.mjs')
 const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
 
@@ -125,6 +126,25 @@ for (const { subcommand, dir, args } of invocations) {
   }
   if (verdict) savePending(pluginDataDir(), callId, { ...verdict, ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim() })
 
+  // Maker receipts (VT-1 stage 11): a code path of a force commit must be the blob a `stage-implement` stop recorded last. `git add x && git commit` is judged before the add runs:
+  // the blob of a path the command itself stages is read from the working tree, the blob of any other path from the index — the one that will be committed.
+  const foreign = commitMakerVerdict({
+    dataDir: pluginDataDir(),
+    taskDir: task.dir,
+    ticket: task.ticket,
+    worktree: state.worktree,
+    changed: changedFiles(state.worktree, paths),
+    staged: stagedByCommand(invocations, state.worktree),
+  })
+  if (foreign?.length) {
+    deny(
+      `stage-pipeline: code not written by stage-implement — hand it to a fix round. The commit is rejected; the code paths below do not match the last blob a stage-implement stop recorded:\n` +
+        `${foreign.slice(0, 12).map((path) => `- ${path}`).join('\n')}${foreign.length > 12 ? `\n- … ${foreign.length - 12} more` : ''}\n` +
+        'Launch `stage-implement` in fix mode with the change as a finding (stage-force, Step 3) instead of editing code in the main context; a deletion is allowed when the Force block names the path. ' +
+        'Lockfiles, generated files, markdown and JSON are not code and pass.',
+    )
+  }
+
   const journal = journalText(task.dir)
   const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
   if (removed.length) {
@@ -204,6 +224,29 @@ function commitPaths(calls, worktree) {
   for (const name of names('diff', '--cached', '--name-only', '--no-renames', '-z')) paths.add(name)
   if (scope.tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
   return [...paths]
+}
+
+/**
+ * The files the command stages by itself before it commits, for the maker receipts: `null` — the whole tree (`git add -A`, pathspec magic), else a Set of the changed
+ * files inside its pathspecs (`git add x`, `git commit x`) and, with `-a`/`-u`, the tracked changes. A plain `git commit` stages nothing (an empty Set).
+ */
+function stagedByCommand(calls, worktree) {
+  const scope = commitScope(calls.filter(({ dir }) => toplevel(dir) === worktree))
+  if (scope.all) return null
+  const out = new Set()
+  const specs = []
+  for (const { dir, spec } of scope.specs) {
+    if (spec.startsWith(':')) return null
+    const real = realDir(dir)
+    if (!real) continue
+    const path = relative(worktree, resolve(real, spec))
+    if (path.startsWith('..') || isAbsolute(path)) continue
+    specs.push(path || '.')
+  }
+  const list = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean)
+  if (scope.tracked) for (const name of list('diff', '--name-only', '--no-renames', '-z', 'HEAD')) out.add(name)
+  if (specs.length) for (const name of changedFiles(worktree, specs)) out.add(name)
+  return out
 }
 
 /** The files this commit changes: tracked changes against HEAD plus untracked files, inside the commit's pathspecs (`null` — the whole tree). */

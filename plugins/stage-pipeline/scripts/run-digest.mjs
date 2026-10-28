@@ -48,6 +48,7 @@ import {
   taskFile,
 } from './journal-check.mjs'
 import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
+import { makerItems } from './maker.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
 import { AWAITING_SECTION, UNVERIFIED_HEADING, forceBlockBody, forceBlockDate, forceHeadings, forceKey, headingDate } from './markers.mjs'
 import { TASK_FILE_MAX, pluginDataDir, readDataFiles, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
@@ -75,9 +76,13 @@ const TEXT = {
     dismissedLine: ({ checker, name, severity, line }) => `- [${checker}] ${name}${severity ? ` (${severity})` : ''}: ${line}`,
     notFinding: (n) => `Критерий не упал, «ложная» стоит вместо «не FAIL» (${n}):`,
     dismissedShort: (n, critical) => `### Отклонено как ложное: ${n}${critical ? `, из них critical ${critical}` : ''} — список дословно в файле`,
+    maker: (n) => `### Из отчётов исполнителя (${n})`,
+    makerShort: (n) => `### Из отчётов исполнителя: ${n} — список дословно в файле`,
+    makerKinds: { product: 'Видно продукту', notdone: 'Не сделано / блокер', acs: 'AC без реализации', unfixed: 'отчёт не исправлен' },
+    makerLine: ({ stage, kind, text }) => `- [${stage ? `этап ${stage} · ` : ''}${kind}] ${text.replace(/^(?:[-*]|\d+\.)\s+/, '')}`,
     noRuntimeLine: ({ stage, sha, ui, skip }) => `- ${stage ?? sha}: изменены UI-файлы (${ui}), отчёта devtools-verify нет${skip ? ` — пропуск: ${skip}` : ''}`,
     // The short view and the file. The category names are the same words as in the headings above.
-    labels: { noOutcome: 'находок без итога', notVerified: 'непроверенного', minor: 'minor', accepted: 'принятого само', noRuntime: 'этапов без проверки в рантайме' },
+    labels: { noOutcome: 'находок без итога', notVerified: 'непроверенного', minor: 'minor', accepted: 'принятого само', noRuntime: 'этапов без проверки в рантайме', maker: 'пунктов из отчётов исполнителя' },
     noneOf: (names) => `Нет: ${names.join(', ')}.`,
     notReady: (names) => `Не готово к PR — critical/major или FAIL без итога в отчётах: ${names.join(', ')}.`,
     unreadable: (items) => `Не готово к PR — файлы не читаются, их правила не применены: ${items.map(({ file, problem, size, max }) => `${file} (${{ 'too-large': `${megabytes(size)} МБ, больше лимита ${megabytes(max)} МБ`, outside: 'реальный путь вне каталога задачи', 'not-file': 'не обычный файл', unreadable: 'не открывается' }[problem]})`).join('; ')}.`,
@@ -118,8 +123,12 @@ const TEXT = {
     dismissedLine: ({ checker, name, severity, line }) => `- [${checker}] ${name}${severity ? ` (${severity})` : ''}: ${line}`,
     notFinding: (n) => `The criterion did not fail, "false" stands for "not a FAIL" (${n}):`,
     dismissedShort: (n, critical) => `### Dismissed as false: ${n}${critical ? `, of them critical ${critical}` : ''} — the list is verbatim in the file`,
+    maker: (n) => `### From the maker's hand-backs (${n})`,
+    makerShort: (n) => `### From the maker's hand-backs: ${n} — the list is verbatim in the file`,
+    makerKinds: { product: 'Product-visible', notdone: 'Not done / blocker', acs: 'ACs without implementation', unfixed: 'hand-back not fixed' },
+    makerLine: ({ stage, kind, text }) => `- [${stage ? `stage ${stage} · ` : ''}${kind}] ${text.replace(/^(?:[-*]|\d+\.)\s+/, '')}`,
     noRuntimeLine: ({ stage, sha, ui, skip }) => `- ${stage ?? sha}: UI files changed (${ui}), no devtools-verify report${skip ? ` — skipped: ${skip}` : ''}`,
-    labels: { noOutcome: 'findings without an outcome', notVerified: 'unverified items', minor: 'minor', accepted: 'items accepted on my own', noRuntime: 'stages without runtime check' },
+    labels: { noOutcome: 'findings without an outcome', notVerified: 'unverified items', minor: 'minor', accepted: 'items accepted on my own', noRuntime: 'stages without runtime check', maker: 'items from the maker\'s hand-backs' },
     noneOf: (names) => `None: ${names.join(', ')}.`,
     notReady: (names) => `Not ready for PR — critical/major or FAIL without an outcome in: ${names.join(', ')}.`,
     unreadable: (items) => `Not ready for PR — these files cannot be read, so their rules did not run: ${items.map(({ file, problem, size, max }) => `${file} (${{ 'too-large': `${megabytes(size)} MB, over the ${megabytes(max)} MB limit`, outside: 'its real path is outside the task directory', 'not-file': 'not a regular file', unreadable: 'cannot be opened' }[problem]})`).join('; ')}.`,
@@ -262,7 +271,10 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
     return `${TEXT[language].noRuntimeLine({ stage: receipt.stage, sha: String(receipt.sha).slice(0, 7), ui: `${ui.slice(0, 3).join(', ')}${ui.length > 3 ? ` +${ui.length - 3}` : ''}`, skip: skip?.reason })}`
   })
   const browser = block ? browserCleanupOf(dataDir, taskDir, block.heading) : null
-  return { language, text: TEXT[language], receipted, noRuntime, notReady, unreadable, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals, browser }
+  // Stage 11 (K11.6): the maker's own items of this run, verbatim; a run with no maker stop has no category (an old run's digest stays as it was).
+  const made = makerItems(dataDir, basename(taskDir), scope.since)
+  const maker = made.items.map((item) => TEXT[language].makerLine({ stage: item.stage, kind: TEXT[language].makerKinds[item.kind] ?? item.kind, text: item.text }))
+  return { language, makered: made.stops > 0, maker, text: TEXT[language], receipted, noRuntime, notReady, unreadable, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals, browser }
 }
 
 const browserRecord = (taskDir) => join('browser-cleanup', basename(baselineName(taskDir)))
@@ -313,6 +325,7 @@ function renderFull(d) {
   }
   out.push('', text.accepted(d.accepted.length), ...(d.accepted.length ? d.accepted : [text.none]))
   if (d.noRuntime.length) out.push('', text.noRuntime(d.noRuntime.length), ...d.noRuntime)
+  if (d.maker.length) out.push('', text.maker(d.maker.length), ...d.maker)
   if (d.browser) out.push('', text.browser(d.browser))
   if (d.scope.sameDay) out.push('', text.sameDay(d.scope.sameDay, d.scope.date))
   return out.join('\n')
@@ -357,6 +370,8 @@ function renderShort(d, path, unwritten = null) {
   else empty.push(text.labels.accepted)
   if (d.noRuntime.length) out.push(text.noRuntime(d.noRuntime.length))
   else if (d.receipted) empty.push(text.labels.noRuntime)
+  if (d.maker.length) out.push(text.makerShort(d.maker.length))
+  else if (d.makered) empty.push(text.labels.maker)
   if (empty.length) out.push(text.noneOf(empty))
   if (d.browser) out.push(text.browser(d.browser))
   if (d.scope.sameDay) out.push(text.sameDay(d.scope.sameDay, d.scope.date))
