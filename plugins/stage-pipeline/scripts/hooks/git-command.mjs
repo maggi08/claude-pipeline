@@ -31,6 +31,49 @@ export function gitInvocations(line, cwd) {
   return found
 }
 
+const WRAPPER_WORDS = ['command', 'time', 'nice', 'nohup', 'env']
+const INDEX_ENV = /^GIT_INDEX_FILE=/
+
+/**
+ * What else a command does to the git index besides `git add` (K11a.2, S-1b): the maker receipt judges the blob a commit takes from the index or from the working tree
+ * of the paths the command itself stages with `add`, so a path staged by another subcommand — `git update-index --add x && git commit` — slips past it. Returns short
+ * descriptions (`update-index`, `GIT_INDEX_FILE=`), `[]` for a command that touches the index only through `add` and `commit`.
+ * Covers `update-index`, `read-tree`, `mv`, `rm`, `reset`, `apply --cached/--index`, `checkout … -- <path>`, `restore --staged/--source`, and a `GIT_INDEX_FILE=` prefix or export.
+ */
+export function indexChangers(line) {
+  const found = []
+  for (const words of commandSegments(line)) {
+    let i = 0
+    for (;;) {
+      while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) {
+        if (INDEX_ENV.test(words[i])) found.push('GIT_INDEX_FILE=')
+        i++
+      }
+      if (words[i] === 'export' || words[i] === 'env') {
+        i++
+        continue
+      }
+      if (WRAPPER_WORDS.includes(words[i])) i++
+      else break
+    }
+    const name = words[i]
+    if (name !== 'git' && !name?.endsWith('/git')) continue
+    i++
+    while (i < words.length && words[i].startsWith('-')) {
+      if (['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'].includes(words[i])) i++
+      i++
+    }
+    const sub = words[i]
+    const args = words.slice(i + 1)
+    const flag = (...names) => args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)))
+    if (['update-index', 'read-tree', 'mv', 'rm', 'reset'].includes(sub)) found.push(sub)
+    else if (sub === 'apply' && flag('--cached', '--index')) found.push('apply --cached')
+    else if (sub === 'checkout' && args.includes('--')) found.push('checkout -- <path>')
+    else if (sub === 'restore' && flag('--staged', '-S', '--source', '-s')) found.push('restore --staged')
+  }
+  return [...new Set(found)]
+}
+
 // Options whose value is a separate word: `-m "text"` is not a commit path.
 const COMMIT_VALUE_SHORT = new Set(['m', 'F', 'c', 'C', 't'])
 const COMMIT_VALUE_LONG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--author', '--date', '--cleanup', '--template', '--trailer', '--pathspec-from-file'])

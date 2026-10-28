@@ -6,24 +6,17 @@
  * the next action never is.
  */
 import { spawnSync } from 'node:child_process'
-import { realpathSync, statSync } from 'node:fs'
+import { statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { CLOSED_STAGE, stageBlocksOf, statusBracket } from './markers.mjs'
 import { findingCounts, lastForceBlock, newReports, openBlockers, readTaskFile, reportChecker, reportLedgerViolations } from './journal-check.mjs'
-import { dirtyBlobs, isCodeFile, lastMakerBlobs, readMakerRecords, recordBlobs } from './maker.mjs'
+import { dirtyBlobs, isCodeFile, lastMakerBlobs, readMakerRecords, real, recordBlobs } from './maker.mjs'
 import { readReceipts } from './receipts.mjs'
 
 export const OUTPUT_MAX = 10000
 const LIST_MAX = 6
 const BLOCKERS_MAX = 8
 const LINE_MAX = 300
-
-const real = (path) => {
-  try {
-    return realpathSync(path)
-  } catch {
-    return path
-  }
-}
 
 const cut = (text, max = LINE_MAX) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 const listed = (items, max = LIST_MAX) => items.slice(0, max).join(', ') + (items.length > max ? `, +${items.length - max} more` : '')
@@ -33,16 +26,23 @@ function git(cwd, args) {
   return run.status === 0 ? run.stdout.trim() : null
 }
 
-/** The stages of the journal with the whole text of their status bracket (`in progress`, `todo — blocked: B2`): `[{ heading, status }]`. */
+/** The stages of the journal with the whole text of their status bracket (`in progress`, `todo — blocked: B2`): `[{ heading, status, done }]`. Built on `stageBlocksOf`, so the Russian stage headings read like the English ones. */
 export function stageList(stages) {
-  return [...stages.matchAll(/^###\s+(.+?)\s*\[status:\s*([^\]]*)\].*$/gim)].map((found) => ({ heading: found[1].trim(), status: found[2].trim().toLowerCase() }))
+  const out = []
+  for (const { block } of stageBlocksOf(stages)) {
+    const line = block.split('\n')[0]
+    const bracket = statusBracket(line)
+    if (!bracket) continue
+    const heading = line.slice(0, bracket.start).replace(/^#+[ \t]*/, '').trim()
+    if (heading) out.push({ heading, status: line.slice(bracket.start + '[status:'.length, bracket.end - 1).trim().toLowerCase(), done: CLOSED_STAGE.test(line) })
+  }
+  return out
 }
 
-// `blocked` anywhere in the bracket is blocked (`todo — blocked: B2`): the stage stays without code and is not the next one. The rest is read by its first word, like OPEN_STATUS.
+// `blocked` anywhere in the bracket is blocked (`todo — blocked: B2`): the stage stays without code and is not the next one. Done and cancelled are `CLOSED_STAGE`'s.
 const BLOCKED = /\bblocked\b/
-const DONE = /^(?:done|ready|completed|skipped|cancel+ed|dropped)\b/
 const ACTIVE = /^in[-\s]?progress\b/
-const closed = (stage) => BLOCKED.test(stage.status) || DONE.test(stage.status)
+const closed = (stage) => BLOCKED.test(stage.status) || stage.done
 const active = (stage) => !BLOCKED.test(stage.status) && ACTIVE.test(stage.status)
 
 /** The state the next action derives from. Pure over its inputs apart from the reads; `null` when there is nothing to say. */

@@ -159,6 +159,37 @@ export function legacyDataDir(dataDir) {
   return basename(dataDir).startsWith('stage-pipeline-') ? join(dirname(dataDir), 'stage-pipeline') : null
 }
 
+/**
+ * The text of the plugin data directory a command or a file path names, else null: the directory itself (as given, real, legacy), its `plugins/data/stage-pipeline…` form,
+ * `CLAUDE_PLUGIN_DATA`. Shared by force-guard (Bash) and journal-gate (Edit / Write / MultiEdit): those files are written by the hooks only (K11a.1, R-2).
+ */
+export function namesDataDir(text) {
+  const dirs = []
+  try {
+    const dir = pluginDataDir().replace(/[/\\]+$/, '')
+    for (const candidate of [dir, legacyDataDir(dir)]) {
+      if (!candidate) continue
+      dirs.push(candidate)
+      try {
+        dirs.push(realpathSync(candidate))
+      } catch {
+        // not there yet
+      }
+    }
+  } catch {
+    // no resolvable directory: the generic forms below still apply
+  }
+  for (const dir of dirs) if (dir.length > 8 && text.includes(dir)) return dir
+  const generic = /plugins\/data\/stage-pipeline[\w.-]*|CLAUDE_PLUGIN_DATA/.exec(text)
+  return generic ? generic[0] : null
+}
+
+/** The denial text for a call that names the plugin data directory in a force run. */
+export const dataDirReason = (ticket, dir) =>
+  `stage-pipeline: force run ${ticket} — the command names the plugin data directory (\`${dir}\`). The maker records, plan snapshots and receipts there are written by the hooks only; ` +
+  'a record written by hand stands in for a stage-implement run that did not happen. A rejection is not a reason to look for a workaround (stage-force, Step 2): ' +
+  'if the state there is wrong, put it into `Blockers:` of the Force run block and carry on with what does not depend on it.'
+
 /** The texts of a data file in the main directory and in the legacy one, main first; a missing file is skipped. */
 export function readDataFiles(dataDir, ...path) {
   return [dataDir, legacyDataDir(dataDir)].flatMap((dir) => {
@@ -169,6 +200,24 @@ export function readDataFiles(dataDir, ...path) {
       return []
     }
   })
+}
+
+/**
+ * The records of a JSONL data file, oldest first (the legacy directory's lines before the main one's): only lines that parse to an object. A blank line, a broken one, `null`,
+ * a number or an array is skipped, never a crash: the files under the plugin data directory are written by the hooks, but a line that is not an object must not take a hook down.
+ */
+export function readDataJsonl(dataDir, ...path) {
+  return readDataFiles(dataDir, ...path)
+    .reverse()
+    .flatMap((text) => text.split('\n'))
+    .flatMap((line) => {
+      try {
+        const record = line.trim() ? JSON.parse(line) : null
+        return record && typeof record === 'object' && !Array.isArray(record) ? [record] : []
+      } catch {
+        return []
+      }
+    })
 }
 
 const registryPath = () => join(pluginDataDir(), 'task-dirs.json')

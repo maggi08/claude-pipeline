@@ -14,14 +14,15 @@
  * The rules apply only to a Force block that is new by two first-sight gates (`makerRun`, D7): the 0.18 receipts gate (`receiptRun`) and stage 10's plan snapshot
  * (`plan-check.mjs`, `takePlanSnapshot`): a Force block the snapshot saw when this version first looked at the plan belongs to a run already going, and keeps the rules
  * it started with. Beyond the gate every rule fails open where the record is missing: a repo with no spawn snapshot in the run, a run whose spawns left no stop record
- * (a session that loaded hooks.json before the release has no maker-guard), a session with no spawn snapshot.
+ * (a session that loaded hooks.json before the release has no maker-guard), a session with no spawn snapshot, a spawn whose snapshot did not finish (K11a.5).
+ * The records are written by the hooks only (K11a.1): a line of a data file that is not an object is skipped, and force-guard denies a Bash command that names the data directory.
  * A maker that died before its stop leaves its baseline open for the ticket (`maker/open/<ticket>.json`); the next spawn on the same HEAD starts from it, so the
  * continuation's change set holds the dead maker's files too. A task over two repos snapshots the cwd repo and the sibling repos the config names (`others`).
  */
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, isAbsolute, resolve, sep } from 'node:path'
-import { readDataFiles } from './hooks/pipeline-state.mjs'
+import { readDataFiles, readDataJsonl } from './hooks/pipeline-state.mjs'
 import { forceKey } from './markers.mjs'
 import { siblingRepos, takePlanSnapshot } from './plan-check.mjs'
 import { receiptRun } from './receipts.mjs'
@@ -45,12 +46,19 @@ const openPath = (dataDir, ticket) => join(dataDir, 'maker', 'open', `${safe(tic
 const recordsName = (ticket) => join('maker', `${safe(ticket)}.jsonl`)
 const spawnsName = (ticket) => join('maker', `${safe(ticket ?? '_')}.spawns.jsonl`)
 
-function git(cwd, args, { input, timeout = 3000 } = {}) {
-  const run = spawnSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', input, timeout, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] })
+/** One git call; `null` on any failure, a timeout included. `deadline` (ms epoch) caps the call by what is left of an overall budget: nothing is left — no call. */
+function git(cwd, args, { input, timeout = 3000, deadline = null } = {}) {
+  let limit = timeout
+  if (deadline !== null) {
+    limit = Math.min(timeout, deadline - Date.now())
+    if (limit < 50) return null
+  }
+  const run = spawnSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', input, timeout: limit, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] })
   return run.status === 0 ? run.stdout : null
 }
 
-const real = (path) => {
+/** The real path (symlinks resolved: `/var` → `/private/var`), the path itself when it does not exist. Shared with the resume point. */
+export const real = (path) => {
   try {
     return realpathSync(path)
   } catch {
@@ -76,15 +84,25 @@ function revBlobs(root, rev, paths) {
   return out
 }
 
-/** Working-tree blob hashes of dirty or untracked paths: `Map<path, blob | null>` (null — deleted). `null` when the tree has more than `DIRTY_MAX` such paths. */
-export function dirtyBlobs(root) {
-  const status = git(root, ['status', '--porcelain', '-z', '--untracked-files=all', '--no-renames'])
-  if (status === null) return new Map()
-  const paths = status.split('\0').filter((entry) => entry.length > 3).map((entry) => entry.slice(3))
-  if (paths.length > DIRTY_MAX) return null
+/** K11a.5: an untracked file over this size is not hashed and not judged (a DB dump, a recording, a .har). */
+const UNTRACKED_MAX_BYTES = 5 * 1024 * 1024
+/** K11a.5: the budget of the spawn side, well under agent-guard's 5 s hook timeout. */
+const SNAPSHOT_BUDGET_MS = 3000
+
+/**
+ * Working-tree blob hashes of dirty or untracked paths: `Map<path, blob | null>` (null — deleted). `null` is "unknown", never "clean": the tree has more than `DIRTY_MAX`
+ * such paths, or `git status` / `hash-object` failed or ran past the deadline (K11a.5, S-2). Files that are not regular by lstat (symlinks, FIFOs, devices) and untracked
+ * files over `UNTRACKED_MAX_BYTES` are left out: they are neither hashed nor judged.
+ */
+export function dirtyBlobs(root, { deadline = Date.now() + 8000 } = {}) {
+  const status = git(root, ['status', '--porcelain', '-z', '--untracked-files=all', '--no-renames'], { deadline })
+  if (status === null) return null
+  const entries = status.split('\0').filter((entry) => entry.length > 3)
+  if (entries.length > DIRTY_MAX) return null
   const map = new Map()
   const present = []
-  for (const path of paths) {
+  for (const entry of entries) {
+    const path = entry.slice(3)
     let stat = null
     try {
       stat = lstatSync(join(root, path))
@@ -92,11 +110,14 @@ export function dirtyBlobs(root) {
       // gone from the working tree: a deletion
     }
     if (!stat) map.set(path, null)
-    else if ((stat.isFile() || stat.isSymbolicLink()) && !path.includes('\n')) present.push(path)
+    else if (stat.isFile() && !path.includes('\n') && !(entry.startsWith('??') && stat.size > UNTRACKED_MAX_BYTES)) present.push(path)
   }
   if (present.length) {
-    const hashed = (git(root, ['hash-object', '--stdin-paths'], { input: `${present.join('\n')}\n`, timeout: 6000 }) ?? '').split('\n').filter(Boolean)
-    present.forEach((path, index) => hashed[index] && map.set(path, hashed[index]))
+    const answer = git(root, ['hash-object', '--stdin-paths'], { input: `${present.join('\n')}\n`, timeout: 60_000, deadline })
+    if (answer === null) return null
+    const hashed = answer.split('\n').filter(Boolean)
+    if (hashed.length !== present.length) return null
+    present.forEach((path, index) => map.set(path, hashed[index]))
   }
   return map
 }
@@ -145,24 +166,31 @@ function siblingRoots(config, primary) {
  * K11.1: the state of the tree at the spawn of a maker, for the stop to compare against. Never throws. Returns the snapshot, or null when nothing was recorded.
  * The cwd repo is the primary one; the sibling repos the config names (`config`) are snapshotted too (`others`). When an earlier maker of the ticket never stopped and
  * HEAD has not moved, its baseline is carried over: the files the dead maker changed belong to the change set of the maker that continues its work.
+ * K11a.5: the spawn line is written BEFORE the tree is hashed, marked `pending`, and a `done` line follows only when every repo's snapshot finished inside `SNAPSHOT_BUDGET_MS`.
+ * A spawn left `pending` (the hook was killed, a `git status` or `hash-object` failed or ran past the budget) makes the commit rule fail open for the run: the rule cannot
+ * tell the maker's files from the others without the baseline, and a missing proof is not a reason to deny the maker's own code.
  */
 export function takeSnapshot(dataDir, { session, cwd, ticket = null, stage = null, taskDir = null, typeCheck = false, config = null }) {
   try {
     if (!session) return null
-    const top = git(cwd, ['rev-parse', '--show-toplevel'])?.trim()
+    const deadline = Date.now() + SNAPSHOT_BUDGET_MS
+    const top = git(cwd, ['rev-parse', '--show-toplevel'], { deadline })?.trim()
     if (!top) return null
     const root = real(top)
+    const roots = [root, ...siblingRoots(config, root)]
     const open = readOpen(dataDir, ticket)
     const at = new Date().toISOString()
+    mkdirSync(join(dataDir, 'maker'), { recursive: true })
+    appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at, session, roots, pending: true })}\n`)
     const one = (repoRoot) => {
-      const head = git(repoRoot, ['rev-parse', 'HEAD'])?.trim() ?? null
-      const branch = git(repoRoot, ['symbolic-ref', '--short', '-q', 'HEAD'])?.trim() ?? null
+      const head = git(repoRoot, ['rev-parse', 'HEAD'], { deadline })?.trim() ?? null
+      const branch = git(repoRoot, ['symbolic-ref', '--short', '-q', 'HEAD'], { deadline })?.trim() ?? null
       const carried = open[repoRoot]
       if (carried && carried.head === head && carried.branch === branch && carried.blobs && typeof carried.blobs === 'object') return { root: repoRoot, head, branch, blobs: carried.blobs, at: carried.at ?? at }
-      const blobs = dirtyBlobs(repoRoot)
+      const blobs = dirtyBlobs(repoRoot, { deadline })
       return { root: repoRoot, head, branch, blobs: blobs ? Object.fromEntries(blobs) : null, at }
     }
-    const [primary, ...others] = [root, ...siblingRoots(config, root)].map(one)
+    const [primary, ...others] = roots.map(one)
     let taskRel = null
     if (taskDir) {
       const rel = relative(root, real(taskDir)).split(sep).join('/')
@@ -173,7 +201,7 @@ export function takeSnapshot(dataDir, { session, cwd, ticket = null, stage = nul
     writeFileSync(spawnPath(dataDir, session), JSON.stringify(snapshot))
     mkdirSync(join(dataDir, 'maker', 'open'), { recursive: true })
     writeFileSync(openPath(dataDir, ticket), JSON.stringify(Object.fromEntries([primary, ...others].map(({ root: key, head, branch, blobs, at: since }) => [key, { head, branch, blobs, at: since }]))))
-    appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at, session, roots: [primary.root, ...others.map((repo) => repo.root)] })}\n`)
+    if ([primary, ...others].every((repo) => repo.blobs)) appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at, session, roots, done: true })}\n`)
     return snapshot
   } catch {
     return null
@@ -184,19 +212,9 @@ export function readSnapshot(dataDir, session) {
   return readJson(dataDir, 'maker', 'spawn', `${safe(session)}.json`)
 }
 
-/** The spawns of a ticket since a moment (ms), oldest first: `[{ at, session, roots }]`. */
+/** The spawn lines of a ticket since a moment (ms), oldest first: `{ at, session, roots, pending?, done? }` (`takeSnapshot` writes `pending` first and `done` when it finished). */
 function readSpawns(dataDir, ticket, sinceMs = 0) {
-  return readDataFiles(dataDir, spawnsName(ticket))
-    .reverse()
-    .flatMap((text) => text.split('\n'))
-    .flatMap((line) => {
-      try {
-        const spawn = line.trim() ? JSON.parse(line) : null
-        return spawn && (Date.parse(spawn.at) || 0) >= sinceMs && Array.isArray(spawn.roots) ? [spawn] : []
-      } catch {
-        return []
-      }
-    })
+  return readDataJsonl(dataDir, spawnsName(ticket)).filter((spawn) => (Date.parse(spawn.at) || 0) >= sinceMs && Array.isArray(spawn.roots))
 }
 
 const inTask = (snapshot, path) => Boolean(snapshot.taskRel) && (path === snapshot.taskRel || path.startsWith(`${snapshot.taskRel}/`))
@@ -244,14 +262,30 @@ const SECTIONS = [
 
 /** The section a line opens: `{ section, rest }` (rest — the text after the colon), else null. Labels stand at the start of a line; indented lines are the section's own. */
 function openedBy(line) {
-  const found = /^ {0,1}(?<bullet>[-*]\s+)?[`*_]*(?<label>[^\n:]*?)[`*_]*:[`*_]*(?<rest>.*)$/.exec(line)
-  if (!found) return null
-  const { bullet, label, rest } = found.groups
+  // Linear by construction (S-3): the label ends at the first colon, and the marker runs are stripped by index, never by a regex that backtracks over them.
+  let start = 0
+  let bullet = false
+  if (line[0] === ' ') start = 1
+  if ((line[start] === '-' || line[start] === '*') && /\s/.test(line[start + 1] ?? '')) {
+    bullet = true
+    start++
+    while (start < line.length && /\s/.test(line[start])) start++
+  }
+  const colon = line.indexOf(':', start)
+  if (colon === -1 || colon - start > LABEL_SCAN_MAX) return null
+  const isMarker = (char) => char === '`' || char === '*' || char === '_'
+  let from = start
+  let to = colon
+  while (from < to && isMarker(line[from])) from++
+  while (to > from && isMarker(line[to - 1])) to--
+  const label = line.slice(from, to).trim()
+  // the label is the head of the line: `Changed (worktree x, all uncommitted):`, `lint / type_check / floor-guard:`, `Not done / blocker:`; not a sentence that happens to contain a colon later
+  if (label.length > 90) return null
+  let restFrom = colon + 1
+  while (restFrom < line.length && isMarker(line[restFrom])) restFrom++
   for (const section of SECTIONS) {
-    if (!section.label.test(label.trim()) || (bullet && !section.bulleted)) continue
-    // the label is the head of the line: `Changed (worktree x, all uncommitted):`, `lint / type_check / floor-guard:`, `Not done / blocker:`; not a sentence that happens to contain a colon later
-    if (label.trim().length > 90) continue
-    return { section, rest }
+    if (!section.label.test(label) || (bullet && !section.bulleted)) continue
+    return { section, rest: line.slice(restFrom) }
   }
   return null
 }
@@ -272,6 +306,8 @@ export function parseHandback(text) {
   return { sections, length: String(text).length }
 }
 
+/** Where a label's colon can stand: a label is at most 90 characters, the rest is the bullet and the markers around it. */
+const LABEL_SCAN_MAX = 200
 const PATH_TOKEN = /^[\w@.+\-/~[\]()]+$/
 
 /**
@@ -287,7 +323,8 @@ export function namedPaths(section, root, others = []) {
   for (const entry of entries) {
     // only the top level of the list: a nested line is a note on its item
     if (/^\s{2,}\S/.test(entry) && entry !== lines[0]) continue
-    const words = entry.trim().replace(/^[-*]\s+/, '').split(/\s+/).map((word) => word.replace(/^`|`[.,;:]*$|[.,;:]+$/g, ''))
+    // a word of a path is short: a longer one names nothing (and is not fed to the trailing-punctuation regex, which backtracks over a long run)
+    const words = entry.trim().replace(/^[-*]\s+/, '').split(/\s+/, 3).map((word) => (word.length > 400 ? '' : word.replace(/^`|`[.,;:]*$|[.,;:]+$/g, '')))
     let word = words[0] ?? ''
     if (/^[AMD]$/.test(word) && words[1]) word = words[1]
     if (!word || !PATH_TOKEN.test(word) || !/[/.]/.test(word) || /^\d+(?:\.\d+)*$/.test(word)) continue
@@ -332,6 +369,22 @@ export function readHandback(transcript) {
   return handback ?? lastText
 }
 
+/**
+ * K11a.4: the paths the maker disowns — `not mine: <path>` lines of `Not done / blocker:` (several paths may follow, comma-separated). A file that changed while the maker ran
+ * but that it did not write (the orchestrator's edit in the shared tree) is listed there instead of in `Changed:`. Such a path is neither demanded in `Changed:` nor recorded as
+ * the maker's blob, so the commit rule still judges it as code nobody made. Keys as in `namedPaths`.
+ */
+export function notMinePaths(section, root, others = []) {
+  const out = new Set()
+  for (const line of String(section ?? '').split('\n')) {
+    const at = line.toLowerCase().indexOf('not mine:')
+    if (at === -1) continue
+    const entries = line.slice(at + 'not mine:'.length).split(/[;,]/).map((entry) => `- ${entry.trim()}`)
+    for (const path of namedPaths(entries.join('\n'), root, others)) out.add(path)
+  }
+  return out
+}
+
 /** What is wrong with a hand-back, as lines for the maker: missing sections, the length, the numbers of the checks line, the change set. `[]` — a valid one. */
 export function handbackProblems(text, snapshot, changes) {
   const { sections, length } = parseHandback(text)
@@ -344,10 +397,11 @@ export function handbackProblems(text, snapshot, changes) {
     const named = namedPaths(sections.changed, snapshot.root, (snapshot.others ?? []).map((repo) => repo.root))
     const actual = new Set(changes.keys())
     const notChanged = [...named].filter((path) => !actual.has(path) && !(snapshot.taskRel && (path === snapshot.taskRel || path.startsWith(`${snapshot.taskRel}/`))))
-    const unnamed = [...actual].filter((path) => !named.has(path))
+    const disowned = notMinePaths(sections.notdone, snapshot.root, (snapshot.others ?? []).map((repo) => repo.root))
+    const unnamed = [...actual].filter((path) => !named.has(path) && !disowned.has(path))
     const shown = (list) => `${list.slice(0, 8).join(', ')}${list.length > 8 ? ` and ${list.length - 8} more` : ''}`
     if (notChanged.length) problems.push(`\`Changed:\` names file(s) that did not change since the spawn: ${shown(notChanged)}`)
-    if (unnamed.length) problems.push(`\`Changed:\` does not name file(s) that changed: ${shown(unnamed)}`)
+    if (unnamed.length) problems.push(`\`Changed:\` does not name file(s) that changed: ${shown(unnamed)} — name a file only if you wrote it; one you did not write goes under \`Not done / blocker:\` as \`not mine: <path>\``)
   }
   return problems
 }
@@ -373,7 +427,6 @@ export function setBlocks(dataDir, key, n) {
 // ── the items and the receipts ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const NOTHING = /^(?:none|nothing|n\/a|no|—|-)[\s.]*$/i
-export const ITEM_KINDS = ['product', 'notdone', 'acs', 'unfixed']
 
 /** The items of a section: one per top-level list item with its notes, else the whole text; "none" is no item. Verbatim, capped at `ITEM_MAX` characters. */
 export function sectionItems(text) {
@@ -382,7 +435,7 @@ export function sectionItems(text) {
   for (const line of lines) {
     if (!line.trim()) continue
     if (/^\s{0,1}(?:[-*]|\d+\.)\s+\S/.test(line) || !items.length) items.push(line.trim())
-    else items[items.length - 1] += `\n${line.replace(/\s+$/, '')}`
+    else items[items.length - 1] += `\n${line.trimEnd()}`
   }
   return items.filter((item) => !NOTHING.test(item.replace(/^(?:[-*]|\d+\.)\s+/, ''))).map((item) => (item.length > ITEM_MAX ? `${item.slice(0, ITEM_MAX)}…` : item))
 }
@@ -391,20 +444,31 @@ export function sectionItems(text) {
 export function storeStop(dataDir, snapshot, text, changes, { unfixed = null, agent = null } = {}) {
   try {
     const { sections } = parseHandback(text ?? '')
+    const rootsOf = (snapshot.others ?? []).map((repo) => repo.root)
+    // R-1: a hand-back given up on is not an authority over the tree. Only the paths its `Changed:` names are recorded as the maker's; a maker that never complies
+    // cannot launder the orchestrator's edits into receipts. The paths left out are named in the digest item.
+    const named = unfixed ? namedPaths(sections.changed, snapshot.root, rootsOf) : null
+    const left = []
     const items = [
       ...sectionItems(sections.product).map((item) => ({ kind: 'product', text: item })),
       ...sectionItems(sections.notdone).map((item) => ({ kind: 'notdone', text: item })),
       ...sectionItems(sections.acs).map((item) => ({ kind: 'acs', text: item })),
-      ...(unfixed ? [{ kind: 'unfixed', text: `hand-back not fixed: ${unfixed}` }] : []),
     ]
     // the cwd repo's paths are repo-relative, a sibling repo's are absolute (`changeSet`): the blobs are stored per repo
     const mine = {}
     const others = (snapshot.others ?? []).map((repo) => ({ root: repo.root, branch: repo.branch, blobs: {} }))
+    const disowned = notMinePaths(sections.notdone, snapshot.root, rootsOf)
     for (const [path, blob] of changes ?? []) {
+      if (disowned.has(path)) continue
+      if (named && !named.has(path)) {
+        left.push(path)
+        continue
+      }
       const owner = isAbsolute(path) ? others.find((repo) => path.startsWith(`${repo.root}${sep}`)) : null
       if (owner) owner.blobs[relative(owner.root, path).split(sep).join('/')] = blob
       else if (!isAbsolute(path)) mine[path] = blob
     }
+    if (unfixed) items.push({ kind: 'unfixed', text: `hand-back not fixed: ${unfixed}${left.length ? ` — not recorded as the maker's (not named in \`Changed:\`): ${left.slice(0, 8).join(', ')}${left.length > 8 ? ` and ${left.length - 8} more` : ''}` : ''}` })
     const record = { at: new Date().toISOString(), session: snapshot.session, agent, ticket: snapshot.ticket, stage: snapshot.stage, root: snapshot.root, branch: snapshot.branch, blobs: mine, others, items }
     mkdirSync(join(dataDir, 'maker'), { recursive: true })
     appendFileSync(join(dataDir, recordsName(snapshot.ticket ?? '_')), `${JSON.stringify(record)}\n`)
@@ -416,30 +480,23 @@ export function storeStop(dataDir, snapshot, text, changes, { unfixed = null, ag
   }
 }
 
-/** Every maker record of a ticket, oldest first. */
+/** Every maker record of a ticket, oldest first (K11a.1: a line that is not an object is skipped). */
 export function readMakerRecords(dataDir, ticket) {
-  return readDataFiles(dataDir, recordsName(ticket))
-    .reverse()
-    .flatMap((text) => text.split('\n'))
-    .flatMap((line) => {
-      try {
-        return line.trim() ? [JSON.parse(line)] : []
-      } catch {
-        return []
-      }
-    })
+  return readDataJsonl(dataDir, recordsName(ticket))
 }
 
 /** For the run digest: the maker stops of a ticket since a moment (ms) and their items, `{ stops, items: [{ at, stage, kind, text }] }`. */
 export function makerItems(dataDir, ticket, sinceMs = 0) {
   const records = readMakerRecords(dataDir, ticket).filter((record) => (Date.parse(record.at) || 0) >= sinceMs)
-  return { stops: records.length, items: records.flatMap((record) => (record.items ?? []).map((item) => ({ at: record.at, stage: record.stage ?? null, kind: item.kind, text: item.text }))) }
+  return { stops: records.length, items: records.flatMap((record) => (Array.isArray(record.items) ? record.items : []).filter((item) => item && typeof item === 'object').map((item) => ({ at: record.at, stage: record.stage ?? null, kind: item.kind, text: item.text }))) }
 }
 
 /** The blobs a record holds for a repo (`root`), or null when the record is not about that repo. */
 export function recordBlobs(record, root) {
-  if (record.root === root) return record.blobs ?? {}
-  return (record.others ?? []).find((repo) => repo.root === root)?.blobs ?? null
+  const plain = (blobs) => (blobs && typeof blobs === 'object' && !Array.isArray(blobs) ? blobs : null)
+  if (record.root === root) return plain(record.blobs) ?? {}
+  const others = Array.isArray(record.others) ? record.others : []
+  return plain(others.find((repo) => repo && repo.root === root)?.blobs)
 }
 
 /** The last blob a maker stop recorded for each path of a repo: `Map<path, blob | null>`. */
@@ -482,6 +539,30 @@ function indexBlobs(root) {
 }
 
 /**
+ * Whether the maker rules judge a force commit in `worktree`, and for which run: `{ run, root }`, else null. No Force block, a block the first-sight gates call old (`makerRun`),
+ * a repo no maker was spawned in, a spawn whose snapshot never finished (K11a.5), a run whose spawns left no stop record, or `STAGE_PIPELINE_MAKER_RECEIPTS=off`: null.
+ */
+function makerGate({ dataDir, taskDir, ticket, worktree }) {
+  if (process.env.STAGE_PIPELINE_MAKER_RECEIPTS === 'off') return null
+  const run = makerRun(dataDir, taskDir)
+  if (!run) return null
+  const root = real(worktree)
+  const lines = readSpawns(dataDir, ticket, run.start)
+  const finished = new Set(lines.filter((line) => line.done).map((line) => line.session))
+  const spawns = lines.filter((line) => !line.done)
+  if (spawns.length) {
+    if (!spawns.some((spawn) => spawn.roots.includes(root))) return null
+    // K11a.5: a spawn whose snapshot never finished (no `done` line: killed, timed out, a failed git call) leaves no baseline to judge against — the rule fails open for the run
+    if (spawns.some((spawn) => spawn.pending && !finished.has(spawn.session) && spawn.roots.includes(root))) return null
+    if (!readMakerRecords(dataDir, ticket).some((record) => (Date.parse(record.at) || 0) >= run.start)) return null
+  }
+  return { run, root }
+}
+
+/** K11a.2: whether a force commit command that changes the index other than by `git add` is judged by the maker rules (the run is new and a maker was spawned in the repo). */
+export const makerRuleApplies = (args) => makerGate(args) !== null
+
+/**
  * K11.5: the code paths of a force commit that the maker did not write. `changed` — the files of the commit (paths from the worktree root). `staged` — what the command
  * itself stages before it commits: `null` for the whole tree (`git add -A`), else a Set of paths (`git add x`, `commit -a`, `commit x`; empty for a plain `git commit`).
  * The blob judged is the one that will be committed: the working-tree blob of a staged path, the index blob of the rest (a path the index leaves as HEAD is not committed
@@ -490,29 +571,38 @@ function indexBlobs(root) {
  * fixtures of this rule). A path passes when its committed blob equals the last blob a maker stop recorded for it, or when it is a deletion the Force block names.
  */
 export function commitMakerVerdict({ dataDir, taskDir, ticket, worktree, changed, staged = null }) {
-  if (process.env.STAGE_PIPELINE_MAKER_RECEIPTS === 'off') return null
-  const run = makerRun(dataDir, taskDir)
-  if (!run) return null
-  const root = real(worktree)
-  const spawns = readSpawns(dataDir, ticket, run.start)
-  if (spawns.length) {
-    if (!spawns.some((spawn) => spawn.roots.includes(root))) return null
-    if (!readMakerRecords(dataDir, ticket).some((record) => (Date.parse(record.at) || 0) >= run.start)) return null
-  }
+  const gate = makerGate({ dataDir, taskDir, ticket, worktree })
+  if (!gate) return null
+  const { run, root } = gate
   let taskRel = null
   try {
     taskRel = relative(root, real(taskDir)).split(sep).join('/')
   } catch {
     // no task directory in the repo
   }
-  const candidates = changed.filter((path) => isCodeFile(path) && !(taskRel && !taskRel.startsWith('..') && (path === taskRel || path.startsWith(`${taskRel}/`))))
+  const index = indexBlobs(root)
+  // K11a.5: what the snapshot does not hash it does not judge either — a file that is not regular by lstat (a symlink, a FIFO) and an untracked file over the size cap
+  const judgeable = (path) => {
+    try {
+      const stat = lstatSync(join(root, path))
+      return stat.isFile() && !(stat.size > UNTRACKED_MAX_BYTES && !index.has(path))
+    } catch {
+      return true // gone: a deletion
+    }
+  }
+  const candidates = changed.filter((path) => isCodeFile(path) && !(taskRel && !taskRel.startsWith('..') && (path === taskRel || path.startsWith(`${taskRel}/`))) && judgeable(path))
   if (!candidates.length) return []
   const recorded = lastMakerBlobs(dataDir, ticket, root)
-  const index = indexBlobs(root)
   const cached = new Set((git(root, ['diff', '--cached', '--name-only', '--no-renames', '-z']) ?? '').split('\0').filter(Boolean))
   const stagedHere = (path) => staged === null || staged.has(path)
   const present = candidates.filter((path) => stagedHere(path) && !path.includes('\n') && existsSync(join(root, path)))
-  const hashed = present.length ? (git(root, ['hash-object', '--stdin-paths'], { input: `${present.join('\n')}\n`, timeout: 10_000 }) ?? '').split('\n').filter(Boolean) : []
+  let hashed = []
+  if (present.length) {
+    // a hash that failed or timed out is not "every path is foreign": the rule cannot judge, and fails open (S-2)
+    const answer = git(root, ['hash-object', '--stdin-paths'], { input: `${present.join('\n')}\n`, timeout: 10_000 })
+    hashed = (answer ?? '').split('\n').filter(Boolean)
+    if (answer === null || hashed.length !== present.length) return null
+  }
   const working = new Map(present.map((path, position) => [path, hashed[position] ?? null]))
   const offending = []
   for (const path of candidates) {
@@ -525,10 +615,4 @@ export function commitMakerVerdict({ dataDir, taskDir, ticket, worktree, changed
     offending.push(path)
   }
   return offending
-}
-
-/** The spawn side for agent-guard: the stage out of the prompt (`Stage: 11`, `Stage 11`, `stage number: 2c`), else null. */
-export function stageOf(prompt) {
-  const found = /\b[Ss]tage(?:\s+number)?\s*[:#]?\s*([0-9]+[a-z]?|[A-Z][0-9]*)\b/.exec(String(prompt ?? ''))
-  return found ? found[1] : null
 }

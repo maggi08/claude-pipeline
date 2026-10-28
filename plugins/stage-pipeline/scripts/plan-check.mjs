@@ -58,7 +58,7 @@ import { pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/
 
 const AC_START = /^[ \t]*(?:[-*][ \t]*|\|[ \t]*)?(?:\[[ xX]\][ \t]*)?(?:✅[ \t]*)?\**`?(AC-[\w.]*\w)`?\**(?=[\s:.,—–|)-]|$)/
 const VERIFIER_TAG = /\[(?:verify|live):/i
-const VERIFY_TAG = /\[verify:\s*([^\]]+)\]/gi
+const VERIFY_TAG = /\[verify:([^\]]{1,500})\]/gi
 const BLOCKED_TAG = /\[blocked:/i
 const VISUAL_LINE = /^[ \t]*(?:[-*][ \t]*)?\**(?:эталон\s+вида|visual\s+reference)\**\s*:\s*(.+)$/im
 const OPEN_FORK = /\[(?:Gap|Ambiguity)\]/i
@@ -66,13 +66,27 @@ const OPEN_FORK = /\[(?:Gap|Ambiguity)\]/i
 // or an assumption (`→ A3`), a narrowing, or a struck-through / ticked marker. A bare file-like token, a date, "e.g." or a mention of "A1" closes nothing.
 const FORK_CLOSED =
   /(?:→|->|[—–:(\[]|^)\s*(?:closed|resolved|decided|narrowed|answered)\b|\b(?:closed|resolved|decided|narrowed|answered)\s+(?:by|in|with|via)\b|\b(?:closed|resolved|decided|narrowed|answered)\s*[:—–→]|(?:→|->)\s*(?:[DAB]\d+|DESIGN-QUESTIONS|interview|batch|assumption)|(?<![\w@./-])[\w@./-]+\.[A-Za-z]{1,5}:\d+\b|\bnode-?id\s*[:=]?\s*\d+[:-]\d+|\bout\s+of\s+stage\b|~~|✅|закрыт[оа]?(?![\wа-яё])|реш[её]н[оа]?(?![\wа-яё])|снят[оа]?(?![\wа-яё])|сужен[оа]?(?![\wа-яё])|вынесен[оа]?(?![\wа-яё])|ответ(?:ил\w*)?\s+(?:на\s+)?интервью|по\s+интервью|допущени[еяю]\s*[A-ZА-Я]?\d/i
-const REF_WITH_LINE = /(?<![\w@./~:-])((?:~\/|\.{1,2}\/|\/)?[\w@.…-]+(?:\/[\w@.…-]+)+\.([A-Za-z][A-Za-z0-9]{0,5})):(\d+)(?:[-–](\d+))?(?![\w])/g
+const REF_WITH_LINE = /(?<![\w@./~:…-])((?:~\/|\.{1,2}\/|\/)?[\w@.…-]+(?:\/[\w@.…-]+)+\.([A-Za-z][A-Za-z0-9]{0,5})):(\d+)(?:[-–](\d+))?(?![\w])/g
 const NOT_A_FILE_EXT = new Set(['com', 'org', 'net', 'io', 'kz', 'ru', 'dev', 'app', 'local', 'test'])
 const ACTION_WORDS = /\b(?:save[sd]?|saving|send(?:s|ing)?|submit(?:s|ted)?|delet(?:e[sd]?|ing)|status\s+change|сохран\w*|отправ\w*|удал\w*)\b/i
 const CONDITION_WORDS = /\b(?:incomplete|empty|invalid|partial(?:ly)?|server\s+error|not\s+filled|without|неполн\w*|пуст\w*|без|ошибк\w*)\b/i
 const READ_MAX = 2 * 1024 * 1024
 const DATE = /\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}/g
 const DATED_LINE = /^[ \t]*(?:[-*][ \t]*)?\**\[?(\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4})/
+/** A plan line longer than this is cut before the lint reads it: the line regexes (trailing punctuation, label gaps) are quadratic over a long run, and no criterion or heading is this long (S-4). */
+const PLAN_LINE_MAX = 8000
+function capLines(text) {
+  if (!String(text).split('\n').some((line) => line.length > PLAN_LINE_MAX)) return text
+  return text.split('\n').map((line) => (line.length > PLAN_LINE_MAX ? `${line.slice(0, PLAN_LINE_MAX)}…` : line)).join('\n')
+}
+
+/** A stage heading without its `[status: …]` bracket, by index: `\s*\[status:[^\]]*\]\s*` backtracks quadratically over a heading padded with whitespace (S-4). */
+function withoutStatus(heading) {
+  const start = heading.search(/\[status:/i)
+  const end = start === -1 ? -1 : heading.indexOf(']', start)
+  if (end === -1) return heading.trim()
+  return `${heading.slice(0, start).trimEnd()} ${heading.slice(end + 1).trimStart()}`.trim()
+}
 
 /** The plan snapshot's file name: the journal baseline's hash, in its own directory, so the journal baseline version is not touched. */
 export const planSnapshotName = (taskDir) => join('plan-baseline', basename(baselineName(taskDir)))
@@ -284,16 +298,18 @@ function tableRows(section) {
  * resolved in), `config` (the config text, for sibling repos), `stage` (narrow the problems), `context` (a ready `planContext`, for tests).
  * Returns `{ stages: [{ number, heading, isNew, summary, line }], problems, warnings }`; a finding is `{ level, rule, scope: 'stage' | 'force' | 'plan', stage, block, message }`.
  */
-export function checkPlan(text, options = {}) {
+export function checkPlan(planText, options = {}) {
+  const text = capLines(planText)
   const { taskDir = null, dataDir = null, roots = [], config = '', stage = null } = options
   const context = options.context ?? planContext(text, { dataDir, taskDir })
   const findings = []
   const note = (hard, finding) => findings.push({ ...finding, level: hard ? 'problem' : 'warning' })
-  const siblings = siblingRepos(config, roots[0])
-  // A `../src/module` in the config is a playground note, not a sibling repo: a name that is also a directory of this repo is not a sibling.
-  const missingSiblings = siblings.filter((dir) => !existsSync(dir) && !(roots[0] && existsSync(join(roots[0], basename(dir)))))
+  // `roots`: the worktree where the code is first, then the repo holding the config (M-1); siblings are resolved against both.
+  const siblings = [...new Set(roots.flatMap((root) => siblingRepos(config, root)))]
+  // A `../src/module` in the config is a playground note, not a sibling repo: a name that is also a directory of a root is not a sibling.
+  const missingSiblings = siblings.filter((dir) => !existsSync(dir) && !roots.some((root) => existsSync(join(root, basename(dir)))) && !siblings.some((other) => other !== dir && basename(other) === basename(dir) && existsSync(other)))
   const refCache = new Map()
-  const bases = [...new Set([...roots, ...siblings, ...(roots[0] ? [dirname(roots[0])] : []), ...(taskDir ? [taskDir, dirname(taskDir)] : [])])]
+  const bases = [...new Set([...roots, ...siblings, ...roots.map((root) => dirname(root)), ...(taskDir ? [taskDir, dirname(taskDir)] : [])])]
   const stages = []
   const seenIds = new Map()
 
@@ -305,7 +321,7 @@ export function checkPlan(text, options = {}) {
     const hard = isNew && !closed
     const at = { scope: 'stage', stage: String(number) }
     const summary = { acs: 0, verifiers: {}, visual: null, stateAction: null, refs: [0, 0], runtime: 0, ui: !logicOnlyTag(heading), archived: ARCHIVED_STUB.test(block) }
-    stages.push({ number: String(number), heading: heading.replace(/^#+\s*/, '').replace(/\s*\[status:[^\]]*\]\s*/i, ' ').trim(), isNew, closed, summary })
+    stages.push({ number: String(number), heading: withoutStatus(heading.replace(/^#+\s*/, '')), isNew, closed, summary })
     if (summary.archived) continue
 
     const criteria = criteriaOf(block)
@@ -451,7 +467,7 @@ export function taxonomyText(body) {
  */
 export function stageForSpawn(text, prompt) {
   const blocks = stageBlocksOf(text)
-  const named = [...String(prompt).matchAll(/(?:\bstage|этап)(?:\s+number)?\s*[:#]?\s*\**([0-9][\w.]*)/gi)].map((match) => match[1].replace(/\.+$/, ''))
+  const named = [...String(prompt).matchAll(/(?:\bstage|этап)(?:\s+number)?\s*(?:[:#]\s*)?\**([0-9][\w.]*)/gi)].map((match) => match[1].replace(/\.+$/, ''))
   if (named.length) {
     const found = named.map((id) => blocks.find(({ number }) => String(number).toLowerCase() === id.toLowerCase())).filter(Boolean)
     const pick = found.find(({ block }) => !CLOSED_STAGE.test(block.split('\n')[0])) ?? found[0]
@@ -482,6 +498,15 @@ export function formatReport(result, name = '') {
   return lines.join('\n')
 }
 
+/** The git toplevel of the working directory (the worktree the code is in), else null. */
+function worktreeOf() {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null
+  } catch {
+    return null
+  }
+}
+
 /** The repo root for a STAGES.md: the nearest directory above it with `.claude/pipeline.config.md`, else the working directory. */
 function rootFor(file) {
   let dir = dirname(resolve(file))
@@ -507,8 +532,10 @@ function main(args) {
   const file = resolve(target)
   const taskDir = dirname(file)
   const text = readTaskFile(taskDir, basename(file)) ?? readFileSync(file, 'utf8')
+  // M-1: without `--root` the cwd's git toplevel (the worktree where the code is) comes first, then the config root of the file.
   const root = flag('--root') ? resolve(flag('--root')) : rootFor(file)
-  const result = checkPlan(text, { taskDir, dataDir: pluginDataDir(), roots: [root], config: readConfig(root), stage: flag('--stage') })
+  const roots = flag('--root') ? [root] : [...new Set([worktreeOf(), root].filter(Boolean))]
+  const result = checkPlan(text, { taskDir, dataDir: pluginDataDir(), roots, config: readConfig(root), stage: flag('--stage') })
   console.log(args.includes('--json') ? JSON.stringify(result, null, 2) : formatReport(result, file))
   // exitCode, not exit(): on a pipe the write is still pending when exit() runs, and a large report is cut at 64 KB.
   process.exitCode = result.problems.length ? 1 : 0

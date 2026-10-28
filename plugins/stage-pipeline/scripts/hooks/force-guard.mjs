@@ -1,6 +1,6 @@
 import { denyTool } from './firing.mjs'
 import { askMatch, askRules, nameKill } from './permission-rules.mjs'
-import { readHookInput, readPipelineState } from './pipeline-state.mjs'
+import { dataDirReason, namesDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
  * In a force run the user is not at the screen, and a call that waits for confirmation costs the run as
@@ -14,6 +14,10 @@ import { readHookInput, readPipelineState } from './pipeline-state.mjs'
  *   process is stopped by PID;
  * - a subcommand under `ask` in the user's or project's settings (`git push`, `reset --hard`, `gh`…) — force
  *   either does not do it at all (stage-force, Step 3), or the user does it: the command goes into the run's blockers.
+ * - a command that names the plugin's data directory (K11a.1, VT-5 S-1a): the maker records, the plan snapshots and the receipts under it are written by the hooks only, and a
+ *   record the orchestrator appends there is a proof of its own code. The guard catches the habit, not a determined workaround: a path built at run time still reaches the files,
+ *   and a rejection is not a reason to look for one (stage-force, Step 2). The plugin's own scripts are run by `${CLAUDE_PLUGIN_ROOT}`, which is not the data directory.
+ * An Edit / Write / MultiEdit of a file there is denied the same way by journal-gate's PreToolUse run (R-2).
  * Outside force and outside a repo with the pipeline the hook stays silent: the user is nearby there, and a
  * question is a normal part of the work.
  * The task is only the current branch's, as in git-guard.
@@ -25,12 +29,14 @@ if (!command) process.exit(0)
 const cwd = input.cwd ?? process.cwd()
 const killer = nameKill(command)
 const asked = killer ? null : askMatch(command, askRules(process.env.CLAUDE_PROJECT_DIR ?? cwd))
-if (!killer && !asked) process.exit(0)
+const dataDir = !killer && !asked && namesDataDir(command)
+if (!killer && !asked && !dataDir) process.exit(0)
 
 const state = readPipelineState(cwd)
 const task = state?.tasks.find((candidate) => candidate.current)
 if (!task?.forceActive) process.exit(0)
 
+if (dataDir) deny(dataDirReason(task.ticket, dataDir))
 if (killer) {
   deny(
     'force-guard/kill-by-name',

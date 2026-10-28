@@ -27,7 +27,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, patchIds, readDataFiles, taskLanguage } from './hooks/pipeline-state.mjs'
+import { OPEN_STATUS, patchIds, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
@@ -57,16 +57,7 @@ export function receiptRun(dataDir, taskDir) {
 const receiptsName = (ticket) => join('receipts', `${String(ticket).replace(/[^\w.-]/g, '_')}.jsonl`)
 
 export function readReceipts(dataDir, ticket) {
-  return readDataFiles(dataDir, receiptsName(ticket))
-    .reverse()
-    .flatMap((text) => text.split('\n'))
-    .flatMap((line) => {
-      try {
-        return line.trim() ? [JSON.parse(line)] : []
-      } catch {
-        return []
-      }
-    })
+  return readDataJsonl(dataDir, receiptsName(ticket))
 }
 
 function appendReceipt(dataDir, ticket, receipt) {

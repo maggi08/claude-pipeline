@@ -43,7 +43,7 @@ try {
           `stage-pipeline: the hand-back is not whole (block ${blocked + 1} of ${MAX_BLOCKS}):\n${problems.map((line) => `- ${line}`).join('\n')}\n` +
           'Return it again by the contract of the stage-implement agent: `Changed:` (paths of the files that changed, the A/M/D prefix is allowed), `Decisions:`, `Product-visible:`, ' +
           '`lint / type_check / floor-guard:` (numbers against the baseline), `Not done / blocker:`, `ACs without implementation:` — up to 25 lines and 4000 characters. ' +
-          'Do not edit files to fit the list: `Changed:` names what changed.',
+          'Do not edit files to fit the list: `Changed:` names the files that changed and that you wrote; a file you did not write goes under `Not done / blocker:` as `not mine: <path>`.',
       }),
     )
     process.exit(0)

@@ -202,7 +202,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
-      "line": "режим\\)\\\\s\\*:\\?\\\\s\\*\\\\\\*\\*fix",
+      "line": "режим\\)\\\\s\\*\\(\\?::\\\\s\\*\\)\\?\\\\\\*\\*fix",
       "reason": "RU alternative of the mode word in the fix-mode regex (stage-implement prompt in a Russian task)"
     }
   ]

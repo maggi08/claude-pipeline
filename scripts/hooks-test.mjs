@@ -6406,7 +6406,6 @@ rmSync(retroRoot, { recursive: true, force: true })
   const plan = ({ acs, extra = '', forceBlock = force(`## Force run ${TODAY}`), earlier = '' }) =>
     `# P-1: task\nBranch: \`P-1/feat/x\`\nLanguage: en\n\n## Status: stage 1\n${earlier}\n${forceBlock}## Stages\n\n### Stage 1: logic  [status: in-progress]  logic-only\nWhat exists:\n${extra}Acceptance criteria:\n${acs}\n`
   const GOOD_AC = '- `AC-1.1` WHEN a is read THEN it is 1 — [verify: pro-review]\n- `AC-1.2` WHEN b THEN c — [verify: devtools-verify]\n'
-  const taskFile = join(pc, '.claude/tasks/P-1/STAGES.md')
   const setPlan = (text) => write(pc, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/P-1/STAGES.md': text })
   const opts = (dataDir) => ({ taskDir: join(pc, '.claude/tasks/P-1'), dataDir, roots: [pc], config: '' })
   const messages = (result) => result.problems.map((finding) => finding.message).join('\n')
@@ -7110,6 +7109,379 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('resume O-4: with a record the "as the maker left them / changed since" split stays', /1 path as the maker left them, 1 changed since: src\/b\.ts/.test(f.start('compact')), f.start('compact'))
   }
   rmSync(rRoot, { recursive: true, force: true })
+}
+
+// ── VT-5 stage 11a, round A (K11a.1-K11a.6): the security review of 0.21.0 — the orchestrator's routes round the maker receipt, a slow hash, cubic and quadratic regexes ──
+// Each rule: the incident form that must fail and the legitimate form that must pass. No fixture above is adapted: the premises of VT-5 stage 11 hold.
+{
+  const mk = await import(join(PLUGIN, 'maker.mjs'))
+  const pa = await import(join(PLUGIN, 'plan-check.mjs'))
+  const gcm = await import(join(PLUGIN, 'hooks/git-command.mjs'))
+  const rc = await import(join(PLUGIN, 'receipts.mjs'))
+  process.env.STAGE_PIPELINE_MAKER_RECEIPTS = 'on'
+  const aRoot = mkdtempSync(join(tmpdir(), 'maker-a-test-'))
+  const AREL = '2026-10-27'
+  let aN = 0
+  const handback = (files, { notdone = '- none', changed = null } = {}) =>
+    `${changed ?? `Changed:\n${files.map((file) => `- M ${file}`).join('\n')}\n`}Decisions:\n- d\nProduct-visible:\n- none\nlint / type_check / floor-guard:\n- tests: 1 ✔\nNot done / blocker:\n${notdone}\nACs without implementation: none\n`
+  const fixture = (name, { heading = `## Force run ${AREL}`, planSeen = false, withBlock = true } = {}) => {
+    const ticket = `MA-${70 + aN++}`
+    const dir = join(aRoot, name)
+    repoAt(dir, 'main')
+    const block = `${heading}\nConfirmed: ${AREL} — no questions\n\n`
+    write(dir, {
+      'src/legacy.ts': 'export const legacy = 1\n',
+      '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n- type_check: —\n',
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nLanguage: en\nBranch: \`${ticket}/feat/m\`\n\n## Status: stage 1\n\n${withBlock ? block : ''}## Stages\n\n### Stage 1: logic  [status: in-progress]  logic-only\n`,
+    })
+    git(dir, 'add', '-A')
+    git(dir, 'commit', '-qm', 'files')
+    git(dir, 'checkout', '-qb', `${ticket}/feat/m`)
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20', [])
+    const full = readFileSync(join(tdir, 'STAGES.md'), 'utf8')
+    pa.takePlanSnapshot(DATA, tdir, planSeen ? full : '')
+    const report = join(tdir, 'checks/pro-review-1.md')
+    mkdirSync(dirname(report), { recursive: true })
+    writeFileSync(report, '# pro-review\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n')
+    utimesSync(report, Date.now() / 1000 + 600, Date.now() / 1000 + 600)
+    const session = `sess-a-${name}`
+    return {
+      dir,
+      ticket,
+      tdir,
+      full,
+      block,
+      session,
+      spawn: (id = session, prompt = `Mode: fix (round 1). Ticket: ${ticket}. Stage: 1. Language: en.`) => runHook('agent-guard.mjs', { cwd: dir, session_id: id, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt } }),
+      stop: (text, { id = session, agent = `agent-a-${name}` } = {}) => {
+        const transcript = join(aRoot, `tx-${aN++}.jsonl`)
+        const call = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_hb', name: 'SubagentHandback', input: { message: text } }] } }
+        writeFileSync(transcript, `${JSON.stringify(call)}\n`)
+        return runHook('maker-guard.mjs', { cwd: dir, session_id: id, agent_type: 'stage-pipeline:stage-implement', agent_id: agent, agent_transcript_path: transcript, stop_hook_active: false })
+      },
+      commit: (command = 'git add -A && git commit -m x') => runHook('git-guard.mjs', { cwd: dir, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `toolu_ma_${aN++}`, tool_input: { command } }),
+      forceGuard: (command) => runHook('force-guard.mjs', { cwd: dir, tool_input: { command } }),
+      records: () => mk.readMakerRecords(DATA, ticket),
+    }
+  }
+  const same2 = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+  // AC-11a.1 / K11a.1 — a broken line in a data file is skipped, and a throw in one rule never skips the rest.
+  {
+    const f = fixture('a-tolerant')
+    f.spawn()
+    write(f.dir, { 'src/t.ts': `// @ts${'-'}ignore\nexport const t: number = "x"\n` })
+    f.stop(handback(['src/t.ts']))
+    mkdirSync(join(DATA, 'receipts'), { recursive: true })
+    appendFileSync(join(DATA, 'maker', `${f.ticket}.jsonl`), 'null\n7\n[1]\n"x"\n{"root": 3, "blobs": "zz", "others": 5, "items": 4}\n')
+    appendFileSync(join(DATA, 'maker', `${f.ticket}.spawns.jsonl`), 'null\n9\n')
+    appendFileSync(join(DATA, 'receipts', `${f.ticket}.jsonl`), 'null\n[]\n"x"\n')
+    const records = mk.readMakerRecords(DATA, f.ticket)
+    check('maker K11a.1: a `null`, a number, an array and a string line in the records file are skipped; an object of another shape stays', records.length === 2 && records.every((record) => record && typeof record === 'object' && !Array.isArray(record)), JSON.stringify(records).slice(0, 300))
+    let thrown = null
+    try {
+      mk.lastMakerBlobs(DATA, f.ticket, realpathSync(f.dir))
+      mk.makerItems(DATA, f.ticket, 0)
+      rc.readReceipts(DATA, f.ticket)
+    } catch (error) {
+      thrown = error
+    }
+    check('maker K11a.1: lastMakerBlobs, makerItems (run-digest) and readReceipts do not throw on those lines (receipts.mjs had the same crash since 0.18)', thrown === null && same2(rc.readReceipts(DATA, f.ticket), []), `${thrown}`)
+    const denied = f.commit('git add src/t.ts && git commit -m x')
+    check('maker K11a.1 incident: a `null` line in the records file used to make git-guard exit 1 before floor-guard — the `@ts-ignore` commit is denied by floor-guard', denied.decision === 'deny' && /floor-guard/.test(denied.text), `${denied.decision} ${denied.text}`)
+    const clean = fixture('a-tolerant-ok')
+    clean.spawn()
+    write(clean.dir, { 'src/t.ts': 'export const t = 1\n' })
+    clean.stop(handback(['src/t.ts']))
+    appendFileSync(join(DATA, 'maker', `${clean.ticket}.jsonl`), 'null\n')
+    check('maker K11a.1 legitimate: the same broken line beside a clean maker file — the commit passes', clean.commit('git add src/t.ts && git commit -m x').decision === 'allow', clean.commit('git add src/t.ts && git commit -m x').text)
+  }
+
+  // K11a.1 — force-guard: a Bash command that names the plugin data directory in an open force run.
+  {
+    const f = fixture('a-forceguard')
+    const forged = f.forceGuard(`node -e "require('fs').appendFileSync('${DATA}/maker/${f.ticket}.jsonl', '{}')"`)
+    check('force K11a.1 incident: a command naming the plugin data directory — denied, "written by the hooks only" and "not a reason for a workaround"', forged.decision === 'deny' && /written by the hooks only/.test(forged.text) && /not a reason to look for a workaround/.test(forged.text), `${forged.decision} ${forged.text}`)
+    check('force K11a.1 incident: the `plugins/data/stage-pipeline…` form and `$CLAUDE_PLUGIN_DATA` are named too', f.forceGuard('cat ~/.claude/plugins/data/stage-pipeline-inline/maker/x.jsonl').decision === 'deny' && f.forceGuard('echo {} >> "$CLAUDE_PLUGIN_DATA/plan-baseline/x.json"').decision === 'deny')
+    for (const script of ['run-digest.mjs', 'archive-stages.mjs', 'ci-gates.mjs', 'browser-cleanup.mjs', 'plan-check.mjs']) {
+      check(`force K11a.1 legitimate: the plugin's own ${script}, run by \${CLAUDE_PLUGIN_ROOT}, names no data directory — passes`, f.forceGuard(`node "\${CLAUDE_PLUGIN_ROOT}/scripts/${script}" .claude/tasks/${f.ticket}/STAGES.md --stage 1`).decision === 'allow')
+    }
+    const closed = fixture('a-forceguard-closed', { heading: `## Force run ${AREL} — completed ${AREL}` })
+    check('force K11a.1: no open force run (the user is nearby) — the data directory is not guarded', closed.forceGuard(`ls ${DATA}/maker`).decision === 'allow')
+  }
+
+  // AC-11a.1 / K11a.2 — a commit command that also changes the index other than by `git add`.
+  {
+    const table = [
+      ['git update-index --add src/o.ts && git commit -m x', ['update-index']],
+      ['GIT_INDEX_FILE=/tmp/i git commit -m x', ['GIT_INDEX_FILE=']],
+      ['export GIT_INDEX_FILE=/tmp/i; git commit -m x', ['GIT_INDEX_FILE=']],
+      ['env GIT_INDEX_FILE=/tmp/i git commit -m x', ['GIT_INDEX_FILE=']],
+      ['git apply --cached p.diff && git commit -m x', ['apply --cached']],
+      ['git mv a.ts b.ts && git commit -m x', ['mv']],
+      ['git rm --cached a.ts && git commit -m x', ['rm']],
+      ['git checkout HEAD~1 -- src/o.ts && git commit -m x', ['checkout -- <path>']],
+      ['git restore --staged src/o.ts && git commit -m x', ['restore --staged']],
+      ['git read-tree HEAD && git commit -m x', ['read-tree']],
+      ['git reset -- src/o.ts && git commit -m x', ['reset']],
+      ['git add src/m.ts && git commit -m x', []],
+      ['git add -A && git commit -am "git update-index and GIT_INDEX_FILE=x in the message"', []],
+      ['git checkout -b feat/x && git commit -m x', []],
+      ['git restore src/o.ts && git commit -m x', []],
+    ]
+    for (const [command, want] of table) check(`git K11a.2: indexChangers(${JSON.stringify(command).slice(0, 62)}) → [${want}]`, same2(gcm.indexChangers(command), want), JSON.stringify(gcm.indexChangers(command)))
+    const f = fixture('a-index')
+    f.spawn()
+    write(f.dir, { 'src/m.ts': 'export const m = 1\n' })
+    f.stop(handback(['src/m.ts']))
+    write(f.dir, { 'src/o.ts': 'export const o = 1 // the orchestrator\n' })
+    check('maker K11a.2 control: `git add src/o.ts && git commit` — denied, the path named (the premise of the incident)', f.commit('git add src/o.ts && git commit -m x').decision === 'deny')
+    const viaIndex = f.commit('git update-index --add src/o.ts && git commit -m x')
+    check('maker K11a.2 incident: `git update-index --add src/o.ts && git commit` — denied, "stage with `git add` in its own call"', viaIndex.decision === 'deny' && /stage with `git add` in its own call, then commit/.test(viaIndex.text) && /update-index/.test(viaIndex.text), `${viaIndex.decision} ${viaIndex.text}`)
+    check('maker K11a.2 incident: a `GIT_INDEX_FILE=` prefix — denied', /own call/.test(f.commit('GIT_INDEX_FILE=/tmp/i git commit -m x').text))
+    git(f.dir, 'add', 'src/m.ts')
+    check('maker K11a.2 legitimate: `git add src/m.ts` in its own call, then `git commit` — passes', f.commit('git commit -m x').decision === 'allow', f.commit('git commit -m x').text)
+    git(f.dir, 'update-index', '--add', 'src/o.ts')
+    const later = f.commit('git commit -m x')
+    check('maker K11a.2: the same staging in its own earlier call — judged by the index blob, denied, the path named', later.decision === 'deny' && /src\/o\.ts/.test(later.text) && !/own call/.test(later.text), `${later.decision} ${later.text}`)
+    const old = fixture('a-index-old', { planSeen: true })
+    write(old.dir, { 'src/o.ts': 'export const o = 1\n' })
+    check('maker K11a.2 D7: a run already going at the first look is never denied by the new rule', old.commit('git update-index --add src/o.ts && git commit -m x').decision === 'allow', old.commit('git update-index --add src/o.ts && git commit -m x').text)
+  }
+
+  // AC-11a.1 / K11a.3 — a plan written only through Bash is looked at before the command runs.
+  {
+    const incident = fixture('a-bash-plan', { withBlock: false })
+    const bashPre = (f, command) => runHook('journal-gate.mjs', { cwd: f.dir, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `toolu_mb_${aN++}`, tool_input: { command } })
+    rmSync(join(DATA, pa.planSnapshotName(incident.tdir)), { force: true })
+    bashPre(incident, `cat >> ${join(incident.tdir, 'STAGES.md')} <<'EOF'\n## Force run ${AREL}\nEOF`)
+    check('journal K11a.3: the Bash call that names a task STAGES.md takes the plan snapshot before it runs (no Force block in it yet)', Array.isArray(pa.readPlanSnapshot(DATA, incident.tdir)?.forceSeen) && pa.readPlanSnapshot(DATA, incident.tdir).forceSeen.length === 0, JSON.stringify(pa.readPlanSnapshot(DATA, incident.tdir)))
+    writeFileSync(join(incident.tdir, 'STAGES.md'), incident.full.replace('## Stages', `${incident.block}## Stages`))
+    write(incident.dir, { 'src/o.ts': 'export const o = 1 // written by the orchestrator\n' })
+    const denied = incident.commit('git add -A && git commit -m x')
+    check('maker K11a.3 incident: plan and confirmed Force block written only through Bash, code by the orchestrator — denied (the snapshot was taken first)', denied.decision === 'deny' && /code not written by stage-implement/.test(denied.text), `${denied.decision} ${denied.text}`)
+    const control = fixture('a-bash-plan-control', { withBlock: false })
+    rmSync(join(DATA, pa.planSnapshotName(control.tdir)), { force: true })
+    writeFileSync(join(control.tdir, 'STAGES.md'), control.full.replace('## Stages', `${control.block}## Stages`))
+    write(control.dir, { 'src/o.ts': 'export const o = 1\n' })
+    check('maker K11a.3 control: with no Pre look the first sight finds the confirmed block and calls the run old — the same commit passes (the premise of the incident)', control.commit('git add -A && git commit -m x').decision === 'allow')
+    const fresh = fixture('a-bash-new-task')
+    const newDir = join(fresh.dir, '.claude/tasks/NEW-9')
+    bashPre(fresh, `mkdir -p ${newDir} && cat > ${newDir}/STAGES.md <<'EOF'\n## Force run ${AREL}\nEOF`)
+    const realNew = join(realpathSync(dirname(newDir)), 'NEW-9')
+    check('journal K11a.3: a task directory the command is about to create gets an empty plan snapshot', same2(pa.readPlanSnapshot(DATA, realNew)?.stages, []) && same2(pa.readPlanSnapshot(DATA, realNew)?.forceSeen, []), JSON.stringify(pa.readPlanSnapshot(DATA, realNew)))
+    const before = readdirSync(join(DATA, 'plan-baseline')).length
+    bashPre(fresh, 'cat STAGES.md README.md && ls /tmp/elsewhere/STAGES.md')
+    check('journal K11a.3 legitimate: a read of a STAGES.md that belongs to no task writes no snapshot', readdirSync(join(DATA, 'plan-baseline')).length === before)
+  }
+
+  // AC-11a.1 / K11a.4 — a file the orchestrator edited while the maker ran is not laundered into the maker's record.
+  {
+    const f = fixture('a-notmine')
+    f.spawn()
+    write(f.dir, { 'src/m.ts': 'export const m = 1\n', 'src/o.ts': 'export const o = 1 // edited by the orchestrator while the maker ran\n' })
+    const blocked = f.stop(handback(['src/m.ts']))
+    check('maker K11a.4: a changed file the hand-back does not name — blocked, and the message offers `not mine: <path>`, not adoption', blocked.decision === 'block' && /does not name/.test(blocked.text) && /src\/o\.ts/.test(blocked.text) && /not mine: <path>/.test(blocked.text), blocked.text)
+    const disowned = f.stop(handback(['src/m.ts'], { notdone: '- not mine: src/o.ts (edited in the shared tree while I ran)' }))
+    check('maker K11a.4 legitimate: `not mine: src/o.ts` under `Not done / blocker:` — the stop goes through', disowned.decision === 'allow', disowned.text)
+    const stored = f.records().at(-1)
+    check('maker K11a.4: the disowned path is not recorded as the maker\'s blob, the maker\'s own is; the line is kept as a Not done item', Object.keys(stored?.blobs ?? {}).join() === 'src/m.ts' && stored.items.some((item) => item.kind === 'notdone' && /not mine: src\/o\.ts/.test(item.text)), JSON.stringify(stored))
+    const denied = f.commit('git add -A && git commit -m x')
+    check('maker K11a.4 incident: the commit of the orchestrator\'s file — denied, the path named; the maker\'s file alone is not', denied.decision === 'deny' && /src\/o\.ts/.test(denied.text) && !/src\/m\.ts/.test(denied.text), `${denied.decision} ${denied.text}`)
+    check('maker K11a.4 legitimate: the maker\'s own file staged alone — the commit passes', f.commit('git add src/m.ts && git commit -m x').decision === 'allow', f.commit('git add src/m.ts && git commit -m x').text)
+    check('maker K11a.4: `Changed:` naming a file that did not change is still blocked (the old rule stands)', (() => {
+      const g = fixture('a-notmine-phantom')
+      g.spawn()
+      write(g.dir, { 'src/m.ts': 'export const m = 1\n' })
+      return g.stop(handback(['src/m.ts', 'src/ghost.ts'], { notdone: '- not mine: src/ghost.ts' })).decision === 'block'
+    })())
+  }
+
+  // AC-11a.2 / K11a.5 — a slow or failed snapshot never denies the maker's own code.
+  {
+    const f = fixture('a-s2-skip')
+    const fifo = join(aRoot, 'a-s2.fifo')
+    execFileSync('mkfifo', [fifo])
+    write(f.dir, { 'src/placeholder.txt': 'x\n' })
+    symlinkSync(fifo, join(f.dir, 'src/pipe.ts'))
+    writeFileSync(join(f.dir, 'src/dump.js'), '')
+    truncateSync(join(f.dir, 'src/dump.js'), 6 * 1024 * 1024)
+    const started = Date.now()
+    const spawned = f.spawn()
+    const took = Date.now() - started
+    const snapshot = mk.readSnapshot(DATA, f.session)
+    check('maker K11a.5: a dirty symlink to a FIFO and a 6 MB untracked file — the spawn is allowed fast (the hash used to block on the FIFO), the snapshot holds neither', spawned.decision === 'allow' && took < 2500 && snapshot && !('src/pipe.ts' in (snapshot.blobs ?? {})) && !('src/dump.js' in (snapshot.blobs ?? {})) && 'src/placeholder.txt' in (snapshot.blobs ?? {}), `${spawned.decision} ${took} ms ${JSON.stringify(snapshot?.blobs)}`)
+    write(f.dir, { 'src/m.ts': 'export const m = 1\n' })
+    const stopped = f.stop(handback(['src/m.ts']))
+    check('maker K11a.5 legitimate: the maker\'s hand-back is judged without the unhashed paths — the stop goes through', stopped.decision === 'allow', stopped.text)
+    check('maker K11a.5 legitimate: the maker\'s own file is committed, the symlink and the dump are not judged', f.commit('git add src/m.ts && git commit -m x').decision === 'allow', f.commit('git add src/m.ts && git commit -m x').text)
+    check('maker K11a.5: the unit — dirtyBlobs leaves out the symlink and the over-5 MB untracked file', (() => {
+      const blobs = mk.dirtyBlobs(f.dir)
+      return blobs && blobs.has('src/placeholder.txt') && !blobs.has('src/pipe.ts') && !blobs.has('src/dump.js')
+    })())
+    check('maker K11a.5: a timed-out `git status` is not a clean tree — dirtyBlobs gives null (unknown), never an empty map', mk.dirtyBlobs(f.dir, { deadline: Date.now() - 1 }) === null)
+  }
+  {
+    const f = fixture('a-s2-pending')
+    for (let i = 0; i < 4001; i++) writeFileSync(join(f.dir, `gen-${i}.txt`), `${i}\n`)
+    check('maker K11a.5 unit: 4001 dirty paths — the tree is not listed (null)', mk.dirtyBlobs(f.dir) === null)
+    f.spawn()
+    const lines = readFileSync(join(DATA, 'maker', `${f.ticket}.spawns.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    check('maker K11a.5: the spawn line is written (pending) and no `done` line follows an unfinished snapshot', lines.length === 1 && lines[0].pending === true && !lines.some((line) => line.done), JSON.stringify(lines))
+    write(f.dir, { 'src/m.ts': 'export const m = 1\n' })
+    f.stop(handback(['src/m.ts']))
+    check('maker K11a.5 incident (S-2): an unfinished snapshot used to leave the maker\'s own file "not written by stage-implement" — the commit passes (the rule fails open for the run)', f.commit('git add src/m.ts && git commit -m x').decision === 'allow', f.commit('git add src/m.ts && git commit -m x').text)
+    const ok = fixture('a-s2-done')
+    ok.spawn()
+    write(ok.dir, { 'src/m.ts': 'export const m = 1\n' })
+    ok.stop(handback(['src/m.ts']))
+    const done = readFileSync(join(DATA, 'maker', `${ok.ticket}.spawns.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    check('maker K11a.5: a finished snapshot writes the pending line and then the done line', done.length === 2 && done[0].pending === true && done[1].done === true, JSON.stringify(done))
+    write(ok.dir, { 'src/o.ts': 'export const o = 1\n' })
+    check('maker K11a.5 control: with a finished snapshot the orchestrator\'s file is still denied (the rule is not off by accident)', ok.commit('git add src/o.ts && git commit -m x').decision === 'deny')
+  }
+
+  // AC-11a.3 / K11a.6 — S-3: the label parser is linear.
+  {
+    const OLD = /^ {0,1}(?<bullet>[-*]\s+)?[`*_]*(?<label>[^\n:]*?)[`*_]*:[`*_]*(?<rest>.*)$/
+    const oldOpened = (line) => {
+      const found = OLD.exec(line)
+      if (!found) return null
+      const { bullet, label, rest } = found.groups
+      for (const id of ['Changed', 'Decisions', 'Product-visible', 'Not done']) {
+        if (new RegExp(`^${id.replace('-', '[- ]')}\\b`, 'i').test(label.trim()) && label.trim().length <= 90 && !(bullet && false)) return { id, rest }
+      }
+      return null
+    }
+    const lines = ['Changed:', 'Changed: a.ts, b.ts', '**Changed:** a.ts', '- Changed: a.ts', '* **Decisions:** one', ' Not done / blocker: x', '`Product-visible:` y', 'Changed (worktree x, all uncommitted):', 'changed: z', 'Decisions', 'Not done / blocker:**', '__Changed__: q', 'Changed:: two', '  Changed: indented', 'The Changed: later in a sentence', `${'x'.repeat(100)} Changed: tail`, 'Changed:'.padEnd(5000, ' ')]
+    const idOf = (line) => {
+      const { sections } = mk.parseHandback(line)
+      const [id] = Object.keys(sections)
+      const names = { changed: 'Changed', decisions: 'Decisions', product: 'Product-visible', notdone: 'Not done' }
+      return id && names[id] ? { id: names[id], rest: sections[id] } : null
+    }
+    check('maker K11a.6 S-3: the linear label parser agrees with the old regex on the live forms (bullets, markers, long labels, indents)', lines.every((line) => same2(idOf(line), oldOpened(line))), lines.filter((line) => !same2(idOf(line), oldOpened(line))).map((line) => `${JSON.stringify(line.slice(0, 40))}: ${JSON.stringify(idOf(line))} vs ${JSON.stringify(oldOpened(line))}`).join(' | '))
+    const adversarial = ['_', '*', '`'].map((char) => char.repeat(3200)).join('\n')
+    const started = Date.now()
+    const parsed = mk.parseHandback(`Changed:\n- M src/a.ts\n${adversarial}\n${adversarial}\n`)
+    check('maker K11a.6 S-3 incident: three 3200-character runs of `_`, `*`, backticks (5.6 s per run before) — parsed in under 100 ms', Date.now() - started < 100 && 'changed' in parsed.sections, `${Date.now() - started} ms`)
+    const f = fixture('a-s3')
+    f.spawn()
+    write(f.dir, { 'src/a.ts': 'export const a = 1\n' })
+    const begun = Date.now()
+    const long = f.stop(`${handback(['src/a.ts'])}${adversarial}\n${adversarial}\n${adversarial}\n`)
+    check('maker K11a.6 S-3 incident: the over-length hand-back with those runs is blocked for its length, inside 3 s (the hook used to be killed at 15 s and let it through)', long.decision === 'block' && /characters, over the limit/.test(long.text) && Date.now() - begun < 3000, `${long.decision} ${Date.now() - begun} ms ${long.text}`)
+  }
+
+  // AC-11a.3 / K11a.6 — S-4: a 100 KB adversarial plan, prompt and hand-back finish well inside each hook's timeout (agent-guard 5 s, git-guard 15 s, maker-guard 15 s, session-start 10 s).
+  {
+    const pad = ' '.repeat(100_000)
+    const plan = `\n## Shared elements\nPairs checked:${pad}x\n\n## Notes\n- AC-9.9 x [verify:${pad}\n${'- AC-9.8 y [verify: '.repeat(5000)}\n- AC-9.7 see ${'…'.repeat(100_000)}\n\n### Stage 9: ${pad.slice(0, 50_000)} [status:${pad.slice(0, 50_000)}\nAC-${'.'.repeat(50_000)}x\n## Force run ${AREL} ${':'.repeat(50_000)}x\n`
+    const f = fixture('a-s4')
+    f.spawn()
+    write(f.dir, { 'src/a.ts': 'export const a = 1\n' })
+    writeFileSync(join(f.tdir, 'STAGES.md'), f.full + plan)
+    const timed = (run) => {
+      const begun = Date.now()
+      const out = run()
+      return { ...out, ms: Date.now() - begun }
+    }
+    const prompt = `Stage${pad}Mode:${pad}Stage${' '.repeat(50_000)}x ${'Mode      '.repeat(5000)}fix`
+    const spawned = timed(() => f.spawn('sess-a-s4-b', prompt))
+    check('agent-guard K11a.6 S-4: a 100 KB plan and a 100 KB prompt — the spawn is judged in under 2.5 s (hook timeout 5 s; it was killed at 5 s before)', spawned.ms < 2500, `${spawned.ms} ms ${spawned.decision}`)
+    const wholeBranch = timed(() => runHook('agent-guard.mjs', { cwd: f.dir, session_id: 'sess-a-s4-c', tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:pro-review', model: 'opus', prompt: `${'Mode      '.repeat(8000)}whole-branch mode` } }))
+    check('agent-guard K11a.6 S-4: a long prompt of `Mode` + spaces for the whole-branch test — under 2.5 s', wholeBranch.ms < 2500, `${wholeBranch.ms} ms`)
+    const committed = timed(() => f.commit('git add src/a.ts && git commit -m x'))
+    check('git-guard K11a.6 S-4: a force commit with that plan — judged in under 7 s (hook timeout 15 s)', committed.ms < 7000, `${committed.ms} ms ${committed.decision}`)
+    const resumed = timed(() => runHook('session-start.mjs', { cwd: f.dir, source: 'compact', session_id: 'sess-a-s4-d' }))
+    check('session-start K11a.6 S-4: the resume point of that plan — under 5 s (hook timeout 10 s)', resumed.ms < 5000, `${resumed.ms} ms`)
+    const stopped = timed(() => f.stop(`${handback(['src/a.ts'])}${'. ,'.repeat(40_000)}x\n${' '.repeat(100_000)}x\n${'_'.repeat(3000)}\n`))
+    check('maker-guard K11a.6 S-4: a 100 KB hand-back over that plan — judged in under 5 s (hook timeout 15 s)', stopped.ms < 5000, `${stopped.ms} ms ${stopped.decision}`)
+    check('plan-check K11a.6 S-4: the stage-id parser on `stage` + 100 KB of spaces', (() => {
+      const begun = Date.now()
+      pa.stageForSpawn(f.full, `stage${pad}x stage${pad}`)
+      return Date.now() - begun < 500
+    })())
+  }
+  // Round B (K11a.7, K11a.8; VT-5 stage 11a): refs resolve in the worktree, one stage parser, one stage-list reader, the give-up records only what `Changed:` names, the data dir under Edit/Write.
+  {
+    // M-1: a linked worktree without a config of its own; the plan names a file the branch added. D7 pair: a ref to a file nobody has is still a problem.
+    const base = join(aRoot, 'b-wt')
+    const wt = join(aRoot, 'b-wt-t1')
+    repoAt(base, 'main')
+    write(base, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n' })
+    git(base, 'worktree', 'add', '-q', wt, '-b', 'MW-1/feat')
+    write(wt, { 'src/new.ts': `${Array.from({ length: 20 }, (_, i) => `export const n${i} = ${i}`).join('\n')}\n` })
+    git(wt, 'add', '-A')
+    git(wt, 'commit', '-qm', 'stage 1')
+    const cats = 'Screens and states — Clear; Copy and i18n — Clear; Permissions and gating — Clear; Breakpoints — Clear; Motion — Clear; A11y — Clear; Data — Clear; Platform parity — Clear; Look — Clear; Terminology — Clear; Boundaries — Clear; Environment and access — Clear'
+    const head = '# MW-1: task\nBranch: `MW-1/feat`\nLanguage: en\n\n## Status: stage 2\n\n'
+    const force = `## Force run ${AREL}\nMode: autonomous.\nInterview answers: none\nAssumptions:\n- accepted X — Rollback: cheap, revert the line — Basis: guess\nStage dependencies: none\nTaxonomy: ${cats}\nBoundaries: none\nConfirmed: ${AREL} — no questions\n\n`
+    const stage1 = '## Stages\n\n### Stage 1: model  [status: done]  logic-only\nAcceptance criteria:\n- `AC-1.1` WHEN a THEN b — [verify: pro-review]\n\n'
+    const stage2 = (ref) => `### Stage 2: use it  [status: todo]  logic-only\nReuse: the helper at ${ref} (written in stage 1)\nAcceptance criteria:\n- \`AC-2.1\` WHEN c THEN d — [verify: pro-review]\n`
+    const tdir = join(base, '.claude/tasks/MW-1')
+    write(base, { '.claude/tasks/MW-1/STAGES.md': head + stage1 })
+    pa.checkPlan(head + stage1, { taskDir: tdir, dataDir: DATA, roots: [base], config: '' })
+    const spawnWt = (session) => runHook('agent-guard.mjs', { cwd: wt, session_id: session, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt: 'Ticket MW-1, stage 2, mode: implement' } })
+    write(base, { '.claude/tasks/MW-1/STAGES.md': head + force + stage1 + stage2('src/new.ts:12') })
+    const added = spawnWt('sess-b-wt-1')
+    check('plan-check M-1 incident: a ref to a file the branch added, in a linked worktree with no config of its own — resolves in the worktree, the spawn is allowed (it was `unresolved-ref`)', added.decision === 'allow', added.text)
+    write(base, { '.claude/tasks/MW-1/STAGES.md': head + force + stage1 + stage2('src/ghost.ts:12') })
+    const ghost = spawnWt('sess-b-wt-2')
+    check('plan-check M-1 legitimate: a ref to a file neither the worktree nor the config repo has — still an `unresolved-ref`, denied', ghost.decision === 'deny' && /ghost\.ts/.test(ghost.text), ghost.text)
+    write(base, { '.claude/tasks/MW-1/STAGES.md': head + force + stage1 + stage2('src/a.ts:1') })
+    check('plan-check M-1 legitimate: a ref to a file of the config repo — resolves as before', spawnWt('sess-b-wt-3').decision === 'allow')
+    const roots = (stage) => pa.checkPlan(head + force + stage1 + stage, { taskDir: tdir, dataDir: DATA, roots: [wt, base], config: '' }).problems.length
+    check('plan-check M-1: `roots` lists the worktree first, then the config root — the same plan has no problem with both and one with the config root alone', roots(stage2('src/new.ts:12')) === 0 && pa.checkPlan(head + force + stage1 + stage2('src/new.ts:12'), { taskDir: tdir, dataDir: DATA, roots: [base], config: '' }).problems.length === 1)
+
+    // M-2: one stage parser — a Russian prompt carries its stage into the maker record.
+    const f = fixture('b-stage')
+    const stageOfSpawn = (prompt, id) => (f.spawn(id, prompt), mk.readSnapshot(DATA, id)?.stage)
+    check('agent-guard M-2 incident: a Russian prompt naming the stage after the ticket — the record carries stage 1 (the second parser knew only `Stage` and gave null)', stageOfSpawn(`Режим: fix. Тикет ${f.ticket}, этап 1.`, 'sess-b-ru-1') === '1')
+    check('agent-guard M-2 incident: a Russian stage field — stage 1', stageOfSpawn(`Режим: fix. Этап: 1.`, 'sess-b-ru-2') === '1')
+    check('agent-guard M-2 legitimate: `Stage: 1` (English) — stage 1, as before', stageOfSpawn(`Mode: fix. Stage: 1.`, 'sess-b-ru-3') === '1')
+    check('agent-guard M-2: "Stage 10 is closed; now implement stage 1" — the stage the plan has, 1 (the first number was taken before)', stageOfSpawn(`Mode: fix. Stage 10 is closed; now implement stage 1`, 'sess-b-ru-4') === '1')
+
+    // m-1: the resume point reads stage headings with the shared readers.
+    const rp = await import(join(PLUGIN, 'resume-point.mjs'))
+    const list = rp.stageList('### Этап 3 [status: ОТМЕНЁН — dropped]\n\n### Stage 4: next  [status: todo]\n\n## Stage 5: second level  [status: in-progress]\n')
+    check('resume-point m-1 incident: a cancelled Russian stage is closed, so the next stage is the todo one (it said to kick off the cancelled one)', list.length === 3 && list[0].done === true && list[1].done === false && list[1].heading === 'Stage 4: next', JSON.stringify(list))
+    check('resume-point m-1 legitimate: a `##` heading and an in-progress status read as before', list[2].status === 'in-progress' && list[2].done === false, JSON.stringify(list))
+
+    // R-1: a maker that never complies is not an authority over the tree.
+    const g = fixture('b-giveup')
+    g.spawn()
+    write(g.dir, { 'src/mine.ts': 'export const mine = 1\n', 'src/orch.ts': 'export const orch = 1\n' })
+    const partial = handback(['src/mine.ts'])
+    const rounds = [1, 2, 3].map(() => g.stop(partial, { agent: 'agent-b-giveup' }).decision)
+    const fourth = g.stop(partial, { agent: 'agent-b-giveup' })
+    const [given] = g.records()
+    check('maker R-1 incident: the give-up stop records the files `Changed:` names only — the orchestrator\'s src/orch.ts is not recorded (it used to be)', rounds.join() === 'block,block,block' && fourth.decision === 'allow' && given && Object.keys(given.blobs).join() === 'src/mine.ts', `${rounds} ${fourth.decision} ${JSON.stringify(given?.blobs)}`)
+    check('maker R-1: the "hand-back not fixed" item names the path that was not recorded', given.items.some((item) => item.kind === 'unfixed' && /not recorded as the maker's/.test(item.text) && /src\/orch\.ts/.test(item.text)), JSON.stringify(given.items))
+    check('maker R-1 consequence: the orchestrator\'s file is refused at commit', g.commit('git add src/orch.ts && git commit -m x').decision === 'deny')
+    const h = fixture('b-giveup-ok')
+    h.spawn()
+    write(h.dir, { 'src/p.ts': 'export const p = 1\n', 'src/q.ts': 'export const q = 1\n' })
+    const bothNamed = handback(['src/p.ts', 'src/q.ts']).replace('ACs without implementation: none\n', '')
+    for (let round = 0; round < 4; round++) h.stop(bothNamed, { agent: 'agent-b-giveup-ok' })
+    check('maker R-1 legitimate: a give-up whose `Changed:` names both files records both', Object.keys(h.records()[0]?.blobs ?? {}).sort().join() === 'src/p.ts,src/q.ts', JSON.stringify(h.records()))
+
+    // R-2: an Edit / Write / MultiEdit straight into the plugin data directory.
+    const d = fixture('b-datadir')
+    const edit = (cwd, tool, file) => runHook('journal-gate.mjs', { cwd, hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { file_path: file } })
+    for (const tool of ['Write', 'Edit', 'MultiEdit']) {
+      const forged = edit(d.dir, tool, join(DATA, 'maker', `${d.ticket}.jsonl`))
+      check(`journal-gate R-2 incident: ${tool} into the plugin data directory in an open force run — denied, "written by the hooks only"`, forged.decision === 'deny' && /written by the hooks only/.test(forged.text), forged.text)
+    }
+    check('journal-gate R-2 incident: the `plugins/data/stage-pipeline-…` form of the path is denied too', edit(d.dir, 'Write', join(homedir(), '.claude/plugins/data/stage-pipeline-inline/maker/x.jsonl')).decision === 'deny')
+    check('journal-gate R-2 legitimate: Write of a code file and of the task journal — passes', edit(d.dir, 'Write', join(d.dir, 'src/a.ts')).decision === 'allow' && edit(d.dir, 'Edit', join(d.tdir, 'STAGES.md')).decision === 'allow')
+    check('journal-gate R-2 legitimate: the plugin\'s own source (a path with `stage-pipeline` in it) is not the data directory', edit(d.dir, 'Edit', join(PLUGIN, 'maker.mjs')).decision === 'allow')
+    const done = fixture('b-datadir-closed', { heading: `## Force run ${AREL} — completed ${AREL}` })
+    check('journal-gate R-2 legitimate: no open force run (the user is nearby) — the data directory is not guarded', edit(done.dir, 'Write', join(DATA, 'maker', `${done.ticket}.jsonl`)).decision === 'allow')
+  }
+  process.env.STAGE_PIPELINE_MAKER_RECEIPTS = 'off'
+  rmSync(aRoot, { recursive: true, force: true })
 }
 
 process.exit(failed ? 1 : 0)
