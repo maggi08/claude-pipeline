@@ -9,7 +9,7 @@
  * recurrence, the commits made on each task branch after the task closed, and — with `--corpus` — the rows of the VT-1 review corpus for the repo (`--repo` is the
  * name in its `repo` column, by default the folder name of the repo root; `--root` names the repo when the task directory lies outside it). `--json` prints
  * the machine-readable form, otherwise a short text view. Tasks of the repo that live in another repo's task directory (a task over several repos keeps its STAGES.md in one of them)
- * are found through the task directory registry when their STAGES.md names the repo (`--own-tasks-only` leaves them out); `--dismissals` adds the findings closed as false, per checker
+ * are found through the task directory registry when their STAGES.md header names the repo or a branch with the task's ticket exists in it (`--own-tasks-only` leaves them out); `--dismissals` adds the findings closed as false, per checker
  * (the reverse direction of /promote); the examples carry the commits of the task branch that touched their file (the `fixes` of a proof). Without the flag nothing below changes.
  *
  * Sources: `metrics:` lines from the journals of STAGES.md / STAGES-ARCHIVE.md (format —
@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { FIRINGS_FILE } from './hooks/firing.mjs'
-import { knownTaskDirs, pluginDataDir, readConfig, readTaskFile, taskDirFromConfig } from './hooks/pipeline-state.mjs'
+import { isCurrentTask, knownTaskDirs, namesRepo, pluginDataDir, readConfig, readTaskFile, taskBranches, taskDirFromConfig } from './hooks/pipeline-state.mjs'
 import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
 const argv = process.argv.slice(2)
@@ -57,6 +57,54 @@ if (!targets.length || targets.includes('--help')) {
 const taskDirs = new Set()
 for (const target of targets.map((t) => resolve(t))) collectTaskDirs(target)
 
+// Findings mode: the repo, and the tasks of this repo that live in another repo's task directory (the registry), are known before the "no STAGES.md" exit —
+// a repo whose only tasks sit in a neighbour's directory is not empty.
+const toplevel = (cwd) => {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return null
+  }
+}
+// The repo: `--root`, else a target that is a repo, else the repo the first task directory lies in (a task directory outside any repo gives no post-done count).
+const isRepo = (path) => existsSync(join(path, '.git')) && !existsSync(join(path, 'STAGES.md'))
+const resolvedTargets = targets.map((t) => resolve(t))
+const root = !FINDINGS ? null : flagValue('--root') ? resolve(flagValue('--root')) : (resolvedTargets.find(isRepo) ?? (taskDirs.size ? toplevel([...taskDirs][0]) : null))
+// A registry task counts when STAGES.md names the repo in its HEADER (the lines before the first `##`: Branch, repo, contexts) or a branch that carries the task's ticket exists in the repo (the hooks' rule: the `Branch: master` of a neighbour's task is no link, `master` exists in every repo): a repo
+// named only in the body of another repo's task is a mention (a neighbour, a reference), and its findings are not this repo's.
+const tryGit = (cwd, ...args) => {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return null
+  }
+}
+const branchInRepo = (repo, branch) => ['refs/heads/', 'refs/remotes/origin/'].some((prefix) => tryGit(repo, 'rev-parse', '--verify', '--quiet', `${prefix}${branch}`) !== null)
+const foreign = []
+if (FINDINGS && root && !argv.includes('--own-tasks-only')) {
+  const own = new Set([...taskDirs].map((dir) => resolve(dir)))
+  for (const registered of knownTaskDirs()) {
+    let names = []
+    try {
+      names = readdirSync(registered)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      const dir = join(registered, name)
+      try {
+        if (own.has(resolve(dir)) || !statSync(dir).isDirectory()) continue
+        const stages = readTaskFile(dir, 'STAGES.md') ?? ''
+        if (!namesRepo(stages.split(/^## /m)[0], basename(root)) && !taskBranches(stages).some((branch) => isCurrentTask(name, [], branch) && branchInRepo(root, branch))) continue
+      } catch {
+        continue
+      }
+      taskDirs.add(dir)
+      foreign.push(dir)
+    }
+  }
+}
+
 if (!taskDirs.size) {
   console.error('No STAGES.md found')
   process.exit(1)
@@ -64,40 +112,6 @@ if (!taskDirs.size) {
 
 if (FINDINGS) {
   const { findingsReport, renderFindings } = await import('./retro-findings.mjs')
-  const toplevel = (cwd) => {
-    try {
-      return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-    } catch {
-      return null
-    }
-  }
-  // The repo: `--root`, else a target that is a repo, else the repo the first task directory lies in (a task directory outside any repo gives no post-done count).
-  const isRepo = (path) => existsSync(join(path, '.git')) && !existsSync(join(path, 'STAGES.md'))
-  const root = flagValue('--root') ? resolve(flagValue('--root')) : (targets.map((t) => resolve(t)).find(isRepo) ?? toplevel([...taskDirs][0]))
-  // Tasks of this repo kept in another repo's task directory: the registry's directories, a task counts when its STAGES.md names the repo (as the hooks decide it).
-  const foreign = []
-  if (root && !argv.includes('--own-tasks-only')) {
-    const named = new RegExp(`(^|[^\\w-])${basename(root).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w-]|$)`)
-    const own = new Set([...taskDirs].map((dir) => resolve(dir)))
-    for (const registered of knownTaskDirs()) {
-      let names = []
-      try {
-        names = readdirSync(registered)
-      } catch {
-        continue
-      }
-      for (const name of names) {
-        const dir = join(registered, name)
-        try {
-          if (own.has(resolve(dir)) || !statSync(dir).isDirectory() || !named.test(readTaskFile(dir, 'STAGES.md') ?? '')) continue
-        } catch {
-          continue
-        }
-        taskDirs.add(dir)
-        foreign.push(dir)
-      }
-    }
-  }
   const corpusPath = flagValue('--corpus')
   if (corpusPath && !existsSync(corpusPath)) {
     console.error(`No corpus file: ${corpusPath}`)
@@ -105,7 +119,9 @@ if (FINDINGS) {
   }
   const report = findingsReport([...taskDirs].sort(), { repoRoot: root, corpus: corpusPath ? { path: resolve(corpusPath), repo: flagValue('--repo') ?? (root ? basename(root) : '') } : null })
   if (foreign.length) report.registryTasks = foreign
-  process.stdout.write(argv.includes('--json') ? `${JSON.stringify(report, null, 2)}\n` : `${renderFindings(report, { dismissals: argv.includes('--dismissals') })}${foreign.length ? `\nTasks found through the task directory registry (their STAGES.md names the repo): ${foreign.join(', ')}\n` : ''}`)
+  // exit in the write callback: process.exit right after the write cuts a pipe at 64 KB
+  const text = argv.includes('--json') ? `${JSON.stringify(report, null, 2)}\n` : `${renderFindings(report, { dismissals: argv.includes('--dismissals') })}${foreign.length ? `\nTasks found through the task directory registry (their STAGES.md header names the repo, or a branch with the task's ticket is in it): ${foreign.join(', ')}\n` : ''}`
+  await new Promise((done) => process.stdout.write(text, done))
   process.exit(0)
 }
 

@@ -16,7 +16,13 @@ In force mode the user answers once for the whole task: a question without a rec
 
 A question in the middle of the run stops all of it, together with everything that does not depend on the answer, and costs as long as the user is not looking at the terminal.
 
+## Step 3. Never — without a separate explicit command
+
+The branch and the index belong to the user: force gives the right to commit into one's own branch, not to publish.
+
 ## Output — the run summary
+
+Why the heading is renamed: an open block is read by the hook as a permission, and the next catch-up or a new stage on this branch in the regular mode would go with an autocommit.
 
 A precedent: a summary reduced everything to "kk/en texts and minor deviations", and under it lay two defects the user found themselves; that is why the choice belongs to the script.
 

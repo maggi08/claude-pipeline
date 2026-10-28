@@ -21,11 +21,11 @@ From the VT-1 stage 1 memo (what repeated across real tasks). These are examples
 ```json
 { "id": "no-resolve-component", "kind": "eslint",
   "eslint": { "no-restricted-syntax": ["error", { "selector": "CallExpression[callee.name='resolveComponent']", "message": "Import the component from #components." }] },
-  "fixes": ["cb488346"], "headFiles": ["components/garage/LitroPopularServicesBlock.vue"] }
+  "fixes": ["cb488346"] }
 ```
 
 - `kind: "eslint"` — the candidate is a rule config entry; `kind: "repo-rule"` — `pattern` (regex), `files` (globs), `message`; `kind: "claude-md"` — unproven by definition.
-- `fixes` — the commits that fixed the class; their parent's version of each changed source file (up to 12 per fix) is a pre-fix probe. `probes: [{ "rev": "<sha>^", "file": "<path>" }]` names versions by hand. `headFiles` — narrows the HEAD probe to the named files. The default sweeps every tracked file the candidate covers (a repo rule: its `files` globs, prefiltered by `git grep`; ESLint: the tracked source files of the probed extensions) and prints `HEAD: quiet on N of M tracked files`, or the files that fire. A narrowed probe is **not a HEAD proof**: one unrelated quiet file proves nothing, so name files only to look at one, not to get a green. A file that no longer exists is inconclusive. `since` — a HEAD hit on a line added after these commits is "added later" (default: `fixes`).
+- `fixes` — the commits that fixed the class; their parent's version of each changed source file (up to 12 per fix) is a pre-fix probe. `probes: [{ "rev": "<sha>^", "file": "<path>" }]` names versions by hand. `headFiles` — narrows the HEAD probe to the named files. The default sweeps every tracked file the candidate covers (a repo rule: its `files` globs, prefiltered by `git grep`; ESLint: the tracked source files of the probed extensions) and prints `HEAD: quiet on N of M tracked files`, or the files that fire. A narrowed probe is **not a HEAD proof**: it prints NOT PROVEN and exits 1 whatever it finds, because one unrelated quiet file proves nothing, so name files only to look at one, not to get a green. A file that no longer exists is inconclusive. `since` — a HEAD hit on a line added after these commits is "added later" (default: `fixes`).
 - Exit 0 proven, 1 not proven, 2 bad input, 3 no ESLint.
 
 ## How the proof works (spike 13, three real repos)

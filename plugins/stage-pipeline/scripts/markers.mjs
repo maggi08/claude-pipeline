@@ -638,14 +638,28 @@ export function parseRepoRules(configText) {
   if (!heading) return { rules, problems }
   const rest = configText.slice(heading.index + heading[0].length).split('\n')
   const end = rest.findIndex((line) => new RegExp(`^#{1,${heading[1].length}}\\s`).test(line))
+  let columns = 5 // the width of the table: its header row says (4 or 5), else 5
   for (const line of end === -1 ? rest : rest.slice(0, end)) {
     if (!/^\s*\|/.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) continue
     const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/)
     const id = cells[0]?.replace(/[*`]/g, '').trim() ?? ''
-    if (/^(?:id|ид|идентификатор)$/i.test(id) && /pattern|шаблон|regex/i.test(cells[1] ?? '')) continue
+    if (/^(?:id|ид|идентификатор)$/i.test(id) && /pattern|шаблон|regex/i.test(cells[1] ?? '')) {
+      columns = Math.min(5, Math.max(4, cells.length))
+      continue
+    }
     const fail = (why) => problems.push(`Repo rules row "${id || line.trim().slice(0, 40)}": ${why}`)
     if (cells.length < 4) {
       fail('needs at least 4 cells: id, pattern, files, message')
+      continue
+    }
+    if (cells.length > columns) {
+      fail(`has ${cells.length} cells, the table has ${columns} columns (id, pattern, files, message${columns === 5 ? ', evidence' : ''}): an unescaped \`|\` in a cell splits it — write \`\\|\` for a \`|\` inside the pattern`)
+      continue
+    }
+    // a pattern with `|` sits in backticks: a pattern or files cell that opens a code span it does not close was split by an unescaped `|`, whatever the width of the table
+    const brokenSpan = cells.slice(1, 3).find((cell) => /^`/.test(cell.trim()) !== /`$/.test(cell.trim()) && cell.trim() !== '`')
+    if (brokenSpan !== undefined) {
+      fail(`the cell ${JSON.stringify(brokenSpan.trim().slice(0, 40))} opens or closes a code span without its pair: an unescaped \`|\` in a cell splits it — write \`\\|\` for a \`|\` inside the pattern`)
       continue
     }
     if (!/^[\w.-]+$/.test(id)) {
@@ -725,6 +739,15 @@ export function backtrackingRisk(source, regex) {
 export function testLines(regex, texts, timeoutMs) {
   try {
     return runInContext('t.map((text) => r.test(text))', createContext({ r: new RegExp(regex.source, regex.flags), t: texts }), { timeout: timeoutMs })
+  } catch {
+    return null
+  }
+}
+
+/** `repoRuleApplies` for many paths in one `vm` run under one time limit: an array of booleans in the order of `paths`, or null when the globs did not finish. */
+export function repoRuleAppliesAll(rule, paths, timeoutMs) {
+  try {
+    return runInContext('p.map((x) => (!i.length || i.some((g) => g.test(x))) && !e.some((g) => g.test(x)))', createContext({ i: rule.files.include, e: rule.files.exclude, p: paths }), { timeout: timeoutMs })
   } catch {
     return null
   }

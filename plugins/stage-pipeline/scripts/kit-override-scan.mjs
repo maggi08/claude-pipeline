@@ -173,14 +173,14 @@ export function scanDiffText(diff, { kit = [], untracked = [], reference = [] } 
   let next = 0
   let header = false
   // The lines the diff removes from files the scan reads (a moved or extracted line leaves its old place). A removed line covers an added one only as a move:
-  // in the same file, from a file the diff deletes or renames, or as part of a contiguous block of MOVE_BLOCK lines that reappears as a block. Counted: a line
+  // in the same file (a renamed file is the same file under its new name), from a file the diff deletes, or as part of a contiguous block of MOVE_BLOCK lines that reappears as a block. Counted: a line
   // added three times and removed once is two new copies. A removed line of a story, a test or a kit file, or a line removed because it was fixed, covers nothing.
   const MOVE_BLOCK = 3
   const sameFile = new Map() // `${file}\0${line}` → count
-  const goneFile = new Map() // line → count, from deleted or renamed files
+  const goneFile = new Map() // line → count, from deleted files only (a renamed file is the same file: its removed lines are keyed by its new name in sameFile)
   const grams = new Map() // MOVE_BLOCK removed lines in a row, joined → count
   let source = null
-  let gone = false
+  let gone = false // `deleted file mode`: the lines left the repo's files, they may reappear anywhere
   let block = []
   const closeBlock = () => {
     for (let at = 0; at + MOVE_BLOCK <= block.length; at++) {
@@ -194,8 +194,8 @@ export function scanDiffText(diff, { kit = [], untracked = [], reference = [] } 
       closeBlock()
       header = true
       const names = row.match(/^diff --git a\/(.*) b\/(.*)$/)
-      source = names ? names[1] : null
-      gone = Boolean(names) && names[1] !== names[2]
+      source = names ? names[2] : null
+      gone = false
     } else if (header && row.startsWith('deleted file mode')) gone = true
     else if (row.startsWith('+++ ')) file = row === '+++ /dev/null' ? null : row.slice(6)
     else if (row.startsWith('@@')) {

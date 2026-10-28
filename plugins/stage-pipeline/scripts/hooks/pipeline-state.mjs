@@ -82,6 +82,9 @@ function readTasks(taskDir, branch) {
     .sort((a, b) => b.mtime - a.mtime)
 }
 
+/** Whether `text` names the repo as a word of its own (`webview` in `webview-abc12` or `my-webview` is not it). The hooks read a task's whole STAGES.md with it, retro only its header. */
+export const namesRepo = (text, repoName) => new RegExp(`(^|[^\\w-])${escapeRegExp(repoName)}([^\\w-]|$)`).test(text)
+
 /**
  * A task over several repos lives in the task directory of one of them: the task edits core and the webview, and STAGES.md lies
  * in core's `task_path`. Without this the hooks did not see the task in the second repo — the orchestrator's commits bypassed
@@ -98,7 +101,7 @@ function foreignTasks(ownTaskDir, root, branch) {
     .filter((dir) => dir !== own)
     .flatMap((dir) => readTasks(dir, branch))
     .filter((task) => task.current && /^[A-Z][A-Z0-9]*-\d+$/.test(task.ticket) && isCurrentTask(task.ticket, [], branch))
-    .filter((task) => new RegExp(`(^|[^\\w-])${escapeRegExp(repoName)}([^\\w-]|$)`).test(task.stages))
+    .filter((task) => namesRepo(task.stages, repoName))
     .map((task) => ({ ...task, foreign: true }))
 }
 

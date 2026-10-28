@@ -206,7 +206,8 @@ function headSweep(root, kind, engine, probes) {
       files = covered.filter((file) => hit.has(file))
     } else if (grep.status === 1) files = []
   }
-  const truncated = files.length > MAX_SWEPT
+  // A repo rule is capped (its files globs and the git grep prefilter narrow it); an ESLint sweep is not: it lints every tracked source file of the probed extensions, one after another, however many (a repo of 5300 files is complete, only slower).
+  const truncated = kind === 'repo-rule' && files.length > MAX_SWEPT
   return { files: truncated ? files.slice(0, MAX_SWEPT) : files, covered: covered.length, truncated }
 }
 
@@ -229,7 +230,7 @@ export async function proveCandidate(root, candidate) {
   const pre = []
   for (const { rev, file } of probes) pre.push(await probe(rev, file))
   // HEAD is swept by default: every tracked file the candidate covers, not the files the fix cleaned (those are quiet by construction).
-  // `headFiles` narrows the sweep to the named files; a narrowed probe is not a HEAD proof and the result says so.
+  // `headFiles` narrows the sweep to the named files; a narrowed probe is not a HEAD proof: it is never PROVEN (exit 1), the reason says what to drop.
   const narrowed = Boolean(candidate.headFiles?.length)
   const sweep = narrowed ? null : headSweep(root, kind, engine, probes)
   const headFiles = narrowed ? candidate.headFiles : sweep.files
@@ -251,11 +252,13 @@ export async function proveCandidate(root, candidate) {
   const covered = narrowed ? headFiles.length : sweep.covered
   const headScope = { narrowed, covered, probed: headFiles.length, quiet: head.filter(({ status }) => status === 'quiet').length + (covered - headFiles.length), truncated: sweep?.truncated ?? false }
   let reason = ''
-  if (headScope.truncated) reason = `the HEAD sweep is over ${MAX_SWEPT} files: narrow it with headFiles, "quiet" is not shown`
+  if (headScope.truncated) reason = `the HEAD sweep is over ${MAX_SWEPT} files that can fire: "quiet" is not shown, narrow the files globs of the repo rule`
   else if (firedPre.length < 2) reason = `fires on ${firedPre.length} conclusive pre-fix version${firedPre.length === 1 ? '' : 's'} (needs 2; ${conclusivePre} of ${pre.length} probes were conclusive)`
   else if (legacy.length) reason = `still fires on HEAD at lines that predate the fix: ${legacy.map(({ file, legacyLines }) => `${file}:${legacyLines.join(',')}`).join('; ')} (legacy code, not proof of the rule)`
   else if (!conclusiveHead.length && !headScope.quiet) reason = 'no conclusive HEAD probe: the files are gone or not linted at HEAD, so "quiet" is not shown'
-  const ok = narrowed ? `fires on pre-fix versions, quiet on the ${headFiles.length} HEAD file(s) named (narrowed: not a HEAD proof)` : `fires on pre-fix versions, quiet on HEAD (${headScope.quiet} of ${covered} tracked files)`
+  // the narrowed run is never a proof, but a more specific reason above (too few pre-fix hits, a legacy line) is shown first
+  if (!reason && narrowed) reason = `a run narrowed to ${headFiles.length} named HEAD file(s) is not a HEAD proof: drop headFiles to sweep every tracked file the rule covers${head.some(({ status }) => status === 'fired') ? ` (it already fires on ${head.filter(({ status }) => status === 'fired').map(({ file }) => file).join(', ')})` : ''}`
+  const ok = `fires on pre-fix versions, quiet on HEAD (${headScope.quiet} of ${covered} tracked files)`
   return { id: candidate.id, kind, engine: engine.describe, proven: !reason, reason: reason || ok, pre, head, headScope, existing: engine.existing?.() ?? {}, existingNote: engine.existingNote?.() ?? '' }
 }
 
