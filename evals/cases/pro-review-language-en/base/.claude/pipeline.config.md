@@ -1,6 +1,6 @@
-# Pipeline config — eval-fixture
+# Pipeline config — account-profile
 ## Project
-- slug: eval-fixture
+- slug: account-profile
 - stack: React 18 / TS
 - package_manager: npm
 - main_branch: main

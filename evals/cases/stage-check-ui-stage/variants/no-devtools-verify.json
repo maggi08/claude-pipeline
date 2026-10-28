@@ -1,0 +1,29 @@
+{
+  "why": "stage-check as if the runtime checker were retired: the lines that name devtools-verify are gone, the description lists the other two, and Step 1 says the browser is never driven from the stage check; the sentence that sends runtime checking to a subagent now says it is retired, and the agent's own description tells the orchestrator never to launch it",
+  "edits": [
+    {
+      "file": "skills/stage-check/SKILL.md",
+      "find": "(figma-compare, devtools-verify, pro-review)",
+      "replace": "(figma-compare, pro-review)"
+    },
+    {
+      "file": "skills/stage-check/SKILL.md",
+      "deleteLines": "^(?!description:).*devtools-verify"
+    },
+    {
+      "file": "skills/stage-check/SKILL.md",
+      "find": "## Step 1. Checkers (maker/checker — always a subagent)\n",
+      "replace": "## Step 1. Checkers (maker/checker — always a subagent)\n\nThe runtime browser check is retired: the browser is not driven from a stage check. Never launch the `devtools-verify` agent; a criterion tagged for it is marked `[skip: runtime check retired]` in the checklist and the stage summary.\n"
+    },
+    {
+      "file": "skills/stage-check/SKILL.md",
+      "find": "Runtime checking and code review are checker subagents, not the orchestrator's work;",
+      "replace": "Code review is a checker subagent, not the orchestrator's work; runtime checking is retired and nobody runs it;"
+    },
+    {
+      "file": "agents/devtools-verify.md",
+      "find": "name: devtools-verify\ndescription: ",
+      "replace": "name: devtools-verify\ndescription: RETIRED - never launch this agent, the runtime check is switched off in this repo. Was: "
+    }
+  ]
+}

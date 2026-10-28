@@ -1,0 +1,43 @@
+{
+  "agent": "pro-review",
+  "why": "recall (deleted-parity, states): the rewrite meets the happy-path criterion and drops two behaviours of the code it replaces - the in-flight state of the cancel button (a second press cancels twice) and the failure toast. Only a comparison with the old file (git show HEAD:...) sees them",
+  "identity": {
+    "repo": "order-console",
+    "ticket": "ORC-31",
+    "user": "Priya Halvorsen",
+    "email": "priya.halvorsen@order-console.dev"
+  },
+  "prompt": "Ticket ORC-31, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN the user presses \"Cancel order\" THEN the order is cancelled and the step closes",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "ActiveOrderStep\\.tsx[^\\n]*(loading|pending|in-flight|double|twice|disabled|second press)|(loading|pending|in-flight|double|twice|disabled)[^\\n]*ActiveOrderStep\\.tsx",
+      "why": "the cancel button lost its in-flight state: a second press sends a second cancel"
+    },
+    {
+      "severity": "critical|major",
+      "file": "ActiveOrderStep\\.tsx[^\\n]*(toast|error|fail|catch|reject|silent)|(toast|error|fail|catch|reject|silent)[^\\n]*ActiveOrderStep\\.tsx",
+      "why": "the failure path is gone: a failed cancel closes the step with no message and the unhandled rejection is silent"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Approve\\*{0,2}\\s*$",
+      "why": "a plain Approve on a rewrite that drops two behaviours"
+    }
+  ],
+  "provenFailing": {
+    "on": "ablate:agent:pro-review",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@0494f328e",
+    "runs": 1,
+    "failed": 1,
+    "caseHash": "c00b21263277bf58",
+    "failures": [
+      "no finding line: the cancel button lost its in-flight state: a second press sends a second cancel (critical|major /ActiveOrderStep\\.tsx[^\\n]*(loading|pending|in",
+      "no finding line: the failure path is gone: a failed cancel closes the step with no message and the unhandled rejection is silent (critical|major /ActiveOrderSte"
+    ]
+  }
+}

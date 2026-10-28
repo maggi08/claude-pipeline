@@ -1,0 +1,27 @@
+{
+  "agent": "pro-review",
+  "why": "precision: the explicit portal container of the old dialog call is gone, and that is right - the shared Dialog resolves the container itself from the provider (src/ui/Dialog.tsx, src/app/Providers.tsx, the archive dialog next to it has never passed one). The report must not raise it, and must still find the real defect of the same file: the delete is not awaited, so the list is refetched before the guest is gone PENDING: awaits a discriminating proof - the recorded failure was a grader artifact (the bare model did find the unawaited delete and raised no portal trap), so the case does not yet fail on any comparison; move it back to evals/cases/ with a provenFailing record once a run that really fails exists.",
+  "identity": {
+    "repo": "guest-admin",
+    "ticket": "GST-9",
+    "user": "Rosa Delgado",
+    "email": "rosa.delgado@guest-admin.dev"
+  },
+  "prompt": "Ticket GST-9, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN the user confirms the deletion THEN the guest is removed from the list shown on the page and the dialog closes\n- `AC-1.2` WHEN the user presses \"Keep\" THEN the dialog closes and nothing is deleted",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "DeleteGuestModal\\.tsx[^\\n]*(await|refetch|refresh|race|stale|not awaited|before)|(await|refetch|refresh|race|stale|not awaited)[^\\n]*DeleteGuestModal\\.tsx",
+      "why": "removeGuest is not awaited: the list is refreshed (and the dialog closed) before the delete finishes, and a failure is silent"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "critical|major|minor",
+      "file": "(portal|container)[^\\n]*(lost|removed|missing|dropped|no longer|not passed|wrong document)|(lost|removed|missing|dropped)[^\\n]*(portal|container)",
+      "why": "the dialog gets its portal container from the provider, the explicit prop was redundant"
+    }
+  ]
+}

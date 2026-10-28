@@ -102,13 +102,17 @@ function foreignTasks(ownTaskDir, root, branch) {
 }
 
 /**
- * The plugin data directory: Claude Code gives it to hooks in CLAUDE_PLUGIN_DATA (`stage-pipeline-<marketplace>`; `stage-pipeline-inline`
+ * The plugin data directory: `STAGE_PIPELINE_DATA_DIR` (an absolute path) wins when set — the eval harness points a run at a throwaway directory with it, because Claude Code overwrites CLAUDE_PLUGIN_DATA for the hooks of a session. Else Claude Code gives it to hooks in CLAUDE_PLUGIN_DATA (`stage-pipeline-<marketplace>`; `stage-pipeline-inline`
  * for a `--plugin-dir` session). A script run from Bash has no such variable and used to fall back to a bare `stage-pipeline`
  * directory — a different one, so the snapshots and the gate runs of the two never met. Now the name comes from where the script itself lies:
  * the `installPath` of a `stage-pipeline@<marketplace>` entry in `~/.claude/plugins/installed_plugins.json` that contains it (or a cached older version of that install) gives
  * `stage-pipeline-<marketplace>`; else the `installLocation` / `source.path` of a marketplace in `known_marketplaces.json` that contains it (a marketplace connected as a directory) gives `stage-pipeline-<marketplace>`; a script outside both (a `--plugin-dir` run) gives `stage-pipeline-inline`, as the hooks of that session do.
  */
 export function pluginDataDir() {
+  // The override wins over CLAUDE_PLUGIN_DATA: Claude Code sets that variable itself for the hooks of a session, so a harness that sets only it
+  // never reaches them (the eval runs wrote into the live directory). Only an absolute path counts.
+  const override = process.env.STAGE_PIPELINE_DATA_DIR
+  if (override && isAbsolute(override)) return override
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA
   const here = dirname(fileURLToPath(import.meta.url))
   const root = join(homedir(), '.claude/plugins/data')

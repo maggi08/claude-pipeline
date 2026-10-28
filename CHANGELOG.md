@@ -5,6 +5,24 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.19.0 — 2026-10-27
+
+### The plugin keeps a log of its own firings; the final pro-review names its model (VT-3, stages 6–7)
+
+What changes against 0.18.2.
+
+**Every block or deny of a hook is logged.** journal-gate, git-guard, agent-guard, force-guard and frames-guard now write one row per rule a block names to `firings.jsonl` in the plugin data dir: a stable rule ID (`<hook>/<slug>`, for example `agent-guard/review-model`), the task, the repo, the time, the tool, whether the call only read, and the event. Only IDs and paths: never the command, a file's content or the message. The log is capped at 1 MB with one older generation (`firings.jsonl.1`). A failed write never changes what a hook decides. A `git branch`, `git remote`, `git config`, `git worktree` or `git stash` counts as a read only in a listing form, and `find -delete/-exec` and `sort -o` do not count.
+
+**`retro.mjs` has a «Hook firings» section.** It counts the rows of the repo it is run for, including the ones its linked worktrees wrote (`--all`: the whole machine's log) and says how many blocks they are (a block that names several rules writes several rows at one moment, journal-gate included, and counts once in the headline). Per rule: how often it fired and how often on a read, then the tasks where the same rule fired more than once, then the rules that fired on reads. `--firings <file>` reads another log.
+
+**The final whole-branch pro-review in `/stage-force` says what model it runs on.** Step 4 used to name `review_model` only in a parenthesis, so the orchestrator spawned the review without `model` and agent-guard denied the call, forcing a retry. It now says the Agent call must carry `model: <review_model>`.
+
+**`STAGE_PIPELINE_DATA_DIR`.** An absolute path in this environment variable makes every hook and script use that directory as the plugin data dir. Claude Code overwrites `CLAUDE_PLUGIN_DATA` for a session's hooks, so a throwaway run (the evals) could not be pointed at its own directory. Unset, nothing changes.
+
+**Dev repo only** (nothing of it ships in the plugin): the eval harness runs the production plugin on blind cases and grades the trace, the first decision cases run `/stage-check` and `/stage-force` for a few turns and grade the Agent calls they spawn, a rule to enforcer table maps every imperative of the skills to a hook, a script or prose and fails when the prose count grows, `validate.mjs` demands an incident and a legitimate fixture for every hook rule ID and checks the READMEs for unknown slash commands and broken links, and `scripts/run-audit.mjs` with the `/audit-runs` skill builds a per-run digest from transcripts.
+
+**On upgrade.** Nothing to rewrite. The log starts empty with the first firing after the update.
+
 ## 0.18.2 — 2026-10-25
 
 ### The run summary is a normal answer, and no blocker drops out of it (VT-1, stage 5e)

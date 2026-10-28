@@ -54,6 +54,7 @@ const tool = input.tool_name ?? ''
 const toolInput = input.tool_input ?? {}
 const target = tool === 'Bash' ? '' : String(toolInput.file_path ?? '')
 if (tool !== 'Bash' && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
+const { recordFiring } = await import('./firing.mjs')
 const { hasPipelineConfig, pluginDataDir, readBounded, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
 const cwd = input.cwd ?? process.cwd()
 const pre = input.hook_event_name === 'PreToolUse'
@@ -209,6 +210,8 @@ const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-d
 
 const messages = []
 const context = []
+// One moment for every row this call writes: they are one block (one `decision: 'block'` below), and retro counts the rows that share a moment as one.
+const at = new Date().toISOString()
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
   // The report is the one written by this edit: for Write/Edit its path, for Bash the reports that changed during the call.
@@ -228,6 +231,10 @@ for (const task of tasks) {
   })
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
+  // One firing per kind of violation the block carries (the violations' own rule names go along as `kinds`: names only, no message text).
+  for (const [rule, found] of [['journal-gate/journal', journal], ['journal-gate/report', reports], ['journal-gate/close', closing]]) {
+    if (found.length) recordFiring(rule, { input, task: task.ticket, repo: state.worktree, kinds: found.map((violation) => violation.rule).filter(Boolean), at })
+  }
   if (!closing.length) {
     const digest = await closedDigest(task)
     if (digest) context.push(digest)

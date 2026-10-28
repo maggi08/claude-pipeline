@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-03-02T10:00:00Z","sessionId":"s2","isSidechain":false,"message":{"role":"user","content":"work on something else entirely"}}
+{"type":"assistant","timestamp":"2026-03-02T10:01:00Z","sessionId":"s2","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"z1","name":"Agent","input":{"subagent_type":"stage-pipeline:pro-review","description":"Other","prompt":"x"}}]}}

@@ -3,5 +3,9 @@
   "why": "\"the fix did not help\" calls root-cause, not one more blind edit",
   "base": "../pro-review-clean-ac/base",
   "prompt": "Я уже поправил ProfileName, но имя всё равно не показывается у части пользователей. Фикс не помог — разберись.",
-  "expectSkill": "root-cause"
+  "expectSkill": "root-cause",
+  "forbidSkills": [
+    "stage-force",
+    "stage-check"
+  ]
 }

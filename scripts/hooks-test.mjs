@@ -2005,6 +2005,15 @@ check('retro: metrics from the journal are split by stage, 2.1 is a separate sta
 check('retro: findings are summed across all stages', /findings in total: 14/.test(retro.stdout))
 check('retro: size by added lines', /\| ≤300 \| 1 \|/.test(retro.stdout) && /\| 301–1000 \| 1 \|/.test(retro.stdout))
 check('retro: the old report name deps-2.md is counted', /\| deps-audit \| 0 \| 0 \| 1 \|/.test(retro.stdout))
+// VT-3 branch review m-4: the flags are read in one pass, whatever their order; a valueless --firings is an error.
+const retroLog = join(retroRoot, 'firings-test.jsonl')
+writeFileSync(retroLog, JSON.stringify({ rule: 'agent-guard/review-model', task: 'T', repo: retroRoot, ts: 1, tool: 'Agent', event: 'PreToolUse', read: false }) + '\n')
+const retroForward = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot, '--firings', retroLog, '--all'], { encoding: 'utf8' })
+const retroReversed = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot, '--all', '--firings', retroLog], { encoding: 'utf8' })
+check('retro: --firings <file> --all reads the file', /agent-guard\/review-model/.test(retroForward.stdout), retroForward.stderr.trim())
+check('retro: --all before --firings <file> reads the same file', /agent-guard\/review-model/.test(retroReversed.stdout), retroReversed.stdout.slice(0, 200))
+const retroBare = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot, '--all', '--firings'], { encoding: 'utf8' })
+check('retro: a valueless --firings exits 2 with a message', retroBare.status === 2 && /--firings needs a file/.test(retroBare.stderr), `${retroBare.status} ${retroBare.stderr.trim()}`)
 rmSync(retroRoot, { recursive: true, force: true })
 
 // ── 0.16 catch-up: English gate forms close only what they should (final reviews of the branch) ──
@@ -5304,6 +5313,227 @@ rmSync(retroRoot, { recursive: true, force: true })
     }
     check('5f: openBlockers on one 1 MB line of lift fields (refused values, a parenthesis that never closes, request words), old and new block, the units `; Lifted: x` and the Russian label unit included, < 250 ms per read', worst.ms < 250, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
   }
+}
+
+// ── VT-3 stage 6: the eval harness isolates the plugin data dir ──────────────
+{
+  // Claude Code overwrites CLAUDE_PLUGIN_DATA for hooks, so the harness needs a variable of its own that wins over it.
+  const a = mkdtempSync(join(tmpdir(), 'pd-override-'))
+  const b = mkdtempSync(join(tmpdir(), 'pd-claude-'))
+  const dirOf = (extra) => {
+    const env = { ...process.env, ...extra }
+    for (const key of ['STAGE_PIPELINE_DATA_DIR', 'CLAUDE_PLUGIN_DATA']) if (extra[key] === undefined) delete env[key]
+    return spawnSync(process.execPath, ['--input-type=module', '-e', `import { pluginDataDir } from ${JSON.stringify(join(PLUGIN, 'hooks/pipeline-state.mjs'))}; console.log(pluginDataDir())`], { env, encoding: 'utf8' }).stdout.trim()
+  }
+  check('data dir: STAGE_PIPELINE_DATA_DIR wins over CLAUDE_PLUGIN_DATA', dirOf({ STAGE_PIPELINE_DATA_DIR: a, CLAUDE_PLUGIN_DATA: b }) === a, dirOf({ STAGE_PIPELINE_DATA_DIR: a, CLAUDE_PLUGIN_DATA: b }))
+  check('data dir legit: without the override CLAUDE_PLUGIN_DATA is used as before', dirOf({ CLAUDE_PLUGIN_DATA: b }) === b, dirOf({ CLAUDE_PLUGIN_DATA: b }))
+  check('data dir: a relative or empty override is ignored', dirOf({ STAGE_PIPELINE_DATA_DIR: 'relative/dir', CLAUDE_PLUGIN_DATA: b }) === b && dirOf({ STAGE_PIPELINE_DATA_DIR: '', CLAUDE_PLUGIN_DATA: b }) === b)
+  rmSync(a, { recursive: true, force: true })
+  rmSync(b, { recursive: true, force: true })
+}
+
+// ── VT-3 stage 7a: hook firings log (AC-7.2) ─────────────────────────────────
+// Every block or deny of the five hooks appends {rule, task, repo, ts, tool, read} to <plugin data>/firings.jsonl: IDs and paths only, rotated, and a failing write never changes the verdict.
+{
+  const { isRead, readOnlyBash } = await import(join(PLUGIN, 'hooks/firing.mjs'))
+  const iso = mkdtempSync(join(tmpdir(), 'firings-iso-'))
+  const fx = mkdtempSync(join(tmpdir(), 'firings-fx-'))
+  const fxApp = join(fx, 'app')
+  const fxHome = join(fx, 'home')
+  repoAt(fxApp, 'main')
+  write(fxHome, { '.claude/settings.json': JSON.stringify({ permissions: { ask: ['Bash(pkill *)', 'Bash(git push *)'] } }) })
+  write(fxApp, {
+    '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+    '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force: '## Force-прогон 2026-10-03\nПодтверждено: 03.10.2026 — да\n\n' }),
+    '.claude/tasks/T-10/STAGES.md': stages('T-10', 'T-10/feat/n'),
+    '.claude/tasks/T-11/STAGES.md': stages('T-11', 'T-11/feat/u', { force: '## Force-прогон 2026-10-20\nРежим: автономный.\n\n' }),
+  })
+  const hookRun = (name, input, env = {}) =>
+    spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], {
+      input: JSON.stringify({ cwd: fxApp, ...input }),
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fxHome, CLAUDE_PROJECT_DIR: fxApp, STAGE_PIPELINE_DATA_DIR: iso, ...env },
+    })
+  const rowsIn = (dir, name = 'firings.jsonl') => {
+    try {
+      return readFileSync(join(dir, name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    } catch {
+      return []
+    }
+  }
+  const bash = (command) => ({ tool_name: 'Bash', hook_event_name: 'PreToolUse', tool_input: { command } })
+  const agent = (subagent_type, prompt, model) => ({ tool_name: 'Agent', hook_event_name: 'PreToolUse', tool_input: { subagent_type, prompt, ...(model ? { model } : {}) } })
+  const last = () => rowsIn(iso).at(-1)
+  const top = realpathSync(fxApp)
+
+  git(fxApp, 'checkout', '-qb', 'T-9/feat/f')
+  const killed = hookRun('force-guard.mjs', bash('pkill -f vite'))
+  check('firings AC-7.2: pkill in force — denied as before and a row force-guard/kill-by-name with task, repo, ts, tool', killed.stdout.includes('permissionDecision":"deny"') && last()?.rule === 'force-guard/kill-by-name' && last().task === 'T-9' && last().repo === top && last().tool === 'Bash' && last().read === false && !Number.isNaN(Date.parse(last().ts)), JSON.stringify(last()))
+  hookRun('force-guard.mjs', bash('git push origin T-9/feat/f'))
+  check('firings AC-7.2: git push under an ask rule — force-guard/ask-rule', last()?.rule === 'force-guard/ask-rule' && last().task === 'T-9', JSON.stringify(last()))
+  hookRun('git-guard.mjs', bash('git commit -am "x\n\nCo-Authored-By: C <c@d.e>"'))
+  check('firings AC-7.2: a signature in a force commit — git-guard/service-trailer', last()?.rule === 'git-guard/service-trailer' && last().task === 'T-9', JSON.stringify(last()))
+  hookRun('agent-guard.mjs', agent('stage-pipeline:pro-review', 'Ticket T-9, whole-branch mode.', 'sonnet'))
+  check('firings AC-7.2: whole-branch pro-review off review_model — agent-guard/review-model, tool Agent', last()?.rule === 'agent-guard/review-model' && last().tool === 'Agent', JSON.stringify(last()))
+  git(fxApp, 'checkout', '-q', 'main')
+  git(fxApp, 'checkout', '-qb', 'T-10/feat/n')
+  hookRun('git-guard.mjs', bash('git add -A'))
+  check('firings AC-7.2: git add in normal mode — git-guard/normal-mode', last()?.rule === 'git-guard/normal-mode' && last().task === 'T-10', JSON.stringify(last()))
+  git(fxApp, 'checkout', '-q', 'main')
+  git(fxApp, 'checkout', '-qb', 'T-11/feat/u')
+  hookRun('agent-guard.mjs', agent('stage-pipeline:stage-implement', 'Ticket T-11, stage 1, implement mode'))
+  check('firings AC-7.2: stage-implement before the interview is confirmed — agent-guard/no-confirmed', last()?.rule === 'agent-guard/no-confirmed' && last().task === 'T-11', JSON.stringify(last()))
+  git(fxApp, 'checkout', '-q', 'main')
+  git(fxApp, 'checkout', '-q', 'T-9/feat/f')
+
+  // IDs and paths only: neither a command nor a reason text reaches the log
+  const raw = readFileSync(join(iso, 'firings.jsonl'), 'utf8')
+  check('firings: no command text, message or file content in the log', !/pkill|vite|git push|Co-Authored|noreply|stage-pipeline:|review_model/.test(raw), raw.slice(0, 300))
+  check('firings legit: an allowed call (a clean read-only command in force) writes no row', (() => {
+    const before = rowsIn(iso).length
+    hookRun('force-guard.mjs', bash('ls -la'))
+    hookRun('git-guard.mjs', bash('git status'))
+    return rowsIn(iso).length === before
+  })())
+
+  // the verdict does not depend on the log: a data directory that cannot be created gives the same denial
+  const blocker = join(fx, 'not-a-dir')
+  writeFileSync(blocker, 'x')
+  const withLog = hookRun('force-guard.mjs', bash('pkill -f vite'))
+  const noLog = hookRun('force-guard.mjs', bash('pkill -f vite'), { STAGE_PIPELINE_DATA_DIR: join(blocker, 'sub') })
+  check('firings AC-7.2: a log that cannot be written keeps the verdict (same stdout, exit 0)', noLog.status === 0 && noLog.stdout === withLog.stdout && noLog.stdout.includes('"deny"'), noLog.stdout.slice(0, 120) + noLog.stderr.slice(0, 120))
+  const noLogAgent = hookRun('agent-guard.mjs', agent('stage-pipeline:pro-review', 'Ticket T-9, whole-branch mode.', 'sonnet'), { STAGE_PIPELINE_DATA_DIR: join(blocker, 'sub') })
+  check('firings: a log that cannot be written keeps the agent-guard denial too', noLogAgent.status === 0 && noLogAgent.stdout.includes('"deny"'), noLogAgent.stdout.slice(0, 120))
+
+  // rotation: past the cap the file becomes .1 and a new one starts; nothing grows without a bound
+  const small = mkdtempSync(join(tmpdir(), 'firings-rot-'))
+  for (let n = 0; n < 12; n++) hookRun('force-guard.mjs', bash('pkill -f vite'), { STAGE_PIPELINE_DATA_DIR: small, STAGE_PIPELINE_FIRINGS_MAX: '700' })
+  const live = rowsIn(small)
+  const old = rowsIn(small, 'firings.jsonl.1')
+  const size = (name) => {
+    try {
+      return statSync(join(small, name)).size
+    } catch {
+      return 0
+    }
+  }
+  check('firings AC-7.2: rotation - past the size cap the log becomes firings.jsonl.1 and a new file starts', old.length > 0 && live.length > 0 && size('firings.jsonl') < 700 + 400 && size('firings.jsonl.1') < 700 + 400, `live ${live.length} (${size('firings.jsonl')} B), old ${old.length} (${size('firings.jsonl.1')} B)`)
+  check('firings: rotation keeps one older generation only', !existsSync(join(small, 'firings.jsonl.2')) && live.length + old.length <= 12)
+
+  // retro.mjs prints the counts per rule, the repeats per task and the firings on reads, from the rows the hooks wrote
+  const retroTask = join(fx, 'retro-task')
+  write(retroTask, { 'STAGES.md': stages('T-9', 'T-9/feat/f') })
+  const reads = [{ rule: 'journal-gate/journal', task: 'T-3', repo: '/r', ts: new Date().toISOString(), tool: 'Bash', read: true, event: 'PostToolUse' }]
+  appendFileSync(join(iso, 'firings.jsonl'), `${reads.map((row) => JSON.stringify(row)).join('\n')}\nnot json\n`)
+  const printed = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroTask], { encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: iso } }).stdout
+  check('firings AC-7.2: retro prints firings per rule', /## Hook firings/.test(printed) && /\| force-guard\/kill-by-name \| 2 \| 1 \| 0 \|/.test(printed) && /\| force-guard\/ask-rule \| 1 \| 1 \| 0 \|/.test(printed), printed.split('## Hook firings')[1])
+  check('firings AC-7.2: retro prints repeats per task (same rule, same task, more than once)', /- T-9 \/ force-guard\/kill-by-name: 2/.test(printed) && !/- T-9 \/ force-guard\/ask-rule/.test(printed), printed.split('Repeats per task')[1])
+  check('firings AC-7.2: retro prints firings on reads', /- journal-gate\/journal: 1 of 1/.test(printed), printed.split('Firings on reads')[1])
+  check('firings legit: retro on an empty data directory says none logged and keeps the other sections', (() => {
+    const out = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroTask], { encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: join(fx, 'empty') } }).stdout
+    return /- none logged/.test(out) && /## Fix-loop/.test(out) && /## Checkers/.test(out)
+  })())
+  check('firings: retro --firings reads another file', /\| journal-gate\/journal \| 1 \|/.test(spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroTask, '--firings', join(iso, 'firings.jsonl')], { encoding: 'utf8' }).stdout))
+
+  // what counts as a read: the call changes nothing, judged from the input only
+  check('firings: Read, Grep and Glob are reads', ['Read', 'Grep', 'Glob'].every((tool_name) => isRead({ tool_name })) && !isRead({ tool_name: 'Edit' }) && !isRead({ tool_name: 'Agent' }))
+  check('firings: read-only Bash is a read (cat, ls | wc, git status/log/diff, sed -n, a /dev/null redirect)', ['cat a.md', 'ls -la | wc -l', 'git status', 'git log --oneline -5', 'git diff HEAD', "sed -n '1,5p' f", 'grep -rn x . 2>/dev/null', 'git status && git diff'].every(readOnlyBash))
+  check('firings legit: Bash that writes or runs code is not a read (git commit, rm, a redirect, sed -i, node, a subshell, tee)', ['git commit -m x', 'git add -A', 'rm -rf x', 'cat a > b', 'sed -i s/a/b/ f', 'node x.mjs', 'echo $(rm x)', 'ls | tee out', 'cat a && rm a', ''].every((command) => !readOnlyBash(command)))
+  check('firings: git branch, remote, config, worktree and stash are reads only in a listing form', ['git branch', 'git branch --list', 'git branch -a', 'git branch -vv', 'git stash list', 'git stash show -p', 'git config --get user.name', 'git config --list', 'git remote -v', 'git remote show origin', 'git worktree list', 'find . -name x', 'sort a'].every(readOnlyBash))
+  check('firings legit: git branch NAME, branch -D, stash, stash pop, config KEY VALUE, remote add, worktree add, find -delete/-exec/-fprint and sort -o are not reads', ['git branch feature', 'git branch -D x', 'git stash', 'git stash push', 'git stash pop', 'git config user.name x', 'git remote add o u', 'git remote remove o', 'git worktree add ../x', 'git worktree remove x', 'find . -delete', 'find . -exec rm {} \\;', 'find . -name x -execdir ls \\;', 'find . -ok rm {} \\;', 'find . -fprint out', 'sort -o out a', 'sort a -o out', 'sort --output=out a'].every((command) => !readOnlyBash(command)))
+
+  // every rule ID of the hooks wrote a row somewhere in this suite (the fixtures above and all the earlier ones ran against the one data directory)
+  const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : DATA
+  const written = new Set([...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)].map((row) => row.rule))
+  const ids = new Set()
+  for (const hookName of ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard']) {
+    for (const m of readFileSync(join(PLUGIN, 'hooks', `${hookName}.mjs`), 'utf8').matchAll(new RegExp(`'(${hookName}/[a-z0-9-]+)'`, 'g'))) ids.add(m[1])
+  }
+  for (const id of [...ids].sort()) check(`firings AC-7.2: ${id} wrote a row in this suite`, written.has(id))
+  check('firings: the suite found the rule IDs it should (21 at this stage, never fewer)', ids.size >= 21, `${ids.size}`)
+  check('firings: every row of the suite has the fields retro needs', [...rowsIn(suiteDir)].every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
+
+  for (const dir of [iso, fx, small]) rmSync(dir, { recursive: true, force: true })
+}
+
+// ── VT-3 final checks: retro's «Hook firings» is scoped to the retro targets and counts blocks (appended: D3) ──────────────────────────────────
+{
+  const scope = mkdtempSync(join(tmpdir(), 'retro-scope-'))
+  const repoA = join(scope, 'repo-a')
+  const repoB = join(scope, 'repo-b')
+  mkdirSync(join(repoA, '.git'), { recursive: true })
+  mkdirSync(join(repoB, '.git'), { recursive: true })
+  write(repoA, { 'T-1/STAGES.md': stages('T-1', 'T-1/feat/a') })
+  const at = '2026-10-27T10:00:00.000Z'
+  const row = (rule, repo, ts, extra = {}) => JSON.stringify({ rule, task: 'T-1', repo, ts, tool: 'Bash', read: false, event: 'PostToolUse', ...extra })
+  const logFile = join(scope, 'firings.jsonl')
+  // repo A: one journal-gate block naming three rules (one moment) and one force-guard denial; repo B: a block that must not be counted for A
+  writeFileSync(logFile, [
+    row('journal-gate/close', repoA, at), row('journal-gate/journal', repoA, at), row('journal-gate/report', repoA, at),
+    row('force-guard/ask-rule', repoA, '2026-10-27T10:05:00.000Z', { event: 'PreToolUse' }),
+    row('git-guard/normal-mode', repoB, at, { event: 'PreToolUse' }),
+  ].join('\n') + '\n')
+  const retroOf = (...extra) => spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), repoA, '--firings', logFile, ...extra], { encoding: 'utf8' }).stdout
+  const scoped = retroOf()
+  check('firings m-6: retro counts only the rows under the retro target', /- scope: rows under .*repo-a \(4 of 5 rows/.test(scoped) && !/git-guard\/normal-mode/.test(scoped), scoped.split('## Hook firings')[1])
+  check('firings m-6: a block that names three rules counts once in the headline (2 blocks, 4 rule rows) and once per rule in the table', /- blocks: 2 \(4 rule rows/.test(scoped) && /\| journal-gate\/close \| 1 \| 1 \| 0 \|/.test(scoped), scoped.split('## Hook firings')[1])
+  const machine = retroOf('--all')
+  check('firings m-6: --all is the machine view and counts the other repo too', /- scope: the whole machine \(--all\), 5 rows/.test(machine) && /git-guard\/normal-mode/.test(machine) && /- blocks: 3 \(5 rule rows/.test(machine), machine.split('## Hook firings')[1])
+  const bare = join(scope, 'bare')
+  write(bare, { 'T-2/STAGES.md': stages('T-2', 'T-2/feat/b') })
+  const unscoped = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), join(bare, 'T-2'), '--firings', logFile], { encoding: 'utf8' }).stdout
+  check('firings m-6: a task dir outside any git repo cannot say which repo it is: nothing is filtered and the section says so', /- scope: all 5 rows of the log/.test(unscoped), unscoped.split('## Hook firings')[1])
+  // the rows of a block written by the hook itself share one moment
+  const shared = mkdtempSync(join(tmpdir(), 'firings-block-'))
+  spawnSync(process.execPath, ['--input-type=module', '-e', `const { blockWith } = await import(${JSON.stringify(join(PLUGIN, 'hooks/firing.mjs'))}); blockWith(['journal-gate/close', 'journal-gate/journal', 'journal-gate/report'], 'x', { input: { tool_name: 'Bash', hook_event_name: 'PostToolUse' }, task: 'T-1', repo: '/r' })`], { encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: shared } })
+  const written = readFileSync(join(shared, 'firings.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+  check('firings m-6: blockWith stamps the three rows of one block with one moment', written.length === 3 && new Set(written.map((r) => r.ts)).size === 1, JSON.stringify(written.map((r) => r.ts)))
+  for (const dir of [scope, shared]) rmSync(dir, { recursive: true, force: true })
+}
+
+// ── VT-3 branch review m-4: the real journal-gate hook stamps the rows of one block with one moment (appended: D3) ─────────────────────────────
+{
+  const dir = mkdtempSync(join(tmpdir(), 'jg-block-'))
+  const jApp = join(dir, 'app')
+  const dataDir = join(dir, 'data')
+  repoAt(jApp, 'main')
+  const jStages = (extra = '') => journal(extra).replace(/^# T-7:[^\n]*\n/, '# T-7: task\nLanguage: en\n')
+  const jReport = join(jApp, '.claude/tasks/T-7/checks/pro-review-1.md')
+  write(jApp, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': jStages() })
+  git(jApp, 'checkout', '-qb', 'T-7/feat/g')
+  const jRun = (name, input) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_DATA_DIR: dataDir } })
+  jRun('session-start.mjs', { cwd: jApp })
+  // one edit that breaks two kinds: a new unproven tick on a devtools criterion (journal) and a Russian report in an English task (report)
+  write(jApp, { '.claude/tasks/T-7/STAGES.md': jStages(BAD_LINE), '.claude/tasks/T-7/checks/pro-review-1.md': RU_REPORT })
+  const blocked = jRun('journal-gate.mjs', { cwd: jApp, tool_name: 'Write', tool_input: { file_path: jReport } })
+  const rows = existsSync(join(dataDir, 'firings.jsonl')) ? readFileSync(join(dataDir, 'firings.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
+  check('firings m-4: the real journal-gate hook blocks an edit that breaks two kinds', blocked.stdout.includes('"decision":"block"'), blocked.stdout.slice(0, 200) + blocked.stderr.slice(0, 200))
+  check('firings m-4: its rows for the two kinds share one ts (retro counts them as one block)', rows.length >= 2 && new Set(rows.map((r) => r.rule)).size >= 2 && new Set(rows.map((r) => r.ts)).size === 1, JSON.stringify(rows.map((r) => [r.rule, r.ts])))
+  rmSync(dir, { recursive: true, force: true })
+}
+
+// ── VT-3 branch review m-6: rows a linked worktree of the retro target wrote are the target's (appended: D3) ─────────────────────────────────────
+{
+  const dir = mkdtempSync(join(tmpdir(), 'retro-wt-'))
+  const main = join(dir, 'repo')
+  const lane = join(dir, 'repo-lane')
+  const other = join(dir, 'other')
+  repoAt(main, 'main')
+  repoAt(other, 'main')
+  write(main, { 'T-1/STAGES.md': stages('T-1', 'T-1/feat/a') })
+  git(main, 'worktree', 'add', '-q', '-b', 'T-1/feat/a', lane)
+  const row = (rule, repo, ts) => JSON.stringify({ rule, task: 'T-1', repo, ts, tool: 'Bash', read: false, event: 'PostToolUse' })
+  const logFile = join(dir, 'firings.jsonl')
+  writeFileSync(logFile, [
+    row('git-guard/normal-mode', main, '2026-10-27T10:00:00.000Z'),
+    row('force-guard/ask-rule', lane, '2026-10-27T10:01:00.000Z'),
+    row('force-guard/kill-by-name', lane, '2026-10-27T10:02:00.000Z'),
+    row('agent-guard/review-model', other, '2026-10-27T10:03:00.000Z'),
+    row('agent-guard/no-confirmed', join(dir, 'gone-worktree'), '2026-10-27T10:04:00.000Z'),
+  ].join('\n') + '\n')
+  const printed = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), main, '--firings', logFile], { encoding: 'utf8' }).stdout
+  check('firings m-6: the rows of a linked worktree of the target are counted (3 of 5), another repo and an unresolvable path are not', /\(3 of 5 rows/.test(printed) && /force-guard\/ask-rule/.test(printed) && /force-guard\/kill-by-name/.test(printed) && !/agent-guard\//.test(printed), printed.split('## Hook firings')[1])
+  rmSync(dir, { recursive: true, force: true })
 }
 
 process.exit(failed ? 1 : 0)

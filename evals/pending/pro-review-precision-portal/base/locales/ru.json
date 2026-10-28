@@ -1,0 +1,7 @@
+{
+  "guests.delete.title": "Удалить гостя",
+  "guests.delete.confirm": "Удалить",
+  "guests.delete.cancel": "Оставить",
+  "guests.archive.title": "Архивировать гостя",
+  "guests.archive.confirm": "Архивировать"
+}

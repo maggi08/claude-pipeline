@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" class="skin-flat">
+<head>
+  <meta charset="utf-8">
+  <title>Checkout flow</title>
+  <link rel="stylesheet" href="prototype.css">
+</head>
+<body>
+  <nav class="proto-nav">
+    Scenario: <button data-scenario="empty">Empty cart</button> <button data-scenario="terms">Terms accepted</button> <button data-scenario="slow">Slow payment</button>
+  </nav>
+
+  <section id="screen-review" class="screen">
+    <div class="review-card">
+      <h1 class="review-title">Review your order</h1>
+      <ul class="lines">
+        <li class="line"><span>Sample Tee x 1</span><span>29.00 EUR</span></li>
+      </ul>
+      <div class="promo" id="promo-banner">Free shipping applied</div>
+      <label class="terms"><input type="checkbox" id="terms"> I accept the terms of sale</label>
+      <button class="cta" id="cta-place" disabled>Place order</button>
+      <p class="legal">Terms &middot; Privacy</p>
+    </div>
+  </section>
+
+  <!-- <script src="skin-toggle.js"></script> -->
+  <script>
+    const terms = document.getElementById('terms')
+    const cta = document.getElementById('cta-place')
+    terms.addEventListener('change', () => { cta.disabled = !terms.checked })
+    setTimeout(() => { document.getElementById('promo-banner').hidden = true }, 5000)
+  </script>
+</body>
+</html>

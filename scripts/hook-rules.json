@@ -1,0 +1,194 @@
+{
+  "_doc": "Release rule (VT-3 stage 7): every rule ID a hook emits (a 'hook/slug' string in plugins/stage-pipeline/scripts/hooks/*-guard.mjs and journal-gate.mjs) has an entry with an incident fixture (the hook says no) and a legitimate fixture (the same hook lets the lookalike through). Each name is a text that occurs in scripts/hooks-test.mjs; validate.mjs fails on a rule with no entry, an entry that names a missing fixture, and an entry with only one of the two forms. Each entry also has a 'head': a literal stretch of the message the hook writes (it occurs in the hook's source). scripts/run-audit.mjs labels a denial by it, because the transcript shows the message and not the rule ID; rules whose message is shared (journal-gate's three) are labelled together. validate.mjs fails on a rule with no head or a head that is not in the hooks.",
+  "rules": {
+    "agent-guard/review-model": {
+      "incident": [
+        "whole-branch pro-review without model — denied"
+      ],
+      "legitimate": [
+        "whole-branch pro-review on opus — passes"
+      ],
+      "head": "whole-branch pro-review runs on review_model"
+    },
+    "agent-guard/no-confirmed": {
+      "incident": [
+        "EN stage-implement: new Force block without \"Confirmed:\" — denied"
+      ],
+      "legitimate": [
+        "EN stage-implement: \"Confirmed:\" is there — passes"
+      ],
+      "head": "(stage-force, Step 0)"
+    },
+    "force-guard/kill-by-name": {
+      "incident": [
+        "force: pkill is denied at once, with a hint about PID"
+      ],
+      "legitimate": [
+        "normal mode: pkill is not denied"
+      ],
+      "head": "kills processes by name, including ones that are not yours"
+    },
+    "force-guard/ask-rule": {
+      "incident": [
+        "force: git push under the user"
+      ],
+      "legitimate": [
+        "branch without a task: the hook is silent"
+      ],
+      "head": "falls under the ask rule"
+    },
+    "git-guard/journal-unreadable": {
+      "incident": [
+        "S-2: a commit on that branch is denied with the journal named and the limit"
+      ],
+      "legitimate": [
+        "branch T-2, force: a clean commit passes"
+      ],
+      "head": "Until it can be read, git add and git commit on this branch are rejected"
+    },
+    "git-guard/normal-mode": {
+      "incident": [
+        "branch T-1, normal mode: git add denied"
+      ],
+      "legitimate": [
+        "branch T-2, force: git add passes"
+      ],
+      "head": "normal mode: the user runs git add and git commit by themselves"
+    },
+    "git-guard/service-trailer": {
+      "incident": [
+        "force: Co-Authored-By in a message heredoc — denied"
+      ],
+      "legitimate": [
+        "force: a clean message — passes"
+      ],
+      "head": "the commit message has a service signature"
+    },
+    "git-guard/findings-no-outcome": {
+      "incident": [
+        "force commit: a new report without an outcome — denied"
+      ],
+      "legitimate": [
+        "full outcome — the force commit passes"
+      ],
+      "head": "the checkers' findings have no outcome"
+    },
+    "git-guard/checker-receipts": {
+      "incident": [
+        "receipts AC-3.1: a window without pro-review — denied"
+      ],
+      "legitimate": [
+        "receipts AC-3.2: devtools-verify report in the window — the UI commit passes"
+      ],
+      "head": "the stage commit has no proof that its checkers ran"
+    },
+    "git-guard/ui-removed-no-parity": {
+      "incident": [
+        "force commit: a UI component deleted without a parity table — denied"
+      ],
+      "legitimate": [
+        "force commit: Old in the parity table — passes"
+      ],
+      "head": "has no parity table with these rows"
+    },
+    "git-guard/kit-overrides-unreported": {
+      "incident": [
+        "force commit: kit overrides without a report — denied"
+      ],
+      "legitimate": [
+        "force commit: the outcome is proven by the reference — passes"
+      ],
+      "head": "the stage diff has kit overrides without a report"
+    },
+    "git-guard/floor-guard": {
+      "incident": [
+        "branch T-2, force: a commit with a type bypass is denied by floor-guard"
+      ],
+      "legitimate": [
+        "branch T-2, force: a clean commit passes"
+      ],
+      "head": "floor-guard found moves in the stage diff"
+    },
+    "journal-gate/journal": {
+      "incident": [
+        "a new mark \"[x] pro-review (checks/"
+      ],
+      "legitimate": [
+        "snapshot v1"
+      ],
+      "head": "the edit of the task journal breaks the rules for closing criteria and findings"
+    },
+    "journal-gate/report": {
+      "incident": [
+        "journal-gate: RU report in an EN task — returned to the author"
+      ],
+      "legitimate": [
+        "journal-gate: EN report in an EN task — passes"
+      ],
+      "head": "the edit of the task journal breaks the rules for closing criteria and findings"
+    },
+    "journal-gate/close": {
+      "incident": [
+        "receipts AC-3.3: completed with no whole-branch pro-review and no task-converge — rejected"
+      ],
+      "legitimate": [
+        "receipts 5d AC-5d.1: the marker line is accepted"
+      ],
+      "head": "the edit of the task journal breaks the rules for closing criteria and findings"
+    },
+    "frames-guard/navigation-blind": {
+      "incident": [
+        "frames-guard: a navigation with no verify-doctor call before it — blocked"
+      ],
+      "legitimate": [
+        "frames-guard: verify-doctor first, then the navigation — passes"
+      ],
+      "head": "you opened a page before running verify-doctor"
+    },
+    "frames-guard/navigation-refused": {
+      "incident": [
+        "frames-guard: a navigation after \"doctor: wrong app\" — blocked"
+      ],
+      "legitimate": [
+        "frames-guard: \"doctor: no dev url\" then a navigation to the static file — passes"
+      ],
+      "head": "verify-doctor said `wrong app` / `down` and you opened a page afterwards"
+    },
+    "frames-guard/navigation-no-config": {
+      "incident": [
+        "frames-guard M-2: a navigation after \"doctor: no config\" — blocked"
+      ],
+      "legitimate": [
+        "frames-guard: verify-doctor first, then the navigation — passes"
+      ],
+      "head": "verify-doctor found no pipeline config"
+    },
+    "frames-guard/navigation-no-verdict": {
+      "incident": [
+        "frames-guard S-3: a navigation after a doctor run with no `doctor:` line (a crash) — blocked"
+      ],
+      "legitimate": [
+        "frames-guard: verify-doctor first, then the navigation — passes"
+      ],
+      "head": "verify-doctor gave no verdict"
+    },
+    "frames-guard/frames-unviewed": {
+      "incident": [
+        "frames-guard: one frame not opened — the agent continues"
+      ],
+      "legitimate": [
+        "frames-guard: all frames opened — the agent finishes"
+      ],
+      "head": "but did not open all of them"
+    },
+    "frames-guard/leftovers": {
+      "incident": [
+        "frames-guard AC-5b.1: a stop that leaves the page its new_page opened — blocked"
+      ],
+      "legitimate": [
+        "frames-guard AC-5b.1: the page closed with close_page — passes"
+      ],
+      "head": "you leave running what you opened"
+    }
+  }
+}

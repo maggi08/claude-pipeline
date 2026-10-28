@@ -1,0 +1,39 @@
+:root {
+  --c-primary: #1f6f5c;
+  --c-surface: #ffffff;
+  --c-border: #e3ded3;
+  --space-card: 16px;
+  --radius-card: 12px;
+}
+
+body { margin: 0; font: 16px/24px system-ui, sans-serif; background: #f6f4ef; }
+
+.proto-nav { position: fixed; top: 0; left: 0; right: 0; padding: 4px 8px; background: #222; color: #fff; font-size: 12px; }
+
+.review-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: var(--space-card);
+  border-radius: var(--radius-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  background: var(--c-surface);
+}
+.review-title { margin: 0; font-size: 20px; line-height: 28px; font-weight: 600; }
+.line { display: flex; justify-content: space-between; }
+.promo { padding: 8px 12px; border-radius: 8px; background: #e8f3ef; }
+.cta {
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 12px;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  background-image: linear-gradient(135deg, #1f6f5c, #2f9a80);
+}
+.cta:disabled { opacity: 0.45; }
+.legal { margin: 0; font-size: 12px; }
+
+/* skin-flat: baked onto <html> in every flow file, the only version. The soft rules above (radius 12, shadow, gradient) are dead. */
+html.skin-flat .review-card { border-radius: 4px; box-shadow: none; border: 1px solid var(--c-border); }
+html.skin-flat .cta { background-image: none; background-color: var(--c-primary); border-radius: 4px; }

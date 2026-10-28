@@ -1,0 +1,87 @@
+{
+  "kind": "decision",
+  "why": "closing a UI stage: the orchestrator must send the design, runtime and code checkers, each with its own tagged criteria",
+  "identity": {
+    "repo": "catalog-ui",
+    "ticket": "CAT-7",
+    "user": "Lena Aalto",
+    "email": "lena.aalto@catalog-ui.dev",
+    "branch": "feature"
+  },
+  "serve": {
+    "dir": "public"
+  },
+  "prompt": "/stage-pipeline:stage-check CAT-7 1",
+  "maxTurns": 20,
+  "budgetUsd": 1.2,
+  "timeoutSec": 600,
+  "expectAgents": [
+    "figma-compare",
+    "devtools-verify",
+    "pro-review"
+  ],
+  "forbidAgents": [
+    "proto-compare",
+    "stage-implement"
+  ],
+  "agentPrompts": [
+    {
+      "agent": "figma-compare",
+      "acs": {
+        "tag": "figma-compare",
+        "stage": 1
+      },
+      "contains": [
+        {
+          "pattern": "31:208",
+          "why": "the Figma node"
+        }
+      ]
+    },
+    {
+      "agent": "devtools-verify",
+      "acs": {
+        "tag": "devtools-verify",
+        "stage": 1
+      },
+      "contains": [
+        {
+          "pattern": "127\\.0\\.0\\.1:\\d+",
+          "why": "the dev URL"
+        }
+      ]
+    },
+    {
+      "agent": "pro-review",
+      "acs": {
+        "tag": "pro-review",
+        "stage": 1
+      },
+      "contains": [
+        {
+          "pattern": "\\bmain\\b|\\b[0-9a-f]{7,40}\\b",
+          "why": "the comparison base"
+        }
+      ]
+    }
+  ],
+  "forbidTools": [
+    {
+      "tool": "AskUserQuestion",
+      "why": "a stage check asks the user nothing before the checkers ran"
+    }
+  ],
+  "provenFailing": {
+    "on": "variant:no-devtools-verify",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@d0ecb405f",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "0b20b741150b9a9a",
+    "failures": [
+      "agent devtools-verify was not spawned (spawned: figma-compare, pro-review)",
+      "devtools-verify prompt: no devtools-verify call"
+    ]
+  }
+}

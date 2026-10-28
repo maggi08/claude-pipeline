@@ -1,0 +1,5 @@
+{
+  "orders.active.title": "Активный заказ",
+  "orders.cancel": "Отменить заказ",
+  "orders.cancelFailed": "Не удалось отменить заказ. Попробуйте ещё раз."
+}

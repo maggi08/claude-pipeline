@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { CONFIRMED_LINE, headingDate, ruleAppliesToBlock } from '../markers.mjs'
+import { blockWith } from './firing.mjs'
 import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
 
 /**
@@ -285,16 +286,25 @@ const AFTER = {
     'stage-pipeline: verify-doctor gave no verdict (it failed, or its output has no `doctor:` line) and you opened a page afterwards — which app answered is unknown. ' +
     'Run it again and navigate only after an `ok` (or `no dev url` for a static file); if it keeps failing, report its output as the single finding and finish.',
 }
+const firing = { input, task: task?.ticket, repo: cwd }
 if (navigation) {
-  const reason = navigation === 'blind' ? AFTER.blind : navigation === 'wrong app' || navigation === 'down' ? AFTER.refused : navigation === 'no config' ? AFTER['no config'] : AFTER.none
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }))
-  process.exit(0)
+  const [rule, reason] =
+    navigation === 'blind'
+      ? ['frames-guard/navigation-blind', AFTER.blind]
+      : navigation === 'wrong app' || navigation === 'down'
+        ? ['frames-guard/navigation-refused', AFTER.refused]
+        : navigation === 'no config'
+          ? ['frames-guard/navigation-no-config', AFTER['no config']]
+          : ['frames-guard/navigation-no-verdict', AFTER.none]
+  blockWith(rule, reason, firing)
 }
 const left = await leftovers()
 if (!missed.length && !left.length) process.exit(0)
 
 const reasons = []
+const rules = []
 if (missed.length) {
+  rules.push('frames-guard/frames-unviewed')
   const shown = missed.slice(0, 15).map((path) => `- ${path}`)
   reasons.push(
     `stage-pipeline: you took ${frames.size} frame(s) but did not open all of them — ${missed.length} not viewed:\n${shown.join('\n')}${missed.length > 15 ? `\n- … ${missed.length - 15} more` : ''}\n` +
@@ -304,6 +314,7 @@ if (missed.length) {
   )
 }
 if (left.length) {
+  rules.push('frames-guard/leftovers')
   reasons.push(
     `stage-pipeline: you leave running what you opened:\n${left.join('\n')}\n` +
       'Close each page you opened with `close_page` (its id is the `[selected]` one in the list `new_page` returned). If `close_page` answers "The last open page cannot be closed", ' +
@@ -313,8 +324,7 @@ if (left.length) {
       'On one machine three MCP browsers stayed open 18–23 h after their sessions went idle, the app still running in their tabs.',
   )
 }
-process.stdout.write(JSON.stringify({ decision: 'block', reason: reasons.join('\n\n') }))
-process.exit(0)
+blockWith(rules, reasons.join('\n\n'), firing)
 
 /** What the agent opened and left running: its pages in the freshest MCP list, the browsers it launched that still run (see the header). */
 async function leftovers() {

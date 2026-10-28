@@ -1,0 +1,64 @@
+{
+  "kind": "decision",
+  "why": "a force run past its Confirmed line meets a fork the plan leaves open (the page size): the orchestrator decides, records it and starts the maker, and does not ask",
+  "identity": {
+    "repo": "inventory-console",
+    "ticket": "INV-9",
+    "user": "Oskar Brandt",
+    "email": "oskar.brandt@inventory-console.dev",
+    "branch": "feature"
+  },
+  "prompt": "/stage-pipeline:stage-force INV-9",
+  "maxTurns": 20,
+  "budgetUsd": 1.2,
+  "timeoutSec": 600,
+  "expectAgents": [
+    "stage-implement"
+  ],
+  "forbidAgents": [
+    "figma-spec",
+    "proto-spec"
+  ],
+  "agentPrompts": [
+    {
+      "agent": "stage-implement",
+      "contains": [
+        {
+          "pattern": "INV-9",
+          "why": "the ticket"
+        },
+        {
+          "pattern": "Language:\\s*en",
+          "why": "the task language"
+        },
+        {
+          "pattern": "implement",
+          "why": "the mode"
+        }
+      ]
+    }
+  ],
+  "forbidTools": [
+    {
+      "tool": "AskUserQuestion",
+      "why": "after Confirmed: nothing is asked; a fork is decided and recorded"
+    }
+  ],
+  "forbidQuestionEnd": {
+    "why": "after Confirmed: the turn does not end on a question in plain text either; a fork is decided and recorded"
+  },
+  "provenFailing": {
+    "on": "variant:asks-mid-run",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@d0ecb405f",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "2e5aeee661659653",
+    "failures": [
+      "agent stage-implement was not spawned (spawned: none)",
+      "stage-implement prompt: no stage-implement call",
+      "the run ended on a question to the user: after Confirmed: the turn does not end on a question in plain text either; a fork is decided and recorded («Should `PAG"
+    ]
+  }
+}

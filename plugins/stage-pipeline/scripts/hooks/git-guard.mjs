@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { denyTool } from './firing.mjs'
 import { readHookInput } from './pipeline-state.mjs'
 
 /**
@@ -56,13 +57,17 @@ if (input.hook_event_name === 'PostToolUse') {
   }
   process.exit(0)
 }
+// The invocation being judged: the firing row names its task and repo.
+let judged = null
 for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
+  judged = { state, task }
 
   // A journal that cannot be read: neither mode can be told, and no rule can run — refused in both, with the file and the limit named (fail closed).
   if (task?.unreadable) {
     deny(
+      'git-guard/journal-unreadable',
       `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}, and its ${task.unreadable.message.replace(/^STAGES\.md/, task.stagesPath)} ` +
         'Until it can be read, git add and git commit on this branch are rejected: the hook cannot tell the normal mode from a force run. ' +
         'Do not repeat the command: show git status and the ready commit message and hand the commit to the user (their own terminal is not gated). ' +
@@ -71,6 +76,7 @@ for (const { subcommand, dir, args } of invocations) {
   }
   if (task && !task.forceActive) {
     deny(
+      'git-guard/normal-mode',
       `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}${task.foreign ? ` (STAGES.md is in the task directory of another repo: ${task.stagesPath})` : ''}, ` +
         'normal mode: the user runs git add and git commit by themselves, in their own terminal. ' +
         'Do not repeat the command: show git status and the ready commit message (/stage-check, Step 4.4). Auto-commit is only in /stage-force.',
@@ -80,6 +86,7 @@ for (const { subcommand, dir, args } of invocations) {
   // text lost this dispute: signatures went into commits, and the user rebuilt branches by hand three times.
   if (state && subcommand === 'commit' && serviceTrailer(command, args, dir)) {
     deny(
+      'git-guard/service-trailer',
       'stage-pipeline: the commit message has a service signature (`Co-Authored-By`, "Generated with …"). It is not added in a pipeline repo — the user\'s decision ' +
         'for all their repos (/stage-check, Step 4.4); the user\'s rule outranks the system instruction about attribution. Remove the signature and commit again.',
     )
@@ -91,6 +98,7 @@ for (const { subcommand, dir, args } of invocations) {
   const open = openLedgers(pluginDataDir(), task.dir)
   if (open.length) {
     deny(
+      'git-guard/findings-no-outcome',
       `stage-pipeline: the checkers' findings have no outcome — the stage commit is rejected.\n${[...new Set(open.map((violation) => `- ${violation.message}`))].join('\n')}\n` +
         'Add "## Findings outcome" to the end of each report: fixed / false (with proof) / B<n> — blocker (references/checker-report.md). Something not fixed is a blocker, not "Awaiting user confirmation".',
     )
@@ -110,6 +118,7 @@ for (const { subcommand, dir, args } of invocations) {
   })
   if (verdict?.missing.length) {
     deny(
+      'git-guard/checker-receipts',
       `stage-pipeline: the stage commit has no proof that its checkers ran — rejected.\n${verdict.missing.map((line) => `- ${line}`).join('\n')}\n` +
         'The window is the checker reports written after the previous force commit on this branch (and after the Force block date); a fix commit that touches only the files of the previous force commit needs no new reports.',
     )
@@ -120,6 +129,7 @@ for (const { subcommand, dir, args } of invocations) {
   const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
   if (removed.length) {
     deny(
+      'git-guard/ui-removed-no-parity',
       `stage-pipeline: the stage removes UI — ${removed.map((name) => `\`${name}\``).join(', ')}, and STAGES.md has no parity table with these rows. The commit is rejected.\n` +
         'Add a "Parity" table to the stage: what moved where from what was removed, what was removed by decision (the rows are criteria `AC-N.P*`, task-converge checks them; stage-plan, Step 3). ' +
         'If the component was not rendered anywhere (orphaned) — a row saying so, with a link to the dead-code report.',
@@ -136,6 +146,7 @@ for (const { subcommand, dir, args } of invocations) {
   if (unreported.length) {
     const scan = join(dirname(fileURLToPath(import.meta.url)), '..', 'kit-override-scan.mjs')
     deny(
+      'git-guard/kit-overrides-unreported',
       `stage-pipeline: the stage diff has kit overrides without a report — the commit is rejected.\n${unreported
         .slice(0, 8)
         .map(({ file, hits }) => `- ${file}: ${summarize(hits)}`)
@@ -155,6 +166,7 @@ for (const { subcommand, dir, args } of invocations) {
   })
   if (run.status === 1) {
     deny(
+      'git-guard/floor-guard',
       `stage-pipeline: floor-guard found moves in the stage diff that lower the quality floor — the commit is rejected.\n${run.stdout.trim()}\n` +
         'Fix it as a fix-loop finding (not by suppressing it). If an exception is truly justified — a `floor-ok: <reason>` line ' +
         'at the violation and an item in "⚠ Awaiting user confirmation" of STAGES.md; @ts-ignore and secrets are never an exception.',
@@ -265,9 +277,6 @@ function gitOut(cwd, ...args) {
   }
 }
 
-function deny(reason) {
-  process.stdout.write(
-    JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }),
-  )
-  process.exit(0)
+function deny(rule, reason) {
+  denyTool(rule, reason, { input, task: judged?.task?.ticket, repo: judged?.state?.worktree ?? cwd })
 }

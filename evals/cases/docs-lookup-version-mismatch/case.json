@@ -1,6 +1,12 @@
 {
   "agent": "docs-lookup",
   "why": "the version comes from the lockfile, the answer from the installed package (types and CHANGELOG in node_modules), not from memory, and the contradiction with the usage in the file is the main part of the answer",
+  "identity": {
+    "repo": "account-dashboard",
+    "ticket": "ACC-18",
+    "user": "Tomas Berg",
+    "email": "tomas.berg@account-dashboard.dev"
+  },
   "prompt": "Library: react-router-dom. Question: how do I correctly redirect an unauthenticated user to /login and navigate programmatically after sign-out in this repo? The file where the API is used: src/App.tsx.",
   "requireReport": false,
   "maxSummaryLines": 50,
@@ -26,5 +32,11 @@
       "why": "the contradiction with src/App.tsx is named explicitly"
     }
   ],
-  "budgetUsd": 1
+  "budgetUsd": 1,
+  "forbidSummary": [
+    {
+      "pattern": "react-router-dom@(?!6\\.22\\.3)\\d",
+      "why": "a version other than the lockfile's is named as the installed one"
+    }
+  ]
 }

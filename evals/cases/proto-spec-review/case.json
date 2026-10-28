@@ -1,0 +1,79 @@
+{
+  "agent": "proto-spec",
+  "why": "the prototype spec agent writes the rendered skin first (the baked-in html class, the dead base rules), carries the values of the skin that wins and the SPEC behaviour (the CTA gating, the redirect guard, the 5 s banner), the static copy verbatim, and leaves the scenario bar out",
+  "identity": {
+    "repo": "shop-checkout-web",
+    "ticket": "SHOP-16",
+    "user": "Anders Quist",
+    "email": "anders.quist@shop-checkout-web.dev"
+  },
+  "prompt": "Ticket SHOP-16, stage 1. Language: en. Screen: prototype/flow-checkout.html#screen-review (SPEC §1). Spec path: tasks/SHOP-16/specs/1.md.",
+  "requireReport": false,
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "files": [
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "skin-flat",
+      "why": "the rendered variant is named first"
+    },
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "(radius|corner)[^\\n]*\\b4\\s?px",
+      "why": "the radius of the skin that wins (4px), not the dead base rule's 12px"
+    },
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "16\\s?px",
+      "why": "the card padding from the CSS"
+    },
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "disabled[^\\n]*terms|terms[^\\n]*disabled|unchecked[^\\n]*(disabled|not enabled|no)",
+      "why": "the CTA gating by the terms checkbox (SPEC §1)"
+    },
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "/cart",
+      "why": "the empty-cart guard redirects to /cart"
+    },
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "5\\s?s\\b|5000|5 seconds",
+      "why": "the banner hides after 5 seconds"
+    },
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "Place order",
+      "why": "the CTA copy verbatim"
+    },
+    {
+      "path": "tasks/SHOP-16/specs/1.md",
+      "pattern": "<dynamic:",
+      "why": "the sample line item is a dynamic slot, not copy"
+    }
+  ],
+  "unchanged": [
+    "prototype/prototype.css",
+    "prototype/SPEC.md",
+    "prototype/flow-checkout.html"
+  ],
+  "traceForbid": [
+    {
+      "tool": "Write|Edit|MultiEdit",
+      "input": "^[^\\n]*/(prototype|src)/",
+      "why": "a spec agent writes the spec only - not the prototype and not the app code"
+    }
+  ],
+  "provenFailing": {
+    "on": "ablate:agent:proto-spec",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@0494f328e",
+    "runs": 1,
+    "failed": 1,
+    "caseHash": "777dbf8c083881f0",
+    "failures": [
+      "tasks/SHOP-16/specs/1.md: the sample line item is a dynamic slot, not copy (/<dynamic:/)"
+    ]
+  }
+}
