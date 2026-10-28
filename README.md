@@ -64,7 +64,7 @@ plugins/<name>/
   skills/<name>/references/       rule precedents — for whoever changes a rule, not read during a run; the exception is `human-text/references/rules.md`, which task-wrapup, stage-force and feature-doc read while they work
   agents/<name>.md                checker subagents
   hooks/hooks.json                plugin hooks (six: session-start, git-guard, force-guard, agent-guard, journal-gate, frames-guard)
-  scripts/                        permissions / archive-stages / retro and the hook scripts
+  scripts/                        permissions / archive-stages / retro / verify-map and the hook scripts
   .mcp.json                       MCP servers that come with the plugin
   README.md                       plugin documentation
 evals/cases/<name>/               synthetic projects with planted problems for scripts/eval.mjs (case.json, base/, stages/, working/, stubs/)

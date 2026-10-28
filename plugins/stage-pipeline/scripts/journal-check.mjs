@@ -17,12 +17,13 @@
  * look at the task: old tasks and closed stages do not have to be rewritten.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
   AUTH_LINE,
+  MAP_LINE,
   blockerFieldApplies,
   BLOCKER_LIFTED,
   blockerLiftField,
@@ -34,8 +35,14 @@ import {
   CLOSED_WORD,
   DEAD_CODE_REMOVE,
   DOCTOR_LINE,
+  EFFECT_NEXT_TO_VERIFY,
   LEDGER_HEADING,
   NO_VISUAL_REFERENCE,
+  READBACK_PROOF,
+  REQUEST_PROOF,
+  PARTIAL_RUN,
+  RERUN_SCREEN,
+  RERUN_SUFFIX,
   STAGE_FILE,
   SUMMARY_STANDARD,
   UNVERIFIED_HEADING,
@@ -437,9 +444,7 @@ function criticalWithoutFresh(entry, severity, name, taskDir) {
   if (severity !== 'critical') return null
   const cited = citedFresh(entry)
   // The fresh report belongs to the dismissed finding's checker and stage: `pro-review-3.md` is confirmed by `pro-review-3-fresh*.md`, not by any `*-fresh*.md` of the task.
-  const checker = reportChecker(name)
-  const token = checker ? name.slice(name.indexOf(checker) + checker.length).match(/^-([\w]+?)(?=[-.]|$)/)?.[1] : null
-  const expected = checker ? `${checker}${token ? `-${token}` : ''}` : null
+  const expected = ownReport(name)
   const ownFresh = cited && (!expected || cited.startsWith(`${expected}-`))
   const shown = entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').slice(0, 90)
   if (ownFresh && cited !== name && (!taskDir || existsSync(join(taskDir, 'checks', cited)))) return null
@@ -567,12 +572,13 @@ export function summaryViolation(text, name) {
  * Precedents: a badge collapsed at the bottom of the menu (`m-4` in a container without padding) while the checker measured width and nesting;
  * a country name in three lines stuck out of the card on the checker's own screenshots.
  */
-export function runtimeViolations(text, name, taskDir = null, fresh = false) {
+export function runtimeViolations(text, name, taskDir = null, fresh = false, map = false) {
   if (reportChecker(name) !== 'devtools-verify' || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
   const found = []
   // A stage with a "Visual reference" — a typography comparison with a neighbouring section: the prototype matched the code, and "too bold" and "different buttons"
   // the user saw next to the rest of the dashboard.
-  const reference = taskDir && stageReference(taskDir, name)
+  const partial = PARTIAL_RUN.test(name)
+  const reference = !partial && taskDir && stageReference(taskDir, name)
   if (reference && !/^[ \t]*(?:[-*][ \t]*)?`?style-diff\b/im.test(text)) {
     found.push({
       rule: 'no-style-diff',
@@ -582,7 +588,8 @@ export function runtimeViolations(text, name, taskDir = null, fresh = false) {
         'of the new section with the reference one (skill devtools-verify, step "Visual reference"). A difference without a user decision is a major finding.',
     })
   }
-  if (!/^[ \t]*(?:[-*][ \t]*)?`?geometry\b/im.test(text)) {
+  // a recheck (`-r<k>`) and a repro report look at the findings they were asked about: the geometry rules stay with the full runs; `doctor:` and `auth:` below apply to both
+  if (!partial && !/^[ \t]*(?:[-*][ \t]*)?`?geometry\b/im.test(text)) {
     found.push({
       rule: 'no-geometry',
       id: name,
@@ -605,6 +612,15 @@ export function runtimeViolations(text, name, taskDir = null, fresh = false) {
         })
     }
   }
+  // VT-4 0.20 (stage 8): a repo with the verify map README (`map`, set by the hook) gets the `map:` line in a new full report (a recheck/repro keeps only `doctor:` and `auth:`); a repo without one is untouched.
+  if (fresh && map && !partial && !MAP_LINE.test(text))
+    found.push({
+      rule: 'no-map',
+      id: name,
+      message:
+        `checks/${name}: no \`map:\` line — this repo has a verify map (\`verify_map:\` README), so the report says \`map: <ids> · entries a/b · drift N\` or, for a stage whose routes have no map entry, ` +
+        '`map: none — <route> unmapped` (skill devtools-verify, "Verify map"; the task language form is in references/language.md).',
+    })
   const unverified = text.slice(Math.max(0, text.search(UNVERIFIED_HEADING)))
   const line = unverified.split('\n').find((candidate) => NO_DATA.test(candidate) && !STUBBED.test(candidate))
   if (UNVERIFIED_HEADING.test(text) && line) {
@@ -629,7 +645,7 @@ export function languageViolation(text, name, language) {
 }
 
 /** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
-export function reportViolations(path, language = null, { fresh = false, strict = false } = {}) {
+export function reportViolations(path, language = null, { fresh = false, strict = false, map = false, v020 = false } = {}) {
   const read = reportRead(path)
   const name = basename(path)
   if (read.problem === 'missing') return []
@@ -637,7 +653,149 @@ export function reportViolations(path, language = null, { fresh = false, strict 
   const { text } = read
   // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
   const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
-  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh)].filter(Boolean)
+  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map), ...(v020 ? [...effectViolations(text, name, dirname(dirname(path))), ...rerunViolations(text, name, dirname(dirname(path)))] : [])].filter(Boolean)
+}
+
+/** The AC ids the task's STAGES.md and STAGES-ARCHIVE.md tag `[effect]` (stage 9: a criterion whose action sends something to the server). */
+export function effectCriteria(taskDir) {
+  const ids = new Set()
+  for (const whole of journalText(taskDir).split(/\r?\n/)) {
+    const line = whole.slice(0, RULE_LINE_MAX)
+    // Only a criterion definition line (`- AC-x.y …` / `- \`AC-x.y\` …`) is tagged; the tag stands outside backticks, next to the verifier tag.
+    const head = line.match(/^\s*[-*]\s+`?AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)`?(.*)$/)
+    if (!head) continue
+    const rest = head[2].replace(/`[^`]*`/g, '')
+    if (EFFECT_NEXT_TO_VERIFY.test(rest)) ids.add(head[1])
+  }
+  return ids
+}
+
+/** The criteria a report passes, for the `[effect]` rule: the verdict stands right after the id (`AC-x.y — PASS`, `AC-x.y: PASS`, `AC-x.y (1440) — PASS` with a parenthetical of up to 60 characters, `AC-x.y ✅ PASS`, a compact `4.5 PASS` run). The word elsewhere on the line and a line under "Could not verify" are not a PASS. */
+function passedIds(text, wanted) {
+  const passed = new Set()
+  let unverified = false
+  for (const whole of text.split(/\r?\n/)) {
+    const line = whole.slice(0, RULE_LINE_MAX)
+    if (/^#/.test(line)) unverified = UNVERIFIED_HEADING.test(line)
+    if (unverified || !line.includes('PASS')) continue
+    // one pass per line: the dotted-id run of PASS_RUN (a table row `| AC-x | PASS |` has none), then the id-named form with one separator class
+    for (const match of line.matchAll(PASS_RUN)) for (const [id] of match[1].matchAll(/\d+[a-z]?(?:\.\d+[a-z]?)+/g)) if (wanted.has(id)) passed.add(id)
+    if (/\bFAIL\b/.test(line)) continue
+    for (const id of wanted) if (new RegExp(`AC-${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)(?:[\\s\x60*]*\\([^)\\n]{0,60}\\))?[\\s\x60*|:—–✅-]*PASS\\b`).test(line)) passed.add(id)
+  }
+  return passed
+}
+
+// a line is read up to this many characters by the rules of the hook: a pasted wall of text must not cost the hook its 5 s
+const RULE_LINE_MAX = 2000
+
+/** Every line that names `AC-<id>` or the bare id (`9.1`, the compact form `passedIds` also reads), each with the detail lines under it (up to 6, to a blank line, a heading or another criterion). */
+function mentionsOf(text, id) {
+  const lines = text.split(/\r?\n/).map((line) => line.slice(0, RULE_LINE_MAX))
+  const own = new RegExp(`(?<![\\w.])(?:AC-)?${id.replace(/\./g, '\\.')}(?![\\w.]*\\d)`)
+  const found = []
+  for (const [index, line] of lines.entries()) {
+    if (!own.test(line)) continue
+    found.push(line)
+    for (const next of lines.slice(index + 1, index + 7)) {
+      if (!next.trim() || /^#/.test(next) || /AC-\d/.test(next)) break
+      found.push(next)
+    }
+  }
+  return found.join('\n')
+}
+
+/**
+ * VT-4 0.20 (stage 9): a PASS on an `[effect]` criterion names the request (`METHOD /path … status`) and a read-back (a reload or a second view).
+ * Precedents: a contract that did not persist, a status and a questionnaire that were not saved — the screen showed the new state, the server never got it.
+ * FAIL, not checked and deferred criteria are not touched.
+ */
+export function effectViolations(text, name, taskDir = null) {
+  if (reportChecker(name) !== 'devtools-verify' || !taskDir || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
+  const effects = effectCriteria(taskDir)
+  if (!effects.size) return []
+  const found = []
+  for (const id of passedIds(text, effects)) {
+    const evidence = mentionsOf(text, id)
+    const missing = [!REQUEST_PROOF.test(evidence) && 'the request (`METHOD /path … status`, from list_network_requests / get_network_request)', !READBACK_PROOF.test(evidence) && 'the read-back (after a reload or from a second view)'].filter(Boolean)
+    if (missing.length)
+      found.push({
+        rule: 'no-effect-proof',
+        id: name,
+        message:
+          `checks/${name}: AC-${id} is tagged [effect] and gets a PASS, but the report does not name ${missing.join(' and ')}. A screen that shows the new state does not prove the server got it ` +
+          '(skill devtools-verify, "Effects"; the Russian forms are in references/language.md). A criterion you could not prove is `not checked` or goes to "Could not verify", not PASS.',
+      })
+  }
+  return found
+}
+
+/** The checker and stage token of a report name: `devtools-verify-5-r1.md` → `devtools-verify-5`, `pro-review-3.md` → `pro-review-3`; `null` — not a checker report. */
+function ownReport(name) {
+  const checker = reportChecker(name)
+  if (!checker) return null
+  const token = name.slice(name.indexOf(checker) + checker.length).match(/^-([\w]+?)(?=[-.]|$)/)?.[1]
+  return `${checker}${token ? `-${token}` : ''}`
+}
+
+/**
+ * The prefixes a re-run of this report starts with, from the report's own stem (a re-run suffix dropped): `devtools-verify-branch.md` → `devtools-verify-branch-`
+ * (`-r1`, `-fresh`); a report with a Russian stage word (`<stage word>-5-devtools-verify.md`) → `<stage word>-5-devtools-verify-`. A report with a stage in its name also gets the stage pair `devtools-verify-5-` ↔ `stage-5-devtools-verify-`.
+ * No bare `<checker>-` fallback: an unrelated `devtools-verify-r1.md` is not a re-run of `devtools-verify-branch.md`. `null` — not a checker report.
+ */
+function ownPrefixes(name) {
+  const checker = reportChecker(name)
+  if (!checker) return null
+  const stem = name.replace(/\.md$/i, '').replace(/-(?:r\d+|fresh[\w-]*|recheck(?:-?\d+)?|repro)$/i, '')
+  const stage = name.match(STAGE_FILE)?.[1] ?? name.slice(name.indexOf(checker) + checker.length).match(/^-(\d+[a-z]?)(?=[-.]|$)/i)?.[1]
+  return [...new Set([`${stem}-`, ...(stage ? [`${checker}-${stage}-`, `stage-${stage}-${checker}-`] : [])])]
+}
+
+/**
+ * The re-run artifact a `fixed` line cites, or null: a recheck report of the SAME checker and stage that exists in this task's `checks/` (`-r<k>`, `-fresh`, `-recheck[-<k>]`; not the report itself;
+ * a bare name or `checks/<name>`, any other directory part rejects it), or a screenshot `checks/screens/<file>` / `screens/<file>` that exists inside this task's `checks/screens/`
+ * (no absolute path, no `..`, no symlink out of it).
+ */
+function citedRerun(entry, name, taskDir) {
+  const own = ownPrefixes(name)
+  for (const word of entry.split(/[^\p{L}\p{N}_./-]+/u).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
+    if (word.length > 200) continue
+    const base = word.split('/').pop()
+    const prefix = own?.find((candidate) => base.startsWith(candidate))
+    if (prefix && (word === base || word === `checks/${base}`) && RERUN_SUFFIX.test(base.slice(prefix.length)) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
+    if (RERUN_SCREEN.test(word) && (!taskDir || screenExists(taskDir, base))) return word
+  }
+  return null
+}
+
+function screenExists(taskDir, file) {
+  try {
+    const dir = realpathSync(join(taskDir, 'checks', 'screens'))
+    return realpathSync(join(dir, file)).startsWith(`${dir}${sep}`)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * VT-4 0.20 (stage 9): a `fixed` outcome in a devtools-verify report cites a re-run artifact — the recheck report (`devtools-verify-<stage>-r<k>.md`, `…-fresh.md`)
+ * or a `checks/screens/` path. `fixed: file:line` alone says the code changed, not that the page now behaves (the fix recheck went by `file:line` only).
+ */
+export function rerunViolations(text, name, taskDir = null) {
+  if (reportChecker(name) !== 'devtools-verify') return []
+  const found = []
+  for (const entry of ledgerEntries(text) ?? []) {
+    if (disposition(entry) !== 'fixed' || citedRerun(entry, name, taskDir)) continue
+    const shown = entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').slice(0, 90)
+    found.push({
+      rule: 'no-rerun',
+      id: name,
+      message:
+        `checks/${name}: "${shown}" — a runtime finding is closed as fixed only with a re-run artifact: the recheck report \`checks/devtools-verify-<stage>-r<k>.md\` (or \`-fresh.md\`) that exists, ` +
+        'or a `checks/screens/` path (stage-check, Step 3.2). `fixed: file:line` shows the code changed, not that the page behaves.',
+    })
+  }
+  return found
 }
 
 /** The "Visual reference" of the stage a report belongs to (`stage-3-devtools-verify.md`, `devtools-verify-3.md`), or null. */
@@ -658,7 +816,8 @@ const VALUE =
 // The evidence for a criterion is looked for in the next 300 characters of its segment: a tail to the end of a long line is a quadratic scan.
 const TAIL_MAX = 300
 // At most 80 ids in a list: an unbounded run makes the scan from every id quadratic on a long line of ids without PASS.
-const PASS_RUN = /((?:`?(?:AC-)?\d+[a-z]?(?:\.\d+[a-z]?)+`?\s*(?:(?:,|и|and|\/)\s*)?){1,80})(?:[—–:|-]\s*)?\**PASS\b\**/g
+// An id ends where its digit run ends (`(?!\d|\.\d)`): without it "01.10.2026" split as "01.1" + "0.2026" and a line of k dates backtracked over 2^k partitions (22 dates: seconds).
+const PASS_RUN = /((?:`?(?:AC-)?\d+[a-z]?(?:\.\d+[a-z]?)+(?!\d|\.\d)`?\s*(?:(?:,|и|and|\/)\s*)?){1,80})(?:[—–:|-]\s*)?\**PASS\b\**/g
 
 /**
  * Criteria that have only bare PASS in a checker report: no mention of the criterion carries
@@ -784,7 +943,7 @@ const closedForceFingerprints = (taskDir) =>
  * Snapshot v1 (0.12–0.13) kept only lines with ✅ and skip: at the first look of a new version all current lines are
  * added to it, except 0.12 violations that appeared after the snapshot — those keep reminding about themselves. `reports` are the names of reports caught at the first look: the language is checked only for reports outside this set
  * (the file path and creation time are unreliable: Edit replaces a file through rename). Reports written before that moment do not need an outcome: a task in progress
- * does not have to rewrite closed stages. `ledgerOld` are the reports there at the 0.18 migration (the 0.18 report rules, stages 4 and 5 of VT-1), `since018` and `forceSeen` —
+ * does not have to rewrite closed stages. `ledgerOld` are the reports there at the 0.18 migration (the 0.18 report rules, stages 4 and 5 of VT-1), `runtimeOld` — those there at the 0.20 one (stages 8 and 9 of VT-1), `since018` and `forceSeen` —
  * the day of that migration and the Force headings there then, dated before that day (`releaseGate`).
  */
 export function baselineInfo(dataDir, taskDir) {
@@ -794,6 +953,7 @@ export function baselineInfo(dataDir, taskDir) {
     ledgerSince: snapshot.ledgerSince,
     reports: new Set(snapshot.reports),
     ledgerOld: new Set(snapshot.ledgerOld),
+    runtimeOld: new Set(snapshot.runtimeOld),
     since: snapshot.since018,
     forceSeen: new Set(snapshot.forceSeen),
     since0182: snapshot.since0182,
@@ -817,6 +977,8 @@ export function baselineInfo(dataDir, taskDir) {
       // VT-1 0.18 (D7): the reports already there are old for the 0.18 report rules — the stage 4 ones (a bare `[live: user-side]`, the `doctor:` / `auth:` lines)
       // and the stage 5 ones (weak dismissals, a critical needs a fresh report); only a report written after this migration is judged by them.
       ledgerOld: Array.isArray(data.ledgerOld) ? data.ledgerOld : reportNames(taskDir),
+      // VT-4 0.20 (stage 9): the reports already there are old for the three 0.20 report rules (the `map:` line, the `[effect]` proof, the re-run artifact of `fixed`).
+      runtimeOld: Array.isArray(data.runtimeOld) && Array.isArray(data.ledgerOld) ? data.runtimeOld : reportNames(taskDir),
       // The day of this migration and the Force runs already open or closed, dated before it: the receipts rules and the ticket-titled rule apply only to a run
       // opened after them (`releaseGate`).
       since018,
@@ -856,6 +1018,7 @@ export function baselineInfo(dataDir, taskDir) {
     liveSeen: true,
     dismissSeen: true,
     ledgerOld: reportNames(taskDir),
+    runtimeOld: reportNames(taskDir),
     since018: localDate(new Date(now)),
     forceSeen: forceKeysBefore(text, localDate(new Date(now))),
     since0182: localDate(new Date(now)),
@@ -1076,12 +1239,14 @@ function main(args) {
   const language = journal.text === undefined ? null : taskLanguage(journal.text)
   // The stage 5 rules (weak dismissals, a critical needs a fresh report) apply to reports that were not there at the first look: the same `ledgerOld` as the hook reads.
   // Read-only (a manual run writes no snapshot); with no snapshot yet every report counts as new.
-  const ledgerOld = new Set(readBaseline(pluginDataDir(), taskDir)?.ledgerOld ?? [])
+  const snapshot = readBaseline(pluginDataDir(), taskDir)
+  const ledgerOld = new Set(snapshot?.ledgerOld ?? [])
+  const runtimeOld = new Set(snapshot?.runtimeOld ?? [])
   const reports = reportNames(taskDir).flatMap((name) => {
     const path = join(taskDir, 'checks', name)
     const strict = !ledgerOld.has(name)
     // Summary and geometry are rules for new reports: old ones lack them by construction, without --ledger it is noise.
-    const all = reportViolations(path, language, { strict }).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
+    const all = reportViolations(path, language, { strict, v020: !runtimeOld.has(name) }).filter((violation) => args.includes('--ledger') || !['report-summary', 'no-geometry'].includes(violation.rule))
     return args.includes('--ledger') && reportChecker(name)
       ? [...all.filter((violation) => !violation.rule.startsWith('ledger-')), ...reportLedgerViolations(taskDir, name, { complete: true, strict })]
       : all

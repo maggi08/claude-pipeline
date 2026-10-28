@@ -206,12 +206,16 @@ const { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJour
 const { gateCloseViolations } = await import('../ci-gates.mjs')
 const { finalReviewViolations } = await import('../receipts.mjs')
 const { CLOSED_WORD, forceHeadings, forceKey } = await import('../markers.mjs')
+const { mapReadme, mapRoots } = await import('../verify-map.mjs')
 const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-digest.mjs')
 
 const messages = []
 const context = []
 // One moment for every row this call writes: they are one block (one `decision: 'block'` below), and retro counts the rows that share a moment as one.
 const at = new Date().toISOString()
+// the same roots the verify-map CLI looks in: the worktree, the config root, the main tree
+let roots = null
+const rootsOnce = () => (roots ??= mapRoots(state.worktree))
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
   // The report is the one written by this edit: for Write/Edit its path, for Bash the reports that changed during the call.
@@ -224,10 +228,12 @@ for (const task of tasks) {
   // The language is checked only for a report that did not exist when the task was first seen: an old report is not rewritten, however it is edited.
   // The 0.18 report rules — the honest live form and the `doctor:` / `auth:` lines (stage 4), weak dismissals and a critical needing a fresh report (stage 5) — look only at
   // reports that were not there at the 0.18 migration (`ledgerOld`): a report written under 0.16 after the first look stays editable without a made-up `doctor:` line.
-  const { reports: known, ledgerOld } = baselineInfo(pluginDataDir(), task.dir)
+  // The 0.20 report rules (the `map:` line, the `[effect]` proof, the re-run artifact of `fixed`) look only at reports that were not there at the 0.20 migration (`runtimeOld`).
+  const { reports: known, ledgerOld, runtimeOld } = baselineInfo(pluginDataDir(), task.dir)
   const reports = written.flatMap((path) => {
     const after018 = !ledgerOld.has(basename(path))
-    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018 })
+    const after020 = !runtimeOld.has(basename(path))
+    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme(rootsOnce(), state.config)), v020: after020 })
   })
   const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)

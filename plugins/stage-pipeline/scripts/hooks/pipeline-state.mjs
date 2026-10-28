@@ -569,7 +569,7 @@ export function configRoot(cwd, worktree) {
 }
 
 // The main working tree: for a worktree `webview-abc12` the repo is still called `webview`.
-function mainRoot(cwd) {
+export function mainRoot(cwd) {
   const common = git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
   return common && basename(common) === '.git' ? dirname(common) : null
 }
