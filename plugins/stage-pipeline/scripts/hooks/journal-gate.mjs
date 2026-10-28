@@ -174,6 +174,14 @@ const stampAll = () => {
 let changed = null
 if (tool === 'Bash') {
   if (pre) {
+    // The first look of this version at a task the command names (5f, A11): the snapshot is taken before the call, as the Edit / Write PreToolUse does. Taken after a call that writes
+    // a block, the block would be recorded as already there and read by words. A snapshot that exists stays as it is.
+    try {
+      const { baselineInfo } = await import('../journal-check.mjs')
+      for (const task of state.tasks.filter((task) => named(task))) baselineInfo(pluginDataDir(), real(task.dir))
+    } catch {
+      // no snapshot now — the PostToolUse run takes it, as before
+    }
     // with the freshest Force heading of each stamped task: the post-hook tells the call that closed the block from one that only ran while it closed
     try {
       const { freshestForceHeading } = await import('../markers.mjs')
@@ -287,7 +295,7 @@ async function closedDigest(task) {
   }
   return (
     `stage-pipeline: force run ${task.ticket} is closed. Below is the short summary, picked by the script from the journal and reports; ` +
-    `the full one is in ${path ?? 'RUN-DIGEST.md (could not be written)'}. Put the short one into the final message as a whole, without retelling or picking; ` +
+    `the full one is in ${path ?? 'RUN-DIGEST.md (could not be written)'}. Put the short one into the final message as a whole, without retelling or picking, as plain markdown and never inside a code block (its headings must render); ` +
     `on "more" or "what about X" open that section from the file instead of repeating everything.\n\n${short}`
   )
 }

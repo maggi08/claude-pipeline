@@ -5,6 +5,31 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.18.2 — 2026-10-25
+
+### The run summary is a normal answer, and no blocker drops out of it (VT-1, stage 5e)
+
+What changes against 0.18.1.
+
+The run summary of announcement-details run 9 reached the chat as one monospace block with a horizontal scroll, and two open blockers were missing from it: the orchestrator added them by hand after the digest.
+
+**The summary is plain markdown.**
+- The «Output» template of `stage-force` has no code fence any more, and says the summary is plain markdown, never inside a code block. The run-digest `###` headings render as headings.
+- The close message of journal-gate says the same. `scripts/validate.mjs` fails if the «Output» section of the stage-force skill holds a fenced block.
+
+**A blocker is lifted by a field, not by words.**
+- In a Force block dated 2026-10-26 or later, a blocker is lifted only by `Lifted: <who> <date> — <answer>` (its Russian form is in the marker table): a who of at most 4 words, then the date, then the answer. The field opens a segment of the blocker's own line (right after the ID, with `B1:` or `B1 -` too, or after `—`, `–`, ` - `, `;`, `.`, `(`), or stands on an indented sub-item under it. "closing", "lifted", "resolved" or "closed" in the description (the Russian words too) lift nothing, and neither does a field-wide mark such as "both lifted" on the `Blockers:` line: each item carries its own field.
+- The date is not the only gate: every Force block present when 0.18.2 first reads a task, open or closed and whatever its date, keeps the rules it started with (the word matcher), because the 0.18.1 plugin wrote them all and may still be writing the open one; only a block written after that first look is read by the field. The first look is taken before the edit that writes a heading (Edit, Write, and Bash that names the task). The cost: a second data dir that first reads the task later holds the blocks 0.18.2 itself wrote and reads them by words.
+- The field cannot be skipped by its value. The span from the colon to the date must open with a letter or a digit (the raw first character: a quote is not one, so a value that is only a quoted status lifts nothing; a quote may follow a who word or the date) and hold no negation or pending word as a whole word, in either language and any case (no, none, not, never, pending, TBD, waiting, awaiting, open, still, yet, false, n/a, and the Russian forms of no, not, not yet, still, waiting, awaiting, open), and no `⏳`, `?` or `❌`: `Lifted: still pending (asked the user 2026-10-27)`, `Lifted: NO, …`, `` Lifted: `no` … `` and the Russian "not yet" after the Russian label lift nothing, in a new block and in an old one. The field's segment runs to the next ` — `, `– `, `; ` or the line end. The request and condition words (needs, requires, waits for, awaiting, pending, once, until, after, when, if, asked, blocked, unresolved, will, and the Russian forms) are refused anywhere in the segment, outside quoted text «…», "…", “…” (a backtick stays part of the value), so `Lifted: once the user sets the token (asked 2026-10-27)` and a who of five words lift nothing, while a quoted answer such as `Lifted: user decision «no e2e for now» 2026-10-27` and a date first (`Lifted: 2026-10-27 user`, and the same in Russian) do lift. A `(` opener counts only when its parenthesis ends the line (a `.` or `;` may follow) and no other blocker's ID stands right before it, so `waits for B1 (lifted: user 2026-10-27) — …` does not lift this blocker. A dateless Russian "not yet" field after the Russian label is blanked on the word path too. A value the check refuses leaves the blocker open (fail closed). The English label keeps either case; the Russian form is capitalised and does not open after `(`, so a lower-case measurement note in parentheses never lifts (K12). Items on a one-line `Blockers:` field split at `. `, `; ` and `, ` before `B<n> —` or `**B<n>** —`. The snapshot is written to a temp file and renamed, so two hooks migrating it at once cannot tear it.
+- The Bash call that names a task takes the task's first-look snapshot before it runs, as the Edit and Write calls do, so a run finished from Bash in the first 0.18.2 session is read by the field, not held as an old block. A field line is read in a bounded window, so a 1 MB line of lift fields is read in under 250 ms per read (the cut is made at the next separator or lift label before quotes are folded).
+- A block dated before 2026-10-26, or with no date, keeps the old word matcher, so old task journals raise nothing new. It no longer lifts on the Russian nouns for "closing" and "lifting" in their cases ("with the flag closed" describes, it does not lift). In the live journals that opens blockers in two old blocks, announcement-details runs 7 and 9 (run 7 is dated 2026-10-20, run 9 2026-10-21; run 9 also counts the carried `B1 (8)`). The field on the blocker's own line lifts in an old block too; an indented sub-item is not read there.
+- One reader decides blocker state for every caller — the run digest, the CI-gate close rule, the final-review receipts and the close rule of journal-check — and the date comes from the block.
+
+**A carried blocker keeps its run.**
+- `B<n> (<run>) — …`, or `B<n> (<run>) text`, is a blocker line in every field of the block except the interview answers, where `B1 (10) — accept the recommendation` answers a blocker. The digest lists `B1 (8)` next to the current run's `B1`, and nothing merges blockers by number.
+
+The marker table of `references/language.md` has the rows for the lift field and the carried form.
+
 ## 0.18.1 — 2026-10-22
 
 ### The pipeline closes the browsers it opened (VT-1, stage 5b)

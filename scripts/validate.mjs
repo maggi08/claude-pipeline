@@ -147,6 +147,7 @@ function validatePluginTree(pluginDir) {
   validateNoHomePaths(pluginDir)
   validateDeclaredCounts(pluginDir)
   validateChangelog(pluginDir)
+  validateSummaryNotFenced(pluginDir)
   validatePluginPaths(pluginDir)
   validateHooks(pluginDir)
   validateNoProjectIds(pluginDir)
@@ -345,6 +346,21 @@ function validateChangelog(pluginDir) {
   if (!manifest?.version || !existsSync(join(ROOT, 'CHANGELOG.md'))) return
   const top = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8').match(/^## (\d+\.\d+\.\d+)/m)?.[1]
   if (top !== manifest.version) fail('CHANGELOG.md', `the top section is ${top ?? 'missing'}, plugin.json has ${manifest.version}`)
+}
+
+/**
+ * The run summary is pasted into the chat as it is. A code fence in the «Output» section of stage-force is copied with it, and the run-digest headings
+ * then show as one monospace block with a horizontal scroll (VT-1 stage 5e): the template there is plain markdown lines.
+ */
+function validateSummaryNotFenced(pluginDir) {
+  const rel = `${pluginDir}/skills/stage-force/SKILL.md`
+  if (!existsSync(join(ROOT, rel))) return
+  const lines = readFileSync(join(ROOT, rel), 'utf8').split('\n')
+  const start = lines.findIndex((line) => /^## Output\b/.test(line))
+  if (start === -1) return fail(rel, 'no "## Output" section — the run summary template is missing')
+  const end = lines.findIndex((line, i) => i > start && /^## /.test(line))
+  const fence = lines.slice(start, end === -1 ? undefined : end).findIndex((line) => /^\s*(?:```|~~~)/.test(line))
+  if (fence !== -1) fail(`${rel}:${start + fence + 1}`, 'the "Output" section holds a fenced block — the run summary template is plain markdown, never inside a code block')
 }
 
 /**
