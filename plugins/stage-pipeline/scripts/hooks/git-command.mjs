@@ -74,6 +74,101 @@ export function indexChangers(line) {
   return [...new Set(found)]
 }
 
+/** K11b.3 (B4): the git subcommands a command that commits may chain: they stage, commit or only read. Everything else (checkout, apply, cherry-pick, merge, stash, mv, rm, reset…) can put a file into the index or HEAD. */
+export const CHAIN_ALLOWED = new Set(['add', 'commit', 'status', 'diff', 'log', 'show', 'rev-parse'])
+const HIDING_WRAPPERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'eval', 'xargs'])
+
+/** The command substitutions of a line, `$( … )` and backticks: their inner texts. Single-quoted text and the body of a quoted heredoc are not substituted by the shell and are skipped. One linear pass. */
+function substitutions(line) {
+  const found = []
+  let quoted = null // the delimiter of a quoted heredoc whose body is skipped
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (quoted !== null) {
+      const next = line.indexOf('\n', i)
+      const end = next === -1 ? line.length : next
+      if (line.slice(i, end).trim() === quoted) quoted = null
+      i = end
+      continue
+    }
+    if (c === '\\') i++
+    else if (c === "'") {
+      const end = line.indexOf("'", i + 1)
+      i = end === -1 ? line.length : end
+    } else if (c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+      const m = /^-?\s*(['"])([\w.-]+)\1/.exec(line.slice(i + 2, i + 80))
+      if (m) {
+        const nl = line.indexOf('\n', i)
+        i = nl === -1 ? line.length : nl
+        quoted = m[2]
+      }
+    } else if (c === '$' && line[i + 1] === '(') {
+      let depth = 1
+      let j = i + 2
+      for (; j < line.length && depth; j++) {
+        if (line[j] === '(') depth++
+        else if (line[j] === ')') depth--
+      }
+      found.push(line.slice(i + 2, depth ? j : j - 1))
+      i = j - 1 // the inner text is scanned by the caller's recursion
+    } else if (c === '`') {
+      const end = line.indexOf('`', i + 1)
+      found.push(line.slice(i + 1, end === -1 ? line.length : end))
+      i = end === -1 ? line.length : end
+    }
+  }
+  return found
+}
+
+/** The git invocations of a line (`sub` — the subcommand, null when there is none) and the wrappers that hide a git call (`hidden` — the wrapper's name, `text` — its words). Substitutions are looked into, three levels deep. */
+function gitCalls(line, depth = 0) {
+  const calls = []
+  const hidden = []
+  for (const words of commandSegments(line)) {
+    let i = 0
+    for (;;) {
+      while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++
+      if (WRAPPER_WORDS.includes(words[i]) || words[i] === 'export') i++
+      else break
+    }
+    const name = words[i]
+    if (name === 'git' || name?.endsWith('/git')) {
+      i++
+      while (i < words.length && words[i].startsWith('-')) {
+        if (['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'].includes(words[i])) i++
+        i++
+      }
+      calls.push({ sub: words[i] ?? null })
+    } else if (name && HIDING_WRAPPERS.has(name.split('/').at(-1)) && words.slice(i + 1).some((word) => /\bgit\b/.test(word))) {
+      hidden.push({ name: name.split('/').at(-1), text: words.slice(i + 1).join(' ') })
+    }
+  }
+  if (depth < 3) {
+    for (const inner of substitutions(line)) {
+      const got = gitCalls(inner, depth + 1)
+      calls.push(...got.calls)
+      hidden.push(...got.hidden)
+    }
+  }
+  return { calls, hidden }
+}
+
+/**
+ * K11b.3 (B4): what in a command that commits can put a file into the index or into HEAD without `git add`. The text denylist of `indexChangers` missed `git checkout <ref> <path>`
+ * without `--`, `apply -3`, `cherry-pick -n`, `merge --squash`; so a command that contains `git commit` passes only if every git invocation in it is one of `CHAIN_ALLOWED`
+ * (`-C dir` and `-c k=v` before the subcommand are skipped; a commit message is one quoted word, not a subcommand). A wrapper that hides a git call — `bash -c`, `sh -c`, `eval`, `xargs`,
+ * and a `$( … )` or backtick holding a git subcommand outside the list — is a problem of the same command. A command with no `git commit` in it (the hidden wrappers' text included) has none.
+ * A commit made without `git commit` (a side branch cherry-picked back, `update-ref` with `commit-tree`) is not judged: the limit of 0.21.0, the HEAD-movement check is for a later version.
+ */
+export function commitChainProblems(line) {
+  const { calls, hidden } = gitCalls(line)
+  const commits = calls.some((call) => call.sub === 'commit') || hidden.some((wrapper) => /\bcommit\b/.test(wrapper.text))
+  if (!commits) return []
+  const problems = calls.filter((call) => call.sub && !CHAIN_ALLOWED.has(call.sub)).map((call) => `git ${call.sub}`)
+  problems.push(...hidden.map((wrapper) => `${wrapper.name} … git`))
+  return [...new Set(problems)]
+}
+
 // Options whose value is a separate word: `-m "text"` is not a commit path.
 const COMMIT_VALUE_SHORT = new Set(['m', 'F', 'c', 'C', 't'])
 const COMMIT_VALUE_LONG = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--author', '--date', '--cleanup', '--template', '--trailer', '--pathspec-from-file'])

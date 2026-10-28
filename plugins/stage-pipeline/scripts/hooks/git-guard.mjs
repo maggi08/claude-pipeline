@@ -41,7 +41,7 @@ const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
 const { PARITY_TABLE } = await import('../markers.mjs')
 const { commitVerdict, finishPending, savePending } = await import('../receipts.mjs')
 const { commitMakerVerdict, makerRuleApplies } = await import('../maker.mjs')
-const { commitScope, gitInvocations, indexChangers } = await import('./git-command.mjs')
+const { commitChainProblems, commitScope, gitInvocations, indexChangers } = await import('./git-command.mjs')
 const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
 
 const cwd = input.cwd ?? process.cwd()
@@ -60,6 +60,13 @@ if (input.hook_event_name === 'PostToolUse') {
 }
 // The invocation being judged: the firing row names its task and repo.
 let judged = null
+// K11b.3 (B4): a commit hidden in a wrapper (`bash -c 'git apply --cached p && git commit'`) has no visible `git commit` for the loop below; the same staging rule judges it from the cwd's task.
+const chain = commitChainProblems(command)
+if (chain.length && !invocations.some(({ subcommand }) => subcommand === 'commit')) {
+  const state = readPipelineState(cwd)
+  const task = state?.tasks.find((candidate) => candidate.current)
+  if (task?.forceActive && !task.unreadable && guarded(() => makerRuleApplies({ dataDir: pluginDataDir(), taskDir: task.dir, ticket: task.ticket, worktree: state.worktree }))) denyStaging(chain)
+}
 for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
@@ -109,13 +116,9 @@ for (const { subcommand, dir, args } of invocations) {
   // K11a.2 (S-1b), before the empty-commit shortcut below (a path put into the index by `update-index` is not in `paths` yet). The rule judges the blob a commit takes from the
   // working tree for the paths `git add` of this command stages, and from the index for the rest. A path put into the index by another subcommand of the same command
   // (`git update-index --add x && git commit`, `GIT_INDEX_FILE=… git commit`) is neither: the rule cannot see what the commit will take.
-  const tampered = indexChangers(command)
-  if (tampered.length && guarded(() => makerRuleApplies(makerArgs))) {
-    deny(
-      `stage-pipeline: the commit command also changes the index other than by \`git add\` (${tampered.map((name) => `\`${name}\``).join(', ')}) — rejected: ` +
-        'stage with `git add` in its own call, then commit. The maker receipt judges the code of a force commit by the blob that goes into it, and cannot read it from a command that builds the index another way.',
-    )
-  }
+  // K11b.3 (B4): besides the index-changing forms, a command that commits chains only add, commit, status, diff, log, show and rev-parse, and hides no git call in a wrapper.
+  const tampered = [...new Set([...indexChangers(command), ...chain])]
+  if (tampered.length && guarded(() => makerRuleApplies(makerArgs))) denyStaging(tampered)
   const specs = commitSpecs(invocations, state.worktree)
   const paths = commitPaths(specs, state.worktree)
   if (paths?.length === 0) continue
@@ -328,6 +331,14 @@ function gitOut(cwd, ...args) {
   } catch {
     return ''
   }
+}
+
+function denyStaging(tampered) {
+  deny(
+    `stage-pipeline: the commit command also does something to the index or to HEAD other than \`git add\` and \`git commit\` (${tampered.map((name) => `\`${name}\``).join(', ')}) — rejected: ` +
+      'stage with `git add` in its own call, then commit; a commit command may chain only add, commit, status, diff, log, show and rev-parse, with no git call inside `bash -c`, `eval`, `xargs`, backticks or `$( … )`. ' +
+      'The maker receipt judges the code of a force commit by the blob that goes into it, and cannot read it from a command that builds the index another way.',
+  )
 }
 
 /** Runs one rule: a throw is no verdict (null), so the rules after it still run. */

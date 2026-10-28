@@ -20,6 +20,7 @@
  * continuation's change set holds the dead maker's files too. A task over two repos snapshots the cwd repo and the sibling repos the config names (`others`).
  */
 import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, isAbsolute, resolve, sep } from 'node:path'
 import { readDataFiles, readDataJsonl } from './hooks/pipeline-state.mjs'
@@ -170,18 +171,16 @@ function siblingRoots(config, primary) {
  * A spawn left `pending` (the hook was killed, a `git status` or `hash-object` failed or ran past the budget) makes the commit rule fail open for the run: the rule cannot
  * tell the maker's files from the others without the baseline, and a missing proof is not a reason to deny the maker's own code.
  */
-export function takeSnapshot(dataDir, { session, cwd, ticket = null, stage = null, taskDir = null, typeCheck = false, config = null }) {
+export function takeSnapshot(dataDir, { session, cwd, ticket = null, stage = null, taskDir = null, typeCheck = false, config = null, spawn = null }) {
   try {
     if (!session) return null
     const deadline = Date.now() + SNAPSHOT_BUDGET_MS
-    const top = git(cwd, ['rev-parse', '--show-toplevel'], { deadline })?.trim()
-    if (!top) return null
-    const root = real(top)
-    const roots = [root, ...siblingRoots(config, root)]
+    // M-1 (K11b.1): agent-guard writes the `pending` line first, before plan-check (`startSpawn`); a direct call writes it here
+    const started = spawn ?? startSpawn(dataDir, { session, cwd, ticket, config })
+    if (!started) return null
+    const { id, roots, at } = started
+    const root = roots[0]
     const open = readOpen(dataDir, ticket)
-    const at = new Date().toISOString()
-    mkdirSync(join(dataDir, 'maker'), { recursive: true })
-    appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at, session, roots, pending: true })}\n`)
     const one = (repoRoot) => {
       const head = git(repoRoot, ['rev-parse', 'HEAD'], { deadline })?.trim() ?? null
       const branch = git(repoRoot, ['symbolic-ref', '--short', '-q', 'HEAD'], { deadline })?.trim() ?? null
@@ -201,10 +200,39 @@ export function takeSnapshot(dataDir, { session, cwd, ticket = null, stage = nul
     writeFileSync(spawnPath(dataDir, session), JSON.stringify(snapshot))
     mkdirSync(join(dataDir, 'maker', 'open'), { recursive: true })
     writeFileSync(openPath(dataDir, ticket), JSON.stringify(Object.fromEntries([primary, ...others].map(({ root: key, head, branch, blobs, at: since }) => [key, { head, branch, blobs, at: since }]))))
-    if ([primary, ...others].every((repo) => repo.blobs)) appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at, session, roots, done: true })}\n`)
+    if ([primary, ...others].every((repo) => repo.blobs)) appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at, id, session, roots, done: true })}\n`)
     return snapshot
   } catch {
     return null
+  }
+}
+
+/**
+ * K11b.1 (B2): the first line of a maker spawn. Every `stage-implement` spawn gets an id of its own; the `pending` line carries it and is written before plan-check
+ * and before the tree is hashed, so a hook killed anywhere after it leaves a spawn with no `done` line (the commit rule then fails open). The orchestrator's session is
+ * the same for every spawn of a run, so pairing by session let a finished spawn hide a later unfinished one. Never throws; null when no line could be written.
+ */
+export function startSpawn(dataDir, { session, cwd, ticket = null, config = null }) {
+  try {
+    const top = git(cwd, ['rev-parse', '--show-toplevel'], { deadline: Date.now() + SNAPSHOT_BUDGET_MS })?.trim()
+    if (!top) return null
+    const root = real(top)
+    const roots = [root, ...siblingRoots(config, root)]
+    const spawn = { id: randomUUID(), roots, at: new Date().toISOString() }
+    mkdirSync(join(dataDir, 'maker'), { recursive: true })
+    appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at: spawn.at, id: spawn.id, session, roots, pending: true })}\n`)
+    return spawn
+  } catch {
+    return null
+  }
+}
+
+/** K11b.1: a spawn that plan-check (or the `Confirmed:` check) denied: the same id, so it is not an unfinished spawn. Never throws. */
+export function denySpawn(dataDir, { spawn, session, ticket = null }) {
+  try {
+    appendFileSync(join(dataDir, spawnsName(ticket)), `${JSON.stringify({ at: new Date().toISOString(), id: spawn.id, session, roots: spawn.roots, denied: true })}\n`)
+  } catch {
+    // no line: the spawn stays pending and the commit rule fails open, the safe side
   }
 }
 
@@ -212,7 +240,7 @@ export function readSnapshot(dataDir, session) {
   return readJson(dataDir, 'maker', 'spawn', `${safe(session)}.json`)
 }
 
-/** The spawn lines of a ticket since a moment (ms), oldest first: `{ at, session, roots, pending?, done? }` (`takeSnapshot` writes `pending` first and `done` when it finished). */
+/** The spawn lines of a ticket since a moment (ms), oldest first: `{ at, id?, session, roots, pending?, done?, denied? }` (`startSpawn` writes `pending` first, `takeSnapshot` `done` when it finished, `denySpawn` `denied`). */
 function readSpawns(dataDir, ticket, sinceMs = 0) {
   return readDataJsonl(dataDir, spawnsName(ticket)).filter((spawn) => (Date.parse(spawn.at) || 0) >= sinceMs && Array.isArray(spawn.roots))
 }
@@ -528,12 +556,19 @@ const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /** Whether the Force block names the path as a whole token (`src/legacy.ts` is not named by `src/legacy.tsx`). */
 const namesPath = (body, path) => new RegExp(`(?<![\\w@./-])(?:\\./)?${escaped(path)}(?![\\w@/-]|\\.\\w)`).test(body)
 
-/** The index entries (`stage 0`) of a repo: `Map<path, blob>`. */
-function indexBlobs(root) {
+/**
+ * The index entries (`stage 0`) of the given paths: `Map<path, blob>`, or null when a read failed (K11b.1: the caller fails open — a failed read is not "every path is foreign").
+ * Only the commit's own paths are read, in literal pathspecs and in chunks, so the call does not grow with the repository.
+ */
+function indexBlobs(root, paths) {
   const map = new Map()
-  for (const entry of (git(root, ['ls-files', '-s', '-z']) ?? '').split('\0')) {
-    const found = /^\d+ ([0-9a-f]{40,64}) 0\t([\s\S]+)$/.exec(entry)
-    if (found) map.set(found[2], found[1])
+  for (let from = 0; from < paths.length; from += 200) {
+    const out = git(root, ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', ...paths.slice(from, from + 200)], { timeout: 10_000 })
+    if (out === null) return null
+    for (const entry of out.split('\0')) {
+      const found = /^\d+ ([0-9a-f]{40,64}) 0\t([\s\S]+)$/.exec(entry)
+      if (found) map.set(found[2], found[1])
+    }
   }
   return map
 }
@@ -548,12 +583,15 @@ function makerGate({ dataDir, taskDir, ticket, worktree }) {
   if (!run) return null
   const root = real(worktree)
   const lines = readSpawns(dataDir, ticket, run.start)
-  const finished = new Set(lines.filter((line) => line.done).map((line) => line.session))
-  const spawns = lines.filter((line) => !line.done)
+  // K11b.1: the lines pair by the spawn id (a line of an older version has none: its session stands for it)
+  const idOf = (line) => line.id ?? line.session
+  const closed = new Set(lines.filter((line) => line.done || line.denied).map(idOf))
+  const denied = new Set(lines.filter((line) => line.denied).map(idOf))
+  const spawns = lines.filter((line) => line.pending && !denied.has(idOf(line)))
   if (spawns.length) {
     if (!spawns.some((spawn) => spawn.roots.includes(root))) return null
     // K11a.5: a spawn whose snapshot never finished (no `done` line: killed, timed out, a failed git call) leaves no baseline to judge against — the rule fails open for the run
-    if (spawns.some((spawn) => spawn.pending && !finished.has(spawn.session) && spawn.roots.includes(root))) return null
+    if (spawns.some((spawn) => !closed.has(idOf(spawn)) && spawn.roots.includes(root))) return null
     if (!readMakerRecords(dataDir, ticket).some((record) => (Date.parse(record.at) || 0) >= run.start)) return null
   }
   return { run, root }
@@ -580,7 +618,10 @@ export function commitMakerVerdict({ dataDir, taskDir, ticket, worktree, changed
   } catch {
     // no task directory in the repo
   }
-  const index = indexBlobs(root)
+  const named = changed.filter((path) => isCodeFile(path) && !(taskRel && !taskRel.startsWith('..') && (path === taskRel || path.startsWith(`${taskRel}/`))))
+  if (!named.length) return []
+  const index = indexBlobs(root, named)
+  if (index === null) return null
   // K11a.5: what the snapshot does not hash it does not judge either — a file that is not regular by lstat (a symlink, a FIFO) and an untracked file over the size cap
   const judgeable = (path) => {
     try {
@@ -590,7 +631,7 @@ export function commitMakerVerdict({ dataDir, taskDir, ticket, worktree, changed
       return true // gone: a deletion
     }
   }
-  const candidates = changed.filter((path) => isCodeFile(path) && !(taskRel && !taskRel.startsWith('..') && (path === taskRel || path.startsWith(`${taskRel}/`))) && judgeable(path))
+  const candidates = named.filter(judgeable)
   if (!candidates.length) return []
   const recorded = lastMakerBlobs(dataDir, ticket, root)
   const cached = new Set((git(root, ['diff', '--cached', '--name-only', '--no-renames', '-z']) ?? '').split('\0').filter(Boolean))

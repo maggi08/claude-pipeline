@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rea
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { commandSegments } from './git-command.mjs'
 import {
   BRANCH_BOUNDARY,
   BRANCH_LABEL,
@@ -184,9 +185,104 @@ export function namesDataDir(text) {
   return generic ? generic[0] : null
 }
 
-/** The denial text for a call that names the plugin data directory in a force run. */
+/** The plugin data directories a command can name, as text: the directory itself (as given, real, legacy). */
+function dataDirTexts() {
+  const dirs = []
+  try {
+    const dir = pluginDataDir().replace(/[/\\]+$/, '')
+    for (const candidate of [dir, legacyDataDir(dir)]) {
+      if (!candidate) continue
+      dirs.push(candidate)
+      try {
+        dirs.push(realpathSync(candidate))
+      } catch {
+        // not there yet
+      }
+    }
+  } catch {
+    // no resolvable directory: the generic forms still apply
+  }
+  return dirs.filter((dir) => dir.length > 8)
+}
+
+const WRITE_COPIERS = new Set(['cp', 'rsync', 'install', 'ln']) // the data dir as the destination (the last operand, or `-t`)
+const WRITE_ANY_OPERAND = new Set(['rm', 'unlink', 'shred', 'truncate', 'tee']) // any operand in the data dir
+const COMMAND_WRAPPERS = new Set(['command', 'time', 'nice', 'nohup', 'env', 'export', 'sudo', 'exec'])
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'eval'])
+const INLINE_CODE = /^(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl)$/
+
+/**
+ * K11b.2 (VT-5 B3): the text of the plugin data directory a Bash command WRITES into, else null. Only write forms: a redirect (`>`, `>>`), `tee`, `cp`/`rsync`/`install`/`ln`
+ * with the directory as the destination, `mv` with it as an operand, `rm`/`unlink`/`shred`/`truncate`/`sed -i` on a path in it, `dd of=`, and an inline `node -e` / `python -c` that names it
+ * (A11: deleting a maker record turns the commit rule off for the run, so a delete is a write). The bare word `CLAUDE_PLUGIN_DATA`, `cat`/`grep`/`ls`, `cp -R <data dir> <scratch>` (a copy out)
+ * and `CLAUDE_PLUGIN_DATA=<temp dir> node …` name no write into it. One linear pass over the lexer's words; a `bash -c '…'` string is read the same way, three levels deep.
+ * The guard catches the habit, not a determined workaround: a path built at run time still reaches the files.
+ */
+export function writesDataDir(command, depth = 0) {
+  const dirs = dataDirTexts()
+  // cheap exit for nearly every call: no directory, no `plugins/data/stage-pipeline`, no variable in the text
+  if (!dirs.some((dir) => command.includes(dir)) && !command.includes('plugins/data/stage-pipeline') && !command.includes('CLAUDE_PLUGIN_DATA')) return null
+  const segments = commandSegments(command)
+  // an own `CLAUDE_PLUGIN_DATA=<dir>` in the command points the variable somewhere else: `$CLAUDE_PLUGIN_DATA` and the bare word then name that directory, not the hooks' one
+  const overridden = segments.some((words) => words.some((word) => /^(?:CLAUDE_PLUGIN_DATA)=/.test(word)))
+  const names = (word) => {
+    for (const dir of dirs) if (word.includes(dir)) return dir
+    const generic = /plugins\/data\/stage-pipeline[\w.-]*/.exec(word)
+    if (generic) return generic[0]
+    if (!overridden && /\$\{?CLAUDE_PLUGIN_DATA\b/.test(word)) return 'CLAUDE_PLUGIN_DATA'
+    return null
+  }
+  const firstNamed = (words) => {
+    for (const word of words) {
+      const dir = names(word)
+      if (dir) return dir
+    }
+    return null
+  }
+  for (const words of segments) {
+    // a redirect: `> file`, `>> file`, `2>file`, `>|file` — the target is the rest of the word or the next one (`&1` is a descriptor)
+    for (let i = 0; i < words.length; i++) {
+      const found = /^\d*>[>|]?(.*)$/.exec(words[i])
+      if (!found || found[1].startsWith('&')) continue
+      const dir = names(found[1] || words[i + 1] || '')
+      if (dir) return dir
+    }
+    let i = 0
+    while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || COMMAND_WRAPPERS.has(words[i]))) i++
+    const name = (words[i] ?? '').split('/').at(-1)
+    const rest = words.slice(i + 1)
+    const operands = rest.filter((word) => !/^-/.test(word) && !/^\d*[<>]/.test(word))
+    if (SHELLS.has(name) && depth < 3) {
+      const inner = name === 'eval' ? rest.join(' ') : rest[rest.indexOf('-c') + 1]
+      const dir = inner && (name === 'eval' || rest.includes('-c')) ? writesDataDir(inner, depth + 1) : null
+      if (dir) return dir
+    } else if (INLINE_CODE.test(name) && rest.some((word) => /^(?:-e|-p|-pe|-c|--eval|--print|-E)$/.test(word))) {
+      // inline code that names the directory — or the variable, unless the command points it at a temp dir of its own
+      const code = rest.filter((word) => !/^-/.test(word)).join('\n')
+      for (const dir of dirs) if (code.includes(dir)) return dir
+      const generic = /plugins\/data\/stage-pipeline[\w.-]*/.exec(code) ?? (overridden ? null : /CLAUDE_PLUGIN_DATA/.exec(code))
+      if (generic) return generic[0]
+    } else if (WRITE_ANY_OPERAND.has(name) || (name === 'sed' && rest.some((word) => word === '--in-place' || /^-[A-Za-z]*i/.test(word)))) {
+      const dir = firstNamed(operands)
+      if (dir) return dir
+    } else if (name === 'mv') {
+      const dir = firstNamed(operands)
+      if (dir) return dir
+    } else if (WRITE_COPIERS.has(name)) {
+      const target = rest.find((word) => word.startsWith('--target-directory='))?.slice(18) ?? (rest.includes('-t') ? rest[rest.indexOf('-t') + 1] : operands.at(-1))
+      const dir = target ? names(target) : null
+      if (dir) return dir
+    } else if (name === 'dd') {
+      const dir = firstNamed(rest.filter((word) => word.startsWith('of=')))
+      if (dir) return dir
+    }
+  }
+  return null
+}
+
+/** The denial text for a call that writes into the plugin data directory in a force run. */
 export const dataDirReason = (ticket, dir) =>
-  `stage-pipeline: force run ${ticket} — the command names the plugin data directory (\`${dir}\`). The maker records, plan snapshots and receipts there are written by the hooks only; ` +
+  `stage-pipeline: force run ${ticket} — the call writes into the plugin data directory (\`${dir}\`). The maker records, plan snapshots and receipts there are written by the hooks only; ` +
   'a record written by hand stands in for a stage-implement run that did not happen. A rejection is not a reason to look for a workaround (stage-force, Step 2): ' +
   'if the state there is wrong, put it into `Blockers:` of the Force run block and carry on with what does not depend on it.'
 

@@ -121,7 +121,11 @@ if (pre && !hasPipelineConfig(cwd)) process.exit(0)
 if (dataTarget) {
   const dir = namesDataDir(`${target}\n${real(resolve(cwd, target))}`)
   const task = dir ? readPipelineState(cwd)?.tasks.find((candidate) => candidate.current) : null
-  if (task?.forceActive) {
+  // K11b.2: only a run that is new by the first look is denied — the maker rules' own gate (`makerRun`); a run already going keeps the rules it started with (D7). An error: not denied.
+  const isNew = task?.forceActive
+    ? await import('../maker.mjs').then(({ makerRun }) => Boolean(makerRun(pluginDataDir(), task.dir))).catch(() => false)
+    : false
+  if (isNew) {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: dataDirReason(task.ticket, dir) } }))
     process.exit(0)
   }

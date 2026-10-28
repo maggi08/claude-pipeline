@@ -7203,7 +7203,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     const f = fixture('a-forceguard')
     const forged = f.forceGuard(`node -e "require('fs').appendFileSync('${DATA}/maker/${f.ticket}.jsonl', '{}')"`)
     check('force K11a.1 incident: a command naming the plugin data directory — denied, "written by the hooks only" and "not a reason for a workaround"', forged.decision === 'deny' && /written by the hooks only/.test(forged.text) && /not a reason to look for a workaround/.test(forged.text), `${forged.decision} ${forged.text}`)
-    check('force K11a.1 incident: the `plugins/data/stage-pipeline…` form and `$CLAUDE_PLUGIN_DATA` are named too', f.forceGuard('cat ~/.claude/plugins/data/stage-pipeline-inline/maker/x.jsonl').decision === 'deny' && f.forceGuard('echo {} >> "$CLAUDE_PLUGIN_DATA/plan-baseline/x.json"').decision === 'deny')
+    check('force K11a.1 incident (premise changed by K11b.2: `cat` is a read, now `rm`): the `plugins/data/stage-pipeline…` form and `$CLAUDE_PLUGIN_DATA` are named too', f.forceGuard('rm ~/.claude/plugins/data/stage-pipeline-inline/maker/x.jsonl').decision === 'deny' && f.forceGuard('echo {} >> "$CLAUDE_PLUGIN_DATA/plan-baseline/x.json"').decision === 'deny')
     for (const script of ['run-digest.mjs', 'archive-stages.mjs', 'ci-gates.mjs', 'browser-cleanup.mjs', 'plan-check.mjs']) {
       check(`force K11a.1 legitimate: the plugin's own ${script}, run by \${CLAUDE_PLUGIN_ROOT}, names no data directory — passes`, f.forceGuard(`node "\${CLAUDE_PLUGIN_ROOT}/scripts/${script}" .claude/tasks/${f.ticket}/STAGES.md --stage 1`).decision === 'allow')
     }
@@ -7479,6 +7479,172 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('journal-gate R-2 legitimate: the plugin\'s own source (a path with `stage-pipeline` in it) is not the data directory', edit(d.dir, 'Edit', join(PLUGIN, 'maker.mjs')).decision === 'allow')
     const done = fixture('b-datadir-closed', { heading: `## Force run ${AREL} — completed ${AREL}` })
     check('journal-gate R-2 legitimate: no open force run (the user is nearby) — the data directory is not guarded', edit(done.dir, 'Write', join(DATA, 'maker', `${done.ticket}.jsonl`)).decision === 'allow')
+  }
+
+  // ── VT-5 stage 11b (catch-up): B2 spawn pairing by id, B3 write forms into the data dir, B4 the chain allow-list ──
+  // B2 / K11b.1 — a finished spawn must not hide a later unfinished one; a denied spawn closes itself; a failed index read lets the commit through.
+  {
+    const spawnLines = (f) => readFileSync(join(DATA, 'maker', `${f.ticket}.spawns.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const crowd = (dir) => {
+      for (let i = 0; i < 4001; i++) writeFileSync(join(dir, `gen-${i}.txt`), `${i}\n`)
+    }
+    const f = fixture('b-second')
+    f.spawn()
+    write(f.dir, { 'src/one.ts': 'export const one = 1\n' })
+    f.stop(handback(['src/one.ts']))
+    git(f.dir, 'add', 'src/one.ts')
+    git(f.dir, 'commit', '-qm', 'stage1')
+    check('maker K11b.1: every spawn line carries an id — the `pending` line and the `done` line of one spawn share it', (() => {
+      const lines = spawnLines(f)
+      const pending = lines.find((line) => line.pending)
+      return Boolean(pending?.id) && lines.some((line) => line.done && line.id === pending.id)
+    })(), JSON.stringify(spawnLines(f)))
+    crowd(f.dir)
+    f.spawn() // the same orchestrator session, the snapshot of the second spawn does not finish
+    write(f.dir, { 'src/m.ts': 'export const m = 1\n', 'src/o.ts': 'export const o = 1 // the orchestrator\n' })
+    f.stop(handback(['src/m.ts']))
+    const lines = spawnLines(f)
+    check('maker K11b.1 incident: a finished spawn, then an unfinished one in the same session — the second `pending` line has an id of its own and no `done` line', lines.filter((line) => line.pending).length === 2 && lines.filter((line) => line.done).length === 1 && new Set(lines.filter((line) => line.pending).map((line) => line.id)).size === 2, JSON.stringify(lines))
+    const second = f.commit('git add src/m.ts && git commit -m stage2')
+    check('maker K11b.1 incident: …and the maker\'s own file is not denied at commit (it was, the first `done` line of the session hid the unfinished spawn)', second.decision === 'allow', `${second.decision} ${second.text}`)
+
+    // a denied spawn does not turn the rule off
+    const d = fixture('b-denied')
+    d.spawn()
+    write(d.dir, { 'src/m.ts': 'export const m = 1\n' })
+    d.stop(handback(['src/m.ts']))
+    // a stage added after the first look is new: an AC with no verifier is a problem there, and plan-check denies the spawn (the first spawn above was the first look)
+    write(d.dir, { [`.claude/tasks/${d.ticket}/STAGES.md`]: `${d.full}\n### Stage 2: new  [status: todo]  logic-only\nAcceptance criteria:\n- \`AC-2.1\` WHEN a THEN b\n` })
+    const refused = d.spawn(d.session, `Mode: implement. Ticket: ${d.ticket}. Stage: 2. Language: en.`)
+    const dLines = spawnLines(d)
+    const last = dLines.filter((line) => line.pending).at(-1)
+    check('maker K11b.1: a spawn that plan-check denies has its `pending` line first and a `denied` line with the same id', refused.decision === 'deny' && dLines.some((line) => line.denied && line.id === last?.id) && !dLines.some((line) => line.done && line.id === last?.id), `${refused.decision} ${JSON.stringify(dLines)}`)
+    write(d.dir, { 'src/o.ts': 'export const o = 1 // the orchestrator\n' })
+    const orchestrator = d.commit('git add src/o.ts && git commit -m x')
+    check('maker K11b.1: a denied spawn does not turn the rule off — the orchestrator\'s file is still denied', orchestrator.decision === 'deny' && /src\/o\.ts/.test(orchestrator.text), `${orchestrator.decision} ${orchestrator.text}`)
+    check('maker K11b.1 legitimate: the maker\'s own file next to a denied spawn passes', d.commit('git add src/m.ts && git commit -m x').decision === 'allow')
+
+    // agent-guard killed before plan-check finishes: the `pending` line is all that is left
+    const k = fixture('b-killed')
+    k.spawn()
+    write(k.dir, { 'src/m.ts': 'export const m = 1\n' })
+    k.stop(handback(['src/m.ts']))
+    write(k.dir, { 'src/o.ts': 'export const o = 1 // the orchestrator\n' })
+    check('maker K11b.1 control: the same orchestrator file with no dead spawn is denied (the premise of the fail-open)', k.commit('git add src/o.ts && git commit -m x').decision === 'deny')
+    appendFileSync(join(DATA, 'maker', `${k.ticket}.spawns.jsonl`), `${JSON.stringify({ at: new Date().toISOString(), id: 'killed-before-plan-check', session: k.session, roots: [realpathSync(k.dir)], pending: true })}\n`)
+    check('maker K11b.1: a `pending` line with no `done` and no `denied` (the hook was killed inside plan-check) — the commit rule fails open', k.commit('git add src/o.ts && git commit -m x').decision === 'allow')
+
+    // a failed index read: the commit passes, and the read names only the commit's paths
+    const r = fixture('b-index')
+    r.spawn()
+    write(r.dir, { 'src/m.ts': 'export const m = 1\n' })
+    r.stop(handback(['src/m.ts']))
+    write(r.dir, { 'src/o.ts': 'export const o = 1 // the orchestrator\n' })
+    const verdict = () => mk.commitMakerVerdict({ dataDir: DATA, taskDir: r.tdir, ticket: r.ticket, worktree: r.dir, changed: ['src/o.ts'], staged: new Set(['src/o.ts']) })
+    const readable = verdict()
+    const broken = join(aRoot, 'b-index.broken')
+    writeFileSync(broken, 'not an index')
+    process.env.GIT_INDEX_FILE = broken
+    const unreadable = verdict()
+    delete process.env.GIT_INDEX_FILE
+    check('maker K11b.1: the index cannot be read — no verdict (the commit passes); readable, the same call names the orchestrator\'s file', unreadable === null && same2(readable, ['src/o.ts']), `${JSON.stringify(readable)} ${JSON.stringify(unreadable)}`)
+  }
+
+  // B3 / K11b.2 — only write forms into the plugin data dir are denied, and only in a run that is new by the first look.
+  {
+    const f = fixture('b-write')
+    const old = fixture('b-write-old', { planSeen: true })
+    const T = f.ticket
+    const incidents = {
+      'a redirect >': `echo {} > ${DATA}/maker/${T}.jsonl`,
+      'a redirect >>': `echo '{}' >> "$CLAUDE_PLUGIN_DATA/maker/${T}.jsonl"`,
+      'tee': `echo '{}' | tee -a ${DATA}/maker/${T}.jsonl`,
+      'cp into it': `cp /tmp/forged.json ${DATA}/maker/${T}.jsonl`,
+      'mv into it': `mv /tmp/forged.json ${DATA}/maker/`,
+      'rsync into it': `rsync -a /tmp/forged/ ${DATA}/maker/`,
+      'install into it': `install -m 644 /tmp/forged.json ${DATA}/maker/${T}.jsonl`,
+      'ln into it': `ln -sf /tmp/forged.json ${DATA}/maker/${T}.jsonl`,
+      'cp -t': `cp -t ${DATA}/maker /tmp/forged.json`,
+      'rm (A11: a deleted record turns the commit rule off)': `rm -f ${DATA}/maker/${T}.jsonl`,
+      'truncate': `truncate -s 0 ${DATA}/maker/${T}.jsonl`,
+      'sed -i': `sed -i '' 's/a/b/' ${DATA}/maker/${T}.jsonl`,
+      'dd of=': `dd if=/tmp/forged.json of=${DATA}/maker/${T}.jsonl`,
+      'inline node -e': `node -e "require('fs').appendFileSync('${DATA}/maker/${T}.jsonl', '{}')"`,
+      'inline node -e on the variable': `node -e "require('fs').writeFileSync(process.env.CLAUDE_PLUGIN_DATA + '/x', '{}')"`,
+      'inline python -c': `python3 -c "open('${DATA}/maker/${T}.jsonl', 'a').write('{}')"`,
+      'bash -c': `bash -c 'echo {} > ${DATA}/maker/${T}.jsonl'`,
+      'the plugins/data form': 'rm ~/.claude/plugins/data/stage-pipeline-inline/maker/x.jsonl',
+      'after a cd and &&': `cd /tmp && echo {} >> ${DATA}/maker/${T}.jsonl`,
+    }
+    for (const [label, command] of Object.entries(incidents)) {
+      const out = f.forceGuard(command)
+      check(`force K11b.2 incident: ${label} — denied`, out.decision === 'deny' && /written by the hooks only/.test(out.text), `${out.decision} ${command}`)
+      if (['a redirect >', 'rm (A11: a deleted record turns the commit rule off)', 'inline node -e'].includes(label)) check(`force K11b.2 D7: ${label} in a run already going at the first look — never denied`, old.forceGuard(command).decision === 'allow')
+    }
+    const legit = {
+      'the bare word': 'echo CLAUDE_PLUGIN_DATA',
+      'the variable printed': 'echo "$CLAUDE_PLUGIN_DATA"',
+      'cat': `cat ${DATA}/maker/${T}.jsonl`,
+      'grep -r': `grep -rn spawn ${DATA}/maker`,
+      'ls': `ls -la ${DATA}`,
+      'sed -n (a read)': `sed -n 1,5p ${DATA}/maker/${T}.jsonl`,
+      'a copy out, cp -R <data dir> <scratch>': `cp -R ${DATA} /tmp/scan-copy`,
+      'a copy out of the plugins/data form': 'cp -R ~/.claude/plugins/data/stage-pipeline-inline /tmp/scan-copy',
+      'a scan with CLAUDE_PLUGIN_DATA=<temp dir>': `CLAUDE_PLUGIN_DATA=/tmp/scan-copy node "\${CLAUDE_PLUGIN_ROOT}/scripts/run-digest.mjs" .claude/tasks/${T}/STAGES.md`,
+      'a scan with the variable on a temp dir and writes into it': 'CLAUDE_PLUGIN_DATA=$(mktemp -d) node -e "require(\'fs\').writeFileSync(process.env.CLAUDE_PLUGIN_DATA + \'/x\', \'1\')"',
+      'a redirect to a log file': 'node build.mjs > /tmp/build.log 2>&1',
+      'rm of a temp file': 'rm -rf /tmp/scan-copy',
+    }
+    for (const [label, command] of Object.entries(legit)) check(`force K11b.2 legitimate: ${label} — passes`, f.forceGuard(command).decision === 'allow', command)
+    const edit = (cwd, tool, file) => runHook('journal-gate.mjs', { cwd, hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { file_path: file } })
+    check('journal-gate K11b.2 D7: a Write into the data directory in a run already going at the first look — never denied', edit(old.dir, 'Write', join(DATA, 'maker', `${old.ticket}.jsonl`)).decision === 'allow')
+    check('journal-gate K11b.2: the same Write in a new run is still denied', edit(f.dir, 'Write', join(DATA, 'maker', `${T}.jsonl`)).decision === 'deny')
+    const big = `cat ${'a '.repeat(50_000)} ${DATA}/maker/x ${'>'.repeat(20_000)} ${'$( '.repeat(500)}`
+    const began = Date.now()
+    const { writesDataDir } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+    writesDataDir(big)
+    writesDataDir(`echo ${'x'.repeat(100_000)} > ${DATA}/y`)
+    check('force K11b.2: a 100 KB command is parsed in linear time (under a second)', Date.now() - began < 1000, `${Date.now() - began} ms`)
+  }
+
+  // B4 / K11b.3 — a command that commits chains only add, commit, status, diff, log, show, rev-parse; no wrapper hides a git call.
+  {
+    const table = [
+      ['git checkout stash@{0} src/o.ts && git commit -m x', ['git checkout']],
+      ['git apply -3 p.diff && git commit -m x', ['git apply']],
+      ['git cherry-pick -n abc && git commit -m x', ['git cherry-pick']],
+      ['git merge --squash feat && git commit -m x', ['git merge']],
+      ['git -C . -c core.x=1 stash pop && git commit -m x', ['git stash']],
+      ["bash -c 'git apply --cached p && git commit -m x'", ['bash … git']],
+      ["sh -c 'git add a' && git commit -m x", ['sh … git']],
+      ['eval "git mv a b" && git commit -m x', ['eval … git']],
+      ['echo src/o.ts | xargs git add && git commit -m x', ['xargs … git']],
+      ['git commit -m x && `git reset --hard`', ['git reset']],
+      ['git commit --fixup=$(git cherry-pick -n abc)', ['git cherry-pick']],
+      ['git add a b && git commit -m "fix … rm … git mv … git checkout x y"', []],
+      ['git status && git add x && git commit -m x', []],
+      ['git -C sub -c user.name=x add x && git diff --cached | head && git log -1 && git show HEAD && git rev-parse HEAD && git commit -m x', []],
+      ['git commit -m "$(git log -1 --format=%s)"', []],
+      ["git add x && git commit -m \"$(cat <<'EOF'\nmessage: git mv and git checkout in a heredoc\nEOF\n)\"", []],
+      ['git checkout stash@{0} src/o.ts', []],
+      ["bash -c 'git apply --cached p'", []],
+      ['npm test && git add x', []],
+    ]
+    for (const [command, want] of table) check(`git K11b.3: commitChainProblems(${JSON.stringify(command).slice(0, 70)}) → [${want}]`, same2(gcm.commitChainProblems(command), want), JSON.stringify(gcm.commitChainProblems(command)))
+    const f = fixture('b-chain')
+    f.spawn()
+    write(f.dir, { 'src/m.ts': 'export const m = 1\n' })
+    f.stop(handback(['src/m.ts']))
+    write(f.dir, { 'src/o.ts': 'export const o = 1 // the orchestrator\n' })
+    const old = fixture('b-chain-old', { planSeen: true })
+    for (const command of ['git checkout stash@{0} src/o.ts && git commit -m x', "bash -c 'git apply --cached p && git commit -m x'", 'git cherry-pick -n abc && git commit -m x', 'echo src/o.ts | xargs git add && git commit -m x']) {
+      const out = f.commit(command)
+      check(`maker K11b.3 incident: ${JSON.stringify(command).slice(0, 60)} — denied, "stage with \`git add\` in its own call"`, out.decision === 'deny' && /stage with `git add` in its own call, then commit/.test(out.text), `${out.decision} ${out.text}`)
+      check(`maker K11b.3 D7: the same in a run already going at the first look — not judged`, old.commit(command).decision === 'allow')
+    }
+    for (const command of ['git add src/m.ts && git commit -m "… rm … git mv …"', 'git status && git add src/m.ts && git commit -m x', 'git -C . -c user.name=x add src/m.ts && git commit -m x', 'git add src/m.ts && git commit -m "$(git log -1 --format=%s)"']) {
+      check(`maker K11b.3 legitimate: ${JSON.stringify(command).slice(0, 60)} — passes`, f.commit(command).decision === 'allow', f.commit(command).text)
+    }
   }
   process.env.STAGE_PIPELINE_MAKER_RECEIPTS = 'off'
   rmSync(aRoot, { recursive: true, force: true })

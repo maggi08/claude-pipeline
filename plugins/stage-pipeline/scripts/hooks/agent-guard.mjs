@@ -25,6 +25,8 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, review
 const CONFIRM_SINCE = '2026-10-03'
 const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(?::\\s*)?\\**whole[-\\s]branch`, 'i')
 
+// the spawn the pending line was written for (K11b.1); a deny closes it with a `denied` line
+let spawned = null
 const input = await readHookInput()
 const toolInput = input.tool_input ?? {}
 const type = String(toolInput.subagent_type ?? '')
@@ -50,6 +52,9 @@ if (agent === 'pro-review' && WHOLE_BRANCH.test(toolInput.prompt ?? '')) {
 if (agent === 'stage-implement') {
   const task = state.tasks.find((candidate) => candidate.current)
   const prompt = toolInput.prompt ?? ''
+  const session = typeof input.session_id === 'string' && input.session_id ? input.session_id : null
+  // K11b.1 (B2): the `pending` line of this spawn goes first, before any check: a hook killed from here on leaves a spawn with no `done` line, and the commit rule fails open
+  spawned = session ? await startSpawn(state, task, session, input.cwd ?? process.cwd()) : null
   const block = task && openForceBlock(task.stages)
   if (block && (block.date ? block.date >= CONFIRM_SINCE : block.unreadDate) && !CONFIRMED_LINE.test(block.body)) {
     deny(
@@ -64,9 +69,22 @@ if (agent === 'stage-implement') {
   const verdict = task && !task.unreadable ? await planVerdict(state, task, stage, prompt) : null
   if (verdict) deny(verdict)
   // K11.1 (VT-1 stage 11): the spawn is allowed — the tree is recorded for the stop hook to compare the hand-back with. A denied spawn records nothing.
-  if (typeof input.session_id === 'string' && input.session_id) await recordSpawn(state, task, stage, input.session_id, input.cwd ?? process.cwd())
+  if (session) await recordSpawn(state, task, stage, session, input.cwd ?? process.cwd())
 }
 process.exit(0)
+
+/** The first line of the spawn (maker.mjs, `startSpawn`): `{ spawn, close }` — `close` writes the `denied` line, null when none was written. Never throws. */
+async function startSpawn(state, task, session, cwd) {
+  try {
+    const { startSpawn: start } = await import('../maker.mjs')
+    const dataDir = pluginDataDir()
+    const spawn = start(dataDir, { session, cwd, ticket: task?.ticket ?? null, config: state.config ?? null })
+    const { denySpawn } = await import('../maker.mjs')
+    return spawn ? { spawn, close: () => denySpawn(dataDir, { spawn, session, ticket: task?.ticket ?? null }) } : null
+  } catch {
+    return null
+  }
+}
 
 /** The spawn snapshot (maker.mjs, `takeSnapshot`): never throws and never denies. The import is lazy, like plan-check's. */
 async function recordSpawn(state, task, stage, session, cwd) {
@@ -75,7 +93,7 @@ async function recordSpawn(state, task, stage, session, cwd) {
     // the config's own words for "no command" (markers.mjs `NO_GATE_COMMAND`, the Russian one included), a trailing comment after them too; `off` is the old spelling
     const command = (/^[ \t]*-[ \t]*type_check:[ \t]*[`*]*([^\n]*)$/im.exec(state.config ?? '')?.[1] ?? '').trim()
     const typeCheck = Boolean(command) && !NO_GATE_COMMAND.test(command) && !/^off(?![a-z])/i.test(command)
-    takeSnapshot(pluginDataDir(), { session, cwd, ticket: task?.ticket ?? null, stage, taskDir: task?.dir ?? null, typeCheck, config: state.config ?? null })
+    takeSnapshot(pluginDataDir(), { session, cwd, ticket: task?.ticket ?? null, stage, taskDir: task?.dir ?? null, typeCheck, config: state.config ?? null, spawn: spawned?.spawn ?? null })
   } catch {
     // no snapshot: the stop hook does not judge this maker
   }
@@ -124,6 +142,8 @@ function agentModel(name) {
 }
 
 function deny(rule, reason) {
+  // K11b.1: a spawn that was denied never counts as an unfinished one
+  if (spawned) spawned.close()
   const task = state.tasks.find((candidate) => candidate.current)
   denyTool(rule, reason, { input, task: task?.ticket, repo: state.worktree })
 }
