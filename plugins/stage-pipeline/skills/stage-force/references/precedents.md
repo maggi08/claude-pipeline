@@ -16,8 +16,6 @@ In force mode the user answers once for the whole task: a question without a rec
 
 A question in the middle of the run stops all of it, together with everything that does not depend on the answer, and costs as long as the user is not looking at the terminal.
 
-The cost is needed not for reporting but for the order of review: by the end of an autonomous run there are a dozen such lines, the user reads them at once and must see which to check first without opening each.
-
 ## Output — the run summary
 
 A precedent: a summary reduced everything to "kk/en texts and minor deviations", and under it lay two defects the user found themselves; that is why the choice belongs to the script.
@@ -27,3 +25,13 @@ Otherwise they go into the PR without a single checker: that is how seven commit
 ## Step 0. Auth probe
 
 (proven at VT-1 kickoff) — said of checker subagents driving the orchestrator's MCP browser.
+
+## Step 0. The answers are the start
+
+There is no separate "confirm, I am starting" after the interview: the user answered and left.
+
+The hook looks only at the task of the current branch (the `Branch:` line in the STAGES.md header or the ticket in the branch name) and only at an open block — without "completed" in the heading (closing — "Output").
+
+## Output — the session browser
+
+A close the hook rejects stays this session's: the edit that fixes the journal closes the browser.

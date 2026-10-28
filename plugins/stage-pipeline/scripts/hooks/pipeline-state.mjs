@@ -209,11 +209,41 @@ const WRITE_COPIERS = new Set(['cp', 'rsync', 'install', 'ln']) // the data dir 
 const WRITE_ANY_OPERAND = new Set(['rm', 'unlink', 'shred', 'truncate', 'tee']) // any operand in the data dir
 const COMMAND_WRAPPERS = new Set(['command', 'time', 'nice', 'nohup', 'env', 'export', 'sudo', 'exec'])
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'eval'])
+// A write form in inline code (K11c.3, M-1): any mutating or executing primitive as a word (write, append, unlink, rm, rename, copy, symlink, mkdir, chmod, system, exec*, spawn*, subprocess, shutil, Popen, File.delete …)
+// or an `open(` / `.open(` / `openSync(` call with a mode literal containing w, a, x or + (or a `mode=` keyword). A word scan, no backtracking: every pattern is a flat alternation or a bounded window.
+const INLINE_MUTATE = /write|append|unlink|remove|rename|copy|symlink|truncate|mkdir|makedirs|chmod|chown|utime|delete|spawn|popen|subprocess|child_process|shutil|exec|system|move|\b(?:rm|cp|mv|ln|link|dd|tee)(?:Sync|dir|\b)/i
+const INLINE_OPEN = /\bopen\w*\s*\(/g
+const INLINE_MODE = /,\s*['"][rbt]{0,3}[wax+][rwabxt+]{0,3}['"]\s*[,)]|\bmode\s*=/
+// a read call naming the directory (`readFileSync('<dir>/x')`): its argument is a read of the data dir, not a write (a copy out)
+const INLINE_READ_CALL = /\b(?:readFileSync|readFile|readdirSync|readdir|statSync|existsSync|read_text|read_bytes|listdir|load)\s*\([^)]{0,300}\)?/g
+function inlineWrites(code) {
+  if (INLINE_MUTATE.test(code)) return true
+  for (const match of code.matchAll(INLINE_OPEN)) {
+    const window = code.slice(match.index, match.index + 200)
+    const close = window.search(/\)\s*(?:[;.\n]|$)/)
+    if (INLINE_MODE.test(close > 0 ? window.slice(0, close + 1) : window)) return true
+  }
+  return false
+}
+/** The file operands of a `sed` command: its script and the values of `-e` / `-f` are not paths. */
+function sedFiles(words) {
+  const files = []
+  let scripted = false
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]
+    if (/^(?:-e|-f|--expression|--file)$/.test(word)) {
+      scripted = true
+      i++
+    } else if (/^(?:--expression|--file)=/.test(word) || /^-[A-Za-z]*[ef]./.test(word)) scripted = true
+    else if (word && !word.startsWith('-')) files.push(word)
+  }
+  return scripted ? files : files.slice(1)
+}
 const INLINE_CODE = /^(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl)$/
 
 /**
  * K11b.2 (VT-5 B3): the text of the plugin data directory a Bash command WRITES into, else null. Only write forms: a redirect (`>`, `>>`), `tee`, `cp`/`rsync`/`install`/`ln`
- * with the directory as the destination, `mv` with it as an operand, `rm`/`unlink`/`shred`/`truncate`/`sed -i` on a path in it, `dd of=`, and an inline `node -e` / `python -c` that names it
+ * with the directory as the destination, `mv` with it as an operand, `rm`/`unlink`/`shred`/`truncate`/`sed -i` on a path in it, `dd of=`, and an inline `node -e` / `python -c` that names a path in it with a write form (K11c.3)
  * (A11: deleting a maker record turns the commit rule off for the run, so a delete is a write). The bare word `CLAUDE_PLUGIN_DATA`, `cat`/`grep`/`ls`, `cp -R <data dir> <scratch>` (a copy out)
  * and `CLAUDE_PLUGIN_DATA=<temp dir> node …` name no write into it. One linear pass over the lexer's words; a `bash -c '…'` string is read the same way, three levels deep.
  * The guard catches the habit, not a determined workaround: a path built at run time still reaches the files.
@@ -257,13 +287,14 @@ export function writesDataDir(command, depth = 0) {
       const dir = inner && (name === 'eval' || rest.includes('-c')) ? writesDataDir(inner, depth + 1) : null
       if (dir) return dir
     } else if (INLINE_CODE.test(name) && rest.some((word) => /^(?:-e|-p|-pe|-c|--eval|--print|-E)$/.test(word))) {
-      // inline code that names the directory — or the variable, unless the command points it at a temp dir of its own
+      // K11c.3 (B6): inline code is denied for a write form on a path in the directory — the bare word `CLAUDE_PLUGIN_DATA` is not one (the variable is not set in the Bash tool)
       const code = rest.filter((word) => !/^-/.test(word)).join('\n')
-      for (const dir of dirs) if (code.includes(dir)) return dir
-      const generic = /plugins\/data\/stage-pipeline[\w.-]*/.exec(code) ?? (overridden ? null : /CLAUDE_PLUGIN_DATA/.exec(code))
-      if (generic) return generic[0]
+      const masked = code.replace(INLINE_READ_CALL, '')
+      const named = dirs.find((dir) => masked.includes(dir)) ?? /plugins\/data\/stage-pipeline[\w.-]*/.exec(masked)?.[0]
+      if (named && inlineWrites(masked)) return named
     } else if (WRITE_ANY_OPERAND.has(name) || (name === 'sed' && rest.some((word) => word === '--in-place' || /^-[A-Za-z]*i/.test(word)))) {
-      const dir = firstNamed(operands)
+      // K11c.3 (B6): sed's script (the first operand, or the value of `-e` / `-f`) is text, not a path — only its file operands are judged
+      const dir = firstNamed(name === 'sed' ? sedFiles(rest) : operands)
       if (dir) return dir
     } else if (name === 'mv') {
       const dir = firstNamed(operands)

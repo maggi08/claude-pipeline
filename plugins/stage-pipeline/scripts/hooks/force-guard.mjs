@@ -39,7 +39,7 @@ const task = state?.tasks.find((candidate) => candidate.current)
 if (!task?.forceActive) process.exit(0)
 
 // K11b.2: only a run that is new by the first look is denied — a run already going when this version came keeps the rules it started with (D7), as the maker rules do
-if (dataDir && (await runIsNew(task))) deny(dataDirReason(task.ticket, dataDir))
+if (dataDir && (await runIsNew(task))) deny('force-guard/data-dir-write', dataDirReason(task.ticket, dataDir))
 if (!killer && !asked) process.exit(0)
 if (killer) {
   deny(

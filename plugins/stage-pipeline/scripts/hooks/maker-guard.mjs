@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { basename } from 'node:path'
 import { readHookInput, pluginDataDir } from './pipeline-state.mjs'
+import { blockWith } from './firing.mjs'
 
 /**
  * The maker does not finish until its hand-back is whole (VT-1 stage 11, K11.2-K11.4).
@@ -36,17 +37,16 @@ try {
   const blocked = blocksSoFar(dataDir, key)
   if (problems.length && blocked < MAX_BLOCKS) {
     setBlocks(dataDir, key, blocked + 1)
-    process.stdout.write(
-      JSON.stringify({
-        decision: 'block',
-        reason:
-          `stage-pipeline: the hand-back is not whole (block ${blocked + 1} of ${MAX_BLOCKS}):\n${problems.map((line) => `- ${line}`).join('\n')}\n` +
-          'Return it again by the contract of the stage-implement agent: `Changed:` (paths of the files that changed, the A/M/D prefix is allowed), `Decisions:`, `Product-visible:`, ' +
-          '`lint / type_check / floor-guard:` (numbers against the baseline), `Not done / blocker:`, `ACs without implementation:` — up to 25 lines and 4000 characters. ' +
-          'Do not edit files to fit the list: `Changed:` names the files that changed and that you wrote; a file you did not write goes under `Not done / blocker:` as `not mine: <path>`.',
-      }),
+    // one rule ID per kind of problem the block carries; the reason is written once (blockWith)
+    const rules = [...new Set(problems.map(ruleOf))]
+    blockWith(
+      rules,
+      `stage-pipeline: the hand-back is not whole (block ${blocked + 1} of ${MAX_BLOCKS}):\n${problems.map((line) => `- ${line}`).join('\n')}\n` +
+        'Return it again by the contract of the stage-implement agent: `Changed:` (paths of the files that changed, the A/M/D prefix is allowed), `Decisions:`, `Product-visible:`, ' +
+        '`lint / type_check / floor-guard:` (numbers against the baseline), `Not done / blocker:`, `ACs without implementation:` — up to 25 lines and 4000 characters. ' +
+        'Do not edit files to fit the list: `Changed:` names the files that changed and that you wrote; a file you did not write goes under `Not done / blocker:` as `not mine: <path>`.',
+      { input, task: snapshot.ticket ?? null, repo: snapshot.root ?? input.cwd ?? null },
     )
-    process.exit(0)
   }
   storeStop(dataDir, snapshot, text, changes, { agent: String(input.agent_id ?? '') || null, unfixed: problems.length ? problems.join('; ') : null })
   setBlocks(dataDir, key, 0)
@@ -54,3 +54,12 @@ try {
   // a crash never holds the maker
 }
 process.exit(0)
+
+/** The rule ID of a hand-back problem (maker.mjs, `handbackProblems`), by how its line starts. */
+function ruleOf(problem) {
+  if (problem.startsWith('missing section')) return 'maker-guard/missing-section'
+  if (problem.startsWith('the checks line')) return 'maker-guard/checks-no-numbers'
+  if (problem.startsWith('the hand-back is')) return 'maker-guard/too-long'
+  if (problem.includes('names file(s) that did not change')) return 'maker-guard/changed-stale'
+  return 'maker-guard/changed-unnamed'
+}

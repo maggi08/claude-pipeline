@@ -34,6 +34,7 @@ const markers = await import(join(PLUGIN, 'markers.mjs'))
 const { acViolation, skipViolation, barePasses } = await import(join(PLUGIN, 'journal-check.mjs'))
 
 let failed = 0
+const lateChecks = [] // checks that need every fixture of the suite to have run (K11c.1)
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? '✔' : '✘'} ${name}${ok ? '' : ` — ${detail}`}`)
   if (!ok) failed++
@@ -5445,16 +5446,18 @@ rmSync(retroRoot, { recursive: true, force: true })
   check('firings: git branch, remote, config, worktree and stash are reads only in a listing form', ['git branch', 'git branch --list', 'git branch -a', 'git branch -vv', 'git stash list', 'git stash show -p', 'git config --get user.name', 'git config --list', 'git remote -v', 'git remote show origin', 'git worktree list', 'find . -name x', 'sort a'].every(readOnlyBash))
   check('firings legit: git branch NAME, branch -D, stash, stash pop, config KEY VALUE, remote add, worktree add, find -delete/-exec/-fprint and sort -o are not reads', ['git branch feature', 'git branch -D x', 'git stash', 'git stash push', 'git stash pop', 'git config user.name x', 'git remote add o u', 'git remote remove o', 'git worktree add ../x', 'git worktree remove x', 'find . -delete', 'find . -exec rm {} \\;', 'find . -name x -execdir ls \\;', 'find . -ok rm {} \\;', 'find . -fprint out', 'sort -o out a', 'sort a -o out', 'sort --output=out a'].every((command) => !readOnlyBash(command)))
 
-  // every rule ID of the hooks wrote a row somewhere in this suite (the fixtures above and all the earlier ones ran against the one data directory)
-  const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : DATA
-  const written = new Set([...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)].map((row) => row.rule))
-  const ids = new Set()
-  for (const hookName of ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard']) {
-    for (const m of readFileSync(join(PLUGIN, 'hooks', `${hookName}.mjs`), 'utf8').matchAll(new RegExp(`'(${hookName}/[a-z0-9-]+)'`, 'g'))) ids.add(m[1])
-  }
-  for (const id of [...ids].sort()) check(`firings AC-7.2: ${id} wrote a row in this suite`, written.has(id))
-  check('firings: the suite found the rule IDs it should (21 at this stage, never fewer)', ids.size >= 21, `${ids.size}`)
-  check('firings: every row of the suite has the fields retro needs', [...rowsIn(suiteDir)].every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
+  // every rule ID of the hooks wrote a row somewhere in this suite (the fixtures above and all the earlier ones ran against the one data directory) (K11c.1: run at the end — the fixtures of VT-5 come after this point)
+  lateChecks.push(() => {
+    const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : DATA
+    const written = new Set([...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)].map((row) => row.rule))
+    const ids = new Set()
+    for (const hookName of ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard', 'maker-guard']) {
+      for (const m of readFileSync(join(PLUGIN, 'hooks', `${hookName}.mjs`), 'utf8').matchAll(new RegExp(`'(${hookName}/[a-z0-9-]+)'`, 'g'))) ids.add(m[1])
+    }
+    for (const id of [...ids].sort()) check(`firings AC-7.2: ${id} wrote a row in this suite`, written.has(id))
+    check('firings: the suite found the rule IDs it should (21 at this stage, never fewer)', ids.size >= 21, `${ids.size}`)
+    check('firings: every row of the suite has the fields retro needs', [...rowsIn(suiteDir)].every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
+  })
 
   for (const dir of [iso, fx, small]) rmSync(dir, { recursive: true, force: true })
 }
@@ -7570,9 +7573,22 @@ rmSync(retroRoot, { recursive: true, force: true })
       'sed -i': `sed -i '' 's/a/b/' ${DATA}/maker/${T}.jsonl`,
       'dd of=': `dd if=/tmp/forged.json of=${DATA}/maker/${T}.jsonl`,
       'inline node -e': `node -e "require('fs').appendFileSync('${DATA}/maker/${T}.jsonl', '{}')"`,
-      'inline node -e on the variable': `node -e "require('fs').writeFileSync(process.env.CLAUDE_PLUGIN_DATA + '/x', '{}')"`,
       'inline python -c': `python3 -c "open('${DATA}/maker/${T}.jsonl', 'a').write('{}')"`,
       'bash -c': `bash -c 'echo {} > ${DATA}/maker/${T}.jsonl'`,
+      'inline node -e rmSync (K11c.3)': `node -e "require('fs').rmSync('${DATA}/maker/${T}.jsonl')"`,
+      'inline python -c os.remove (K11c.3)': `python3 -c "import os; os.remove('${DATA}/maker/${T}.jsonl')"`,
+      'sed -i -e on the data file (K11c.3)': `sed -i -e 's/a/b/' ${DATA}/maker/${T}.jsonl`,
+      'sed -i with a script naming the path, then the data file (K11c.3)': `sed -i '' 's|plugins/data/stage-pipeline|x|' ${DATA}/maker/${T}.jsonl`,
+      'python open(P, mode=a) (pro-review-11c M-1)': `python3 -c "open('${DATA}/maker/${T}.jsonl', mode='a').write('{}')"`,
+      'python Path(P).open(a) (M-1)': `python3 -c "from pathlib import Path; Path('${DATA}/maker/${T}.jsonl').open('a').write('{}')"`,
+      'python os.system rm (M-1)': `python3 -c "import os; os.system('rm ${DATA}/maker/${T}.jsonl')"`,
+      'python subprocess.run rm (M-1)': `python3 -c "import subprocess; subprocess.run(['rm', '${DATA}/maker/${T}.jsonl'])"`,
+      'node cpSync (M-1)': `node -e "require('fs').cpSync('/tmp/f', '${DATA}/maker/${T}.jsonl')"`,
+      'node symlinkSync (M-1)': `node -e "require('fs').symlinkSync('/tmp/f', '${DATA}/maker/${T}.jsonl')"`,
+      'node destructured openSync/writeSync (M-1)': `node -e "const {openSync,writeSync}=require('fs'); writeSync(openSync('${DATA}/maker/${T}.jsonl','a'),'{}')"`,
+      'node execSync rm (M-1)': `node -e "require('child_process').execSync('rm ${DATA}/maker/${T}.jsonl')"`,
+      'ruby File.write (M-1)': `ruby -e "File.write('${DATA}/maker/${T}.jsonl', '{}')"`,
+      'ruby File.delete (M-1)': `ruby -e "File.delete('${DATA}/maker/${T}.jsonl')"`,
       'the plugins/data form': 'rm ~/.claude/plugins/data/stage-pipeline-inline/maker/x.jsonl',
       'after a cd and &&': `cd /tmp && echo {} >> ${DATA}/maker/${T}.jsonl`,
     }
@@ -7584,6 +7600,17 @@ rmSync(retroRoot, { recursive: true, force: true })
     const legit = {
       'the bare word': 'echo CLAUDE_PLUGIN_DATA',
       'the variable printed': 'echo "$CLAUDE_PLUGIN_DATA"',
+      // K11c.3 (B6; pro-review-11b m-1, m-2): the real commands of the earlier runs
+      'inline node -e on the variable only (it is unset in the Bash tool; was an incident fixture in 11b)': `node -e "require('fs').writeFileSync(process.env.CLAUDE_PLUGIN_DATA + '/x', '{}')"`,
+      'inline python -c that only mentions the variable': `python3 -c "print('tests set CLAUDE_PLUGIN_DATA to a temp dir')"`,
+      'inline node -e that points the variable at a temp dir': `node -e "process.env.CLAUDE_PLUGIN_DATA='/tmp/s/data'; console.log(1)"`,
+      'inline python -c that edits STAGES.md and names the variable in its text': `python3 -c "open('.claude/tasks/${T}/STAGES.md','w').write('- A12: tests use a temp CLAUDE_PLUGIN_DATA')"`,
+      'inline node -e that reads a file of the data dir': `node -e "console.log(require('fs').readFileSync('${DATA}/maker/${T}.jsonl','utf8'))"`,
+      'inline node -e copy OUT of the data dir (reads it, writes /tmp)': `node -e "const fs=require('fs'); fs.writeFileSync('/tmp/o', fs.readFileSync('${DATA}/maker/${T}.jsonl'))"`,
+      'inline python -c open(P) and open(P, r) (reads)': `python3 -c "print(open('${DATA}/maker/${T}.jsonl').read(), open('${DATA}/maker/${T}.jsonl', 'r').read())"`,
+      'inline python -c json.load of a data file': `python3 -c "import json; print(json.load(open('${DATA}/maker/${T}.jsonl')))"`,
+      'sed -i on a repo file, its script names the data path': "sed -i '' 's|~/.claude/plugins/data/stage-pipeline-<marketplace>|the plugin data dir|' README.md",
+      'sed -i -e on a repo file, its script names the data path': "sed -i -e 's|plugins/data/stage-pipeline-x|y|' README.md",
       'cat': `cat ${DATA}/maker/${T}.jsonl`,
       'grep -r': `grep -rn spawn ${DATA}/maker`,
       'ls': `ls -la ${DATA}`,
@@ -7604,6 +7631,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     const { writesDataDir } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
     writesDataDir(big)
     writesDataDir(`echo ${'x'.repeat(100_000)} > ${DATA}/y`)
+    writesDataDir(`node -e "${DATA} ${"open('x', 'a".repeat(10_000)} ${"open(".repeat(20_000)} ${"readFileSync(".repeat(10_000)}"`)
     check('force K11b.2: a 100 KB command is parsed in linear time (under a second)', Date.now() - began < 1000, `${Date.now() - began} ms`)
   }
 
@@ -7642,6 +7670,10 @@ rmSync(retroRoot, { recursive: true, force: true })
       check(`maker K11b.3 incident: ${JSON.stringify(command).slice(0, 60)} — denied, "stage with \`git add\` in its own call"`, out.decision === 'deny' && /stage with `git add` in its own call, then commit/.test(out.text), `${out.decision} ${out.text}`)
       check(`maker K11b.3 D7: the same in a run already going at the first look — not judged`, old.commit(command).decision === 'allow')
     }
+    // pro-review-11c m-1: a commit hidden in a wrapper logs the commit-chain firing with the task and the worktree, not null and the raw cwd
+    f.commit("bash -c 'git apply --cached p && git commit -m x'")
+    const chainRows = readFileSync(join(DATA, 'firings.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((row) => row.rule === 'git-guard/commit-chain')
+    check('maker K11c m-1: the commit-chain firing row of a wrapped commit carries the task', chainRows.at(-1)?.task === f.ticket, JSON.stringify(chainRows.at(-1)))
     for (const command of ['git add src/m.ts && git commit -m "… rm … git mv …"', 'git status && git add src/m.ts && git commit -m x', 'git -C . -c user.name=x add src/m.ts && git commit -m x', 'git add src/m.ts && git commit -m "$(git log -1 --format=%s)"']) {
       check(`maker K11b.3 legitimate: ${JSON.stringify(command).slice(0, 60)} — passes`, f.commit(command).decision === 'allow', f.commit(command).text)
     }
@@ -7650,4 +7682,5 @@ rmSync(retroRoot, { recursive: true, force: true })
   rmSync(aRoot, { recursive: true, force: true })
 }
 
+for (const late of lateChecks) late()
 process.exit(failed ? 1 : 0)

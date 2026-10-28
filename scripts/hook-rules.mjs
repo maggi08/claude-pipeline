@@ -1,12 +1,12 @@
 /**
  * Release rule for hook rules (VT-3 stage 7, K7.2): every rule ID a hook emits has an incident fixture and a legitimate fixture in scripts/hooks-test.mjs.
- * The IDs are the `'<hook>/<slug>'` strings written at the block or deny sites of the five hooks; `scripts/hook-rules.json` maps each to the names of its fixtures
+ * The IDs are the `'<hook>/<slug>'` strings written at the block or deny sites of the six hooks; `scripts/hook-rules.json` maps each to the names of its fixtures
  * (a name is a text that occurs in hooks-test.mjs), so the fixtures that already exist are not renamed or rewritten - a lane only appends. Dev repo only; validate.mjs runs it.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const HOOKS = ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard']
+export const HOOKS = ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard', 'maker-guard']
 const ID = new RegExp(`'((?:${HOOKS.join('|')})/[a-z0-9]+(?:-[a-z0-9]+)*)'`, 'g')
 
 /** The rule IDs found in the sources of the hooks: `{ id: [hook file names] }`. */
@@ -16,7 +16,8 @@ export function foundRules(sources) {
   return found
 }
 
-export const readHookSources = (root) => Object.fromEntries(HOOKS.map((name) => [`${name}.mjs`, readFileSync(join(root, 'plugins/stage-pipeline/scripts/hooks', `${name}.mjs`), 'utf8')]))
+// `pipeline-state` holds a message that two hooks share (`dataDirReason`, K11c.1): its text is searched for heads, and holds no rule ID
+export const readHookSources = (root) => Object.fromEntries([...HOOKS, 'pipeline-state'].map((name) => [`${name}.mjs`, readFileSync(join(root, 'plugins/stage-pipeline/scripts/hooks', `${name}.mjs`), 'utf8')]))
 
 /** Failures of the map against the IDs in the hooks and the fixtures in the test source: `[string]`. */
 export function checkHookRules({ sources, map, testSource }) {

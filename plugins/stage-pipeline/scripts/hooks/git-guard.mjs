@@ -65,7 +65,10 @@ const chain = commitChainProblems(command)
 if (chain.length && !invocations.some(({ subcommand }) => subcommand === 'commit')) {
   const state = readPipelineState(cwd)
   const task = state?.tasks.find((candidate) => candidate.current)
-  if (task?.forceActive && !task.unreadable && guarded(() => makerRuleApplies({ dataDir: pluginDataDir(), taskDir: task.dir, ticket: task.ticket, worktree: state.worktree }))) denyStaging(chain)
+  if (task?.forceActive && !task.unreadable && guarded(() => makerRuleApplies({ dataDir: pluginDataDir(), taskDir: task.dir, ticket: task.ticket, worktree: state.worktree }))) {
+    judged = { state, task }
+    denyStaging('git-guard/commit-chain', chain)
+  }
 }
 for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
@@ -117,8 +120,9 @@ for (const { subcommand, dir, args } of invocations) {
   // working tree for the paths `git add` of this command stages, and from the index for the rest. A path put into the index by another subcommand of the same command
   // (`git update-index --add x && git commit`, `GIT_INDEX_FILE=… git commit`) is neither: the rule cannot see what the commit will take.
   // K11b.3 (B4): besides the index-changing forms, a command that commits chains only add, commit, status, diff, log, show and rev-parse, and hides no git call in a wrapper.
-  const tampered = [...new Set([...indexChangers(command), ...chain])]
-  if (tampered.length && guarded(() => makerRuleApplies(makerArgs))) denyStaging(tampered)
+  const changers = indexChangers(command)
+  const tampered = [...new Set([...changers, ...chain])]
+  if (tampered.length && guarded(() => makerRuleApplies(makerArgs))) denyStaging(changers.length ? 'git-guard/index-changer' : 'git-guard/commit-chain', tampered)
   const specs = commitSpecs(invocations, state.worktree)
   const paths = commitPaths(specs, state.worktree)
   if (paths?.length === 0) continue
@@ -151,6 +155,7 @@ for (const { subcommand, dir, args } of invocations) {
   const foreign = guarded(() => commitMakerVerdict({ ...makerArgs, changed, staged: stagedByCommand(specs, state.worktree) }))
   if (foreign?.length) {
     deny(
+      'git-guard/maker-commit',
       `stage-pipeline: code not written by stage-implement — hand it to a fix round. The commit is rejected; the code paths below do not match the last blob a stage-implement stop recorded:\n` +
         `${foreign.slice(0, 12).map((path) => `- ${path}`).join('\n')}${foreign.length > 12 ? `\n- … ${foreign.length - 12} more` : ''}\n` +
         'Launch `stage-implement` in fix mode with the change as a finding (stage-force, Step 3) instead of editing code in the main context; a deletion is allowed when the Force block names the path. ' +
@@ -333,8 +338,9 @@ function gitOut(cwd, ...args) {
   }
 }
 
-function denyStaging(tampered) {
+function denyStaging(rule, tampered) {
   deny(
+    rule,
     `stage-pipeline: the commit command also does something to the index or to HEAD other than \`git add\` and \`git commit\` (${tampered.map((name) => `\`${name}\``).join(', ')}) — rejected: ` +
       'stage with `git add` in its own call, then commit; a commit command may chain only add, commit, status, diff, log, show and rev-parse, with no git call inside `bash -c`, `eval`, `xargs`, backticks or `$( … )`. ' +
       'The maker receipt judges the code of a force commit by the blob that goes into it, and cannot read it from a command that builds the index another way.',

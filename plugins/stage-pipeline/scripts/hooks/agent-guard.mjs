@@ -67,7 +67,7 @@ if (agent === 'stage-implement') {
   // M-2: the one stage parser (plan-check's `stageForSpawn`, the Russian form included) is read once, for the plan check and for the snapshot alike
   const stage = task ? await stageOfSpawn(task, prompt) : null
   const verdict = task && !task.unreadable ? await planVerdict(state, task, stage, prompt) : null
-  if (verdict) deny(verdict)
+  if (verdict) deny('agent-guard/plan-problems', verdict)
   // K11.1 (VT-1 stage 11): the spawn is allowed — the tree is recorded for the stop hook to compare the hand-back with. A denied spawn records nothing.
   if (session) await recordSpawn(state, task, stage, session, input.cwd ?? process.cwd())
 }

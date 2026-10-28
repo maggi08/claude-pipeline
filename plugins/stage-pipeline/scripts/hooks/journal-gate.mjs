@@ -56,7 +56,7 @@ const target = tool === 'Bash' ? '' : String(toolInput.file_path ?? '')
 // R-2: a file under the plugin data directory, in a force run, is denied before the edit (the same rule as force-guard's for Bash). Only a path that could be there reaches the state read.
 const dataTarget = tool !== 'Bash' && input.hook_event_name === 'PreToolUse' && (/stage-pipeline|CLAUDE_PLUGIN_DATA/.test(target) || Boolean(process.env.CLAUDE_PLUGIN_DATA && target.includes(process.env.CLAUDE_PLUGIN_DATA)))
 if (tool !== 'Bash' && !dataTarget && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
-const { recordFiring } = await import('./firing.mjs')
+const { denyTool, recordFiring } = await import('./firing.mjs')
 const { dataDirReason, hasPipelineConfig, namesDataDir, pluginDataDir, readBounded, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
 const cwd = input.cwd ?? process.cwd()
 const pre = input.hook_event_name === 'PreToolUse'
@@ -120,14 +120,14 @@ if (pre && !hasPipelineConfig(cwd)) process.exit(0)
 
 if (dataTarget) {
   const dir = namesDataDir(`${target}\n${real(resolve(cwd, target))}`)
-  const task = dir ? readPipelineState(cwd)?.tasks.find((candidate) => candidate.current) : null
+  const dataState = dir ? readPipelineState(cwd) : null
+  const task = dataState?.tasks.find((candidate) => candidate.current)
   // K11b.2: only a run that is new by the first look is denied — the maker rules' own gate (`makerRun`); a run already going keeps the rules it started with (D7). An error: not denied.
   const isNew = task?.forceActive
     ? await import('../maker.mjs').then(({ makerRun }) => Boolean(makerRun(pluginDataDir(), task.dir))).catch(() => false)
     : false
   if (isNew) {
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: dataDirReason(task.ticket, dir) } }))
-    process.exit(0)
+    denyTool('journal-gate/data-dir-write', dataDirReason(task.ticket, dir), { input, task: task.ticket, repo: dataState.worktree })
   }
   if (!/STAGES|checks[/\\]/.test(target)) process.exit(0)
 }

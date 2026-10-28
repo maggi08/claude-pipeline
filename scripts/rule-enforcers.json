@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 205,
+  "proseBaseline": 206,
   "rules": {
     "dead-code#d0f5092819": {
       "to": "prose",
@@ -833,6 +833,11 @@
     "stage-force#4d1313070e": {
       "to": "prose",
       "text": "dependent questions do not go in one batch. before sending, sort the selected ones by dependencies: for a ques",
+      "baseline": true
+    },
+    "stage-force#8e732d15cc": {
+      "to": "prose",
+      "text": "every question with a choice carries your recommendation — as the first option and with a one-line reason (\"i",
       "baseline": true
     },
     "stage-force#dbe18bdda7": {
