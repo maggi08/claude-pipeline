@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 194,
+  "proseBaseline": 195,
   "rules": {
     "dead-code#d0f5092819": {
       "to": "prose",
@@ -730,6 +730,10 @@
       "text": "<taskdir>/<ticket>/stages.md — required.",
       "baseline": true
     },
+    "stage-force#625ae686d6": {
+      "to": "hook:journal-gate/close",
+      "text": "an answered blocker gets lifted: <who> <date> — <answer> on its own line (a who of at most 4 words, the answer"
+    },
     "stage-force#647cc1ddf4": {
       "to": "prose",
       "text": "so do not rely on the needed thing coming to mind by itself — go through the fixed list and give every categor",
@@ -834,6 +838,11 @@
     "stage-force#b9c9c8b2c0": {
       "to": "hook:journal-gate/close",
       "text": "the hook reads only the marker: a blocker that names the checker in prose (\"pro-review found a critical; the r"
+    },
+    "stage-force#853b25463f": {
+      "to": "prose",
+      "text": "the summary is plain markdown, never inside a code block: the short view carries ### headings, and in a fence ",
+      "baseline": true
     },
     "stage-force#b93383fa43": {
       "to": "script:plugins/stage-pipeline/scripts/run-digest.mjs",
