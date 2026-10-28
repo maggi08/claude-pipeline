@@ -8384,5 +8384,146 @@ module.exports = { ESLint }
   rmSync(rf, { recursive: true, force: true })
 }
 
+// ── Stage 13a of VT-6, fix round 1: pro-review M-1 (post-done base), security 1, 3, 4, 6, 7 ───────────────────────────────────────────────────────────────────────
+// Incident: other people's commits and merges are not work after the task closed (a lagging local base, `main_branch` that is not the PR target);
+// a symlink to /dev/zero is not read by the kit scan; a rev that is an option reaches no git command; a registry STAGES.md that is a device does not hang the retro;
+// an ESLint above the repo is not the project's; a glob with many wildcards is a config problem. Legitimate: a plain commit after the close is counted; the rest keeps working.
+{
+  const f13 = realpathSync(mkdtempSync(join(tmpdir(), 'stage13a-')))
+  const retro = await import(join(PLUGIN, 'retro-findings.mjs'))
+  const STAGES13 = (ticket) => `# ${ticket}: task\nBranch: \`${ticket}/feat/x\`\n\n## Status: done\n\n## Force run 2026-09-24 — completed\n\n## Stages\n\n### Stage 1: card  [status: done]\n`
+  const dated = (when) => ({ ...process.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when })
+  const commitOn = (dir, message, file, when) => {
+    write(dir, { [file]: `export const x = '${message}'\n` })
+    git(dir, 'add', '-A')
+    execFileSync('git', ['commit', '-qm', message], { cwd: dir, env: dated(when), stdio: 'ignore' })
+  }
+  const mergeOf = (dir, from, when) => execFileSync('git', ['merge', '--no-ff', '-qm', `merge ${from}`, from], { cwd: dir, env: dated(when), stdio: 'ignore' })
+
+  // A: `main_branch: dev` is right, local dev lags behind origin/dev, the task branch merges origin/dev after the close
+  const lag = join(f13, 'lag')
+  repoAt(lag, 'dev')
+  write(lag, { '.claude/pipeline.config.md': '- main_branch: dev\n' })
+  const origin = join(f13, 'origin.git')
+  git(f13, 'init', '-q', '--bare', origin)
+  git(lag, 'remote', 'add', 'origin', origin)
+  git(lag, 'push', '-q', 'origin', 'dev')
+  git(lag, 'checkout', '-qb', 'T-9/feat/x')
+  commitOn(lag, 'task work', 'src/task.ts', '2026-09-20T10:00:00')
+  git(lag, 'checkout', '-q', 'dev')
+  commitOn(lag, 'someone elses PR', 'src/other.ts', '2026-10-05T10:00:00')
+  git(lag, 'push', '-q', 'origin', 'dev')
+  git(lag, 'reset', '-q', '--hard', 'HEAD~1')
+  git(lag, 'checkout', '-q', 'T-9/feat/x')
+  mergeOf(lag, 'origin/dev', '2026-10-06T10:00:00')
+  const lagged = retro.postDoneCommits(STAGES13('T-9'), lag)
+  check('retro post-done incident: a lagging local base — another PR merged into origin/dev and the merge of it are not work after the close', lagged.commits === 0 && lagged.base === 'origin/dev', JSON.stringify(lagged))
+  commitOn(lag, 'follow-up fix', 'src/task2.ts', '2026-10-07T10:00:00')
+  const lagFollow = retro.postDoneCommits(STAGES13('T-9'), lag)
+  check('retro post-done legitimate: a plain commit of the task after the close is still counted (1)', lagFollow.commits === 1, JSON.stringify(lagFollow))
+  const touching = retro.commitsTouching(lag, lagFollow.ref, lagFollow.base, 'src/other.ts')
+  check('retro commits-touching incident: the fixes candidates carry no commit of the merged base', touching.length === 0, JSON.stringify(touching))
+
+  // B: `main_branch: main`, the PRs go to dev; dev is merged into the task branch after the close
+  const pr = join(f13, 'pr')
+  repoAt(pr, 'main')
+  write(pr, { '.claude/pipeline.config.md': '- main_branch: main\n' })
+  git(pr, 'checkout', '-qb', 'dev')
+  commitOn(pr, 'dev work', 'src/dev0.ts', '2026-09-10T10:00:00')
+  git(pr, 'checkout', '-qb', 'T-8/feat/x')
+  commitOn(pr, 'task work', 'src/task.ts', '2026-09-20T10:00:00')
+  git(pr, 'checkout', '-q', 'dev')
+  commitOn(pr, 'another developer on dev', 'src/dev1.ts', '2026-10-05T10:00:00')
+  git(pr, 'checkout', '-q', 'T-8/feat/x')
+  mergeOf(pr, 'dev', '2026-10-06T10:00:00')
+  const toDev = retro.postDoneCommits(STAGES13('T-8'), pr)
+  check('retro post-done incident: main_branch is not the PR target — a dev commit merged in after the close is not the task\'s work', toDev.commits === 0 && toDev.base === 'dev', JSON.stringify(toDev))
+  check('retro post-done: the listed branch commits carry no merge commit', !toDev.branchCommits.some((line) => /merge dev/.test(line)), JSON.stringify(toDev.branchCommits))
+
+  // the base rule is one function: the hook's list of unjournaled commits and the retro name the same ref
+  const ps = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  check('integration base: the nearest of the integration refs, origin first — one helper for the hooks and the retro', ps.integrationBase(lag, '- main_branch: dev\n', 'T-9/feat/x')?.ref === 'origin/dev' && ps.integrationBase(pr, '- main_branch: main\n', 'T-8/feat/x')?.ref === 'dev', JSON.stringify([ps.integrationBase(lag, '- main_branch: dev\n', 'T-9/feat/x'), ps.integrationBase(pr, '- main_branch: main\n', 'T-8/feat/x')]))
+
+  // security 3: a symlink to a device in an untracked file is not read; a regular file next to it still is
+  const link = join(f13, 'link')
+  repoAt(link, 'main')
+  write(link, { 'src/Real.tsx': 'export const R = () => <b className="font-bold" />\n' })
+  symlinkSync('/dev/zero', join(link, 'src/Evil.tsx'))
+  const t0 = Date.now()
+  const scanLink = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(join(PLUGIN, 'kit-override-scan.mjs'))}).then((m) => console.log(JSON.stringify(m.scanOverridesDetailed(${JSON.stringify(link)}, { config: '' }).found.map((x) => x.file))))`], { encoding: 'utf8', timeout: 8000 })
+  check('kit-overrides incident: an untracked symlink to /dev/zero is skipped, the scan finishes fast', scanLink.status === 0 && Date.now() - t0 < 6000 && !/Evil/.test(scanLink.stdout), `${scanLink.status} ${scanLink.signal} ${Date.now() - t0}ms ${scanLink.stdout}`)
+  check('kit-overrides legitimate: the regular untracked file next to the link is still scanned', /Real\.tsx/.test(scanLink.stdout), scanLink.stdout)
+
+  // security 6: a registry directory whose STAGES.md is a device does not hang `retro --findings`
+  const regDir = join(f13, 'registry')
+  mkdirSync(join(regDir, 'T-1'), { recursive: true })
+  symlinkSync('/dev/zero', join(regDir, 'T-1/STAGES.md'))
+  const own = join(f13, 'own')
+  mkdirSync(join(own, 'T-0'), { recursive: true })
+  writeFileSync(join(own, 'T-0/STAGES.md'), STAGES13('T-0'))
+  const rdata = join(f13, 'rdata')
+  mkdirSync(rdata, { recursive: true })
+  writeFileSync(join(rdata, 'task-dirs.json'), JSON.stringify([regDir]))
+  const t1 = Date.now()
+  const regRun = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), join(own, 'T-0'), '--findings', '--root', pr], { encoding: 'utf8', timeout: 8000, env: { ...process.env, CLAUDE_PLUGIN_DATA: rdata, STAGE_PIPELINE_DATA_DIR: rdata } })
+  check('retro --findings incident: a registry task whose STAGES.md links to /dev/zero is skipped, the run finishes', regRun.status === 0 && Date.now() - t1 < 6000, `${regRun.status} ${regRun.signal} ${Date.now() - t1}ms ${regRun.stderr.slice(0, 200)}`)
+  const stagesLink = join(f13, 'stages-link')
+  mkdirSync(join(stagesLink, 'T-2'), { recursive: true })
+  symlinkSync('/dev/zero', join(stagesLink, 'T-2/STAGES.md'))
+  const t2 = Date.now()
+  const rep = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(join(PLUGIN, 'retro-findings.mjs'))}).then((m) => console.log(JSON.stringify(m.findingsReport([${JSON.stringify(join(stagesLink, 'T-2'))}], { repoRoot: ${JSON.stringify(pr)} }).totals)))`], { encoding: 'utf8', timeout: 8000 })
+  check('retro --findings incident: findingsReport over a STAGES.md that is a device finishes and counts no commits', rep.status === 0 && Date.now() - t2 < 6000, `${rep.status} ${rep.signal} ${rep.stderr.slice(0, 200)}`)
+
+  // security 4: a rev that is an option is rejected before git sees it; a normal sha is accepted
+  const proof13 = await import(join(PLUGIN, 'promote-proof.mjs'))
+  const rv = join(f13, 'rev')
+  repoAt(rv, 'main')
+  write(rv, { 'src/a.vue': '<script>resolveComponent(x)</script>\n' })
+  git(rv, 'add', '-A')
+  git(rv, 'commit', '-qm', 'old')
+  const oldSha = git(rv, 'rev-parse', 'HEAD').trim()
+  write(rv, { 'src/a.vue': '<script>x</script>\n' })
+  git(rv, 'add', '-A')
+  git(rv, 'commit', '-qm', 'fix')
+  const fixSha = git(rv, 'rev-parse', 'HEAD').trim()
+  const victim = join(f13, 'victim.txt')
+  writeFileSync(victim, 'precious')
+  const row = { id: 'x', kind: 'repo-rule', pattern: 'resolveComponent', files: '*.vue', message: 'm' }
+  const evilFix = await proof13.proveCandidate(rv, { ...row, fixes: [`--output=${victim}`] })
+  const evilProbe = await proof13.proveCandidate(rv, { ...row, probes: [{ rev: `--output=${victim}`, file: 'src/a.vue' }] })
+  const evilSince = await proof13.proveCandidate(rv, { ...row, fixes: [fixSha], since: [`--output=${victim}`] })
+  check('promote proof incident: a fix, a probe rev or a since that is an option is rejected and the file is untouched', evilFix.invalid && evilProbe.invalid && evilSince.invalid && readFileSync(victim, 'utf8') === 'precious' && !existsSync(`${victim}^`), JSON.stringify([evilFix.reason, evilProbe.reason, evilSince.reason]))
+  const okSha = await proof13.proveCandidate(rv, { ...row, fixes: [fixSha], probes: [{ rev: oldSha, file: 'src/a.vue' }, { rev: `${fixSha}^`, file: 'src/a.vue' }] })
+  check('promote proof legitimate: a normal sha, sha^ and a fix commit are accepted and probed', !okSha.invalid && okSha.pre.some(({ status }) => status === 'fired'), JSON.stringify(okSha.pre))
+
+  // security 7: an ESLint found above the repo is not the project's; the repo's own is
+  const up = join(f13, 'up')
+  const upRepo = join(up, 'repo')
+  mkdirSync(join(up, 'node_modules/eslint'), { recursive: true })
+  writeFileSync(join(up, 'node_modules/eslint/package.json'), '{"name":"eslint","version":"8.0.0","main":"index.js"}')
+  writeFileSync(join(up, 'node_modules/eslint/index.js'), "console.log('ANCESTOR ESLINT CODE RAN'); class ESLint {}; ESLint.version = '8.0.0'; module.exports = { ESLint }\n")
+  repoAt(upRepo, 'main')
+  write(upRepo, { 'package.json': '{"name":"app"}\n' })
+  const ancestor = spawnSync(process.execPath, [join(PLUGIN, 'promote-proof.mjs'), '--root', upRepo, '--check-eslint'], { encoding: 'utf8' })
+  check('promote proof incident: an ESLint in an ancestor directory is not loaded (exit 3, its code does not run)', ancestor.status === 3 && !/ANCESTOR ESLINT CODE RAN/.test(ancestor.stdout) && /not the project's ESLint/.test(ancestor.stdout), `${ancestor.status} ${ancestor.stdout}`)
+  mkdirSync(join(upRepo, 'node_modules/eslint'), { recursive: true })
+  writeFileSync(join(upRepo, 'node_modules/eslint/package.json'), '{"name":"eslint","version":"8.5.0","main":"index.js"}')
+  writeFileSync(join(upRepo, 'node_modules/eslint/index.js'), "class ESLint {}; ESLint.version = '8.5.0'; module.exports = { ESLint }\n")
+  const own13 = spawnSync(process.execPath, [join(PLUGIN, 'promote-proof.mjs'), '--root', upRepo, '--check-eslint'], { encoding: 'utf8' })
+  check('promote proof legitimate: the repo\'s own node_modules/eslint is loaded', own13.status === 0 && /eslint 8\.5\.0/.test(own13.stdout), `${own13.status} ${own13.stdout}`)
+
+  // security 1 (parser and vm): more wildcards than a glob needs is a named config problem; a hand-built catastrophic glob is stopped by the time guard
+  const markers13 = await import(join(PLUGIN, 'markers.mjs'))
+  const globRows = (files) => `## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n| g | \`foo\` | \`${files}\` | no |\n`
+  const many = markers13.parseRepoRules(globRows('*a*a*a*a*a*a*a*b'))
+  check('repo rules incident: a files glob with seven wildcards is a named config problem, not a row that can hang', many.rules.length === 0 && /more than 4 wildcards/.test(many.problems[0] ?? ''), JSON.stringify(many.problems))
+  const fine = markers13.parseRepoRules(globRows('**/__tests__/**/*.test.*, src/**/*.vue'))
+  check('repo rules legitimate: realistic globs (four wildcards, two globs) still load', fine.rules.length === 1 && fine.problems.length === 0, JSON.stringify(fine.problems))
+  const evil = { files: { include: [/^(?:a*)*b$/], exclude: [] } }
+  const guarded = markers13.repoRuleApplies(evil, 'a'.repeat(40), 200)
+  check('repo rules incident: a glob regex that backtracks is stopped by the time guard (null), an ordinary one answers', guarded === null && markers13.repoRuleApplies(fine.rules[0], 'src/a.vue', 200) === true && markers13.repoRuleApplies(fine.rules[0], 'lib/a.ts', 200) === false, String(guarded))
+  rmSync(f13, { recursive: true, force: true })
+}
+
 for (const late of lateChecks) late()
 process.exit(failed ? 1 : 0)

@@ -31,7 +31,7 @@
  * The kind of a hit (`kind`) is a language-neutral English label; the report and messages translate it. Console output is English.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readConfig, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
@@ -101,6 +101,23 @@ const isScanned = (file, kit) => CODE.test(file) && !SKIP.test(file) && !kit.som
 // An untracked file larger than this is not code written by hand (a dump, a bundle): it is not read.
 const MAX_UNTRACKED_BYTES = 2 * 1024 * 1024
 
+/**
+ * The text of a regular file inside the cap, or null. `lstat`, not `stat`: a symlink (to `/dev/zero`, a FIFO) is not code the stage wrote and `stat` reports its
+ * target's size 0, so the cap would pass and the read would never end. The read itself is bounded by the cap, whatever the file turns into.
+ */
+function readRegular(path) {
+  const info = lstatSync(path)
+  if (!info.isFile() || info.size > MAX_UNTRACKED_BYTES) return null
+  const fd = openSync(path, 'r')
+  try {
+    const buffer = Buffer.alloc(Math.min(info.size, MAX_UNTRACKED_BYTES))
+    const length = readSync(fd, buffer, 0, buffer.length, 0)
+    return buffer.toString('utf8', 0, length)
+  } finally {
+    closeSync(fd)
+  }
+}
+
 export const scanDisabled = (config) => KIT_OVERRIDES_OFF.test(config)
 
 /**
@@ -120,8 +137,8 @@ export function scanOverridesDetailed(root, { against = 'HEAD', paths = null, co
   for (const name of git(root, 'ls-files', '--others', '--exclude-standard', '-z', '--', ...spec).split('\0').filter(Boolean)) {
     if (!isScanned(name, kit)) continue
     try {
-      if (statSync(join(root, name)).size > MAX_UNTRACKED_BYTES) continue
-      untracked.push({ file: name, text: readFileSync(join(root, name), 'utf8') })
+      const text = readRegular(join(root, name))
+      if (text !== null) untracked.push({ file: name, text })
     } catch {
       // a file that cannot be read has no lines to scan
     }
@@ -130,7 +147,8 @@ export function scanOverridesDetailed(root, { against = 'HEAD', paths = null, co
   const references = []
   for (const name of reference) {
     try {
-      references.push({ file: name, text: readFileSync(join(root, name), 'utf8') })
+      const text = readRegular(join(root, name))
+      if (text !== null) references.push({ file: name, text })
     } catch {
       // a reference that is not a readable file in the repo names nothing
     }

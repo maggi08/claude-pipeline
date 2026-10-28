@@ -12,7 +12,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { disposition, ledgerEntries, findingCounts, reportChecker } from './journal-check.mjs'
 import { entryHead, entrySeverity, findingRows } from './dismissals.mjs'
-import { closedForceDate, configRoot, readConfig, taskBranches } from './hooks/pipeline-state.mjs'
+import { closedForceDate, configRoot, integrationBase, readBounded, readConfig, readTaskFile, taskBranches } from './hooks/pipeline-state.mjs'
 import { headingDate } from './markers.mjs'
 
 /** Ordered: the first class whose words are in the finding wins. */
@@ -89,9 +89,10 @@ export function postDoneCommits(stages, repoRoot) {
   if (!ref) return { ...out, why: 'the branch is not in the repo' }
   // the config the hooks read: a linked worktree with an excluded `.claude/` has the main tree's
   const config = readConfig(configRoot(repoRoot, repoRoot) ?? repoRoot)
-  const configured = config.match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
-  const base = [configured, `origin/${configured}`, 'origin/HEAD', 'main', 'master', 'dev'].filter(Boolean).find((candidate) => gitOut(repoRoot, 'rev-parse', '--verify', '-q', candidate))
-  const log = gitOut(repoRoot, 'log', '--format=%H %aI', ref, ...(base ? ['--not', base] : []))
+  // the nearest integration ref, origin first (the rule of `unjournaledCommits`): a lagging local `main_branch` or a `main_branch` that is not the PR target
+  // would count other people's merged commits as work after the close
+  const base = integrationBase(repoRoot, config, ref)?.ref ?? ['origin/HEAD'].find((candidate) => gitOut(repoRoot, 'rev-parse', '--verify', '-q', candidate))
+  const log = gitOut(repoRoot, 'log', '--no-merges', '--format=%H %aI', ref, ...(base ? ['--not', base] : []))
   if (log === null) return { ...out, why: 'git log failed' }
   const until = new Date(`${closed}T23:59:59`).getTime()
   const shas = log
@@ -99,14 +100,14 @@ export function postDoneCommits(stages, repoRoot) {
     .filter(Boolean)
     .filter((line) => Date.parse(line.split(' ')[1]) > until)
     .map((line) => line.split(' ')[0].slice(0, 10))
-  const subjects = (gitOut(repoRoot, 'log', '--format=%h %s', '-n', '60', ref, ...(base ? ['--not', base] : [])) ?? '').split('\n').filter(Boolean)
+  const subjects = (gitOut(repoRoot, 'log', '--no-merges', '--format=%h %s', '-n', '60', ref, ...(base ? ['--not', base] : [])) ?? '').split('\n').filter(Boolean)
   return { ...out, commits: shas.length, shas: shas.slice(0, 20), branchCommits: subjects, ref, base: base ?? null }
 }
 
 /** The commits of the task branch (not on the base) that touched a file: `["<sha> <subject>", …]`: the candidates for the `fixes` of a proof. */
 export function commitsTouching(repoRoot, ref, base, file) {
   if (!repoRoot || !ref || !file) return []
-  const log = gitOut(repoRoot, 'log', '--format=%h %s', '-n', '5', ref, ...(base ? ['--not', base] : []), '--', file)
+  const log = gitOut(repoRoot, 'log', '--no-merges', '--format=%h %s', '-n', '5', ref, ...(base ? ['--not', base] : []), '--', file)
   return (log ?? '').split('\n').filter(Boolean)
 }
 
@@ -162,7 +163,9 @@ const signalsOf = (text) => [...text.matchAll(/`([^`\n]{4,80})`/g)].map(([, toke
 
 /** Corpus rows (the stage 1 TSV) of one repo, unique ones (`dup_of` empty): by class with the checker outcome. */
 export function corpusRows(tsvPath, repoName) {
-  const [head, ...lines] = readFileSync(tsvPath, 'utf8').split('\n').filter(Boolean).map((line) => line.split('\t'))
+  const tsv = readBounded(tsvPath, { max: 32 * 1024 * 1024 })
+  if (tsv.text === undefined) throw new Error(`the corpus ${tsvPath} cannot be read (${tsv.problem})`)
+  const [head, ...lines] = tsv.text.split('\n').filter(Boolean).map((line) => line.split('\t'))
   const col = Object.fromEntries(head.map((name, index) => [name, index]))
   const rows = lines
     .filter((cells) => cells[col.repo] === repoName && !cells[col.dup_of])
@@ -185,12 +188,8 @@ export function findingsReport(taskDirs, { repoRoot = null, corpus = null } = {}
   const branches = new Map()
   for (const dir of taskDirs) {
     const found = taskFindings(dir)
-    let stages = ''
-    try {
-      stages = readFileSync(join(dir, 'STAGES.md'), 'utf8')
-    } catch {
-      // no journal — nothing to count after
-    }
+    // bounded and inside the task directory: a STAGES.md that is a link to a device or a huge file counts no commits (no journal — nothing to count after)
+    const stages = readTaskFile(dir, 'STAGES.md') ?? ''
     const post = postDoneCommits(stages, repoRoot)
     branches.set(found.ticket, { ref: post.ref ?? null, base: post.base ?? null })
     delete post.ref

@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { FIRINGS_FILE } from './hooks/firing.mjs'
-import { knownTaskDirs, pluginDataDir, readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
+import { knownTaskDirs, pluginDataDir, readConfig, readTaskFile, taskDirFromConfig } from './hooks/pipeline-state.mjs'
 import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
 const argv = process.argv.slice(2)
@@ -89,7 +89,7 @@ if (FINDINGS) {
       for (const name of names) {
         const dir = join(registered, name)
         try {
-          if (own.has(resolve(dir)) || !statSync(dir).isDirectory() || !named.test(readFileSync(join(dir, 'STAGES.md'), 'utf8'))) continue
+          if (own.has(resolve(dir)) || !statSync(dir).isDirectory() || !named.test(readTaskFile(dir, 'STAGES.md') ?? '')) continue
         } catch {
           continue
         }

@@ -406,6 +406,23 @@ const UNREAD_DATE = new RegExp(
 )
 
 /**
+ * The integration refs of a repo, `origin/` first: `main_branch` of the config, then dev, develop, development, main, master — the ones that exist.
+ * Not only `main_branch`: in live configs it can be `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
+ */
+export function integrationRefs(cwd, configText) {
+  const configured = (configText ?? '').match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
+  const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
+  return names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
+}
+
+/** The nearest integration ref to `ref` (the fewest commits `base..ref`; `origin/` wins a tie): `{ ref, ahead }`, or undefined when the repo has none. The one base rule of the hooks and of the retro. */
+export function integrationBase(cwd, configText, ref) {
+  return integrationRefs(cwd, configText)
+    .map((base) => ({ ref: base, ahead: Number(git(cwd, 'rev-list', '--count', `${base}..${ref}`) ?? Infinity) }))
+    .sort((a, b) => a.ahead - b.ahead)[0]
+}
+
+/**
  * Task commits the journal does not know: neither the SHA, nor the subject, nor the content appear in STAGES.md,
  * STAGES-ARCHIVE.md and PR.md. This is what work after a force run closed looks like — edits in the main context
  * and the user's commits that did not pass any checker. Where to look:
@@ -417,16 +434,9 @@ const UNREAD_DATE = new RegExp(
  */
 export function unjournaledCommits(state, task, { limit = 50, gate = null } = {}) {
   const cwd = state.worktree
-  // The base is the nearest of the integration branches, not only `main_branch`: in live configs it can be
-  // `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
-  const configured = state.config.match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
-  const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
-  const integration = names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
-  if (!integration.length) return []
-  const nearest = (ref) =>
-    integration
-      .map((base) => ({ ref: base, ahead: Number(git(cwd, 'rev-list', '--count', `${base}..${ref}`) ?? Infinity) }))
-      .sort((a, b) => a.ahead - b.ahead)[0]
+  // The base is the nearest of the integration branches, not only `main_branch` (see `integrationBase`).
+  if (!integrationRefs(cwd, state.config).length) return []
+  const nearest = (ref) => integrationBase(cwd, state.config, ref)
   // Through the task file rule: a journal file that cannot be read knows no commit, so its commits are named (a warning, never a stall).
   const journal = ['STAGES.md', 'STAGES-ARCHIVE.md', 'PR.md']
     .map((name) => readTaskFile(task.dir, name))

@@ -445,4 +445,47 @@ for (const spec of CASES) {
   rmSync(main, { recursive: true, force: true })
 }
 
+// ── Stage 13a of VT-6, fix round 1 (security 1, 2, 5): the repo rules cannot take the built-in rules down with them ───────────────────────────────────────────────────
+// Incident: a glob with many wildcards, many slow rows and a very long line must not push floor-guard past the hook's 12 s kill (the commit would go through unchecked, the secret scan lost).
+// Legitimate: an ordinary row still fires, and a line inside the cap is checked as before.
+{
+  const SECRET_LINE = `const k = "${'AKIA'}${'QWERTYUIOPASDFGH'}"\n`
+  const withConfig = (rows) => `- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n${rows}\n`
+  const timedRun = (name, base, change, check) => {
+    const repo = mkdtempSync(join(tmpdir(), 'floor-guard-13a-'))
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    write(repo, base)
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'base')
+    write(repo, change)
+    git(repo, 'add', '-A')
+    const started = Date.now()
+    const run = spawnSync('node', [GUARD, '--json'], { cwd: repo, encoding: 'utf8', timeout: 12_000 })
+    const ms = Date.now() - started
+    let out = null
+    try {
+      out = JSON.parse(run.stdout)
+    } catch {}
+    const problem = check({ run, out, ms })
+    rmSync(repo, { recursive: true, force: true })
+    console.log(`${problem ? '✘' : '✔'} ${name}${problem ? ` — ${problem} (exit ${run.status}, ${ms} ms)` : ''}`)
+    if (problem) failed++
+  }
+  const A = 'a'.repeat(60)
+  timedRun('repo rules incident: a files glob with seven wildcards is a named config problem and the secret scan still runs, fast', { '.claude/pipeline.config.md': withConfig('| g | `foo` | `*a*a*a*a*a*a*a*b` | no |') }, { [`${A}.ts`]: SECRET_LINE }, ({ run, out, ms }) =>
+    run.status === 1 && ms < 6000 && out?.violations.some((v) => v.rule === 'secret') && /more than 4 wildcards/.test(out.configProblems?.[0] ?? '') ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  const slowRows = Array.from({ length: 14 }, (_, i) => `| r${i} | \`(?:\\d+\\d+\\d+\\d+\\d+\\d+\\d+)z${i}\` | * | no |`).join('\n')
+  timedRun('repo rules incident: fourteen slow rows share one time budget — the secret is reported before the hook would kill the run, the skipped rows are named', { '.claude/pipeline.config.md': withConfig(slowRows) }, { 'src/a.ts': `const n = "${'1'.repeat(3000)}"\n${SECRET_LINE}` }, ({ run, out, ms }) =>
+    run.status === 1 && ms < 9000 && out?.violations.some((v) => v.rule === 'secret') && out.configProblems?.some((line) => /time budget/.test(line)) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems?.slice(-1))}`)
+  const nofoo = '| nofoo | `forbiddenCall\\(` | * | no |'
+  timedRun('repo rules incident: a line longer than the cap is named as not checked by repo rules, not passed in silence', { '.claude/pipeline.config.md': withConfig(nofoo) }, { 'src.ts': `${'x'.repeat(4100)}forbiddenCall(1)\n` }, ({ run, out }) =>
+    run.status === 2 && out?.configProblems?.some((line) => /longer than 4000 characters/.test(line)) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  timedRun('repo rules legitimate: a line inside the cap is checked, an ordinary row fires, nothing is reported as skipped', { '.claude/pipeline.config.md': withConfig(nofoo) }, { 'src.ts': `${'x'.repeat(3000)}forbiddenCall(1)\n` }, ({ run, out }) =>
+    run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'repo:nofoo' && !out.configProblems ? null : `status ${run.status}, ${JSON.stringify(out)}`)
+  timedRun('repo rules legitimate: realistic globs with four wildcards apply on a deep path', { '.claude/pipeline.config.md': withConfig('| g | `forbiddenCall\\(` | `**/__tests__/**/*.test.*` | no |') }, { 'a/b/__tests__/c/d.test.ts': 'forbiddenCall(1)\n' }, ({ run, out }) =>
+    run.status === 1 && out?.violations.some((v) => v.rule === 'repo:g') ? null : `status ${run.status}, ${JSON.stringify(out)}`)
+}
+
 process.exit(failed ? 1 : 0)

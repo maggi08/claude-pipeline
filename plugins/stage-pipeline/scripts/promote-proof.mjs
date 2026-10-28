@@ -26,8 +26,8 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { parseRepoRules, repoRuleApplies } from './markers.mjs'
 
@@ -46,10 +46,20 @@ const git = (root, ...args) => {
 export async function loadProjectEslint(root) {
   let path
   try {
-    path = createRequire(join(root, 'package.json')).resolve('eslint')
+    path = realpathSync(createRequire(join(root, 'package.json')).resolve('eslint'))
   } catch {
-    return { error: `no eslint in ${root}/node_modules (nor above it)` }
+    return { error: `no eslint in ${root}/node_modules` }
   }
+  // Node resolution walks up to an ancestor's node_modules: code outside the project is not the project's ESLint. The repo's own root (a hoisting monorepo) counts.
+  const toplevel = git(root, 'rev-parse', '--show-toplevel').out.trim()
+  const homes = [root, toplevel].filter(Boolean).map((dir) => {
+    try {
+      return `${realpathSync(dir)}${sep}node_modules${sep}`
+    } catch {
+      return null
+    }
+  })
+  if (!homes.some((home) => home && path.startsWith(home))) return { error: `eslint resolves to ${path}, outside ${root}/node_modules and the repo's own node_modules: not the project's ESLint` }
   try {
     const module = await import(pathToFileURL(path).href)
     const ESLint = module.ESLint ?? module.default?.ESLint
@@ -92,11 +102,16 @@ function laterLines(root, rev, file, lines, since) {
   return later
 }
 
+// A rev from a candidate reaches git as an argument: a leading dash would be an option (`--output=<path>` truncates a file), so it is not a rev.
+const SAFE_REV = /^[\w@][\w./^~@{}:-]*$/
+/** The first rev of a candidate (fixes, since, probes) that is not a plain rev, or null. */
+export const unsafeRev = (candidate) => [...(candidate.fixes ?? []), ...(candidate.since ?? []), ...(candidate.probes ?? []).map((probe) => probe?.rev)].find((rev) => typeof rev !== 'string' || !SAFE_REV.test(rev)) ?? null
+
 /** The pre-fix probes of a candidate: its explicit ones plus the files each fix commit changed, at the fix's parent. */
 export function collectProbes(root, candidate, accepts = (file) => SOURCE_FILE.test(file)) {
   const probes = [...(candidate.probes ?? [])].map(({ rev, file }) => ({ rev, file }))
   for (const fix of candidate.fixes ?? []) {
-    const changed = git(root, 'diff', '--name-only', '--diff-filter=MD', `${fix}^`, fix)
+    const changed = git(root, 'diff', '--name-only', '--diff-filter=MD', '--end-of-options', `${fix}^`, fix)
     for (const file of changed.out.split('\n').filter((name) => name && accepts(name)).slice(0, MAX_PER_FIX)) probes.push({ rev: `${fix}^`, file })
   }
   const seen = new Set()
@@ -199,13 +214,15 @@ function headSweep(root, kind, engine, probes) {
 export async function proveCandidate(root, candidate) {
   const kind = candidate.kind ?? (candidate.eslint ? 'eslint' : 'repo-rule')
   if (kind === 'claude-md') return { id: candidate.id, kind, proven: false, unproven: true, reason: 'a CLAUDE.md line has no mechanical proof: marked unproven' }
+  const unsafe = unsafeRev(candidate)
+  if (unsafe !== null) return { id: candidate.id, kind, proven: false, invalid: true, reason: `"${String(unsafe).slice(0, 60)}" is not a revision (a rev is letters, digits and ./^~@{}:- and does not start with a dash)` }
   const engine = kind === 'eslint' ? await eslintEngine(root, candidate) : repoRuleEngine(candidate)
   if (engine.unavailable) return { id: candidate.id, kind, proven: false, noEslint: true, reason: `${engine.unavailable}: no proof by ESLint, offer a repo rule (proven by git show + its regex) or a CLAUDE.md line marked unproven` }
   if (engine.invalid) return { id: candidate.id, kind, proven: false, invalid: true, reason: engine.invalid }
   const accepts = kind === 'repo-rule' ? (file) => repoRuleApplies(engine.rule, file) : (file) => SOURCE_FILE.test(file)
   const probes = collectProbes(root, candidate, accepts)
   const probe = async (rev, file) => {
-    const shown = git(root, 'show', `${rev}:${file}`)
+    const shown = git(root, 'show', '--end-of-options', `${rev}:${file}`)
     if (!shown.ok) return { rev, file, status: 'inconclusive', why: 'git show failed (the file does not exist at this rev)' }
     return { rev, file, ...(await engine.lint(shown.out, file)) }
   }

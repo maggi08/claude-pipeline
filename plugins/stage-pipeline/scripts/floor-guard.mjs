@@ -74,6 +74,8 @@ const REPO_RULE_SKIP = /(^|\/)pipeline\.config(\.local)?\.md$/
 // goes on — the built-in rules never depend on a row.
 const REPO_LINE_MAX = 4000
 const REPO_RULE_MS = 1000
+const REPO_TOTAL_MS = 3000
+let repoSpent = 0
 const brokenRules = new Set()
 
 let base = 'HEAD'
@@ -285,18 +287,42 @@ for (const [path, { added, removed }] of files) {
   const isTestish = TESTISH.test(path)
   const isPython = path.endsWith('.py')
 
-  // The rows of the Repo rules table that apply to this file, evaluated for all its added lines at once under a time limit.
+  // The rows of the Repo rules table that apply to this file, evaluated for all its added lines at once under a time limit. All rows of the run share one budget:
+  // many slow rows must not add up past the hook's kill (the built-in rules below would be lost with it), so what the budget does not reach is skipped and named.
   const repoHits = new Map()
   if (repoRules.rules.length && !REPO_RULE_SKIP.test(path)) {
+    let longLines = 0
     for (const rule of repoRules.rules) {
-      if (brokenRules.has(rule.id) || !repoRuleApplies(rule, path)) continue
-      const hits = testLines(rule.regex, added.map(({ text }) => text.slice(0, REPO_LINE_MAX)), REPO_RULE_MS)
+      if (brokenRules.has(rule.id)) continue
+      const left = REPO_TOTAL_MS - repoSpent
+      if (left <= 0) {
+        for (const skipped of repoRules.rules) if (!brokenRules.has(skipped.id)) brokenRules.add(skipped.id)
+        repoRules.problems.push(`Repo rules: the time budget of ${REPO_TOTAL_MS} ms for all rows ran out on ${path} — the rows not yet run were skipped (a slow pattern or glob; the built-in rules ran)`)
+        break
+      }
+      const started = Date.now()
+      const applies = repoRuleApplies(rule, path, Math.min(REPO_RULE_MS, left))
+      if (applies === null) {
+        repoSpent += Date.now() - started
+        brokenRules.add(rule.id)
+        repoRules.problems.push(`Repo rules row "${rule.id}": the files glob did not finish within ${REPO_RULE_MS} ms on ${path} (backtracking) — the row was skipped, the other rules ran`)
+        continue
+      }
+      if (!applies) {
+        repoSpent += Date.now() - started
+        continue
+      }
+      longLines = added.filter(({ text }) => text.length > REPO_LINE_MAX).length
+      const hits = testLines(rule.regex, added.map(({ text }) => text.slice(0, REPO_LINE_MAX)), Math.min(REPO_RULE_MS, Math.max(1, REPO_TOTAL_MS - repoSpent)))
+      repoSpent += Date.now() - started
       if (hits) repoHits.set(rule.id, hits)
       else {
         brokenRules.add(rule.id)
         repoRules.problems.push(`Repo rules row "${rule.id}": the pattern did not finish within ${REPO_RULE_MS} ms on ${path} (backtracking) — the row was skipped, the other rules ran`)
       }
     }
+    // A repo rule looks at the first REPO_LINE_MAX characters of a line: what stands further is not checked, and that is said, not passed over.
+    if (longLines) repoRules.problems.push(`Repo rules: ${longLines} added line(s) in ${path} are longer than ${REPO_LINE_MAX} characters — repo rules were checked on the first ${REPO_LINE_MAX} only, not checked after that`)
   }
   added.forEach(({ line, text }, i) => {
     if (SECRET.some((pattern) => pattern.exec(text) && !PLACEHOLDER.test(text.match(pattern)[0]))) {

@@ -580,6 +580,8 @@ export const PARTIAL_RUN = /^(?:devtools-verify(?:-\w+)*|(?:stage|этап)-?\d+
 /** The heading of the repo rules table (`## Repo rules`, in a ru config its Russian form from references/language.md). */
 export const REPO_RULES_HEADING = /^(#{2,4})[ \t]*(?:Правила\s+репо(?:зитория)?|Repo\s+rules)(?![\wа-яё]).*$/im
 
+const MAX_GLOB_WILDCARDS = 4
+
 /**
  * A glob of the `files` column as a RegExp over a repo-relative path with `/`: `**` any depth, `*` inside a segment, `?` one character, `{a,b}`
  * alternatives. A glob with no `/` matches the name at any depth (`*.vue` is every Vue file).
@@ -587,9 +589,12 @@ export const REPO_RULES_HEADING = /^(#{2,4})[ \t]*(?:Правила\s+репо(?
 export function globToRegExp(glob) {
   let out = ''
   let braces = 0
+  let wildcards = 0
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i]
     if (c === '*') {
+      // Each `*` is a backtracking point: `*a*a*a*a*a*a*a*b` on a long path of `a` never finishes. A real glob has two or three; more is a config problem, not a hang.
+      if (glob[i - 1] !== '*' && ++wildcards > MAX_GLOB_WILDCARDS) throw new Error(`more than ${MAX_GLOB_WILDCARDS} wildcards (\`*\`, \`**\`) in one glob can backtrack without end — split it into several globs`)
       if (glob[i + 1] === '*') {
         i++
         if (glob[i + 1] === '/') {
@@ -725,5 +730,16 @@ export function testLines(regex, texts, timeoutMs) {
   }
 }
 
-/** Whether a repo rule applies to a repo-relative path: it matches an include glob (or the rule names every file) and no exclude glob. */
-export const repoRuleApplies = (rule, path) => (!rule.files.include.length || rule.files.include.some((glob) => glob.test(path))) && !rule.files.exclude.some((glob) => glob.test(path))
+/**
+ * Whether a repo rule applies to a repo-relative path: it matches an include glob (or the rule names every file) and no exclude glob.
+ * With `timeoutMs` the glob match runs in a `vm` that stops it (the same guard as the pattern): the answer is then null when the globs did not finish.
+ */
+export function repoRuleApplies(rule, path, timeoutMs = null) {
+  const applies = () => (!rule.files.include.length || rule.files.include.some((glob) => glob.test(path))) && !rule.files.exclude.some((glob) => glob.test(path))
+  if (timeoutMs === null) return applies()
+  try {
+    return runInContext('(!i.length || i.some((g) => g.test(p))) && !e.some((g) => g.test(p))', createContext({ i: rule.files.include, e: rule.files.exclude, p: path }), { timeout: timeoutMs })
+  } catch {
+    return null
+  }
+}
