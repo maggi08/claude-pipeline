@@ -102,6 +102,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Could-not-verify section, nothing left | `everything verified` | `всё проверено` |
 | dead-code report summary | `N to remove` | `N удалить` |
 | Config `pipeline.config.md` | `## CI gates` | `## Гейты CI` |
+| Config `pipeline.config.md` | `## Repo rules` (table: id · pattern · files · message · evidence; read by floor-guard) | `## Правила репо` |
 | Config gate command: none | `none` | `нет` |
 | Config field, kit overrides off | `kit_overrides: off` (also `false`, `no`, `disabled`) | `kit_overrides: нет` |
 | Config field | `language: en` | `language: ru` |

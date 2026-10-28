@@ -69,6 +69,39 @@ function appendReceipt(dataDir, ticket, receipt) {
   }
 }
 
+const floorOkName = (ticket) => join('floor-ok', `${String(ticket).replace(/[^\w.-]/g, '_')}.jsonl`)
+
+/**
+ * The `floor-ok:` exceptions of the project's repo rules that a force commit went through with (stage 13): `[{ rule, file, line, reason }]`, one line each in
+ * `<plugin data>/floor-ok/<TICKET>.jsonl` for the run digest. Built-in rules are not recorded here: they are in the stage journal and "Awaiting user confirmation".
+ */
+export function recordFloorOk(dataDir, ticket, branch, exceptions) {
+  if (!exceptions.length) return
+  try {
+    mkdirSync(join(dataDir, 'floor-ok'), { recursive: true })
+    const at = new Date().toISOString()
+    appendFileSync(join(dataDir, floorOkName(ticket)), exceptions.map((exception) => `${JSON.stringify({ at, branch, ...exception })}\n`).join(''))
+  } catch {
+    // no record — the digest just lacks these lines
+  }
+}
+
+/** What `recordFloorOk` kept for this task, from `sinceMs` on, each exception once (the last record of the same rule, place and reason). */
+export function readFloorOk(dataDir, taskDir, sinceMs = 0) {
+  const seen = new Map()
+  for (const text of readDataFiles(dataDir, floorOkName(basename(taskDir))).reverse()) {
+    for (const line of text.split('\n')) {
+      try {
+        const entry = line.trim() ? JSON.parse(line) : null
+        if (entry?.rule && entry.file && Date.parse(entry.at) >= sinceMs) seen.set(`${entry.rule}|${entry.file}|${entry.line}|${entry.reason}`, entry)
+      } catch {
+        // a broken line — skipped
+      }
+    }
+  }
+  return [...seen.values()]
+}
+
 /** The stage(s) a commit now closes: in-progress ones, else done ones whose commit line is still open. `[{ heading, logicOnly, skips }]`. */
 export function openStages(stagesText) {
   const parsed = stageBlocksOf(stagesText).map(({ block }) => {
@@ -227,6 +260,20 @@ export function finishPending(dataDir, id, worktree) {
   }
   appendReceipt(dataDir, pending.ticket, receipt)
   return receipt
+}
+
+/** PostToolUse of a commit: the `floor-ok` waivers saved before it count only if HEAD moved (the commit exists). */
+export function finishFloorOk(dataDir, id, worktree) {
+  const path = pendingPath(dataDir, id)
+  let pending
+  try {
+    pending = JSON.parse(readFileSync(path, 'utf8'))
+    rmSync(path, { force: true })
+  } catch {
+    return
+  }
+  const sha = git(worktree, 'rev-parse', 'HEAD')
+  if (sha && sha !== pending.head) recordFloorOk(dataDir, pending.ticket, pending.branch, pending.waived ?? [])
 }
 
 /**

@@ -39,7 +39,7 @@ if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(
 const { journalText, openLedgers, readTaskFile, reportNames } = await import('../journal-check.mjs')
 const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
 const { PARITY_TABLE } = await import('../markers.mjs')
-const { commitVerdict, finishPending, savePending } = await import('../receipts.mjs')
+const { commitVerdict, finishFloorOk, finishPending, savePending } = await import('../receipts.mjs')
 const { commitMakerVerdict, makerRuleApplies } = await import('../maker.mjs')
 const { commitChainProblems, commitScope, gitInvocations, indexChangers } = await import('./git-command.mjs')
 const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
@@ -48,13 +48,16 @@ const cwd = input.cwd ?? process.cwd()
 const archiveScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'archive-stages.mjs')
 const invocations = gitInvocations(command, cwd)
 const callId = input.tool_use_id ?? input.session_id ?? 'call'
+const floorOkId = (id, worktree) => `${id}.floor-ok.${worktree}`
 
 // PostToolUse: a force commit that went through leaves its receipt (the pre-hook below saved the verdict).
 if (input.hook_event_name === 'PostToolUse') {
   for (const { subcommand, dir } of invocations) {
     if (subcommand !== 'commit') continue
     const worktree = toplevel(dir)
-    if (worktree) finishPending(pluginDataDir(), callId, worktree)
+    if (!worktree) continue
+    finishPending(pluginDataDir(), callId, worktree)
+    finishFloorOk(pluginDataDir(), floorOkId(callId, worktree), worktree)
   }
   process.exit(0)
 }
@@ -209,6 +212,12 @@ for (const { subcommand, dir, args } of invocations) {
         'Fix it as a fix-loop finding (not by suppressing it). If an exception is truly justified — a `floor-ok: <reason>` line ' +
         'at the violation and an item in "⚠ Awaiting user confirmation" of STAGES.md; @ts-ignore and secrets are never an exception.',
     )
+  }
+  // The project's rules passed with a `floor-ok:` reason (`[repo:<id>] file:line — reason`): the run digest lists them, so the user sees what was waived.
+  // Kept pending and written when the commit is confirmed (PostToolUse, HEAD moved): a commit that fails leaves no waiver. Exit 2 (a bad row elsewhere) still lists the accepted lines.
+  if (run.status === 0 || run.status === 2) {
+    const waived = [...run.stdout.matchAll(/^ {2}- \[repo:([^\]]+)\] (.+?):(\d+) — (.+)$/gm)].map(([, id, file, line, reason]) => ({ rule: `repo:${id}`, file, line: Number(line), reason }))
+    if (waived.length) savePending(pluginDataDir(), floorOkId(callId, state.worktree), { ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim(), waived })
   }
   // "Could not look" does not block the commit — /stage-check, Step 1, will run the same — but it does not pass silently.
   if (run.status !== 0) {

@@ -47,7 +47,7 @@ import {
   SUMMARY_LINE,
   taskFile,
 } from './journal-check.mjs'
-import { hasReceipts, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
+import { hasReceipts, readFloorOk, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { makerItems } from './maker.mjs'
 import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
 import { AWAITING_SECTION, UNVERIFIED_HEADING, forceBlockBody, forceBlockDate, forceHeadings, forceKey, headingDate } from './markers.mjs'
@@ -72,6 +72,7 @@ const TEXT = {
     minor: (n) => `### Minor без итога (${n})`,
     accepted: (n) => `### Принято само — проверь, дорогие откаты первыми (${n})`,
     noRuntime: (n) => `### Этапы без проверки в рантайме (${n})`,
+    repoOk: (n) => `### Правила репо, снятые через floor-ok — проверь причины (${n})`,
     dismissed: (n) => `### Отклонено как ложное — критичные, major и FAIL, дословно (${n})`,
     dismissedLine: ({ checker, name, severity, line }) => `- [${checker}] ${name}${severity ? ` (${severity})` : ''}: ${line}`,
     notFinding: (n) => `Критерий не упал, «ложная» стоит вместо «не FAIL» (${n}):`,
@@ -119,6 +120,7 @@ const TEXT = {
     minor: (n) => `### Minor without outcome (${n})`,
     accepted: (n) => `### Accepted on my own — check, expensive rollbacks first (${n})`,
     noRuntime: (n) => `### Stages without runtime check (${n})`,
+    repoOk: (n) => `### Repo rules waived by floor-ok — check the reasons (${n})`,
     dismissed: (n) => `### Dismissed as false — critical, major and FAIL, verbatim (${n})`,
     dismissedLine: ({ checker, name, severity, line }) => `- [${checker}] ${name}${severity ? ` (${severity})` : ''}: ${line}`,
     notFinding: (n) => `The criterion did not fail, "false" stands for "not a FAIL" (${n}):`,
@@ -274,7 +276,9 @@ export function collectDigest(taskDir, dataDir = pluginDataDir(), repo = null) {
   // Stage 11 (K11.6): the maker's own items of this run, verbatim; a run with no maker stop has no category (an old run's digest stays as it was).
   const made = makerItems(dataDir, basename(taskDir), scope.since)
   const maker = made.items.map((item) => TEXT[language].makerLine({ stage: item.stage, kind: TEXT[language].makerKinds[item.kind] ?? item.kind, text: item.text }))
-  return { language, makered: made.stops > 0, maker, text: TEXT[language], receipted, noRuntime, notReady, unreadable, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals, browser }
+  // Stage 13: the project's own rules (`## Repo rules`) that a force commit of this run went through with a `floor-ok:` reason, named by the rule id.
+  const repoOk = readFloorOk(dataDir, taskDir, scope.since).map(({ rule, file, line, reason }) => `- [${rule}] ${file}:${line} — ${String(reason).slice(0, 160)}`)
+  return { language, makered: made.stops > 0, maker, repoOk, text: TEXT[language], receipted, noRuntime, notReady, unreadable, heading: block?.heading.replace(/^## /, '') ?? null, scope, blockers, gates, noOutcome, unverifiedReports, unverifiedJournal, minors, accepted, checkers, dismissals, browser }
 }
 
 const browserRecord = (taskDir) => join('browser-cleanup', basename(baselineName(taskDir)))
@@ -326,6 +330,7 @@ function renderFull(d) {
   out.push('', text.accepted(d.accepted.length), ...(d.accepted.length ? d.accepted : [text.none]))
   if (d.noRuntime.length) out.push('', text.noRuntime(d.noRuntime.length), ...d.noRuntime)
   if (d.maker.length) out.push('', text.maker(d.maker.length), ...d.maker)
+  if (d.repoOk.length) out.push('', text.repoOk(d.repoOk.length), ...d.repoOk)
   if (d.browser) out.push('', text.browser(d.browser))
   if (d.scope.sameDay) out.push('', text.sameDay(d.scope.sameDay, d.scope.date))
   return out.join('\n')
@@ -372,6 +377,7 @@ function renderShort(d, path, unwritten = null) {
   else if (d.receipted) empty.push(text.labels.noRuntime)
   if (d.maker.length) out.push(text.makerShort(d.maker.length))
   else if (d.makered) empty.push(text.labels.maker)
+  if (d.repoOk.length) out.push(text.repoOk(d.repoOk.length), ...d.repoOk.slice(0, 3))
   if (empty.length) out.push(text.noneOf(empty))
   if (d.browser) out.push(text.browser(d.browser))
   if (d.scope.sameDay) out.push(text.sameDay(d.scope.sameDay, d.scope.date))

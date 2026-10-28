@@ -8,6 +8,8 @@
  * stay with the scripts.
  */
 
+import { createContext, runInContext } from 'node:vm'
+
 const re = (source, flags = '') => new RegExp(source, flags)
 
 /** Code in backticks and quoted text ("…", «…», “…”): identifiers or copy, not the wording of an outcome ("the untested import is removed"). */
@@ -572,3 +574,156 @@ export const RERUN_SUFFIX = /^(?:r\d+|fresh[\w-]*|recheck(?:-?\d+)?)\.md$/i
 export const RERUN_SCREEN = /^(?:checks\/)?screens\/[\w.-]+\.(?:png|jpe?g|webp)$/i
 /** A partial devtools-verify run: the recheck of named findings (`devtools-verify-<stage>-r<k>.md`) and the before-fix repro (`…-repro.md`). It measures what it was asked to, not the geometry of every width. */
 export const PARTIAL_RUN = /^(?:devtools-verify(?:-\w+)*|(?:stage|этап)-?\d+[a-z]?-devtools-verify)-(?:r\d+|repro|recheck(?:-?\d+)?)\.md$/i
+
+// --- `## Repo rules` (stage 13): project rules that floor-guard applies to added lines ---
+
+/** The heading of the repo rules table (`## Repo rules`, in a ru config its Russian form from references/language.md). */
+export const REPO_RULES_HEADING = /^(#{2,4})[ \t]*(?:Правила\s+репо(?:зитория)?|Repo\s+rules)(?![\wа-яё]).*$/im
+
+/**
+ * A glob of the `files` column as a RegExp over a repo-relative path with `/`: `**` any depth, `*` inside a segment, `?` one character, `{a,b}`
+ * alternatives. A glob with no `/` matches the name at any depth (`*.vue` is every Vue file).
+ */
+export function globToRegExp(glob) {
+  let out = ''
+  let braces = 0
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        i++
+        if (glob[i + 1] === '/') {
+          i++
+          out += '(?:.*/)?'
+        } else out += '.*'
+      } else out += '[^/]*'
+    } else if (c === '?') out += '[^/]'
+    else if (c === '{') {
+      braces++
+      out += '(?:'
+    } else if (c === '}' && braces) {
+      braces--
+      out += ')'
+    } else if (c === ',' && braces) out += '|'
+    else out += c.replace(/[.+^$()|[\]\\{}]/g, '\\$&')
+  }
+  if (braces) throw new Error('unclosed {')
+  return new RegExp(`^${glob.includes('/') ? '' : '(?:.*/)?'}${out}$`)
+}
+
+const unwrap = (cell) => cell.trim().replace(/^`([\s\S]*)`$/, '$1').replace(/\\\|/g, '|').trim()
+
+/** `**`, `*`, `any`, `all` or a dash: every file. */
+const EVERY_FILE = /^(?:\*\*?|\*\*\/\*|any|all|—|-|все)$/i
+
+/**
+ * The repo rules of a config text: `{ rules, problems }`. A row is `| id | pattern | files | message | evidence |` under the `## Repo rules` heading
+ * (every table of the section; the cells are split on `|` not escaped by a backslash, so a pattern writes an alternation as `\|`).
+ *  - `pattern` — a JS regular expression, bare or as `/source/flags` (flags from `imsu`); in backticks if it has a `|` or a space.
+ *  - `files` — globs separated by commas outside braces or by spaces (`src/**\/*.vue, !**\/*.test.*`); a leading `!` excludes; `*` — every file.
+ *  - `message` — what the violation says, naming the fix; `evidence` — where the rule came from (optional, not read by the guard).
+ * A row that cannot be used (an id that is not `[\w.-]+`, a pattern that does not compile or matches an empty string, a duplicate id, a bad glob) goes
+ * to `problems` as a line naming the row; the rows that are fine are still returned. No heading or no rows — `{ rules: [], problems: [] }`.
+ * A rule: `{ id, source, flags, regex, files: { include: RegExp[], exclude: RegExp[] }, message, evidence }`.
+ */
+export function parseRepoRules(configText) {
+  const rules = []
+  const problems = []
+  const heading = (configText ?? '').match(REPO_RULES_HEADING)
+  if (!heading) return { rules, problems }
+  const rest = configText.slice(heading.index + heading[0].length).split('\n')
+  const end = rest.findIndex((line) => new RegExp(`^#{1,${heading[1].length}}\\s`).test(line))
+  for (const line of end === -1 ? rest : rest.slice(0, end)) {
+    if (!/^\s*\|/.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) continue
+    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/)
+    const id = cells[0]?.replace(/[*`]/g, '').trim() ?? ''
+    if (/^(?:id|ид|идентификатор)$/i.test(id) && /pattern|шаблон|regex/i.test(cells[1] ?? '')) continue
+    const fail = (why) => problems.push(`Repo rules row "${id || line.trim().slice(0, 40)}": ${why}`)
+    if (cells.length < 4) {
+      fail('needs at least 4 cells: id, pattern, files, message')
+      continue
+    }
+    if (!/^[\w.-]+$/.test(id)) {
+      fail('the id must be letters, digits, `.`, `_` or `-`')
+      continue
+    }
+    if (rules.some((rule) => rule.id === id)) {
+      fail('the id is already used by an earlier row')
+      continue
+    }
+    const raw = unwrap(cells[1])
+    const slashed = raw.match(/^\/([\s\S]+)\/([a-z]*)$/)
+    const source = slashed ? slashed[1] : raw
+    const flags = slashed ? slashed[2] : ''
+    if (!source) {
+      fail('the pattern is empty')
+      continue
+    }
+    let regex
+    try {
+      if (!/^[imsu]*$/.test(flags)) throw new Error(`flags "${flags}" are not allowed (only i, m, s, u)`)
+      regex = new RegExp(source, flags)
+    } catch (error) {
+      fail(`the pattern does not compile — ${error.message}`)
+      continue
+    }
+    if (regex.test('')) {
+      fail('the pattern matches an empty string, so it would flag every line')
+      continue
+    }
+    const slow = backtrackingRisk(source, regex)
+    if (slow) {
+      fail(`the pattern can backtrack without end (${slow}), so it would hang the commit check — rewrite it without a repeated group that repeats (e.g. \`(\\w+\\s?)+\` → \`\\w[\\w ]*\`)`)
+      continue
+    }
+    const globs = unwrap(cells[2])
+      .split(/[\s,]+(?![^{]*\})/)
+      .filter(Boolean)
+    const files = { include: [], exclude: [] }
+    try {
+      if (!globs.length) throw new Error('no files named (use `*` for every file)')
+      if (!(globs.length === 1 && EVERY_FILE.test(globs[0]))) {
+        for (const glob of globs) (glob.startsWith('!') ? files.exclude : files.include).push(globToRegExp(glob.replace(/^!/, '')))
+      }
+    } catch (error) {
+      fail(`the files column is not usable — ${error.message}`)
+      continue
+    }
+    const message = unwrap(cells[3])
+    if (!message) {
+      fail('the message is empty — it must say what to do instead')
+      continue
+    }
+    rules.push({ id, source, flags, regex, files, message, evidence: unwrap(cells[4] ?? '') })
+  }
+  return { rules, problems }
+}
+
+// A quantified group that holds a quantifier (`(a+)+`, `(\w+\s?)*`, `(a{1,5})+`), or an alternation under a quantifier whose branches share a start (`(a|ab)*`).
+const NESTED_QUANTIFIER = /\((?:\?:)?(?:[^()\\[\]]|\\.|\[(?:[^\]\\]|\\.)*\])*[+*}](?:[^()\\[\]]|\\.|\[(?:[^\]\\]|\\.)*\])*\)(?:[+*]|\{\d+,\d*\})/
+const ALTERNATION_UNDER_QUANTIFIER = /\((?:\?:)?([^()|]+)\|([^()|]+)\)(?:[+*]|\{\d+,\d*\})/
+const PROBE_LINES = ['a'.repeat(48) + '!', 'ab '.repeat(24) + '!', 'a,'.repeat(30) + '!', ' '.repeat(60) + '!', '"' + 'a '.repeat(30) + '!', 'x.y'.repeat(20) + '!']
+const PROBE_MS = 40
+
+/**
+ * Why a regex of a repo rule may hang the commit check, or null: a nested quantifier, an alternation whose branches begin alike under a quantifier,
+ * or (the net for what a source heuristic cannot see) a run of synthetic lines it cannot finish within PROBE_MS, timed in a `vm` that stops it.
+ */
+export function backtrackingRisk(source, regex) {
+  if (NESTED_QUANTIFIER.test(source)) return 'a repeated group that holds a repeat'
+  const alternation = source.match(ALTERNATION_UNDER_QUANTIFIER)
+  if (alternation && (alternation[1].startsWith(alternation[2][0]) || alternation[2].startsWith(alternation[1][0]))) return 'a repeated alternation whose branches begin alike'
+  return testLines(regex, PROBE_LINES, PROBE_MS) === null ? `it did not finish on a synthetic line within ${PROBE_MS} ms` : null
+}
+
+/** `regex.test` for each text, stopped after `timeoutMs` in total: the array of booleans, or null when the regex did not finish (a backtracking pattern). */
+export function testLines(regex, texts, timeoutMs) {
+  try {
+    return runInContext('t.map((text) => r.test(text))', createContext({ r: new RegExp(regex.source, regex.flags), t: texts }), { timeout: timeoutMs })
+  } catch {
+    return null
+  }
+}
+
+/** Whether a repo rule applies to a repo-relative path: it matches an include glob (or the rule names every file) and no exclude glob. */
+export const repoRuleApplies = (rule, path) => (!rule.files.include.length || rule.files.include.some((glob) => glob.test(path))) && !rule.files.exclude.some((glob) => glob.test(path))

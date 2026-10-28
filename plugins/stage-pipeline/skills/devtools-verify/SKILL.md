@@ -146,4 +146,6 @@ style-diff 1440: roles N · differ N
 - unmapped: <route> — for feature-checker to draft
 ```
 
+A symptom that matches a class of `references/false-positives.md` with its proof goes under "Could not verify" with the class id and the proof, not into the table; what that file lists under "Never skipped" is always a finding.
+
 Classes of bugs found by the first run (real cases): a hydration mismatch from two root ClientOnly; a draft ignored because of SSR instantiation of the store (Pinia hydrate); a progress bar with px-[480px] collapsed at 1024; a dark theme without a dark mockup.

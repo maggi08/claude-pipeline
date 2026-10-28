@@ -3,6 +3,14 @@
  * Pipeline retro from the facts in task files, not from memory.
  *
  *   node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all]
+ *   node retro.mjs <repo | task_dir | STAGES.md> [...] --findings [--json] [--corpus <tsv>] [--repo <name>] [--root <dir>] [--dismissals] [--own-tasks-only]
+ *
+ * `--findings` is the input of /promote instead of the retro: critical and major findings of the tasks with their outcomes, grouped into classes with counts and
+ * recurrence, the commits made on each task branch after the task closed, and — with `--corpus` — the rows of the VT-1 review corpus for the repo (`--repo` is the
+ * name in its `repo` column, by default the folder name of the repo root; `--root` names the repo when the task directory lies outside it). `--json` prints
+ * the machine-readable form, otherwise a short text view. Tasks of the repo that live in another repo's task directory (a task over several repos keeps its STAGES.md in one of them)
+ * are found through the task directory registry when their STAGES.md names the repo (`--own-tasks-only` leaves them out); `--dismissals` adds the findings closed as false, per checker
+ * (the reverse direction of /promote); the examples carry the commits of the task branch that touched their file (the `fixes` of a proof). Without the flag nothing below changes.
  *
  * Sources: `metrics:` lines from the journals of STAGES.md / STAGES-ARCHIVE.md (format —
  * /stage-check, Step 4.1), the stage pipeline checklists and the reports in checks/. Tasks from before
@@ -17,10 +25,13 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { FIRINGS_FILE } from './hooks/firing.mjs'
-import { pluginDataDir, readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
+import { knownTaskDirs, pluginDataDir, readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
 import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
 const argv = process.argv.slice(2)
+const FINDINGS = argv.includes('--findings')
+const flagValue = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null)
+const findingsFlags = ['--findings', '--json', '--corpus', '--repo', '--root', '--dismissals', '--own-tasks-only']
 const targets = []
 let machineView = false
 let firingsArg = null
@@ -33,11 +44,13 @@ for (let i = 0; i < argv.length; i++) {
       process.exit(2)
     }
     i++
+  } else if (FINDINGS && findingsFlags.includes(argv[i])) {
+    if (['--corpus', '--repo', '--root'].includes(argv[i])) i++
   } else targets.push(argv[i])
 }
 const firingsFile = firingsArg ? resolve(firingsArg) : join(pluginDataDir(), FIRINGS_FILE)
 if (!targets.length || targets.includes('--help')) {
-  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all]')
+  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all] [--findings [--json] [--corpus <tsv>] [--repo <name>] [--root <dir>] [--dismissals] [--own-tasks-only]]')
   process.exit(targets.length ? 0 : 2)
 }
 
@@ -47,6 +60,53 @@ for (const target of targets.map((t) => resolve(t))) collectTaskDirs(target)
 if (!taskDirs.size) {
   console.error('No STAGES.md found')
   process.exit(1)
+}
+
+if (FINDINGS) {
+  const { findingsReport, renderFindings } = await import('./retro-findings.mjs')
+  const toplevel = (cwd) => {
+    try {
+      return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    } catch {
+      return null
+    }
+  }
+  // The repo: `--root`, else a target that is a repo, else the repo the first task directory lies in (a task directory outside any repo gives no post-done count).
+  const isRepo = (path) => existsSync(join(path, '.git')) && !existsSync(join(path, 'STAGES.md'))
+  const root = flagValue('--root') ? resolve(flagValue('--root')) : (targets.map((t) => resolve(t)).find(isRepo) ?? toplevel([...taskDirs][0]))
+  // Tasks of this repo kept in another repo's task directory: the registry's directories, a task counts when its STAGES.md names the repo (as the hooks decide it).
+  const foreign = []
+  if (root && !argv.includes('--own-tasks-only')) {
+    const named = new RegExp(`(^|[^\\w-])${basename(root).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w-]|$)`)
+    const own = new Set([...taskDirs].map((dir) => resolve(dir)))
+    for (const registered of knownTaskDirs()) {
+      let names = []
+      try {
+        names = readdirSync(registered)
+      } catch {
+        continue
+      }
+      for (const name of names) {
+        const dir = join(registered, name)
+        try {
+          if (own.has(resolve(dir)) || !statSync(dir).isDirectory() || !named.test(readFileSync(join(dir, 'STAGES.md'), 'utf8'))) continue
+        } catch {
+          continue
+        }
+        taskDirs.add(dir)
+        foreign.push(dir)
+      }
+    }
+  }
+  const corpusPath = flagValue('--corpus')
+  if (corpusPath && !existsSync(corpusPath)) {
+    console.error(`No corpus file: ${corpusPath}`)
+    process.exit(2)
+  }
+  const report = findingsReport([...taskDirs].sort(), { repoRoot: root, corpus: corpusPath ? { path: resolve(corpusPath), repo: flagValue('--repo') ?? (root ? basename(root) : '') } : null })
+  if (foreign.length) report.registryTasks = foreign
+  process.stdout.write(argv.includes('--json') ? `${JSON.stringify(report, null, 2)}\n` : `${renderFindings(report, { dismissals: argv.includes('--dismissals') })}${foreign.length ? `\nTasks found through the task directory registry (their STAGES.md names the repo): ${foreign.join(', ')}\n` : ''}`)
+  process.exit(0)
 }
 
 const CHECKERS = ['figma-compare', 'proto-compare', 'devtools-verify', 'pro-review', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'figma-spec', 'proto-spec']

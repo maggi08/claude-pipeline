@@ -75,6 +75,8 @@ The source of the rubric is the repository itself, not this skill: `CLAUDE.md` (
 - **Structure**: the code layout from the config (where components/hooks/utils go).
 - **Feature flags**: the project's mechanism, not home-made conditions.
 
+A convention that a row of the config's `## Repo rules` table enforces is not re-reported here: floor-guard owns it on every force commit, so the review spends its attention on what the row cannot see (a pattern that is dodged by another spelling, a file the row's `files` do not cover, the same defect in an unchanged neighbour).
+
 Keep project checklists in the project's repo (CLAUDE.md / pipeline.config Conventions), NOT in this skill: the skill arrives with the plugin and is read in all repositories — someone else's rubric gives false Majors (verified: the rules of one project's store, API layer and set of locales lived here and were applied to another project).
 
 ### B. Senior best practices (universal)

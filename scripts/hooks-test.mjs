@@ -7945,5 +7945,444 @@ rmSync(retroRoot, { recursive: true, force: true })
   rmSync(rRoot, { recursive: true, force: true })
 }
 
+// ── Stage 13 of VT-6: the project's `## Repo rules` on a force commit ────────────────────────────────────────────────────────────────────────────
+// Incident: a force commit that adds a line matching a row is denied with the rule's id and message. Legitimate: the same line with `floor-ok: <reason>` passes and the run
+// digest lists it under the rule id; a config with no table, and the pattern on a line the commit did not touch, change nothing.
+{
+  const fRoot = mkdtempSync(join(tmpdir(), 'repo-rules-test-'))
+  const RULES_CONFIG = '- task_path: .claude/tasks/\n- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-legacy-fetch | `legacyFetch\\(` | `src/**/*.ts` | Call the typed client from api/client.ts instead of legacyFetch. | PR 4417 |\n'
+  const FORCE = '## Force-прогон 2026-09-24\nРежим: автономный.\n\n'
+  let n = 0
+  const fixture = (name, config) => {
+    const dir = join(fRoot, name)
+    const ticket = `RR-${n++}`
+    repoAt(dir, 'main')
+    write(dir, { '.claude/pipeline.config.md': config, [`.claude/tasks/${ticket}/STAGES.md`]: stages(ticket, `${ticket}/feat/r`, { force: FORCE }) })
+    git(dir, 'checkout', '-qb', `${ticket}/feat/r`)
+    return { dir, ticket, task: join(dir, '.claude/tasks', ticket) }
+  }
+  // the pre-hook, then the commit itself, then the post-hook: the waivers are written when the commit is confirmed (HEAD moved), not before
+  let rrCalls = 0
+  const commit = (dir) => {
+    const call = { cwd: dir, tool_name: 'Bash', tool_use_id: `toolu_rr_${rrCalls++}`, tool_input: { command: 'git commit -am x' } }
+    const pre = runHook('git-guard.mjs', { ...call, hook_event_name: 'PreToolUse' })
+    if (pre.decision !== 'deny') {
+      try {
+        git(dir, 'add', '-A')
+        git(dir, 'commit', '-qm', 'x')
+      } catch {
+        // nothing to commit: HEAD does not move
+      }
+      runHook('git-guard.mjs', { ...call, hook_event_name: 'PostToolUse' })
+    }
+    return pre
+  }
+  const { readFloorOk } = await import(join(PLUGIN, 'receipts.mjs'))
+  const { runDigest: digestOf } = await import(join(PLUGIN, 'run-digest.mjs'))
+
+  const hit = fixture('hit', RULES_CONFIG)
+  write(hit.dir, { 'src/a.ts': 'export const a = legacyFetch(1)\n' })
+  const denied = commit(hit.dir)
+  check('repo rules incident: a force commit that adds a matching line is denied with the rule id and its message', denied.decision === 'deny' && /\[repo:no-legacy-fetch\] src\/a\.ts:1/.test(denied.text) && /typed client from api\/client\.ts/.test(denied.text), denied.text)
+
+  write(hit.dir, { 'src/a.ts': '// floor-ok: the vendor SDK has no typed entry point for this call\nexport const a = legacyFetch(1)\n' })
+  const waived = commit(hit.dir)
+  check('repo rules legitimate: the same line with floor-ok: <reason> passes the force commit', waived.decision !== 'deny', waived.text)
+  const kept = readFloorOk(DATA, hit.task)
+  check('repo rules legitimate: the waived line is recorded with the rule id and the reason', kept.length === 1 && kept[0].rule === 'repo:no-legacy-fetch' && kept[0].file === 'src/a.ts' && /vendor SDK/.test(kept[0].reason), JSON.stringify(kept))
+  commit(hit.dir)
+  check('repo rules legitimate: the same exception committed twice is listed once', readFloorOk(DATA, hit.task).length === 1)
+  const digest = digestOf(hit.task, DATA, null)
+  check('repo rules legitimate: the run digest names the waived repo rule and the reason', /### Правила репо, снятые через floor-ok/.test(digest) && /\[repo:no-legacy-fetch\] src\/a\.ts:2 — floor-ok: the vendor SDK/.test(digest), digest)
+  check('repo rules legitimate: the short digest carries the same section', /Правила репо, снятые через floor-ok/.test(digestOf(hit.task, DATA, null, 'short')))
+
+  const bare = fixture('no-table', '- task_path: .claude/tasks/\n- main_branch: main\n')
+  write(bare.dir, { 'src/a.ts': 'export const a = legacyFetch(1)\n' })
+  const unchanged = commit(bare.dir)
+  check('repo rules legitimate: a config with no table — the same line passes and nothing is recorded or listed (AC-13.1)', unchanged.decision !== 'deny' && readFloorOk(DATA, bare.task).length === 0 && !/Правила репо/.test(digestOf(bare.task, DATA, null)), unchanged.text)
+
+  const old = fixture('old-line', RULES_CONFIG)
+  write(old.dir, { 'src/a.ts': 'export const a = legacyFetch(1)\n' })
+  git(old.dir, 'add', '-A')
+  git(old.dir, 'commit', '-qm', 'old code')
+  write(old.dir, { 'src/b.ts': 'export const b = 2\n', 'src/a.ts': 'export const a = legacyFetch(1)\nexport const c = 3\n' })
+  const onOld = commit(old.dir)
+  check('repo rules legitimate: the pattern on a line the commit did not add is not flagged', onOld.decision !== 'deny', onOld.text)
+
+  const broken = fixture('broken-row', RULES_CONFIG.replace('`legacyFetch\\(`', '`legacyFetch(`'))
+  write(broken.dir, { 'src/a.ts': 'export const a = legacyFetch(1)\n' })
+  const bad = commit(broken.dir)
+  check('repo rules incident: a row that does not compile is reported as unchecked, not as a pass', bad.decision === 'message' && /could not check the force commit/.test(bad.text) && /no-legacy-fetch/.test(bad.text), `${bad.decision} ${bad.text}`)
+  rmSync(fRoot, { recursive: true, force: true })
+}
+
+// ── Stage 13 of VT-6: `retro.mjs --findings`, the input of /promote ───────────────────────────────────────────────────────────────────────────────
+// Incident: the same kind of finding in two tasks is one recurring class with both outcomes counted, a commit after the task closed is counted, the corpus rows of the repo are added.
+// Legitimate: a class with one task is not recurrent; a task whose branch is gone is "not counted", not zero; without the flag the retro is what it was.
+{
+  const retroRoot = mkdtempSync(join(tmpdir(), 'retro-findings-test-'))
+  const dir = join(retroRoot, 'shop')
+  repoAt(dir, 'main')
+  const REPORT = (id, text, outcome) => `# pro-review\nFindings: critical 0 · major 1 · minor 0\n### ${id} major ${text}\n## Findings outcome\n- ${id} — ${outcome}\n`
+  const task = (ticket, force, reports) => {
+    write(dir, {
+      '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/x\`\n\n## Status: done\n\n${force}## Stages\n\n### Stage 1: card  [status: done]\n`,
+      ...Object.fromEntries(Object.entries(reports).map(([name, text]) => [`.claude/tasks/${ticket}/checks/${name}`, text])),
+    })
+  }
+  task('T-1', '## Force run 2026-09-24 — completed\n', { 'pro-review-1.md': REPORT('M-1', 'src/Card.vue:4 — hand-set `font-semibold` and `rounded-[20px]` instead of the kit token', 'fixed: src/Card.vue:4') })
+  task('T-2', '## Force run 2026-10-02 — completed\n', { 'pro-review-1.md': REPORT('M-1', 'src/Panel.vue:9 — hand-set `rounded-[20px]` radius instead of the kit token', 'false: the reference section does the same, src/Card.vue:4') })
+  task('T-3', '## Force run 2026-10-05 — completed\n', { 'pro-review-1.md': REPORT('M-1', 'src/api.ts:3 — a hardcoded locale string in the error text instead of the translation helper', 'fixed: src/api.ts:3') })
+  const commitAt = (branch, when, file) => {
+    git(dir, 'checkout', '-q', ...(branch.fresh ? ['-b', branch.name, 'main'] : [branch.name]))
+    write(dir, { [file]: `export const x = '${file}'\n` })
+    git(dir, 'add', '-A')
+    execFileSync('git', ['commit', '-qm', file], { cwd: dir, env: { ...process.env, GIT_COMMITTER_DATE: when, GIT_AUTHOR_DATE: when }, stdio: 'ignore' })
+  }
+  commitAt({ name: 'T-1/feat/x', fresh: true }, '2026-09-20T10:00:00', 'src/one.ts')
+  commitAt({ name: 'T-1/feat/x' }, '2026-09-27T10:00:00', 'src/two.ts')
+  commitAt({ name: 'T-1/feat/x' }, '2026-09-30T10:00:00', 'src/three.ts')
+  git(dir, 'checkout', '-q', 'main')
+  const corpus = join(retroRoot, 'corpus.tsv')
+  writeFileSync(corpus, ['uid\trepo\tclass\tseverity\traised_by\tchecker_outcome\tlet_through\tfile_line\tquote\tdup_of', 'a:1\tshop\tstyling-tokens\tmajor\treviewer\tmissed\t\tsrc/Card.vue:4\tuse the token\t', 'a:2\tshop\ti18n\tminor\treviewer\tseen:fixed\t\tsrc/api.ts:3\tcopy\t', 'a:3\tshop\ti18n\tminor\treviewer\tmissed\t\tsrc/api.ts:3\tdup\ta:2', 'b:1\tother\tstyling-tokens\tmajor\treviewer\tmissed\t\tx.ts:1\tnot this repo\t'].join('\n'))
+  const retro = (...args) => spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, CLAUDE_PLUGIN_DATA: DATA } })
+  const run = retro(dir, '--findings', '--json', '--corpus', corpus)
+  const report = run.status === 0 ? JSON.parse(run.stdout) : null
+  const styling = report?.classes.find((entry) => entry.class === 'styling-tokens')
+  const i18n = report?.classes.find((entry) => entry.class === 'i18n')
+  check('retro --findings incident: a finding class in two tasks recurs, with both outcomes counted', styling?.hits === 2 && styling.recurrent && same(styling.tasks, ['T-1', 'T-2']) && styling.outcomes.fixed === 1 && styling.outcomes.false === 1, run.stderr + run.stdout.slice(0, 400))
+  check('retro --findings legitimate: a class with a hit in one task is not recurrent', i18n?.hits === 1 && i18n.recurrent === false && report.classes[0].class === 'styling-tokens')
+  check('retro --findings incident: the identifier that stands in two tasks is a signal', report?.signals.some(({ signal, tasks }) => signal === 'rounded-[20px]' && same(tasks, ['T-1', 'T-2'])), JSON.stringify(report?.signals))
+  const post = Object.fromEntries((report?.tasks ?? []).map((entry) => [entry.task, entry.postDone]))
+  check('retro --findings incident: commits after the Force block closed are counted (the one before is not)', post['T-1']?.commits === 2 && post['T-1'].closedBy === 'force-close' && post['T-1'].closed === '2026-09-24', JSON.stringify(post['T-1']))
+  check('retro --findings legitimate: a task whose branch is not in the repo is "not counted", not zero', post['T-2']?.commits === null && /branch is not in the repo/.test(post['T-2'].why))
+  check('retro --findings: the corpus rows of this repo only, duplicates left out', report?.corpus?.repo === 'shop' && report.corpus.rows === 2 && report.corpus.byClass.find((entry) => entry.class === 'styling-tokens')?.missed === 1, JSON.stringify(report?.corpus?.byClass))
+  const text = retro(dir, '--findings', '--corpus', corpus).stdout
+  check('retro --findings: the short text view names the recurring class and the post-done count', /RECURS styling-tokens: 2 hit\(s\) in 2 task\(s\)/.test(text) && /T-1: 2 \(/.test(text) && /Stage 1 corpus rows of shop/.test(text), text)
+  const plain = retro(dir).stdout
+  check('retro without the flag is the retro it was', /^# Pipeline retro\n\nTasks: 3, stages: 3/.test(plain) && !/Findings for \/promote/.test(plain), plain.slice(0, 120))
+  rmSync(retroRoot, { recursive: true, force: true })
+}
+
+// ── Stage 13 of VT-6: kit-overrides false-positive patterns (`skills/stage-check/references/kit-overrides-false-positives.md`) ───────────────────────
+// Incident: a new override is still flagged, a line copied once more than it was removed is flagged, `!important` is never skipped, a variable the diff declares is not a kit token.
+// Legitimate: a moved or re-indented line and a `[--token]` shorthand are listed as skipped with the pattern id, not flagged and not dropped.
+{
+  const fp = mkdtempSync(join(tmpdir(), 'kit-fp-test-'))
+  const app = join(fp, 'app')
+  repoAt(app, 'main')
+  const CARD = '    <h3 className="font-semibold uppercase">title</h3>'
+  write(app, {
+    'src/Old.tsx': `export const Old = () => (\n  <div>\n${CARD}\n    <p className="!important-ish">x</p>\n  </div>\n)\n`,
+    'src/Two.tsx': `export const Two = () => (\n${CARD}\n)\n`,
+    'src/Imp.tsx': 'export const Imp = () => <i className="mt-1 !text-red-500" style="color: red !important" />\n',
+  })
+  git(app, 'add', '-A')
+  git(app, 'commit', '-qm', 'base 3')
+  const KIT = '- ui_lib: shadcn/ui → `src/ui/`\n'
+  const scan = () => kits.scanOverridesDetailed(app, { config: KIT })
+  const skippedIds = (result) => result.skipped.flatMap(({ hits }) => hits.map((hit) => hit.skip))
+
+  // the line moves out of Old.tsx into a new file, re-indented
+  // the file moves: Old.tsx is deleted (a line removed from a file that stays is no move, pro-review 13 M-3)
+  rmSync(join(app, 'src/Old.tsx'))
+  write(app, { 'src/Moved.tsx': `export const Moved = () => (\n  <section>\n      <h3 className="font-semibold uppercase">title</h3>\n  </section>\n)\n` })
+  const moved = scan()
+  check('kit-overrides skip legitimate: a line moved to a new file is skipped, with the pattern id, not flagged', moved.found.length === 0 && same([...new Set(skippedIds(moved))], ['moved-line']) && moved.skipped[0].file === 'src/Moved.tsx', JSON.stringify(moved))
+  check('kit-overrides skip legitimate: scanOverrides (the force-commit hook) sees no finding for the moved line', kits.scanOverrides(app, { config: KIT }).length === 0)
+  const report = kits.renderReport(moved.found, { language: 'en', skipped: moved.skipped })
+  check('kit-overrides skip legitimate: the report lists the skipped hit with the pattern id and keeps the summary at 0 findings', /^Findings: critical 0 · major 0 · minor 0/m.test(report) && /## Skipped by false-positive patterns \(2\)/.test(report) && /`src\/Moved\.tsx:3` font weight \(`font-semibold`\) — moved-line/.test(report), report)
+  check('kit-overrides skip legitimate: a report without skips is what it was (no new section)', !/Skipped by/.test(kits.renderReport([], { language: 'en' })) && !/Пропущено/.test(kits.renderReport([], { language: 'ru' })))
+
+  // the same line copied into a second file while it was removed once: one copy is the move, the other is new
+  write(app, { 'src/Copy.tsx': `export const Copy = () => (\n${CARD}\n)\n` })
+  const copied = scan()
+  check('kit-overrides skip incident: a line added once more than it was removed is flagged (one copy skipped, one reported)', copied.found.length === 1 && copied.skipped.length === 1, JSON.stringify(copied))
+  rmSync(join(app, 'src/Copy.tsx'))
+
+  // a changed line is a new override
+  write(app, { 'src/Moved.tsx': 'export const Moved = () => <h3 className="font-bold">title</h3>\n' })
+  const changed = scan()
+  check('kit-overrides skip incident: a line that is not on the base is flagged', changed.found.some(({ file }) => file === 'src/Moved.tsx') && skippedIds(changed).length === 0, JSON.stringify(changed))
+
+  // `!important` and kit variables on a moved line stay findings
+  write(app, { 'src/Imp2.tsx': 'export const Imp = () => <i className="mt-1 !text-red-500" style="color: red !important" />\n' })
+  rmSync(join(app, 'src/Imp.tsx'), { force: true })
+  const imp = scan()
+  check('kit-overrides skip incident: `!important` on a moved line is never skipped', imp.found.some(({ file, hits }) => file === 'src/Imp2.tsx' && hits.some(({ kind }) => kind === '!important')), JSON.stringify(imp))
+
+  // the `[--token]` shorthand
+  write(app, { 'src/Tok.tsx': 'export const T = () => <div className="rounded-[--radius-md] p-4" />\n' })
+  rmSync(join(app, 'src/Imp2.tsx'), { force: true })
+  rmSync(join(app, 'src/Moved.tsx'), { force: true })
+  const token = scan()
+  check('kit-overrides skip legitimate: rounded-[--radius-md] is skipped as token-shorthand, listed', token.found.length === 0 && same(skippedIds(token), ['token-shorthand']), JSON.stringify(token))
+  write(app, { 'src/Tok.tsx': 'export const T = () => <div className="rounded-[--radius-md] p-4" style={{ "--radius-md": "9px" }} />\n', 'src/vars.css': ':root { --radius-md: 9px; }\n' })
+  const declaredToken = scan()
+  check('kit-overrides skip incident: a variable the diff itself declares is a hand-made token — flagged', declaredToken.found.some(({ file }) => file === 'src/Tok.tsx'), JSON.stringify(declaredToken))
+  // `reference-line`: the value stands in a reference file the diff does not touch
+  const NEW_FILE = ['diff --git a/src/Card.tsx b/src/Card.tsx', 'new file mode 100644', '--- /dev/null', '+++ b/src/Card.tsx', '@@ -0,0 +1,2 @@', '+<div className="rounded-[20px] max-w-[70ch] !mt-2 pb-2" style="color: red !important">', '+<p className="font-bold">x</p>', ''].join('\n')
+  const REF = { file: 'src/Neighbour.tsx', text: '<section>\n  <div className="bg-white rounded-[20px] pb-2">\n  <i className="max-w-[70chars]" />\n</section>\n' }
+  const withRef = kits.scanDiffText(NEW_FILE, { reference: [REF] })
+  check(
+    'kit-overrides skip legitimate: a value the reference file has as a whole token is skipped as reference-line, with its file:line',
+    withRef.skipped[0]?.hits.some((hit) => hit.token === 'rounded-[20px]' && hit.skip === 'reference-line' && hit.ref === 'src/Neighbour.tsx:2') && !withRef.found[0].hits.some((hit) => hit.token === 'rounded-[20px]'),
+    JSON.stringify(withRef),
+  )
+  check('kit-overrides skip incident: a value the reference only has inside a longer one, and one it lacks, stay findings', withRef.found[0].hits.some((hit) => hit.token === 'max-w-[70ch]') && withRef.found[0].hits.some((hit) => hit.token === 'font-bold'))
+  check('kit-overrides skip incident: `!important` is not skipped by a reference either', withRef.found[0].hits.some((hit) => hit.kind === '!important'))
+  const touched = kits.scanDiffText(`${NEW_FILE}diff --git a/src/Neighbour.tsx b/src/Neighbour.tsx\n--- a/src/Neighbour.tsx\n+++ b/src/Neighbour.tsx\n@@ -1 +1 @@\n+<b />\n`, { reference: [REF] })
+  check('kit-overrides skip incident: a reference file the diff itself changes is no proof — the hit stays a finding', touched.skipped.length === 0 && touched.found[0].hits.some((hit) => hit.token === 'rounded-[20px]'), JSON.stringify(touched))
+  check('kit-overrides skip legitimate: no reference, no skip (the scan is what it was)', kits.scanDiffText(NEW_FILE).skipped.length === 0)
+  const refReport = kits.renderReport(withRef.found, { language: 'en', skipped: withRef.skipped })
+  check('kit-overrides skip legitimate: the report names the reference place of the skip', /`src\/Card\.tsx:1` radius \(`rounded-\[20px\]`\) — reference-line \(src\/Neighbour\.tsx:2\)/.test(refReport), refReport)
+  const fpDoc = readFileSync(join(PLUGIN, '../skills/stage-check/references/kit-overrides-false-positives.md'), 'utf8')
+  check('kit-overrides skip: the patterns the scan applies are the sections of the false-positives reference headed by their id, and the reverse', same([...fpDoc.matchAll(/^### `([a-z-]+)`\s*$/gm)].map((m) => m[1]).sort(), [...kits.SKIP_PATTERNS].sort()), JSON.stringify([...fpDoc.matchAll(/^### `([a-z-]+)`\s*$/gm)].map((m) => m[1])))
+  rmSync(fp, { recursive: true, force: true })
+}
+
+
+// ── /promote proof runner (stage 13): a fake project ESLint, no real one needed ───────────────────────────────────────────
+{
+  const proof = await import(join(PLUGIN, 'promote-proof.mjs'))
+  const pp = realpathSync(mkdtempSync(join(tmpdir(), 'promote-proof-test-')))
+  const repo = join(pp, 'app')
+  repoAt(repo, 'main')
+  const commit = (message) => {
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', message)
+    return git(repo, 'rev-parse', 'HEAD').trim()
+  }
+  const FAKE = `class ESLint {
+  constructor(options) { this.options = options }
+  async lintText(text, { filePath }) {
+    if (/\\.ignored$/.test(filePath)) return []
+    if (text.includes('SYNTAX ERROR')) return [{ filePath, messages: [{ ruleId: null, fatal: true, severity: 2, message: 'Parsing error: Unexpected token' }] }]
+    const rules = Array.isArray(this.options.overrideConfig) ? this.options.overrideConfig[0].rules : this.options.overrideConfig.rules
+    const messages = [{ ruleId: 'quotes', line: 1, severity: 2, message: 'project noise' }]
+    for (const [id, config] of Object.entries(rules)) {
+      const re = new RegExp(config[1].fake)
+      text.split('\\n').forEach((line, index) => { if (re.test(line)) messages.push({ ruleId: id, line: index + 1, severity: 2, message: config[1].message }) })
+    }
+    return [{ filePath, messages }]
+  }
+  async calculateConfigForFile() { return { rules: { 'no-restricted-syntax': ['warn', '$fetch'] } } }
+}
+ESLint.version = '8.41.0'
+module.exports = { ESLint }
+`
+  write(repo, { 'node_modules/eslint/index.js': FAKE, 'node_modules/eslint/package.json': '{"name":"eslint","version":"8.41.0","main":"index.js"}', 'package.json': '{"name":"app"}', '.gitignore': '.claude/\nmsg.txt\nnode_modules/\n' })
+  const old = (n) => `<script>\nconst C = resolveComponent('Name${n}')\nconst D = resolveComponent('Other${n}')\n</script>\n`
+  write(repo, { 'pages/a.vue': old(1), 'pages/b.vue': old(2), 'pages/broken.vue': `SYNTAX ERROR ${old(4)}`, 'pages/skipped.ignored': old(5) })
+  const c0 = commit('before the fix')
+  write(repo, { 'pages/a.vue': "<script>\nimport Name1 from '#components'\n</script>\n", 'pages/b.vue': "<script>\nimport Name2 from '#components'\n</script>\n" })
+  const fix = commit('fix: import instead of resolveComponent')
+  const candidate = { id: 'no-resolve-component', kind: 'eslint', eslint: { 'no-restricted-syntax': ['error', { fake: 'resolveComponent\\(', message: 'import it' }] }, fixes: [fix] }
+
+  const proven = await proof.proveCandidate(repo, candidate)
+  check('promote proof: fires on 2 pre-fix versions and quiet on HEAD — proven, with revs and counts', proven.proven && proven.pre.filter(({ status }) => status === 'fired').length === 2 && proven.pre.every(({ count }) => count === 2) && proven.head.filter(({ status }) => status === 'quiet').length === 2 && proven.head.every(({ status }) => status !== 'fired'), JSON.stringify(proven))
+  const shown = proof.renderProof(proven)
+  check('promote proof: the output names the revs, the counts and HEAD', /^PROVEN/.test(shown) && shown.includes(`${fix.slice(0, 8)}^:pages/a.vue — fired 2`) && /HEAD: quiet on 2 of 3 tracked files, 1 inconclusive/.test(shown), shown)
+  check('promote proof: only the candidate rule id counts, the project noise does not', proven.pre.every(({ lines }) => lines.length === 2), JSON.stringify(proven.pre))
+  check('promote proof: the project entry of the same rule id is named, so the proposal merges and does not replace', /already has/.test(shown) && proven.existing['no-restricted-syntax']?.[1] === '$fetch', shown)
+
+  const one = await proof.proveCandidate(repo, { ...candidate, fixes: undefined, probes: [{ rev: c0, file: 'pages/a.vue' }, { rev: c0, file: 'pages/missing.vue' }], headFiles: ['pages/a.vue'] })
+  check('promote proof: fires on one version only — not proven', !one.proven && /needs 2/.test(one.reason), one.reason)
+  const inconclusive = await proof.proveCandidate(repo, { ...candidate, fixes: undefined, probes: [{ rev: c0, file: 'pages/a.vue' }, { rev: c0, file: 'pages/broken.vue' }, { rev: c0, file: 'pages/skipped.ignored' }], headFiles: ['pages/a.vue'] })
+  check(
+    'promote proof: a parse error, an ignored file and a missing file are inconclusive and not counted as proof',
+    !inconclusive.proven && inconclusive.pre.filter(({ status }) => status === 'inconclusive').length === 2 && inconclusive.pre.filter(({ status }) => status === 'fired').length === 1,
+    JSON.stringify(inconclusive.pre),
+  )
+  // M-1 incident (pro-review 13): a file the fix never touched still has the old form and the rule fires on it at HEAD; the default probe sweeps HEAD, so it is found
+  const lg = join(pp, 'legacy')
+  repoAt(lg, 'main')
+  write(lg, { 'node_modules/eslint/index.js': FAKE, 'node_modules/eslint/package.json': '{"name":"eslint","version":"8.41.0","main":"index.js"}', 'package.json': '{"name":"app"}', '.gitignore': 'node_modules/\n', 'pages/a.vue': old(1), 'pages/b.vue': old(2), 'pages/old.vue': old(3), 'README.md': '# app\n' })
+  git(lg, 'add', '-A')
+  git(lg, 'commit', '-qm', 'before the fix')
+  write(lg, { 'pages/a.vue': "<script>\nimport Name1 from '#components'\n</script>\n", 'pages/b.vue': "<script>\nimport Name2 from '#components'\n</script>\n" })
+  git(lg, 'add', '-A')
+  git(lg, 'commit', '-qm', 'fix: import instead of resolveComponent')
+  const lgFix = git(lg, 'rev-parse', 'HEAD').trim()
+  const lgCandidate = { ...candidate, fixes: [lgFix] }
+  const legacy = await proof.proveCandidate(lg, lgCandidate)
+  check('promote proof: HEAD fires on a line that predates the fix, in a file the fix did not change — the default probe finds it, not proven, the legacy lines are named', !legacy.proven && /predate the fix/.test(legacy.reason) && legacy.head.find(({ file }) => file === 'pages/old.vue').legacyLines.join() === '2,3', legacy.reason)
+  const legacyShown = proof.renderProof(legacy)
+  check('promote proof: the output of a swept HEAD says quiet on N of M tracked files and names the firing file', /HEAD: quiet on 2 of 3 tracked files, fires on 1/.test(legacyShown) && /pages\/old\.vue — fired 2/.test(legacyShown), legacyShown)
+  const narrowedLegacy = await proof.proveCandidate(lg, { ...lgCandidate, headFiles: ['pages/a.vue', 'pages/b.vue'] })
+  check('promote proof: a narrowed HEAD probe (the files the fix cleaned) passes, but the result says it is not a HEAD proof', narrowedLegacy.proven && /narrowed: not a HEAD proof/.test(narrowedLegacy.reason) && /HEAD \(narrowed to 2/.test(proof.renderProof(narrowedLegacy)), narrowedLegacy.reason)
+  const namedLegacy = await proof.proveCandidate(lg, { ...lgCandidate, headFiles: ['pages/a.vue', 'pages/old.vue'] })
+  check('promote proof: HEAD probe narrowed to a file that fires on a predating line — not proven, the legacy lines are named', !namedLegacy.proven && /predate the fix/.test(namedLegacy.reason) && namedLegacy.head.find(({ file }) => file === 'pages/old.vue').legacyLines.join() === '2,3', namedLegacy.reason)
+  const legacyRow = await proof.proveCandidate(lg, { id: 'no-resolve-component', kind: 'repo-rule', pattern: 'resolveComponent\\(', files: '**/*.vue', message: 'm', fixes: [lgFix] })
+  check('promote proof: a repo-rule row is swept over the tracked files it covers (git grep prefilter) and the legacy file stops it', !legacyRow.proven && /predate the fix/.test(legacyRow.reason) && legacyRow.headScope.covered === 3 && legacyRow.headScope.quiet === 2, JSON.stringify(legacyRow.headScope) + legacyRow.reason)
+  const noHead = await proof.proveCandidate(repo, { ...candidate, headFiles: ['pages/gone.vue'] })
+  check('promote proof: no conclusive HEAD probe — quiet is not shown, not proven', !noHead.proven && /no conclusive HEAD/.test(noHead.reason), noHead.reason)
+
+  write(repo, { 'pages/a.vue': "<script>\nimport Name1 from '#components'\nconst Late = resolveComponent('Late')\n</script>\n" })
+  commit('feat: later code that uses the old way again')
+  const later = await proof.proveCandidate(repo, candidate)
+  check('promote proof: HEAD fires only on a line added after the fix — proven, the line is reported as added later', later.proven && later.head.find(({ file }) => file === 'pages/a.vue').laterLines.join() === '3', JSON.stringify(later.head))
+
+  // a repo-rule row, proven by git show + its regex, no ESLint needed
+  const row = await proof.proveCandidate(repo, { id: 'no-resolve-component', kind: 'repo-rule', pattern: 'resolveComponent\\(', files: '**/*.vue', message: 'import it from #components', fixes: [fix], since: [fix], headFiles: ['pages/b.vue'] })
+  check('promote proof: a repo-rule row is proven by the regex on git show output (no ESLint)', row.proven && row.pre.filter(({ status }) => status === 'fired').length === 2, JSON.stringify(row))
+  const badRow = await proof.proveCandidate(repo, { id: 'bad', kind: 'repo-rule', pattern: '(?:', files: '*', message: 'm', fixes: [fix] })
+  check('promote proof: a row that does not parse is invalid, not proven', !badRow.proven && badRow.invalid, JSON.stringify(badRow))
+
+  // no ESLint in the project: no proof by ESLint, never npx
+  const bare = join(pp, 'bare')
+  repoAt(bare, 'main')
+  const noEslint = await proof.proveCandidate(bare, candidate)
+  check('promote proof: no project ESLint — says so and names the next level (exit 3), never npx', !noEslint.proven && noEslint.noEslint && /repo rule/.test(noEslint.reason), JSON.stringify(noEslint))
+  const md = await proof.proveCandidate(repo, { id: 'line', kind: 'claude-md' })
+  check('promote proof: a CLAUDE.md line is unproven by definition', md.unproven && !md.proven)
+
+  // the CLI: the exit code follows the verdict
+  const cli = (extra) => spawnSync(process.execPath, [join(PLUGIN, 'promote-proof.mjs'), '--root', repo, ...extra], { encoding: 'utf8' })
+  const cliOk = cli(['--candidate', JSON.stringify(candidate)])
+  check('promote proof: the CLI exits 0 on a proven candidate and prints PROVEN', cliOk.status === 0 && /^PROVEN/.test(cliOk.stdout), `${cliOk.status} ${cliOk.stdout}${cliOk.stderr}`)
+  const cliNo = cli(['--candidate', JSON.stringify({ ...candidate, fixes: undefined, probes: [{ rev: c0, file: 'pages/a.vue' }] })])
+  check('promote proof: the CLI exits 1 on a candidate that is not proven', cliNo.status === 1 && /^NOT PROVEN/.test(cliNo.stdout), `${cliNo.status} ${cliNo.stdout}`)
+  check('promote proof: --check-eslint reports the project ESLint version', /eslint 8\.41\.0/.test(cli(['--check-eslint']).stdout))
+  check('promote proof: the runner never shells out to npx', !/\bnpx\b[^\n]*(?:spawn|exec)|(?:spawn|exec)[^\n]*\bnpx\b/.test(readFileSync(join(PLUGIN, 'promote-proof.mjs'), 'utf8')))
+  rmSync(pp, { recursive: true, force: true })
+}
+
+// ── Stage 13 of VT-6, fix round 1: pro-review findings M-2 (a backtracking row), M-3 (moved-line), m-3 (waivers of a failed commit), m-8 (untracked files) ──────────────
+// Incident: a backtracking row is a named config problem and the built-in rules still run; a line fixed in one file and written again in another is a finding;
+// the waiver of a commit that did not happen is not listed; a big untracked file is not read. Legitimate: an ordinary row still applies; a true move is skipped.
+{
+  const fx = realpathSync(mkdtempSync(join(tmpdir(), 'stage13-fix1-')))
+  const TOKEN = `const key = 'ghp_${'aB3dE5'.repeat(6)}'\n`
+  const rowsConfig = (rows) => `- task_path: .claude/tasks/\n- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n${rows}\n`
+  const guardIn = (dir) => spawnSync(process.execPath, [join(PLUGIN, 'floor-guard.mjs')], { cwd: dir, encoding: 'utf8', timeout: 20_000 })
+
+  // M-2: the row from the report, and a row that passes the parser and still backtracks on a line of its alphabet
+  const redos = join(fx, 'redos')
+  repoAt(redos, 'main')
+  write(redos, {
+    '.claude/pipeline.config.md': rowsConfig('| no-bare-statement | `(\\w+\\s?)+;$` | `src/**/*.ts` | end the statement | proof |\n| no-legacy-fetch | `legacyFetch\\(` | `src/**/*.ts` | use the typed client | proof |'),
+    'src/new.ts': `${TOKEN}export const a = legacyFetch(1)\nexport const line = '${'word '.repeat(14)}'\n`,
+  })
+  const started = Date.now()
+  const nested = guardIn(redos)
+  check('repo rules incident: a backtracking row is a config problem that names the row, found in well under the hook timeout', Date.now() - started < 8000 && /config problem/.test(nested.stdout) && /no-bare-statement/.test(nested.stdout) && /backtrack/.test(nested.stdout), `${Date.now() - started} ms ${nested.stdout}${nested.stderr}`)
+  check('repo rules incident: the built-in rules still run when a row is bad (the planted token is reported, the value is hidden)', nested.status === 1 && /\[secret\] src\/new\.ts:1/.test(nested.stdout) && !/ghp_aB3/.test(nested.stdout), nested.stdout)
+  check('repo rules legitimate: the ordinary row next to the bad one still applies', /\[repo:no-legacy-fetch\] src\/new\.ts:2/.test(nested.stdout), nested.stdout)
+
+  // the net behind the parser: a row it accepts (its alternation does not look alike) that does not finish on a real line is stopped, named, skipped
+  const net = join(fx, 'net')
+  repoAt(net, 'main')
+  write(net, {
+    '.claude/pipeline.config.md': rowsConfig('| slow-q | `(?:q\\|[p-r])+;$` | `src/**/*.ts` | m | proof |\n| no-legacy-fetch | `legacyFetch\\(` | `src/**/*.ts` | use the typed client | proof |'),
+    'src/new.ts': `${TOKEN}export const a = legacyFetch(1)\nconst q = '${'q'.repeat(40)}!'\n`,
+  })
+  const slowStarted = Date.now()
+  const slow = guardIn(net)
+  check('repo rules incident: a row that hangs on a real line is stopped after a second, named as skipped, and the rest of the rules ran', Date.now() - slowStarted < 9000 && /slow-q/.test(slow.stdout) && /did not finish/.test(slow.stdout) && /\[secret\]/.test(slow.stdout) && /\[repo:no-legacy-fetch\]/.test(slow.stdout), `${Date.now() - slowStarted} ms ${slow.stdout}${slow.stderr}`)
+  const ok = join(fx, 'ok')
+  repoAt(ok, 'main')
+  write(ok, { '.claude/pipeline.config.md': rowsConfig('| no-legacy-fetch | `legacyFetch\\(` | `src/**/*.ts` | use the typed client | proof |'), 'src/new.ts': 'export const a = legacyFetch(1)\n' })
+  const plain = guardIn(ok)
+  check('repo rules legitimate: an ordinary row alone — same violation, no config problem', plain.status === 1 && /\[repo:no-legacy-fetch\] src\/new\.ts:1/.test(plain.stdout) && !/config problem/.test(plain.stdout), plain.stdout)
+  check('repo rules incident: the parser names the shapes it rejects and keeps what is fine', (() => {
+    const parsed = (pattern) => markers.parseRepoRules(`## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n| r | \`${pattern}\` | * | m |\n`)
+    return ['(a+)+b', '(\\w+\\s?)*;', '(a\\|ab)*c', '(?:x{1,3}\\|y)+z'].every((pattern) => parsed(pattern).problems.length === 1 && /backtrack/.test(parsed(pattern).problems[0])) && ['font-(?:bold\\|black)', '^\\s*import .* from', 'legacyFetch\\('].every((pattern) => parsed(pattern).rules.length === 1)
+  })())
+
+  // m-3: the waiver is written when the commit exists
+  const wv = join(fx, 'waiver')
+  repoAt(wv, 'main')
+  write(wv, { '.claude/pipeline.config.md': rowsConfig('| no-legacy-fetch | `legacyFetch\\(` | `src/**/*.ts` | use the typed client | proof |'), '.claude/tasks/WV-1/STAGES.md': stages('WV-1', 'WV-1/feat/r', { force: '## Force-прогон 2026-09-24\nРежим: автономный.\n\n' }) })
+  git(wv, 'checkout', '-qb', 'WV-1/feat/r')
+  write(wv, { 'src/a.ts': '// floor-ok: the vendor SDK has no typed entry point for this call\nexport const a = legacyFetch(1)\n' })
+  const { readFloorOk: readWaived } = await import(join(PLUGIN, 'receipts.mjs'))
+  const wvTask = join(wv, '.claude/tasks/WV-1')
+  const call = (id) => ({ cwd: wv, tool_name: 'Bash', tool_use_id: id, tool_input: { command: 'git add -A && git commit -m x' } })
+  const preFail = runHook('git-guard.mjs', { ...call('toolu_wv_fail'), hook_event_name: 'PreToolUse' })
+  runHook('git-guard.mjs', { ...call('toolu_wv_fail'), hook_event_name: 'PostToolUse' }) // the commit failed (a project pre-commit hook): HEAD did not move
+  check('repo rules incident: a commit that did not happen lists no waiver', preFail.decision !== 'deny' && readWaived(DATA, wvTask).length === 0, JSON.stringify(readWaived(DATA, wvTask)))
+  const preOk = runHook('git-guard.mjs', { ...call('toolu_wv_ok'), hook_event_name: 'PreToolUse' })
+  git(wv, 'add', '-A')
+  git(wv, 'commit', '-qm', 'x')
+  runHook('git-guard.mjs', { ...call('toolu_wv_ok'), hook_event_name: 'PostToolUse' })
+  check('repo rules legitimate: the same waiver is listed once the commit exists', preOk.decision !== 'deny' && readWaived(DATA, wvTask).length === 1 && readWaived(DATA, wvTask)[0].rule === 'repo:no-legacy-fetch', JSON.stringify(readWaived(DATA, wvTask)))
+
+  // M-3: the two cases of the review, and the moves that stay skipped
+  const header = (file, extra = []) => [`diff --git a/${file} b/${file}`, ...extra]
+  const del = (file, rows) => [`diff --git a/${file} b/${file}`, 'deleted file mode 100644', `--- a/${file}`, '+++ /dev/null', `@@ -1,${rows.length} +0,0 @@`, ...rows.map((row) => `-${row}`)]
+  const add = (file, rows) => [`diff --git a/${file} b/${file}`, 'new file mode 100644', '--- /dev/null', `+++ b/${file}`, `@@ -0,0 +1,${rows.length} @@`, ...rows.map((row) => `+${row}`)]
+  const edit = (file, from, to) => [...header(file), `--- a/${file}`, `+++ b/${file}`, '@@ -3 +3 @@', ...from.map((row) => `-${row}`), ...to.map((row) => `+${row}`)]
+  const asDiff = (...parts) => `${parts.flat().join('\n')}\n`
+  const fixed = kits.scanDiffText(asDiff(edit('src/Old.vue', ['  class="font-semibold"'], ['  <KitTitle />']), add('src/NewCard.vue', ['<h3', '  class="font-semibold"', '>x</h3>'])))
+  check('kit-overrides skip incident: a line fixed in Old.vue and written again in a new NewCard.vue is still a finding', fixed.found.length === 1 && fixed.found[0].file === 'src/NewCard.vue' && fixed.skipped.length === 0, JSON.stringify(fixed))
+  const story = kits.scanDiffText(asDiff(edit('src/Badge.stories.tsx', ['  className="uppercase tracking-wide"'], ['  className="x"']), add('src/Badge.tsx', ['<span', '  className="uppercase tracking-wide"', '/>'])))
+  check('kit-overrides skip incident: a line removed from Badge.stories.tsx (not scanned) does not cover Badge.tsx', story.found.length === 1 && story.found[0].file === 'src/Badge.tsx' && story.skipped.length === 0, JSON.stringify(story))
+  const kept = kits.scanDiffText(asDiff(edit('src/Other.tsx', ['  className="uppercase tracking-wide"'], ['  className="y"']), add('src/Badge.tsx', ['<span', '  className="uppercase tracking-wide"', '/>'])))
+  check('kit-overrides skip incident: one line removed from another file that stays is a coincidence, not a move', kept.found.length === 1 && kept.skipped.length === 0, JSON.stringify(kept))
+  const reindent = kits.scanDiffText(asDiff(edit('src/Same.tsx', ['  <h3 className="font-semibold uppercase">'], ['      <h3 className="font-semibold uppercase">'])))
+  check('kit-overrides skip legitimate: a re-indent inside the same file is a move', reindent.found.length === 0 && reindent.skipped[0]?.hits[0].skip === 'moved-line', JSON.stringify(reindent))
+  const gone = kits.scanDiffText(asDiff(del('src/Old.vue', ['  class="font-semibold"']), add('src/NewCard.vue', ['<h3', '  class="font-semibold"', '>x</h3>'])))
+  check('kit-overrides skip legitimate: the line leaves a file the diff deletes and appears in a new one — a move', gone.found.length === 0 && gone.skipped[0]?.hits[0].skip === 'moved-line', JSON.stringify(gone))
+  const BLOCK = ['  <h3 className="font-semibold">', '    <b className="uppercase">x</b>', '  </h3>']
+  const block = kits.scanDiffText(asDiff(edit('src/Big.tsx', BLOCK, ['  <Section />']), add('src/Section.tsx', ['<>', ...BLOCK, '</>'])))
+  check('kit-overrides skip legitimate: a block of three lines extracted into a new file is a move', block.found.length === 0 && block.skipped.length === 1, JSON.stringify(block))
+  const twoOnly = kits.scanDiffText(asDiff(edit('src/Big.tsx', BLOCK.slice(0, 2), ['  <Section />']), add('src/Section.tsx', ['<>', ...BLOCK.slice(0, 2), '</>'])))
+  check('kit-overrides skip incident: a block of two lines moved to another file is not enough — the overrides stay findings', twoOnly.found.length === 1 && twoOnly.skipped.length === 0, JSON.stringify(twoOnly))
+
+  // m-8: an untracked file is read only when the scan would scan it, and not when it is huge
+  const big = join(fx, 'untracked')
+  repoAt(big, 'main')
+  write(big, { 'src/Small.tsx': 'export const S = () => <b className="font-bold" />\n', 'src/Huge.tsx': `${'// filler\n'.repeat(400_000)}export const H = () => <b className="font-bold" />\n`, 'src/trace.log': 'font-bold\n', 'src/Card.stories.tsx': 'export const C = () => <b className="font-bold" />\n' })
+  const untracked = kits.scanOverridesDetailed(big, { config: '' })
+  check('kit-overrides legitimate: a small untracked code file is scanned', untracked.found.some(({ file }) => file === 'src/Small.tsx'), JSON.stringify(untracked))
+  check('kit-overrides incident: an untracked file over the size cap, a non-code file and a story are not read', !untracked.found.some(({ file }) => ['src/Huge.tsx', 'src/trace.log', 'src/Card.stories.tsx'].includes(file)), JSON.stringify(untracked))
+  rmSync(fx, { recursive: true, force: true })
+}
+
+// ── Stage 13 of VT-6, fix round 1: `retro --findings` (m-1 author date, m-4 registry tasks, fix commits, dismissals) ─────────────────────────────────────────────────────
+// Incident: a commit rebased after the task closed (author date before, committer date after) is not counted as post-done; a task of the repo in a shared task directory is read.
+// Legitimate: a commit authored after the close is counted; the dismissals view lists the closed-as-false findings per checker; the examples name the commits that touched their file.
+{
+  const rf = realpathSync(mkdtempSync(join(tmpdir(), 'retro-fix1-')))
+  const dir = join(rf, 'shop')
+  repoAt(dir, 'main')
+  const REPORT = (id, text, outcome) => `# pro-review\nFindings: critical 0 · major 1 · minor 0\n### ${id} major ${text}\n## Findings outcome\n- ${id} — ${outcome}\n`
+  const journal = (ticket, extra = '') => `# ${ticket}: task\nBranch: \`${ticket}/feat/x\`\nRepos: shop\n\n## Status: done\n\n## Force run 2026-09-24 — completed\n\n## Stages\n\n### Stage 1: card  [status: done]\n${extra}`
+  write(dir, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/R-1/STAGES.md': journal('R-1'), '.claude/tasks/R-1/checks/pro-review-1.md': REPORT('M-1', 'src/Card.vue:4 — hand-set `font-semibold` instead of the kit token', 'fixed: src/Card.vue:4') })
+  // a shared task directory, outside the repo, registered, whose journal names the repo
+  const shared = join(rf, 'shared-tasks')
+  write(shared, { 'R-2/STAGES.md': journal('R-2'), 'R-2/checks/pro-review-1.md': REPORT('M-1', 'src/Panel.vue:9 — hand-set `rounded-[20px]` instead of the kit token', 'false: the reference section does the same, src/Card.vue:4'), 'R-3/STAGES.md': journal('R-3').replace('Repos: shop', 'Repos: another-app'), 'R-3/checks/pro-review-1.md': REPORT('M-1', 'src/Other.vue:1 — hand-set `font-bold` instead of the kit token', 'fixed: src/Other.vue:1') })
+  const data = join(rf, 'data')
+  mkdirSync(data, { recursive: true })
+  writeFileSync(join(data, 'task-dirs.json'), JSON.stringify([shared]))
+  const at = (when) => ({ ...process.env, GIT_COMMITTER_DATE: when.committer ?? when.author, GIT_AUTHOR_DATE: when.author })
+  git(dir, 'checkout', '-qb', 'R-1/feat/x')
+  write(dir, { 'src/Card.vue': '<b class="font-semibold" />\n' })
+  git(dir, 'add', '-A')
+  execFileSync('git', ['commit', '-qm', 'feat: card'], { cwd: dir, env: at({ author: '2026-09-20T10:00:00' }), stdio: 'ignore' })
+  write(dir, { 'src/two.ts': 'export const two = 2\n' })
+  git(dir, 'add', '-A')
+  // authored before the close, committed after it: what a rebase does
+  execFileSync('git', ['commit', '-qm', 'fix: two'], { cwd: dir, env: at({ author: '2026-09-22T10:00:00', committer: '2026-10-10T10:00:00' }), stdio: 'ignore' })
+  write(dir, { 'src/three.ts': 'export const three = 3\n' })
+  git(dir, 'add', '-A')
+  execFileSync('git', ['commit', '-qm', 'fix: three after done'], { cwd: dir, env: at({ author: '2026-09-30T10:00:00' }), stdio: 'ignore' })
+  git(dir, 'checkout', '-q', 'main')
+  const run = (...args) => spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), dir, '--findings', ...args], { encoding: 'utf8', env: { ...process.env, CLAUDE_PLUGIN_DATA: data, STAGE_PIPELINE_DATA_DIR: data } })
+  const json = JSON.parse(run('--json').stdout || 'null')
+  const post = json?.tasks.find(({ task }) => task === 'R-1')?.postDone
+  check('retro --findings incident: a commit rebased after the close (authored before) is not post-done, one authored after is', post?.commits === 1 && post.shas.length === 1, JSON.stringify(post))
+  check('retro --findings legitimate: the task of the repo that lives in a registered shared task directory is read, one that names another repo is not', json?.tasks.some(({ task }) => task === 'R-2') && !json.tasks.some(({ task }) => task === 'R-3') && json.registryTasks?.length === 1, JSON.stringify(json?.tasks.map(({ task }) => task)))
+  check('retro --findings: --own-tasks-only leaves the registry out', !JSON.parse(run('--json', '--own-tasks-only').stdout).tasks.some(({ task }) => task === 'R-2'))
+  const styling = json?.classes.find((entry) => entry.class === 'styling-tokens')
+  check('retro --findings: the example names the commits of the task branch that touched its file (the fixes of a proof)', styling?.examples.find(({ task }) => task === 'R-1')?.commits.some((line) => /feat: card/.test(line)), JSON.stringify(styling?.examples))
+  check('retro --findings: the dismissals are listed per checker with the outcome text, and only the false ones', json?.dismissals.length === 1 && json.dismissals[0].checker === 'pro-review' && json.dismissals[0].count === 1 && /reference section does the same/.test(json.dismissals[0].items[0].outcomeText), JSON.stringify(json?.dismissals))
+  const text = run('--dismissals').stdout
+  check('retro --findings: --dismissals adds the section to the text view, which is absent without the flag', /## Dismissals per checker/.test(text) && /pro-review: 1 in 1 task/.test(text) && !/## Dismissals per checker/.test(run().stdout), text)
+  rmSync(rf, { recursive: true, force: true })
+}
+
 for (const late of lateChecks) late()
 process.exit(failed ? 1 : 0)

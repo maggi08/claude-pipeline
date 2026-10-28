@@ -30,6 +30,8 @@ The diff of the stage (from `/stage-check`) or the whole branch (before the PR).
 - Proper names and brands, if they are not translated in the project.
 - Strings on service screens, if the project explicitly decided not to translate them (check the neighbouring files before you flag).
 
+- A string that matches a class of `references/false-positives.md` with its proof: write it into the report as skipped with the class id, not as a finding, and never skip what that file lists under "Never skipped".
+
 ## Confirmation
 
 - Before calling a string hardcoded — make sure it really reaches the screen. A literal in a prop that is then passed to `t()` is not a finding.
