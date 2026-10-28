@@ -1,0 +1,32 @@
+{
+  "agent": "pro-review",
+  "why": "precision for the deleted-code parity rule (stage 12 of the review work): GuestRow.tsx is deleted and its behaviours must each be found in the new tree - the VIP badge (inline in GuestList), the two-click and disabled-while-running delete (ConfirmButton, unchanged in the diff), the refresh after the delete (useDeleteGuest) - so the report must not call them lost. One behaviour really is lost: the old row hid the delete button for the owner guest (`!guest.owner`), the new list offers it for everyone; the report must find that, and the parity table is how. PENDING: no run has proven that it discriminates (a bare model may already read the rewrite correctly); no provenFailing yet, move to evals/cases/ with one once a run on the previous tag fails it.",
+  "identity": {
+    "repo": "guest-admin",
+    "ticket": "GST-14",
+    "user": "Rosa Delgado",
+    "email": "rosa.delgado@guest-admin.dev"
+  },
+  "prompt": "Ticket GST-14, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN the guest list opens THEN every guest is shown with the name and, for a VIP guest, the badge\n- `AC-1.2` WHEN the user confirms deleting a guest THEN the guest disappears from the list",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "(GuestList\\.tsx|GuestRow\\.tsx)[^\\n]*\\bowner\\b|\\bowner\\b[^\\n]*(GuestList\\.tsx|GuestRow\\.tsx)",
+      "why": "the old row did not offer delete for the owner guest; the inline list renders the delete button for everyone"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "critical|major|minor",
+      "file": "^(?![^\\n]*\\bowner\\b)[^\\n]*\\b(vip|badge)\\b[^\\n]{0,40}?(?<!not )(?<!never )(?<!nothing )\\b(lost|removed|missing|dropped|no longer)\\b",
+      "why": "the badge is rendered inline in GuestList"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "^(?![^\\n]*\\bowner\\b)[^\\n]*\\b(refresh(Guests)?|two[- ]click|disabled while|ConfirmButton)\\b[^\\n]{0,40}?(?<!not )(?<!never )(?<!nothing )\\b(lost|removed|missing|dropped|no longer)\\b",
+      "why": "the refresh moved to useDeleteGuest and the two-click, disabled-while-running behaviour stays in ConfirmButton"
+    }
+  ]
+}

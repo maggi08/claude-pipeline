@@ -91,6 +91,9 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 ## Models
 - review_model: opus   # whole-branch pro-review and the fresh checker run in the fix-loop — the strongest model; in force it is also not the maker's (`stage-implement` = sonnet); sonnet | opus | haiku
 
+## Final checks (optional)
+- team_review: <cleanup-review | —>   # a repo-local review skill (`.claude/skills/<name>/SKILL.md`) the force run runs on the whole branch as a final check; its report `checks/<name>-branch.md` is required fresh to close "completed". — or no line: no extra report is asked for (a hand-saved `checks/<name>-branch.md` is still read as a checker report). Several: comma-separated
+
 ## Static analysis (dead-code / deps-audit)
 <!-- Gives CANDIDATES across the whole repo; the checker intersects the output with the diff and confirms on its own. -->
 - unused_code: <yarn knip | npx ts-prune | —>          # orphaned exports, files, types

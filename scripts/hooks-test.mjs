@@ -7807,5 +7807,143 @@ rmSync(retroRoot, { recursive: true, force: true })
   rmSync(aRoot, { recursive: true, force: true })
 }
 
+// ── Stage 12 of VT-6 (P1, decision 12c): a repo-local team review skill named in the config is a final checker the force close requires ──────
+// Incident: the config names `cleanup-review`, the run closes "completed" with pro-review and task-converge fresh and no cleanup-review report.
+{
+  const tRoot = mkdtempSync(join(tmpdir(), 'team-review-test-'))
+  const T0 = Date.now()
+  const at = (hours) => (T0 + hours * 3600_000) / 1000
+  const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n`
+  const gitAt = (dir, hours, ...args) => execFileSync('git', args, { cwd: dir, env: { ...process.env, GIT_COMMITTER_DATE: new Date(at(hours) * 1000).toISOString() }, stdio: 'ignore' })
+  let tCalls = 0
+  const fixture = (name, { config = '' } = {}) => {
+    const dir = join(tRoot, name)
+    const ticket = `T-9${tCalls++}`
+    repoAt(dir, 'main')
+    write(dir, {
+      '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${config}`,
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n\n`,
+    })
+    git(dir, 'checkout', '-qb', `${ticket}/feat/r`)
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20')
+    const report = (file, hours) => {
+      write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: REPORT(file.replace(/\.md$/, '')) })
+      utimesSync(join(tdir, 'checks', file), at(hours), at(hours))
+    }
+    write(dir, { 'src/z.ts': 'export const z = 1\n' })
+    git(dir, 'add', '-A')
+    gitAt(dir, 3, 'commit', '-qm', 'code')
+    report('pro-review-branch.md', 8)
+    report('task-converge.md', 8)
+    const closed = (heading, blockers = '') =>
+      `# ${ticket}: task\nBranch: \`${ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — ${heading}\nConfirmed: 22.10.2026\n${blockers}\n## Stages\n\n### Stage 1: card  [status: done]\n`
+    const gate = (text) => {
+      write(dir, { [`.claude/tasks/${ticket}/STAGES.md`]: text })
+      return runHook('journal-gate.mjs', { cwd: dir, tool_name: 'Write', tool_input: { file_path: join(tdir, 'STAGES.md') } })
+    }
+    return { report, closed, gate }
+  }
+  const TEAM = '- team_review: cleanup-review   # repo-local review skill\n'
+
+  const inc = fixture('configured-no-report', { config: TEAM })
+  const incident = inc.gate(inc.closed('completed'))
+  check(
+    'team review P1 incident: the config names cleanup-review, no cleanup-review-branch.md — "completed" is rejected, the message names the report and its marker',
+    incident.decision === 'block' && /cleanup-review: no whole-task report/.test(incident.text) && /\[final: cleanup-review — not run\]/.test(incident.text) && !/pro-review: no whole-task/.test(incident.text),
+    incident.text,
+  )
+
+  const none = fixture('no-config-line')
+  check('team review P1 legit: a config without the `team_review:` line behaves as before — "completed" with the two usual reports passes', none.gate(none.closed('completed')).decision !== 'block', none.gate(none.closed('completed')).text)
+  const placeholder = fixture('placeholder-line', { config: '- team_review: —   # none\n' })
+  check('team review P1 legit: `team_review: —` asks for nothing', placeholder.gate(placeholder.closed('completed')).decision !== 'block')
+
+  const fresh = fixture('configured-fresh', { config: TEAM })
+  fresh.report('cleanup-review-branch.md', 9)
+  check('team review P1 legit: the config names cleanup-review and a fresh report is there — "completed" passes', fresh.gate(fresh.closed('completed')).decision !== 'block', fresh.gate(fresh.closed('completed')).text)
+
+  const stale = fixture('configured-stale', { config: TEAM })
+  stale.report('cleanup-review-branch.md', 1)
+  const staleResult = stale.gate(stale.closed('completed'))
+  check('team review P1 incident: a cleanup-review report older than the last code change is stale — rejected with the `stale` marker', staleResult.decision === 'block' && /\[final: cleanup-review — stale\]/.test(staleResult.text), staleResult.text)
+
+  const marked = fixture('configured-marker', { config: TEAM })
+  check('team review P1 legit: "completed with blockers" with an open blocker carrying the marker passes', marked.gate(marked.closed('completed with blockers', 'Blockers: B1 — [final: cleanup-review — not run] no capacity\n')).decision !== 'block')
+  check('team review P1 incident: a marker for another report does not cover it', marked.gate(marked.closed('completed with blockers', 'Blockers: B1 — [final: pro-review — not run] no capacity\n')).decision === 'block')
+  check('team review P1: the findings ledger applies to the team report like any checker\'s', jc.reportChecker('cleanup-review-branch.md') === 'cleanup-review' && jc.reportChecker('pro-review-branch.md') === 'pro-review' && jc.reportChecker('notes.md') === null)
+  check(
+    'team review P1: teamReviewSkills reads the config line (a list, backticks, a trailing comment) and nothing from a template placeholder',
+    same(markers.teamReviewSkills('- team_review: `cleanup-review`, dead-code-lint  # x\n'), ['cleanup-review', 'dead-code-lint']) &&
+      markers.teamReviewSkills('- team_review: <skill-name | —>\n').length === 0 &&
+      markers.teamReviewSkills('- main_branch: main\n').length === 0,
+  )
+  rmSync(tRoot, { recursive: true, force: true })
+}
+
+// ── Stage 12 of VT-6, round 1: the findings ledger on the team review report and its re-runs ────────────────────────────────────────────────────
+// Incident: `cleanup-review-branch.md` with a major and no "Findings outcome" must stop a force commit; the same report with the outcome passes.
+// The re-run `-branch-2.md` is the same checker (stage-check names re-runs that way), so it is judged the same.
+{
+  const rRoot = mkdtempSync(join(tmpdir(), 'team-ledger-test-'))
+  const TEAM_REPORT = (outcome) => `# cleanup-review\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.ts:1 — x\n${outcome ? '## Findings outcome\n- M-1 — fixed: a.ts:2\n' : ''}`
+  let calls = 0
+  const ledgerFixture = (name, file, outcome) => {
+    const dir = join(rRoot, name)
+    const ticket = `T-8${calls++}`
+    repoAt(dir, 'main')
+    write(dir, {
+      '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n- team_review: cleanup-review\n',
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n\n`,
+    })
+    git(dir, 'checkout', '-qb', `${ticket}/feat/r`)
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20')
+    write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: TEAM_REPORT(outcome) })
+    const later = Date.now() / 1000 + 5
+    utimesSync(join(tdir, 'checks', file), later, later)
+    return runHook('git-guard.mjs', { cwd: dir, tool_input: { command: 'git commit --allow-empty -m x' } })
+  }
+  const noOutcome = ledgerFixture('no-outcome', 'cleanup-review-branch.md', false)
+  check('team ledger incident: a cleanup-review-branch.md with a major and no outcome — the force commit is denied, the report is named', noOutcome.decision === 'deny' && /cleanup-review-branch\.md/.test(noOutcome.text), noOutcome.text)
+  const withOutcome = ledgerFixture('with-outcome', 'cleanup-review-branch.md', true)
+  check('team ledger legit: the same report with its outcome — the force commit passes', withOutcome.decision !== 'deny', withOutcome.text)
+  const rerun = ledgerFixture('rerun-no-outcome', 'cleanup-review-branch-2.md', false)
+  check('team ledger incident: the re-run cleanup-review-branch-2.md with a major and no outcome — denied too', rerun.decision === 'deny' && /cleanup-review-branch-2\.md/.test(rerun.text), rerun.text)
+  check(
+    'team ledger: re-run names are the same checker (-branch-2, -branch-fresh), a plain name is not',
+    jc.reportChecker('cleanup-review-branch-2.md') === 'cleanup-review' && jc.reportChecker('cleanup-review-branch-fresh.md') === 'cleanup-review' && jc.reportChecker('notes-branch.txt') === null && jc.reportChecker('branch-notes.md') === null,
+  )
+  // The close: the first team report is stale, the re-run `-branch-2.md` is fresh — "completed" passes (before the fix the re-run was not seen and the close said `stale`).
+  {
+    const T0 = Date.now()
+    const at = (hours) => (T0 + hours * 3600_000) / 1000
+    const dir = join(rRoot, 'close-rerun')
+    const ticket = `T-8${calls++}`
+    repoAt(dir, 'main')
+    write(dir, {
+      '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n- team_review: cleanup-review\n',
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n\n`,
+    })
+    git(dir, 'checkout', '-qb', `${ticket}/feat/r`)
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20')
+    write(dir, { 'src/z.ts': 'export const z = 1\n' })
+    git(dir, 'add', '-A')
+    execFileSync('git', ['commit', '-qm', 'code'], { cwd: dir, env: { ...process.env, GIT_COMMITTER_DATE: new Date(at(3) * 1000).toISOString() }, stdio: 'ignore' })
+    for (const [file, hours] of [['pro-review-branch.md', 8], ['task-converge.md', 8], ['cleanup-review-branch.md', 1], ['cleanup-review-branch-2.md', 9]]) {
+      write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: TEAM_REPORT(true).replace('# cleanup-review', `# ${file.replace(/\.md$/, '')}`) })
+      utimesSync(join(tdir, 'checks', file), at(hours), at(hours))
+    }
+    write(dir, { [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n` })
+    const closed = runHook('journal-gate.mjs', { cwd: dir, tool_name: 'Write', tool_input: { file_path: join(tdir, 'STAGES.md') } })
+    check('team ledger legit: stale cleanup-review-branch.md plus a fresh cleanup-review-branch-2.md — "completed" passes', closed.decision !== 'block', closed.text)
+  }
+  rmSync(rRoot, { recursive: true, force: true })
+}
+
 for (const late of lateChecks) late()
 process.exit(failed ? 1 : 0)

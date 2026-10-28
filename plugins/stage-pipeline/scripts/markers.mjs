@@ -433,9 +433,9 @@ export const BLOCKER_LIFTED = new RegExp(
 // The marker an open blocker carries when a final whole-task report is missing or stale and the run closes "completed with blockers" (VT-1 B1):
 // `[final: pro-review — not run]`, `[final: task-converge — stale]`, the Russian state words in a ru task. The brackets, `final:`, the report name and the dash
 // are the same in both languages. Prose is not read: "pro-review found a critical; report missing a recheck" names a finding, not a review that did not run.
-const FINAL_MARKER = /\[final:\s*(pro-review|task-converge)\s*[—–-]\s*(?:not\s+run|stale|не\s+запускался|устарел)\s*\]/gi
+const FINAL_MARKER = /\[final:\s*([\w.-]+)\s*[—–-]\s*(?:not\s+run|stale|не\s+запускался|устарел)\s*\]/gi
 const FINAL_STATE = { en: { missing: 'not run', stale: 'stale' }, ru: { missing: 'не запускался', stale: 'устарел' } }
-/** The final reports a line names by the marker: a Set of `pro-review` / `task-converge`. */
+/** The final reports a line names by the marker: a Set of `pro-review` / `task-converge` / a configured team review skill. */
 export const finalMarkerReports = (line) => new Set([...line.matchAll(FINAL_MARKER)].map((found) => found[1].toLowerCase()))
 /** The marker to write: `state` is `missing` or `stale`, `language` is `en` or `ru` (anything else — `en`). */
 export const finalMarker = (report, state, language) => `[final: ${report} — ${(FINAL_STATE[language] ?? FINAL_STATE.en)[state]}]`
@@ -457,6 +457,14 @@ export const UNVERIFIED_HEADING = /^#{2,3}\s*(?:Не удалось провер
 export const SUMMARY_STANDARD = /(?:Находки|Findings):\s*critical\s*\d+\s*·\s*major\s*\d+/i
 
 // --- pipeline.config.md ---
+
+/** `- team_review: cleanup-review, other-skill` — repo-local review skills the project asks to run as a final checker (stage 12, opt-in). */
+const TEAM_REVIEW_LINE = /^[ \t]*-[ \t]*team_review[ \t]*:[ \t]*(.+)$/im
+/** The team review skills a config names: skill names (`[\w.-]+`) from the `team_review:` line, `—`/`none`/a placeholder gives an empty list. */
+export const teamReviewSkills = (configText) => {
+  const value = TEAM_REVIEW_LINE.exec(configText ?? '')?.[1].split('#')[0].replace(/`/g, '') ?? ''
+  return value.split(/[,\s]+/).filter((name) => /^[a-z][\w.-]*$/i.test(name) && !NO_GATE_COMMAND.test(name) && !/^(?:skill|name)$/i.test(name))
+}
 
 /** The heading of the CI gates table. */
 export const CI_GATES_HEADING = /^(#{2,4})[ \t]*(?:Гейты\s+CI|CI\s+gates)\b.*$/im

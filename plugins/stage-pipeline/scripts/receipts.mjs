@@ -27,8 +27,8 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, patchIds, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
-import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf } from './markers.mjs'
+import { OPEN_STATUS, patchIds, readConfig, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
+import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
 const NOT_UI = /\.(?:test|spec|stories|story)\.\w+$|(?:^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//
@@ -283,6 +283,8 @@ function dirtyTracked(worktree, taskDir) {
  * Closing a Force block as "completed": the whole-branch pro-review and task-converge reports must be newer than when HEAD's tree appeared
  * and the tracked files must have no uncommitted edits; "completed with blockers" — each missing one named in an open blocker by its marker
  * (`[final: pro-review — not run]`, markers.mjs). A blocker that names the checker in prose does not count: it gets the marker to add.
+ * A project whose config names a repo-local team review skill (`- team_review: cleanup-review`) gets one more wanted report, `checks/<skill>-branch.md`,
+ * under the same rule (a re-run `-branch-2.md` / `-branch-fresh.md` counts); a config without the line asks for no extra report. The ledger classifier reads any `checks/<name>-branch*.md` as a checker report, config line or not.
  * Only for a closing written after the snapshot, a block of the new rules' dates, the current task.
  */
 export function finalReviewViolations(dataDir, worktree, taskDir) {
@@ -296,6 +298,11 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const wanted = [
     { checker: 'pro-review', match: (name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
     { checker: 'task-converge', match: (name) => reportChecker(name) === 'task-converge', how: 'the `task-converge` agent, `checks/task-converge.md`' },
+    ...teamReviewSkills(readConfig(worktree)).map((skill) => ({
+      checker: skill,
+      match: (name) => reportChecker(name) === skill.toLowerCase(),
+      how: `a general-purpose subagent that follows the project skill \`${skill}\` on the whole branch (the config names it as \`team_review\`), writing \`checks/${skill}-branch.md\` under the checker-report contract`,
+    })),
   ].filter((item) => dirty.length || !newReports(taskDir, since).some((name) => item.match(name) && readTaskFile(taskDir, 'checks', name) !== null))
   const bGate = blockerGate(dataDir, taskDir)
   const blockers = openBlockers(run.block, bGate)
