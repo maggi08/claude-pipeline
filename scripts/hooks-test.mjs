@@ -8723,5 +8723,28 @@ module.exports = { ESLint }
   check('firing log (13b) legitimate: no row carries a rule ID of this lane that hook-rules.json does not know', rows.every((row) => !/^(?:git-guard|journal-gate)\/(?:repo-rule|team-review)/.test(row.rule)), 'a lane-invented ID')
 }
 
+// ── Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit path ──────────────────────────────────────────────────
+// Incident: git-guard denies the matching added line under the multi-span row with [repo:<id>] (before the fix the row covered no file and the commit went through).
+// Legitimate: the single-span row denies the same line.
+{
+  const c13 = realpathSync(mkdtempSync(join(tmpdir(), 'b5-spans-')))
+  const rowOf = (cell) => `- task_path: .claude/tasks/\n- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n| no-resolve | \`resolveComponent\\(\` | ${cell} | import it statically |\n`
+  repoAt(c13, 'main')
+  write(c13, { '.claude/pipeline.config.md': rowOf('`src/**/*.vue`, `!**/*.test.*`'), 'src/A.vue': '<template />\n' })
+  git(c13, 'add', '-A')
+  git(c13, 'commit', '-qm', 'base')
+  git(c13, 'checkout', '-qb', 'WV-5/feat/r')
+  write(c13, { '.claude/tasks/WV-5/STAGES.md': '# WV-5: task\nBranch: `WV-5/feat/r`\n\n## Status: stage 1\n\n## Force run 2026-09-24\nMode: autonomous.\n\n## Stages\n\n### Stage 1: card  [status: in-progress]\n' })
+  write(c13, { 'src/A.vue': '<template />\n<script>const c = resolveComponent(name)</script>\n' })
+  git(c13, 'add', '-A')
+  const preSpans = runHook('git-guard.mjs', { cwd: c13, tool_name: 'Bash', tool_use_id: 'toolu_b5_spans', hook_event_name: 'PreToolUse', tool_input: { command: 'git commit -m x' } })
+  check('B5 incident: git-guard denies the matching added line under a files cell of one code span per glob, with [repo:no-resolve]', preSpans.decision === 'deny' && /\[repo:no-resolve\] src\/A\.vue:2/.test(preSpans.text), `${preSpans.decision} ${preSpans.text}`)
+  write(c13, { '.claude/pipeline.config.md': rowOf('`src/**/*.vue, !**/*.test.*`') })
+  git(c13, 'add', '-A')
+  const preOne = runHook('git-guard.mjs', { cwd: c13, tool_name: 'Bash', tool_use_id: 'toolu_b5_one', hook_event_name: 'PreToolUse', tool_input: { command: 'git commit -m x' } })
+  check('B5 legitimate: the single-span files cell denies the same line as before', preOne.decision === 'deny' && /\[repo:no-resolve\] src\/A\.vue:2/.test(preOne.text), `${preOne.decision} ${preOne.text}`)
+  rmSync(c13, { recursive: true, force: true })
+}
+
 for (const late of lateChecks) late()
 process.exit(failed ? 1 : 0)

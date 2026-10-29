@@ -625,7 +625,8 @@ const EVERY_FILE = /^(?:\*\*?|\*\*\/\*|any|all|—|-|все)$/i
  * The repo rules of a config text: `{ rules, problems }`. A row is `| id | pattern | files | message | evidence |` under the `## Repo rules` heading
  * (every table of the section; the cells are split on `|` not escaped by a backslash, so a pattern writes an alternation as `\|`).
  *  - `pattern` — a JS regular expression, bare or as `/source/flags` (flags from `imsu`); in backticks if it has a `|` or a space.
- *  - `files` — globs separated by commas outside braces or by spaces (`src/**\/*.vue, !**\/*.test.*`); a leading `!` excludes; `*` — every file.
+ *  - `files` — globs separated by commas outside braces or by spaces (`src/**\/*.vue, !**\/*.test.*`), the cell in one code span or each glob in its own; a leading `!` excludes; `*` — every file.
+ *    A glob is repo-relative: one with a backtick left, a leading `./` or a trailing `/` is a problem (a directory is written `dir/**`).
  *  - `message` — what the violation says, naming the fix; `evidence` — where the rule came from (optional, not read by the guard).
  * A row that cannot be used (an id that is not `[\w.-]+`, a pattern that does not compile or matches an empty string, a duplicate id, a bad glob) goes
  * to `problems` as a line naming the row; the rows that are fine are still returned. No heading or no rows — `{ rules: [], problems: [] }`.
@@ -697,7 +698,13 @@ export function parseRepoRules(configText) {
     }
     const globs = unwrap(cells[2])
       .split(/[\s,]+(?![^{]*\})/)
+      .map((glob) => glob.replace(/^`|`$/g, '')) // each glob in its own code span: `a`, `!b`
       .filter(Boolean)
+    const badGlob = globs.find((glob) => /`/.test(glob) || /^!?(?:\.\.?)?\//.test(glob) || /\/$/.test(glob))
+    if (badGlob !== undefined) {
+      fail(`the glob ${JSON.stringify(badGlob)} cannot match: globs match repo-relative paths (no backtick, no leading \`./\`, \`../\` or \`/\`), and a directory needs \`/**\` (\`src/components/**\`), not a trailing \`/\``)
+      continue
+    }
     const files = { include: [], exclude: [] }
     try {
       if (!globs.length) throw new Error('no files named (use `*` for every file)')

@@ -488,4 +488,43 @@ for (const spec of CASES) {
     run.status === 1 && out?.violations.some((v) => v.rule === 'repo:g') ? null : `status ${run.status}, ${JSON.stringify(out)}`)
 }
 
+// Stage 13c of VT-6 (B5): the `files` cell written as several code spans, and the globs that can never match.
+// Incident: `src/**/*.vue`, `!**/*.test.*` loaded as two globs with a backtick left in them, so the row covered no file and nothing said so.
+// Legitimate: the single-span cell loads and denies as before; a glob with a `/**` directory is fine.
+{
+  const withConfig = (rows) => `- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n${rows}\n`
+  const guarded = (name, config, change, verify) => {
+    const repo = mkdtempSync(join(tmpdir(), 'floor-guard-13c-'))
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    write(repo, { '.claude/pipeline.config.md': config, 'src/A.vue': '<template />\n' })
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'base')
+    write(repo, change)
+    git(repo, 'add', '-A')
+    const run = spawnSync('node', [GUARD, '--json'], { cwd: repo, encoding: 'utf8', timeout: 12_000 })
+    let out = null
+    try {
+      out = JSON.parse(run.stdout)
+    } catch {}
+    const problem = verify({ run, out })
+    rmSync(repo, { recursive: true, force: true })
+    console.log(`${problem ? '✘' : '✔'} ${name}${problem ? ` — ${problem} (exit ${run.status})` : ''}`)
+    if (problem) failed++
+  }
+  const hit = { 'src/A.vue': '<template />\n<script>const c = resolveComponent(name)</script>\n' }
+  const denies = ({ run, out }) => (run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'repo:rc' && !out.configProblems ? null : `status ${run.status}, ${JSON.stringify(out)}`)
+  guarded('repo rule incident (13c): a files cell written as one code span per glob denies a matching added line with [repo:<id>]', withConfig('| rc | `resolveComponent\\(` | `src/**/*.vue`, `!**/*.test.*` | import it statically |'), hit, denies)
+  guarded('repo rule legitimate (13c): the single-span files cell still loads and denies as before', withConfig('| rc | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | import it statically |'), hit, denies)
+  guarded('repo rule legitimate (13c): the multi-span exclusion still excludes', withConfig('| rc | `resolveComponent\\(` | `src/**/*.vue`, `!**/*.test.*` | import it statically |'), { 'src/A.test.vue': '<script>resolveComponent(x)</script>\n' }, ({ run, out }) => (run.status === 0 && !out?.violations.length ? null : `status ${run.status}, ${JSON.stringify(out)}`))
+  guarded('repo rule legitimate (13c): a directory written dir/** loads without a problem', withConfig('| rc | `resolveComponent\\(` | `src/**` | import it statically |'), hit, denies)
+  const named = (id, glob) => ({ run, out }) => (run.status === 2 && out?.configProblems?.length === 1 && out.configProblems[0].includes(`"${id}"`) && /repo-relative/.test(out.configProblems[0]) && out.configProblems[0].includes(glob) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  guarded('repo rule incident (13c): a ./ glob is a config problem naming the row', withConfig('| dot | `resolveComponent\\(` | `./src/**` | import it statically |'), hit, named('dot', './src/**'))
+  guarded('repo rule incident (13c): a leading-slash glob is a config problem naming the row', withConfig('| lead | `resolveComponent\\(` | `/src/**` | import it statically |'), hit, named('lead', '/src/**'))
+  guarded('repo rule incident (13c): a ../ glob is a config problem naming the row', withConfig('| up | `resolveComponent\\(` | `../x/**` | import it statically |'), hit, named('up', '../x/**'))
+  guarded('repo rule incident (13c): a backtick inside a glob is a config problem naming the row and the glob', withConfig('| bt | `resolveComponent\\(` | `src/**/*.vue`, !`**/*.test.*` | m |'), hit, named('bt', '!`**/*.test.*'))
+  guarded('repo rule incident (13c): a trailing-slash directory glob is a config problem naming the row', withConfig('| dir | `resolveComponent\\(` | `src/components/` | import it statically |'), hit, named('dir', 'src/components/'))
+}
+
 process.exit(failed ? 1 : 0)
