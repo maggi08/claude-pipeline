@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 206,
+  "proseBaseline": 207,
   "rules": {
     "dead-code#d0f5092819": {
       "to": "prose",
@@ -857,6 +857,11 @@
     "stage-force#b835b914d5": {
       "to": "prose",
       "text": "do not rerun lint/typecheck/floor-guard yourself if the stage-implement summary has numbers against the baseli",
+      "baseline": true
+    },
+    "stage-force#33182506d8": {
+      "to": "prose",
+      "text": "one maker at a time. never run two stage-implement at once in one worktree in a force run: makers in parallel ",
       "baseline": true
     },
     "stage-force#8b27bb2916": {

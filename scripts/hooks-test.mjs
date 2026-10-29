@@ -6926,6 +6926,131 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('maker O-3: once a stop is recorded the rule is on — the orchestrator file beside it is denied', f.commit().decision === 'deny')
   }
   {
+    // B9 (VT-5 11d): a `git status` that is slow or fails at the maker's stop stores an unknown stop, and the maker's own commit is not denied.
+    const shimDir = join(mRoot, 'shim-b9')
+    mkdirSync(shimDir, { recursive: true })
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+    writeFileSync(join(shimDir, 'git'), `#!/bin/sh\nif [ -f "${shimDir}/SLOW" ]; then for a in "$@"; do [ "$a" = "status" ] && sleep 3.5; done; fi\nexec ${realGit} "$@"\n`)
+    execFileSync('chmod', ['+x', join(shimDir, 'git')])
+    const f = fixture('b9-slow')
+    f.spawn('sess-b9-first')
+    write(f.dir, { 'src/first.ts': 'export const first = 1\n' })
+    check('maker B9 legitimate: a normal stop still records its blobs and is not marked unknown', f.stop(handback(['src/first.ts']), { id: 'sess-b9-first', agent: 'agent-b9-first' }).decision === 'allow' && f.records().at(-1)?.unknown !== true && Boolean(f.records().at(-1)?.blobs['src/first.ts']), JSON.stringify(f.records()))
+    write(f.dir, { 'src/orch.ts': 'export const orch = 1\n' })
+    const foreign = f.commit()
+    check('maker B9 legitimate: a file the maker did not write is still denied after a normal stop', foreign.decision === 'deny' && /src\/orch\.ts/.test(foreign.text), foreign.text)
+    rmSync(join(f.dir, 'src/orch.ts'))
+    f.spawn('sess-b9-slow')
+    write(f.dir, { 'src/a.ts': 'export const a = 2\n' })
+    writeFileSync(join(shimDir, 'SLOW'), '1')
+    const savedPath = process.env.PATH
+    process.env.PATH = `${shimDir}:${savedPath}`
+    const slow = f.stop(handback(['src/a.ts']), { id: 'sess-b9-slow', agent: 'agent-b9-slow' })
+    process.env.PATH = savedPath
+    rmSync(join(shimDir, 'SLOW'))
+    check('maker B9 incident: `git status` slow (3.5 s) at the stop — the stop goes through and is stored as unknown, with no blobs', slow.decision === 'allow' && f.records().at(-1)?.unknown === true && Object.keys(f.records().at(-1)?.blobs ?? {}).length === 0, `${slow.text} ${JSON.stringify(f.records().at(-1))}`)
+    const own = f.commit()
+    check('maker B9 incident (was denied): the maker\'s own commit after the unknown stop — allowed', own.decision === 'allow', own.text)
+  }
+  {
+    // B9, the hook-kill variant: maker-guard killed at its timeout after it began the stop leaves a `stopping` line with no record — the commit rule fails open for the run.
+    const f = fixture('b9-kill')
+    f.spawn('sess-b9k-first')
+    write(f.dir, { 'src/first.ts': 'export const first = 1\n' })
+    f.stop(handback(['src/first.ts']), { id: 'sess-b9k-first', agent: 'agent-b9k-first' })
+    f.spawn('sess-b9k-second')
+    write(f.dir, { 'src/b.ts': 'export const b = 1\n' })
+    mk.beginStop(DATA, mk.readSnapshot(DATA, 'sess-b9k-second'), { agent: 'agent-b9k-killed' })
+    check('maker B9 incident (kill): a stop that began and left no record — the maker\'s own commit is allowed', f.commit().decision === 'allow', f.commit().text)
+    f.stop(handback(['src/b.ts']), { id: 'sess-b9k-second', agent: 'agent-b9k-killed' })
+    write(f.dir, { 'src/orch.ts': 'export const orch = 1\n' })
+    check('maker B9 legitimate (kill): once the stop is stored the line is closed and the rule is on again — the orchestrator file is denied', f.commit().decision === 'deny', f.commit().text)
+  }
+  {
+    // B9 / M-1 (11d fix round): the shim slows `git status` only in the sibling repo; a skipped sibling must not read as "nothing changed there".
+    const shimDir = join(mRoot, 'shim-m1')
+    mkdirSync(shimDir, { recursive: true })
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+    writeFileSync(join(shimDir, 'git'), `#!/bin/sh\ncase "$PWD" in *m1-web*) if [ -f "${shimDir}/SLOW" ]; then for a in "$@"; do [ "$a" = "status" ] && sleep 3.5; done; fi;; esac\nexec ${realGit} "$@"\n`)
+    execFileSync('chmod', ['+x', join(shimDir, 'git')])
+    const core = fixture('m1-core')
+    const web = join(mRoot, 'm1-web')
+    repoAt(web, 'main')
+    write(web, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n- type_check: —\n' })
+    git(web, 'checkout', '-qb', `${core.ticket}/feat/m`)
+    write(core.dir, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n- type_check: —\n- webview: ../m1-web\n' })
+    writeFileSync(join(core.tdir, 'STAGES.md'), `${readFileSync(join(core.tdir, 'STAGES.md'), 'utf8')}Repos: m1-web\n`)
+    const { registerTaskDir } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+    registerTaskDir(dirname(core.tdir))
+    core.spawn()
+    write(core.dir, { 'src/c.ts': 'export const c = 1\n' })
+    write(web, { 'src/w.ts': 'export const w = 2\n' })
+    writeFileSync(join(shimDir, 'SLOW'), '1')
+    const savedPath = process.env.PATH
+    process.env.PATH = `${shimDir}:${savedPath}`
+    const slow = core.stop(handback(['src/c.ts', join(web, 'src/w.ts')]), { agent: 'agent-m1' })
+    process.env.PATH = savedPath
+    rmSync(join(shimDir, 'SLOW'))
+    check('maker M-1 incident (was blocked 3 times): only the sibling `git status` slow at the stop — the stop goes through as unknown', slow.decision === 'allow' && core.records().at(-1)?.unknown === true, `${slow.text} ${JSON.stringify(core.records().at(-1))}`)
+    check('maker M-1 incident (was denied): the maker\'s own commit in the sibling repo — allowed', core.commit('git add -A && git commit -m x', web).decision === 'allow', core.commit('git add -A && git commit -m x', web).text)
+    // legitimate: both repos fast — both are recorded
+    const both = fixture('m1-fast')
+    const web2 = join(mRoot, 'm1-web2')
+    repoAt(web2, 'main')
+    write(web2, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n- type_check: —\n' })
+    git(web2, 'checkout', '-qb', `${both.ticket}/feat/m`)
+    write(both.dir, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n- type_check: —\n- webview: ../m1-web2\n' })
+    writeFileSync(join(both.tdir, 'STAGES.md'), `${readFileSync(join(both.tdir, 'STAGES.md'), 'utf8')}Repos: m1-web2\n`)
+    registerTaskDir(dirname(both.tdir))
+    both.spawn()
+    write(both.dir, { 'src/c.ts': 'export const c = 1\n' })
+    write(web2, { 'src/w.ts': 'export const w = 2\n' })
+    const fast = both.stop(handback(['src/c.ts', join(web2, 'src/w.ts')]), { agent: 'agent-m1-fast' })
+    check('maker M-1 legitimate: both repos fast — the stop records both', fast.decision === 'allow' && both.records().at(-1)?.unknown !== true && Boolean(both.records().at(-1)?.blobs['src/c.ts']) && Boolean(both.records().at(-1)?.others?.[0]?.blobs?.['src/w.ts']), `${fast.text} ${JSON.stringify(both.records().at(-1))}`)
+  }
+  {
+    // m-1 (11d fix round): a maker blocked once that never stops again must not turn the commit rule off.
+    const f = fixture('m1-blocked')
+    f.spawn('sess-bl-first')
+    write(f.dir, { 'src/first.ts': 'export const first = 1\n' })
+    f.stop(handback(['src/first.ts']), { id: 'sess-bl-first', agent: 'agent-bl-first' })
+    f.spawn('sess-bl-second')
+    write(f.dir, { 'src/b.ts': 'export const b = 1\n' })
+    const blocked = f.stop('garbage', { id: 'sess-bl-second', agent: 'agent-bl-gone' })
+    write(f.dir, { 'src/orch.ts': 'export const orch = 1\n' })
+    const orch = f.commit()
+    check('maker m-1 incident: blocked once and never back — the stop is closed as blocked and an orchestrator file is still denied', blocked.decision === 'block' && orch.decision === 'deny' && /src\/orch\.ts/.test(orch.text), `${blocked.decision} ${orch.text}`)
+    f.stop(handback(['src/b.ts']), { id: 'sess-bl-second', agent: 'agent-bl-gone' })
+    check('maker m-1 legitimate: after the block the maker stops for real — its record closes the line, the orchestrator file is still denied', f.commit().decision === 'deny')
+  }
+  {
+    // m-2 (11d fix round): maker-guard really killed at its timeout (git status hangs) — the `stopping` line is there, no record, and the commit is allowed.
+    const shimDir = join(mRoot, 'shim-kill')
+    mkdirSync(shimDir, { recursive: true })
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+    writeFileSync(join(shimDir, 'git'), `#!/bin/sh\nif [ -f "${shimDir}/HANG" ]; then for a in "$@"; do [ "$a" = "status" ] && exec sleep 30; done; fi\nexec ${realGit} "$@"\n`)
+    execFileSync('chmod', ['+x', join(shimDir, 'git')])
+    const f = fixture('m2-kill')
+    f.spawn('sess-kill-first')
+    write(f.dir, { 'src/first.ts': 'export const first = 1\n' })
+    f.stop(handback(['src/first.ts']), { id: 'sess-kill-first', agent: 'agent-kill-first' })
+    f.spawn('sess-kill-second')
+    write(f.dir, { 'src/b.ts': 'export const b = 1\n' })
+    const transcript = join(mRoot, `tx-kill-${mN++}.jsonl`)
+    writeFileSync(transcript, `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_hb', name: 'SubagentHandback', input: { message: handback(['src/b.ts']) } }] } })}\n`)
+    writeFileSync(join(shimDir, 'HANG'), '1')
+    const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'maker-guard.mjs')], {
+      input: JSON.stringify({ cwd: f.dir, session_id: 'sess-kill-second', agent_type: 'stage-pipeline:stage-implement', agent_id: 'agent-kill-real', agent_transcript_path: transcript }),
+      encoding: 'utf8',
+      timeout: 2500,
+      env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+    })
+    rmSync(join(shimDir, 'HANG'))
+    const spawnLines = readFileSync(join(DATA, 'maker', `${f.ticket}.spawns.jsonl`), 'utf8').split('\n').filter((l) => l.includes('agent-kill-real'))
+    check('maker m-2: maker-guard killed for real (git status hangs) — a `stopping` line is written before the tree is read, no record exists', run.signal === 'SIGTERM' && JSON.stringify(spawnLines).includes('stopping') && !f.records().some((r) => r.agent === 'agent-kill-real'), `${run.signal} ${JSON.stringify(spawnLines)}`)
+    check('maker m-2: and the maker\'s own commit is allowed', f.commit().decision === 'allow', f.commit().text)
+  }
+  {
     // m-2: the config's own words for "no type_check command".
     for (const [index, [line, want]] of [['НЕТ  # skip', false], ['нет', false], ['`none` # later', false], ['npx tsc --noEmit  # slow', true]].entries()) {
       const f = fixture(`m2-tc${index}`, { typeCheckLine: line })
@@ -7339,7 +7464,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     ok.spawn()
     write(ok.dir, { 'src/m.ts': 'export const m = 1\n' })
     ok.stop(handback(['src/m.ts']))
-    const done = readFileSync(join(DATA, 'maker', `${ok.ticket}.spawns.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const done = readFileSync(join(DATA, 'maker', `${ok.ticket}.spawns.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((line) => !line.stopping) // 11d: the stop adds its own `stopping` line
     check('maker K11a.5: a finished snapshot writes the pending line and then the done line', done.length === 2 && done[0].pending === true && done[1].done === true, JSON.stringify(done))
     write(ok.dir, { 'src/o.ts': 'export const o = 1\n' })
     check('maker K11a.5 control: with a finished snapshot the orchestrator\'s file is still denied (the rule is not off by accident)', ok.commit('git add src/o.ts && git commit -m x').decision === 'deny')

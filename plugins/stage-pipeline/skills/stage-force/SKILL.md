@@ -110,6 +110,8 @@ For each stage in order:
 7. **Journal** in STAGES.md: 3–6 lines + a `metrics:` line (format — `/stage-check`, Step 4.1; `floor=` — the number of violations from the `stage-implement` summary, its first run); decisions from the implement summaries — into the stage's `Decisions:` line, product-visible — into "⚠ Awaiting user confirmation". Then `archive-stages.mjs --apply` (`/stage-check`, Step 4.2).
 8. **The next stage** — in the same context: only summaries remain in it, not code.
 
+**One maker at a time.** Never run two `stage-implement` at once in one worktree in a force run: makers in parallel in one tree cannot be told apart by a tree snapshot.
+
 Between stages keep in the context only STAGES.md (the current stage) and the subagent summaries. The context still grows (a long task, many escalations) — on overflow Claude Code will compact it itself, and the task memory lies in STAGES.md: after compaction the continuation starts with reading it.
 
 ## Step 2. Mid-run — no questions

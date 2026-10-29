@@ -13,6 +13,9 @@ import { blockWith } from './firing.mjs'
  * It blocks at most 3 times per agent (Claude Code's own cap is 8), then lets the stop through with a "hand-back not fixed" item for the digest.
  * A stop that goes through stores the blobs of the change set (git-guard compares the force commit with them) and the «Product-visible», «Not done / blocker»
  * and «ACs without implementation» items (`maker.mjs`).
+ * A stop whose change set cannot be read (`git status` of any repo of the snapshot failed or timed out at 3 s, or the hash failed or ran past the rest of its 8 s deadline, or the tree has over 4000 dirty paths) is stored as `unknown: true` with no blobs, and is not blocked on the
+ * change set; and maker-guard writes a `stopping` line before it reads the tree, which the stored record closes. An unknown stop, or a `stopping` line with no record (this
+ * hook killed at its 15 s timeout), makes the commit rule of git-guard fail open for the run (`makerGate`), as an unfinished spawn does: no blobs, nothing to judge against.
  *
  * No snapshot for the session (a session that started before this version, a spawn the hooks never saw), a Force block that is old by the first-sight gates
  * (`makerRun`: a run already going when this version came), no transcript, or any error: the stop is not judged (fail open).
@@ -23,7 +26,7 @@ const transcript = input.agent_transcript_path
 if (typeof transcript !== 'string' || !transcript || !existsSync(transcript) || typeof input.session_id !== 'string' || !input.session_id) process.exit(0)
 
 try {
-  const { MAX_BLOCKS, blocksSoFar, changeSet, handbackProblems, makerRun, readHandback, readSnapshot, setBlocks, storeStop } = await import('../maker.mjs')
+  const { MAX_BLOCKS, beginStop, blockStop, blocksSoFar, changeSet, handbackProblems, makerRun, readHandback, readSnapshot, setBlocks, storeStop } = await import('../maker.mjs')
   const dataDir = pluginDataDir()
   const snapshot = readSnapshot(dataDir, input.session_id)
   const text = snapshot ? readHandback(transcript) : null
@@ -31,12 +34,14 @@ try {
   // Only under an open Force block that is new by the first-sight gates (D7): a run resumed after the release keeps the rules it started with.
   if (!snapshot.taskDir || !makerRun(dataDir, snapshot.taskDir)) process.exit(0)
 
+  beginStop(dataDir, snapshot, { agent: String(input.agent_id ?? '') || null })
   const changes = changeSet(snapshot)
   const problems = handbackProblems(text, snapshot, changes)
   const key = String(input.agent_id || basename(transcript))
   const blocked = blocksSoFar(dataDir, key)
   if (problems.length && blocked < MAX_BLOCKS) {
     setBlocks(dataDir, key, blocked + 1)
+    blockStop(dataDir, snapshot, { agent: String(input.agent_id ?? '') || null })
     // one rule ID per kind of problem the block carries; the reason is written once (blockWith)
     const rules = [...new Set(problems.map(ruleOf))]
     blockWith(

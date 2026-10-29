@@ -227,6 +227,33 @@ export function startSpawn(dataDir, { session, cwd, ticket = null, config = null
   }
 }
 
+/**
+ * K11d.1 (B9, the hook-kill variant): the first line of a maker stop under the gate, written before the change set is read. maker-guard killed at its own timeout leaves no stop
+ * record, and the spawn's `done` line is already there, so nothing else would tell the commit rule that a maker stopped without a trace. `storeStop` closes the line by the agent id
+ * (the record carries it); a `stopping` line with no record makes `makerGate` fail open for the run. Never throws; no agent id — no line (nothing to pair it with).
+ */
+export function beginStop(dataDir, snapshot, { agent = null } = {}) {
+  try {
+    if (!agent) return
+    const roots = reposOf(snapshot).map((repo) => repo.root)
+    mkdirSync(join(dataDir, 'maker'), { recursive: true })
+    appendFileSync(join(dataDir, spawnsName(snapshot.ticket)), `${JSON.stringify({ at: new Date().toISOString(), session: snapshot.session, agent, roots, stopping: true })}\n`)
+  } catch {
+    // no line: a kill during the stop is then not noticed (the next-version list)
+  }
+}
+
+/** A stop that maker-guard blocked: closes the `stopping` line of this agent (the maker is alive and will stop again with a new line). Never throws. */
+export function blockStop(dataDir, snapshot, { agent = null } = {}) {
+  try {
+    if (!agent) return
+    const roots = reposOf(snapshot).map((repo) => repo.root)
+    appendFileSync(join(dataDir, spawnsName(snapshot.ticket)), `${JSON.stringify({ at: new Date().toISOString(), session: snapshot.session, agent, roots, blocked: true })}\n`)
+  } catch {
+    // no line: the stop stays open and the commit rule fails open, the safe side
+  }
+}
+
 /** K11b.1: a spawn that plan-check (or the `Confirmed:` check) denied: the same id, so it is not an unfinished spawn. Never throws. */
 export function denySpawn(dataDir, { spawn, session, ticket = null }) {
   try {
@@ -255,15 +282,10 @@ export function changeSet(snapshot) {
   if (!snapshot?.blobs) return null
   const changes = new Map()
   for (const [index, repo] of reposOf(snapshot).entries()) {
-    if (!repo.blobs) {
-      if (index === 0) return null
-      continue
-    }
+    // an unreadable tree in ANY repo of the snapshot (cwd or sibling) makes the change set unknown: a skipped repo would read as "nothing changed there"
+    if (!repo.blobs) return null
     const now = dirtyBlobs(repo.root)
-    if (!now) {
-      if (index === 0) return null
-      continue
-    }
+    if (!now) return null
     const paths = [...new Set([...Object.keys(repo.blobs), ...now.keys()])].filter((path) => index !== 0 || !inTask(snapshot, path))
     const before = revBlobs(repo.root, repo.head, paths.filter((path) => !(path in repo.blobs)))
     const after = revBlobs(repo.root, 'HEAD', paths.filter((path) => !now.has(path)))
@@ -468,7 +490,10 @@ export function sectionItems(text) {
   return items.filter((item) => !NOTHING.test(item.replace(/^(?:[-*]|\d+\.)\s+/, ''))).map((item) => (item.length > ITEM_MAX ? `${item.slice(0, ITEM_MAX)}…` : item))
 }
 
-/** K11.4 / K11.6: a stop that goes through (valid, or given up on): the post-run blobs of the change set and the maker's items, appended to the ticket's record file. */
+/**
+ * K11.4 / K11.6: a stop that goes through (valid, or given up on): the post-run blobs of the change set and the maker's items, appended to the ticket's record file.
+ * K11d.1 (B9): `changes` null — `git status` or the hash failed or ran past its budget at the stop — stores the stop as `unknown: true` with no blobs; `makerGate` then fails open for the run.
+ */
 export function storeStop(dataDir, snapshot, text, changes, { unfixed = null, agent = null } = {}) {
   try {
     const { sections } = parseHandback(text ?? '')
@@ -498,6 +523,7 @@ export function storeStop(dataDir, snapshot, text, changes, { unfixed = null, ag
     }
     if (unfixed) items.push({ kind: 'unfixed', text: `hand-back not fixed: ${unfixed}${left.length ? ` — not recorded as the maker's (not named in \`Changed:\`): ${left.slice(0, 8).join(', ')}${left.length > 8 ? ` and ${left.length - 8} more` : ''}` : ''}` })
     const record = { at: new Date().toISOString(), session: snapshot.session, agent, ticket: snapshot.ticket, stage: snapshot.stage, root: snapshot.root, branch: snapshot.branch, blobs: mine, others, items }
+    if (changes === null || changes === undefined) record.unknown = true
     mkdirSync(join(dataDir, 'maker'), { recursive: true })
     appendFileSync(join(dataDir, recordsName(snapshot.ticket ?? '_')), `${JSON.stringify(record)}\n`)
     // the maker has stopped: its baseline is no longer open for the next spawn to continue from
@@ -575,7 +601,7 @@ function indexBlobs(root, paths) {
 
 /**
  * Whether the maker rules judge a force commit in `worktree`, and for which run: `{ run, root }`, else null. No Force block, a block the first-sight gates call old (`makerRun`),
- * a repo no maker was spawned in, a spawn whose snapshot never finished (K11a.5), a run whose spawns left no stop record, or `STAGE_PIPELINE_MAKER_RECEIPTS=off`: null.
+ * a repo no maker was spawned in, a spawn whose snapshot never finished (K11a.5), a run whose spawns left no stop record, a stop whose change set was unknown (K11d.1), or `STAGE_PIPELINE_MAKER_RECEIPTS=off`: null.
  */
 function makerGate({ dataDir, taskDir, ticket, worktree }) {
   if (process.env.STAGE_PIPELINE_MAKER_RECEIPTS === 'off') return null
@@ -592,7 +618,16 @@ function makerGate({ dataDir, taskDir, ticket, worktree }) {
     if (!spawns.some((spawn) => spawn.roots.includes(root))) return null
     // K11a.5: a spawn whose snapshot never finished (no `done` line: killed, timed out, a failed git call) leaves no baseline to judge against — the rule fails open for the run
     if (spawns.some((spawn) => !closed.has(idOf(spawn)) && spawn.roots.includes(root))) return null
-    if (!readMakerRecords(dataDir, ticket).some((record) => (Date.parse(record.at) || 0) >= run.start)) return null
+    const records = readMakerRecords(dataDir, ticket).filter((record) => (Date.parse(record.at) || 0) >= run.start)
+    if (!records.length) return null
+    // K11d.1 (B9): a maker stop that began (`beginStop`) and left no record — maker-guard was killed before it stored the stop — leaves no blobs to judge against
+    const stored = new Set(records.map((record) => record.agent).filter(Boolean))
+    // an agent's `stopping` line is open only when it is that agent's LAST stopping/blocked line (a block closes it, `blockStop`) and the agent has no record
+    const lastStop = new Map()
+    for (const line of lines) if ((line.stopping || line.blocked) && line.agent) lastStop.set(line.agent, line)
+    if ([...lastStop.values()].some((line) => line.stopping && line.roots.includes(root) && !stored.has(line.agent))) return null
+    // K11d.1 (B9): a stop whose change set could not be read (a slow or failed `git status`) holds no blobs to judge against — the rule fails open for the run, as for an unfinished spawn
+    if (records.some((record) => record.unknown === true && (record.root === root || (Array.isArray(record.others) && record.others.some((repo) => repo?.root === root))))) return null
   }
   return { run, root }
 }
