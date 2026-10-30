@@ -5,6 +5,44 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.23.0 — 2026-10-30
+
+### A tuning loop: measured effort, model drift, an eval gate on agent changes, a hill-climb driver (VT-1, stage 14)
+
+What changes against 0.22.0: the free tooling, one measured `effort:` line, and a hill-climb driver whose paid run did not happen in this release (see the sections below).
+
+- **`eval.mjs --effort <agent>=<level>`** (repeatable, like `--model`) rewrites or inserts the `effort:` frontmatter line of that agent in the copied plugin only; `none` removes it. The ledger row says which run it was: `plugin_ref` is `effort:<agent>=<level>` (`model:…+effort:…` with both, `<ref|variant|ablate>+…` after a comparison), so effort runs never mix with the plain ones. `--show-plugin` prints the label and the overridden frontmatter without any run. One agent carries an `effort:` line after the measurement below.
+- **Model drift is a warning.** `evals/models.json` (committed) holds the last resolved model per agent, seeded from the ledger. After each agent run `eval.mjs` compares the model the agent itself ran on (its own assistant events, not the haiku parent in `modelUsage`) and prints `model drift: agent <a> resolved to <got>, evals/models.json has <expected>`. A run never rewrites the file; `--accept-models` writes the models of that run, `--seed-models` regenerates it from the ledger.
+- **`eval.mjs --record-release`** (free, no model call) writes `evals/releases.tsv` (committed). Columns: `version, case, agent, pass, cost_usd, invocation, plugin_sha, agent_tree, claude_version, models, recorded`. One row per agent case and plugin version, from the latest working-tree invocation at the version in `plugin.json`. `agent_tree` is the blob of `agents/<a>.md` plus the tree of `skills/<a>/` at the measured sha, so a row stands for the agent's bytes, not for a commit. At record time it skips (and says so) runs on a dirty tree, runs whose sha is not an ancestor of HEAD, hill-climb runs (`--label hillclimb:<run>`) and harness failures; it warns when the agent's files changed since the sha. A rerun replaces the rows of the same version and case and keeps the others. `evals/ledger.tsv` stays local.
+- **`release-check.mjs` is an eval gate.** When the diff changes `agents/<a>.md` or `skills/<a>/` of an agent, every case whose `case.json` names that agent needs a row at this version in `evals/releases.tsv`, else the CHANGELOG section of the version needs a skip line: `eval: skipped — <reason>` (all changed agents) or `eval: skipped <a>, <b> — <reason>` (the named ones; a leading list dash is allowed, the dash before the reason is `—`, `–` or `--`). A row counts when its `agent_tree` equals HEAD's, the run was not on a dirty tree and passed at least once. The commit ancestry matters only at record time: a rebase that keeps the agent's bytes keeps the row, and a later change to the agent makes it stale (a row without `agent_tree` is a mismatch). A row with 0 passing runs, a dirty row, a stale row and a skip line whose reason is the literal `<reason>` do not count. An agent with no case fails without a skip line. The message names the agent and the missing cases. Routing and decision cases name no agent and do not count.
+- **`scripts/hillclimb.mjs`** — an opus editor makes one edit per iteration to an agent's `skills/<a>/references/` or the body of `agents/<a>.md`; the agent's own eval cases decide. It never edits the checkout it is started from: a temp worktree on a local branch `hillclimb/<run>`, every eval through that worktree's own `scripts/eval.mjs`, the ledger and results of the starting checkout (`EVAL_LEDGER`, `EVAL_RESULTS`). Metric per run: hit positive graders (`expect`, `findings`) over their count minus violated negative graders (`forbid`, `findingsForbid`, `forbidSummary`) over their count; a case is the median of its runs, a split the mean of its cases. An edit is kept (its own commit, carrying its `decision.tsv` row) when the train mean rises by 0.1 and the holdout mean does not fall below the baseline; an edit outside the allowed paths or touching the frontmatter is rejected and undone by path. Every attempt is a row of `evals/hillclimb/<run>/decision.tsv`; it stops at target AND a minimum of attempts, at the maximum of iterations, before a call whose estimate, on top of the ledger spend of the run (rows labelled `hillclimb:<run>`; a timed-out editor call is charged its budget), would pass `--max-cost-usd`, or when no edit could be kept (`stopped-no-headroom`: baseline train mean + 0.1 > 1); a case with a harness failure or fewer graded runs than `--runs` stops the run by name; a case from `evals/pending/` is named bare or as `pending/<name>` (`eval.mjs --pending`); the run refuses to start with uncommitted changes in `scripts/`, `evals/cases/`, `evals/pending/` or `plugins/`, and `--resume` refuses a run whose baseline failed; `--resume <run>` continues without a second baseline; `--dry-run` and `--self-test` call no model. The default split is train `pro-review-recall-logic`, `pro-review-recall-parity`, `pro-review-language-en`; holdout `pro-review-clean-ac`, `pro-review-language-ru`.
+- The free tests (`scripts/tuning-test.mjs`, `hillclimb.mjs --self-test`) run in `validate.mjs`, so in CI.
+- README: the agents' model list now says which choices were measured (`deps-audit`, `docs-lookup`, `i18n-sweep`, CHANGELOG 0.9.0, on Sonnet 4.6 before the alias moved) and which were chosen by role.
+
+### Effort measurement
+
+`eval.mjs --effort <agent>=<level>`, N=3 runs per case, Claude Code 2.1.314, the agents resolved to `claude-sonnet-5-5` (the exception is `pro-review-cross-stage-dup`, whose whole-branch parent passes `model: opus` by design). Ledger rows since 2026-10-30T07:42:03Z. Cost and time are per run.
+
+| Agent (cases × 3) | Level | Pass | $ per run | Time | Invocations | Decision |
+|---|---|---|---|---|---|---|
+| `pro-review` (6 × 3) | no line | 18/18 | 0.174 | 46 s | 20261030T093454-untr | **no line** |
+| | `low` | 17/18 (`recall-parity` 1 miss) | 0.108 | 27 s | 20261030T095357-djyl, 095524-9hmn, 095643-zvha, 095813-5tyv, 095914-nbtz, 100028-qjic | |
+| | `medium` | 16/18 (`recall-parity` 1, `cross-stage-dup` 1) | 0.162 | 38 s | 20261030T095343-y2hb, 095541-ts4j, 095720-7ihy, 100040-0ads, 100203-rtpq, 100330-ty6m | |
+| `human-text-check` (4 × 3) | no line | 12/12 | 0.030 | 15 s | 20261030T093454-rsoz, 094917-eojg, 095058-ln8k | **no line** |
+| | `low` | 11/12 (`feature-doc` 1) | 0.030 | 11 s | 20261030T094917-wqk5, 094939-pac9, 095035-5bbi, 095101-s3cm | |
+| | `medium` | 11/12 (`feature-doc` 1) | 0.030 | 11 s | 20261030T094917-hfed, 094937-ffs1, 095033-s3fz, 095059-q0a7 | |
+| `docs-lookup` (2 × 3) | no line | 3/6 | 0.083 | 31 s | 20261030T093454-be63, 094951-y2jj | |
+| | `low` | 3/6 | 0.075 | 23 s | 20261030T095135-kscu, 095252-7gix | |
+| | `medium` | 3/6 | 0.074 | 21 s | 20261030T095137-r72t, 095240-e0ox | **`effort: medium`** |
+
+The rule: an agent gets an `effort:` line only where the pass rate and the cost do not get worse. `pro-review` and `human-text-check` lost one run at both levels, so they keep no line. `docs-lookup` has the same pass rate at every level (`docs-lookup-not-installed` fails 3 of 3 whatever the level, `docs-lookup-version-mismatch` passes 3 of 3), is about 10 % cheaper and about 10 s faster at `medium` and `low`; `medium` was chosen over `low` as the smaller cut for the same measured gain. The line is `effort: medium` in `agents/docs-lookup.md`.
+
+**What this does not show.** N=3 is small: one missed run decided `pro-review` and `human-text-check` (a 17/18 or 11/12 can be noise as well as a real loss), and the `docs-lookup` gain is a 10 % difference between runs of one case pair. No agent other than these three was measured, and `high`, `xhigh` and `max` were not tried.
+
+### The hill-climb did not run in this release
+
+The driver ships and its free modes work, but **the paid climb did not run**. The last review of this release found 4 majors in `scripts/hillclimb-lib.mjs` that are not fixed (an interrupted editor or eval call's spend is not in the ledger, eval children can outlive a signal, a bare `git worktree prune` runs on resume, and the dry-run headroom reads old runs). Do not use `hillclimb.mjs` for paid runs until these 4 are fixed. Also, at 0.23.0 every existing `pro-review` case scores 1.0 (18/18 on the suite, 6/6 on the 2 pending cases, invocation 20261030T094934-rruv), so a climb would end `stopped-no-headroom` right after its baseline: there is no edit it could show to help. No `pro-review` edit is kept in this release.
+
 ## 0.22.0 — 2026-10-28
 
 ### pro-review learns from past reviews; `/promote` turns repeats into rules (VT-6, stages 12–13, release R4)
