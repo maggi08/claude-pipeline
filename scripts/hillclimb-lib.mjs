@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { alive } from '../plugins/stage-pipeline/scripts/processes.mjs'
 import { INVOCATION_RE, appendLedger, meanCost, newInvocationId, readLedger, spentSince } from './eval-lib.mjs'
 
 // pro-review-cross-stage-dup is out of the default train: every recorded run of it is W- («Task was denied although the harness allows it»), a harness failure that says nothing about the agent.
@@ -87,6 +88,24 @@ export const median = (values) => {
 }
 export const mean = (values) => (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null)
 
+/**
+ * A run that fails a grader outside the metric (a `-` mark on any token other than E/N/F/S/M; a harness failure `W` is no run at all). The median of a case outvotes one such run in three,
+ * so the keep rule counts them apart: see `failureCounts` and `grewFailures`.
+ */
+export const runFailed = (marks) => {
+  const tokens = String(marks ?? '').split(/\s+/).filter(Boolean)
+  if (tokens.some((token) => token.startsWith('W'))) return false
+  return tokens.some((token) => {
+    const [, letter, ok] = /^([A-Z])\d+([+-])$/.exec(token) ?? []
+    return ok === '-' && !POSITIVE.includes(letter) && !NEGATIVE.includes(letter)
+  })
+}
+/** `{ case: number of runs that fail a grader outside the metric }`; null for a case whose marks are not known (a resumed case without its invocation's rows). */
+export const failureCounts = (perCase) =>
+  Object.fromEntries(Object.entries(perCase ?? {}).map(([name, entry]) => [name, Array.isArray(entry.marks) && entry.marks.length ? entry.marks.filter(runFailed).length : null]))
+/** The cases whose count of such runs is higher than in `reference` (a case without a known reference count is not compared). */
+export const grewFailures = (candidate, reference) => Object.entries(candidate).filter(([name, count]) => count !== null && reference?.[name] != null && count > reference[name]).map(([name]) => `${name} ${reference[name]} → ${candidate[name]}`)
+
 /** A case scores the median of its runs, a split the mean of its cases. `perCase`: { name: { score } }. */
 export const splitMean = (perCase) => mean(Object.values(perCase).map((entry) => entry.score))
 
@@ -110,6 +129,7 @@ export function decisionHeader({ run, agent, base, train, holdout, runs, target,
     `# holdout: ${holdout.join(', ')}`,
     `# runs per case: ${runs}`,
     '# metric: per run = hit positive graders (expect, findings) / their count − violated negative graders (forbid, findingsForbid, forbidSummary) / their count; case = median of its runs; split = mean of its cases; a run that fails any other grader (D1 report saved, L, T, V, …) is the worst run, -1, so an edit that makes runs drop their report is never kept',
+    '# no new failures: an edit is rejected (rejected-failures) when any train or holdout case has more runs that fail such a grader (a - mark outside E/N/F/S/M) than that case had at the baseline or the last kept state, even when the medians tie or rise',
     `# keep: train mean >= best train mean so far + ${MIN_GAIN} (one grader flip in one case's median) AND holdout mean >= the baseline holdout mean; otherwise the edit is undone by path`,
     `# stop: (train mean >= ${target} AND attempts >= ${minAttempts}) OR attempts >= ${maxIterations} OR no headroom (best train mean + ${MIN_GAIN} > 1: no edit could be kept, stopped-no-headroom) OR the cap: no eval or editor call starts whose estimate, on top of the ledger spend of this run, passes $${capUsd}; the reason is the last row`,
     `# editor: ${editorModel}, at most $${editorBudget} per call; one edit in skills/${agent}/references/ or the body of agents/${agent}.md`,
@@ -231,14 +251,6 @@ const realPath = (path) => {
     }
   }
 }
-const pidAlive = (pid) => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error.code === 'EPERM'
-  }
-}
 const LOCK_REASON = /^hillclimb pid (\d+)$/
 
 /**
@@ -300,7 +312,7 @@ export function clearStaleWorktree(repo, branch) {
     const holder = dirname(entry.path)
     if (basename(entry.path) !== 'wt' || !/^hc-/.test(basename(holder)) || realPath(dirname(holder)) !== realPath(tmpdir())) throw new Error(`branch ${branch} is checked out at ${entry.path}, which is not a hill-climb temp worktree: remove it yourself, then resume`)
     const pid = Number(LOCK_REASON.exec(entry.locked ?? '')?.[1])
-    if (pid && pid !== process.pid && pidAlive(pid)) throw new Error(`run ${branch.replace(/^hillclimb\//, '')} is still running as pid ${pid} (worktree ${entry.path}): stop it first, then resume`)
+    if (pid && pid !== process.pid && alive(pid)) throw new Error(`run ${branch.replace(/^hillclimb\//, '')} is still running as pid ${pid} (worktree ${entry.path}): stop it first, then resume`)
     removeOwnWorktree(repo, entry.path)
     rmSync(holder, { recursive: true, force: true })
   }
@@ -350,6 +362,36 @@ export function markInflight(repo, run, key, data) {
 }
 export const clearInflight = (path) => rmSync(path, { force: true })
 
+/**
+ * A resume while an eval child of the previous process still answers (its pid is in its mark) would charge the case and then run beside it: it refuses, naming the pid and the run, and
+ * kills nothing — the user ends the child, then resumes.
+ */
+export function assertNoLiveEvalChildren({ repo, run }) {
+  const dir = inflightDir(repo, run)
+  if (!existsSync(dir)) return
+  for (const file of readdirSync(dir).filter((name) => name.endsWith('.json')).sort()) {
+    let mark = null
+    try {
+      mark = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+    } catch {
+      continue
+    }
+    const pid = Number(mark?.pid)
+    if (mark?.kind === 'eval' && pid > 0 && alive(pid)) throw new Error(`eval child pid ${pid} of run ${run} is still running (case ${mark.case}, mark ${join(dir, file)}): stop it first, then resume`)
+  }
+}
+
+/**
+ * What an interrupted eval case has not yet spent: the estimate less the case's spend since the mark, but at least one run's cost bound (`perRun`) while the invocation has recorded fewer
+ * runs than `runs` — a run in flight has no row yet, and the estimate may already be covered by its earlier, dearer runs. Marks without those fields (an older log) charge the estimate rule only.
+ */
+function evalCharge(ledger, run, mark) {
+  const remaining = Math.max(0, Number(mark.estimate) - (spentByRun(ledger, run, mark.case) - Number(mark.before || 0)))
+  if (!mark.invocation || !(Number(mark.runs) > 0)) return remaining
+  const recorded = ledger.filter((row) => row.invocation === mark.invocation && row.case === mark.case).length
+  return Math.max(remaining, recorded < Number(mark.runs) ? Number(mark.perRun) || 0 : 0)
+}
+
 /** Charges every mark of the run into the ledger (an editor call its whole budget, an eval case what its estimate has not yet spent) and removes it. Returns the dollars charged. */
 export function chargeInflight({ repo, run, ledgerPath }) {
   const dir = inflightDir(repo, run)
@@ -364,7 +406,7 @@ export function chargeInflight({ repo, run, ledgerPath }) {
       // a half-written mark names no amount
     }
     if (mark) {
-      const charge = mark.kind === 'editor' ? Number(mark.charge) : Math.max(0, Number(mark.estimate) - (spentByRun(ledger, run, mark.case) - Number(mark.before || 0)))
+      const charge = mark.kind === 'editor' ? Number(mark.charge) : evalCharge(ledger, run, mark)
       if (charge > 0) {
         appendLedger({
           ts: new Date().toISOString(), invocation: `hillclimb-${run}`, case: INFLIGHT_CASE, attempt: mark.attempt ?? '', plugin_ref: climbLabel(run), marks: `interrupted ${mark.kind}${mark.case ? ` ${mark.case}` : ''}`,
@@ -409,12 +451,24 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
     process.on('exit', () => killEvalChildren('SIGKILL'))
   }
   const isPending = (worktree, name) => !existsSync(join(worktree, 'evals/cases', name, 'case.json')) && existsSync(join(worktree, 'evals/pending', name, 'case.json'))
-  const runOne = (worktree, name, { budget, since }) =>
+  // The cost bound of one run of a case: its `budgetUsd` (the `--max-budget-usd` scripts/eval.mjs gives the agent), 1 when the case names none.
+  const perRunBound = (worktree, name) => {
+    for (const dir of ['evals/cases', 'evals/pending']) {
+      try {
+        const spec = JSON.parse(readFileSync(join(worktree, dir, name, 'case.json'), 'utf8'))
+        return Number(spec.budgetUsd) > 0 ? Number(spec.budgetUsd) : 1
+      } catch {
+        // not there, or not readable: the next place, then the default
+      }
+    }
+    return 1
+  }
+  const runOne = (worktree, name, { budget, since }, invocation, onSpawn) =>
     new Promise((resolve) => {
-      const invocation = newInvocationId()
       const args = [join(worktree, 'scripts/eval.mjs'), '--runs', String(runs), '--invocation', invocation, ...(run ? ['--label', climbLabel(run)] : []), ...(isPending(worktree, name) ? ['--pending'] : []), ...(budget ? ['--budget-usd', String(budget)] : []), ...(budget && since ? ['--budget-since', since] : []), name]
       const child = spawn(nodeBin, args, { cwd: worktree, env: { ...process.env, EVAL_LEDGER: ledgerPath, EVAL_RESULTS: resultsDir }, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
       evalChildren.add(child)
+      if (child.pid) onSpawn?.(child.pid)
       let out = ''
       child.stdout.on('data', (chunk) => (out += chunk))
       child.stderr.on('data', (chunk) => (out += chunk))
@@ -452,8 +506,11 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
           else if (capLeft !== null) limit = { budget: Math.max(0.01, capLeft), since: new Date().toISOString() }
           const before = spentByRun(ledger, run, name)
           inflight.set(name, { estimate, before })
-          const mark = run && repo ? markInflight(repo, run, `eval-${name}`, { kind: 'eval', case: name, estimate, before }) : null
-          results.push(await runOne(worktree, name, limit))
+          // The mark is written before the spawn (a crash between the two still leaves it) and rewritten with the child's pid once it exists: a resume refuses while that pid answers.
+          const invocation = newInvocationId()
+          const markData = { kind: 'eval', case: name, estimate, before, perRun: perRunBound(worktree, name), runs, invocation }
+          const mark = run && repo ? markInflight(repo, run, `eval-${name}`, markData) : null
+          results.push(await runOne(worktree, name, limit, invocation, (pid) => mark && markInflight(repo, run, `eval-${name}`, { ...markData, pid })))
           if (mark) clearInflight(mark)
           inflight.delete(name)
         }
@@ -691,8 +748,15 @@ export async function climb(cfg, deps) {
 
   const ledgerNow = () => readLedger(cfg.ledgerPath)
   const wt = makeWorktree(repo, run, { resume: cfg.resume })
-  // A resume got past the owner-pid check of makeWorktree: what a SIGKILLed earlier part left in flight (an editor call, eval children) is charged now.
+  // A resume got past the owner-pid check of makeWorktree. An eval child of the previous process that still answers stops it (nothing is charged or cleared, nothing is killed); otherwise what a
+  // SIGKILLed earlier part left in flight (an editor call, eval children) is charged now.
   if (cfg.resume) {
+    try {
+      assertNoLiveEvalChildren({ repo, run })
+    } catch (error) {
+      wt.remove()
+      throw error
+    }
     const charged = chargeInflight({ repo, run, ledgerPath: cfg.ledgerPath })
     if (charged > 0) log(`charged $${charged.toFixed(2)} for the calls the previous process left in flight`)
   }
@@ -743,6 +807,7 @@ export async function climb(cfg, deps) {
     let baseline
     let best
     let lastTrain
+    let failRef // per case, the runs that fail a grader outside the metric at the baseline / last kept state
     if (!cfg.resume) {
       const estimate = estimateEval(ledgerNow(), [...train, ...holdout], runs)
       const blocked = room(estimate)
@@ -766,11 +831,14 @@ export async function climb(cfg, deps) {
       baseline = { train: base.train.mean, holdout: base.holdout.mean }
       best = base.train.mean
       lastTrain = base.train
+      failRef = { train: failureCounts(base.train.perCase), holdout: failureCounts(base.holdout.perCase) }
     } else {
       const baseRow = rows.find((row) => row.kind === 'baseline')
       baseline = { train: Number(baseRow.train_mean), holdout: Number(baseRow.holdout_mean) }
       best = Math.max(baseline.train, ...rows.filter((row) => row.decision === 'kept').map((row) => Number(row.train_mean)))
       lastTrain = { perCase: resumedTrain(ledgerNow(), (rows.filter((row) => row.decision === 'kept').at(-1) ?? baseRow)), mean: best }
+      // The decision rows keep the invocation ids of the train split only: the holdout counts are not known after a resume, and those cases are not compared.
+      failRef = { train: failureCounts(lastTrain.perCase), holdout: {} }
     }
 
     for (;;) {
@@ -848,6 +916,12 @@ export async function climb(cfg, deps) {
         undoAndWrite({ decision: 'rejected-train', ...trainCells(trainResult.perCase), train_mean: num(trainMean) })
         continue
       }
+      const trainFailures = failureCounts(trainResult.perCase)
+      const trainGrew = grewFailures(trainFailures, failRef.train)
+      if (trainGrew.length) {
+        undoAndWrite({ decision: 'rejected-failures', ...trainCells(trainResult.perCase), train_mean: num(trainMean), summary: `${edit.summary ?? ''} [more runs fail a grader outside the metric, train: ${trainGrew.join('; ')}]`.slice(0, 400) })
+        continue
+      }
       if (stopMid('holdout eval', estimateEval(ledgerNow(), holdout, runs))) return { rows, branch: wt.branch, stopped: 'stopped-cap' }
       const holdoutResult = await deps.evaluator.evaluate(wt.dir, holdout, ctx)
       if (holdoutResult.capped) {
@@ -860,6 +934,12 @@ export async function climb(cfg, deps) {
       }
       const holdoutMean = splitMean(holdoutResult.perCase)
       const scored = { ...trainCells(trainResult.perCase), train_mean: num(trainMean), holdout_cases: casesCell(holdoutResult.perCase), holdout_mean: num(holdoutMean) }
+      const holdoutFailures = failureCounts(holdoutResult.perCase)
+      const holdoutGrew = grewFailures(holdoutFailures, failRef.holdout)
+      if (holdoutGrew.length) {
+        undoAndWrite({ decision: 'rejected-failures', ...scored, summary: `${edit.summary ?? ''} [more runs fail a grader outside the metric, holdout: ${holdoutGrew.join('; ')}]`.slice(0, 400) })
+        continue
+      }
       if (holdoutMean < baseline.holdout - EPS) {
         undoAndWrite({ decision: 'rejected-holdout', ...scored })
         continue
@@ -872,6 +952,7 @@ export async function climb(cfg, deps) {
       write(kept)
       best = trainMean
       lastTrain = trainResult
+      failRef = { train: trainFailures, holdout: holdoutFailures }
     }
   } finally {
     process.removeListener('SIGINT', onSignal)

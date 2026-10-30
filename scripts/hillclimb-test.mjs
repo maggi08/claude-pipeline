@@ -7,8 +7,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { alive } from '../plugins/stage-pipeline/scripts/processes.mjs'
 import { INVOCATION_RE, appendLedger, readLedger, sessionEnv } from './eval-lib.mjs'
-import { caseLedgerSummary, chargeInflight, climb, climbLabel, DEFAULT_HOLDOUT, DEFAULT_TRAIN, identityArgs, decisionPath, editorArgs, inflightDir, makeEditor, makeEvaluator, median, missExcerpts, parseDecision, resumedTrain, runScore, spentByRun, splitMean } from './hillclimb-lib.mjs'
+import { assertNoLiveEvalChildren, caseLedgerSummary, chargeInflight, climb, climbLabel, DEFAULT_HOLDOUT, DEFAULT_TRAIN, identityArgs, decisionPath, editorArgs, inflightDir, makeEditor, markInflight, makeEvaluator, median, missExcerpts, parseDecision, resumedTrain, runScore, spentByRun, splitMean } from './hillclimb-lib.mjs'
 
 const INV = '20261030T000000'
 const AGENT = 'pro-review'
@@ -79,6 +80,24 @@ const step = (summary, run, cost) => ({ summary, run, cost })
 function cfgFor(repo, run, extra = {}) {
   return { repo, run, agent: AGENT, train: TRAIN, holdout: HOLD, runs: 3, maxIterations: 5, minAttempts: 1, target: 2, capUsd: 100, ledgerPath: join(repo, 'evals/ledger.tsv'), editorModel: 'opus', editorBudget: 0.5, ...extra }
 }
+/**
+ * Removes the temp dirs of the self-test. `repos` are dirs this test made with `git init` (they carry their own `.git`): their worktree registrations are pruned with `--git-dir` of
+ * their own, never from a cwd that could resolve to an enclosing repo. `scratch` dirs (not repos) are only removed: a `git worktree prune` run from one, with TMPDIR inside a git work tree,
+ * would prune that enclosing repo's registrations.
+ */
+export function cleanupTemp({ repos = [], scratch = [] }) {
+  for (const dir of repos) {
+    if (existsSync(join(dir, '.git'))) {
+      try {
+        execFileSync('git', ['--git-dir', join(dir, '.git'), 'worktree', 'prune'], { stdio: 'ignore' })
+      } catch {
+        // already gone
+      }
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
+  for (const dir of scratch) rmSync(dir, { recursive: true, force: true })
+}
 const decisions = (repo, run) => parseDecision(readFileSync(decisionPath(repo, run), 'utf8')).rows
 
 export async function selfTest() {
@@ -89,6 +108,7 @@ export async function selfTest() {
     if (!ok) problems.push(message)
   }
   const cleanups = []
+  const scratch = []
   const repoFor = () => {
     const repo = makeRepo()
     cleanups.push(repo)
@@ -471,6 +491,99 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: ' + runs + ', i
       check(/^# metric:.*worst run, -1/m.test(readFileSync(decisionPath(repo, 'm5'), 'utf8')), 'M-5: the decision.tsv header names the rule')
     }
 
+    // M-6: the median of a case outvotes one failed run in three, so the keep rule counts the runs that fail a grader outside the metric apart: an edit that adds one is rejected, whatever the medians do
+    {
+      const GOOD = 'D1+ F1+ N1+ N2+'
+      const BAD = 'D1+ F1- N1+ N2+'
+      const DROP = 'D1- F1+ N1+ N2+'
+      const marksEvaluator = (marksOf) => ({
+        async evaluate(worktree, cases) {
+          const text = readFileSync(join(worktree, REF), 'utf8')
+          const perCase = Object.fromEntries(cases.map((name) => {
+            const marks = marksOf(text, name)
+            return [name, { scores: marks.map(runScore), score: median(marks.map(runScore)), marks, invocation: `${INV}-${name}` }]
+          }))
+          return { perCase, mean: splitMean(perCase), cost: 0, failed: [] }
+        },
+      })
+      const climbWith = async (run, marksOf, edit) => {
+        const repo = repoFor()
+        await climb(cfgFor(repo, run, { maxIterations: 1 }), { evaluator: marksEvaluator(marksOf), editor: editorWith([step('the edit', append(REF, edit))], { edits: [] }) })
+        return { repo, rows: decisions(repo, run) }
+      }
+      const holdMarks = (text) => ['D1+ E1+ F1+', 'D1+ E1+ F1+', text.includes('HDROP') ? 'D1- E1+ F1+' : 'D1+ E1+ F1+']
+      // incident (train): runs [GOOD, GOOD, DROP] against 3 × BAD: the median rises 0 → 1, a run loses its report
+      const incident = await climbWith('m6a', (text, name) => (name.startsWith('t') ? (text.includes('TDROP') ? [GOOD, GOOD, DROP] : [BAD, BAD, BAD]) : holdMarks(text)), 'TDROP\n')
+      check(incident.rows[1]?.decision === 'rejected-failures' && Number(incident.rows[1].train_mean) === 1 && /t1 0 → 1/.test(incident.rows[1].summary), `M-6 incident: runs [good, good, D1-] over a baseline of 3 × F1- must be rejected-failures naming the case, not kept on the median; got ${incident.rows[1]?.decision} ${incident.rows[1]?.summary}`)
+      check(git(incident.repo, 'rev-parse', 'hillclimb/m6a').trim() === git(incident.repo, 'rev-parse', 'HEAD').trim(), 'M-6 incident: nothing is committed')
+      // incident (holdout): the train gain is clean, one holdout run drops its report while the holdout median stays
+      const holdout = await climbWith('m6b', (text, name) => (name.startsWith('t') ? (text.includes('HDROP') ? [GOOD, GOOD, GOOD] : [BAD, BAD, BAD]) : holdMarks(text)), 'HDROP\n')
+      check(holdout.rows[1]?.decision === 'rejected-failures' && /holdout: h1 0 → 1/.test(holdout.rows[1].summary), `M-6 incident: a holdout case that gains a run failing D1 must be rejected-failures; got ${holdout.rows[1]?.decision} ${holdout.rows[1]?.summary}`)
+      // legitimate: the baseline already has one D1- run in each train case, the candidate has the same count and fixes the false finding → kept
+      const same = await climbWith('m6c', (text, name) => (name.startsWith('t') ? (text.includes('FIXF') ? [DROP, GOOD, GOOD] : [DROP, BAD, BAD]) : holdMarks(text)), 'FIXF\n')
+      check(same.rows[1]?.decision === 'kept', `M-6 legitimate: an edit whose failure counts do not grow is kept; got ${same.rows[1]?.decision} ${same.rows[1]?.summary}`)
+      // legitimate: no case has such a run before or after → kept
+      const none = await climbWith('m6d', (text, name) => (name.startsWith('t') ? (text.includes('FIXF') ? [GOOD, GOOD, GOOD] : [BAD, BAD, BAD]) : holdMarks(text)), 'FIXF\n')
+      check(none.rows[1]?.decision === 'kept', `M-6 legitimate: an edit with no failed run before or after is kept; got ${none.rows[1]?.decision}`)
+      check(/^# no new failures:.*rejected \(rejected-failures\)/m.test(readFileSync(decisionPath(incident.repo, 'm6a'), 'utf8')), 'M-6: the decision.tsv header names the rule')
+    }
+
+    // m-16: the cleanup never prunes the registrations of a repo that encloses a scratch dir (TMPDIR inside a git work tree); a repo's own are pruned through its own .git
+    {
+      const outer = mkdtempSync(join(tmpdir(), 'hco-'))
+      try {
+        git(outer, 'init', '-q', '-b', 'main')
+        git(outer, 'config', 'user.name', 'Test')
+        git(outer, 'config', 'user.email', 't@example.test')
+        put(outer, 'a.txt', 'a\n')
+        git(outer, 'add', '-A')
+        git(outer, 'commit', '-q', '-m', 'init')
+        const gone = join(outer, 'gone-wt')
+        git(outer, 'worktree', 'add', '-b', 'gone-branch', gone)
+        rmSync(gone, { recursive: true, force: true }) // a prunable registration of the enclosing repo
+        const inner = mkdtempSync(join(outer, 'hcx-')) // a non-repo scratch dir inside that work tree
+        const innerRepo = mkdtempSync(join(outer, 'hcr-'))
+        git(innerRepo, 'init', '-q', '-b', 'main')
+        git(innerRepo, 'config', 'user.name', 'Test')
+        git(innerRepo, 'config', 'user.email', 't@example.test')
+        put(innerRepo, 'b.txt', 'b\n')
+        git(innerRepo, 'add', '-A')
+        git(innerRepo, 'commit', '-q', '-m', 'init')
+        const innerGone = join(tmpdir(), `hcw-${process.pid}-${Date.now()}`)
+        git(innerRepo, 'worktree', 'add', '-b', 'own-branch', innerGone)
+        rmSync(innerGone, { recursive: true, force: true })
+        cleanupTemp({ scratch: [inner] })
+        check(git(outer, 'worktree', 'list', '--porcelain').includes('gone-wt') && !existsSync(inner), 'm-16 incident: removing a scratch dir inside a git work tree must leave that repo\'s prunable registration alone')
+        const innerGit = join(innerRepo, '.git')
+        check(git(innerRepo, 'worktree', 'list', '--porcelain').includes('hcw-'), 'm-16: the inner repo has its own registration before the cleanup')
+        const listBefore = git(outer, 'worktree', 'list', '--porcelain')
+        cleanupTemp({ repos: [innerRepo] })
+        check(!existsSync(innerRepo) && existsSync(innerGit) === false && git(outer, 'worktree', 'list', '--porcelain') === listBefore, 'm-16 legitimate: a repo made by the test is removed (pruned through its own .git) and the enclosing repo\'s registrations are as they were')
+      } finally {
+        rmSync(outer, { recursive: true, force: true })
+      }
+    }
+
+    // m-18 / m-19: the charge for an interrupted case covers the run in flight; one shared pid helper
+    {
+      const repo = repoFor()
+      const ledgerPath = join(repo, 'evals/ledger.tsv')
+      const rowOf = (invocation, cost) => ({ ts: 't', invocation, case: 'c1', plugin_ref: `working-tree+${climbLabel('m18')}`, marks: 'E1+', pass: 1, cost_usd: String(cost) })
+      const mark = (invocation, estimate) => ({ kind: 'eval', case: 'c1', estimate, before: 0, perRun: 1, runs: 3, invocation })
+      // incident: estimate 3 × 0.30, runs 1–2 recorded at 0.45 each (the estimate is already spent), run 3 in flight → at least one run's bound
+      for (const cost of [0.45, 0.45]) appendLedger(rowOf(`${INV}-a`, cost), ledgerPath)
+      markInflight(repo, 'm18', 'eval-c1', mark(`${INV}-a`, 0.9))
+      const charged = chargeInflight({ repo, run: 'm18', ledgerPath })
+      check(Math.abs(charged - 1) < 1e-9, `m-18 incident: runs 1–2 recorded, run 3 in flight, the estimate spent: the charge must be at least perRun (1); got ${charged}`)
+      // legitimate: all 3 runs recorded → only the remaining reserve (2.0 − 1.35), no extra run
+      for (const cost of [0.45, 0.45, 0.45]) appendLedger(rowOf(`${INV}-b`, cost), ledgerPath)
+      markInflight(repo, 'm18', 'eval-c1', { ...mark(`${INV}-b`, 2), before: 0.9 })
+      const rest = chargeInflight({ repo, run: 'm18', ledgerPath })
+      check(Math.abs(rest - 0.65) < 1e-9, `m-18 legitimate: with every run recorded the charge is the remaining reserve (0.65); got ${rest}`)
+      const lib = readFileSync(new URL('./hillclimb-lib.mjs', import.meta.url), 'utf8')
+      check(/import \{ alive \} from '\.\.\/plugins\/stage-pipeline\/scripts\/processes\.mjs'/.test(lib) && !/pidAlive/.test(lib) && alive(process.pid) && !alive(2 ** 22 + 12345), 'm-19: the driver imports the shared alive helper and has no copy of its own')
+    }
+
     // S-1 / S-2: the editor's toolset, its path-scoped allow rules, the settings that confine it to the worktree, and the denies on the measurement
     {
       const argv = editorArgs({ prompt: 'p', model: 'opus', budget: 1, agent: AGENT, repo: '/r/start', resultsDir: '/r/start/evals/.results' })
@@ -550,7 +663,7 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: 2, invocation '
     // the signal, SIGKILL and live-owner cases run the driver as a child: real makeEditor on a stub `claude`, or real makeEvaluator on a stub eval.mjs
     {
       const aux = mkdtempSync(join(tmpdir(), 'hcx-'))
-      cleanups.push(aux)
+      scratch.push(aux)
       const pids = []
       const libUrl = new URL('./hillclimb-lib.mjs', import.meta.url).href
       const driver = join(aux, 'driver.mjs')
@@ -579,14 +692,7 @@ await climb({ repo: o.repo, run: o.run, agent: 'pro-review', train: ['t1', 't2']
         return false
       }
       const pidOf = (file) => (existsSync(file) ? Number(readFileSync(file, 'utf8').trim()) : 0)
-      const dead = (pid) => {
-        try {
-          process.kill(pid, 0)
-          return false
-        } catch {
-          return true
-        }
-      }
+      const dead = (pid) => !alive(pid)
       const start = (repo, options) => {
         const proc = spawn(process.execPath, [driver, JSON.stringify({ repo, ...options })], { stdio: 'ignore' })
         const closed = new Promise((resolveClose) => proc.on('close', (code, sig) => resolveClose({ code, sig })))
@@ -683,7 +789,7 @@ setTimeout(() => {}, 30000)
           check(!inflightRows(repo).length && !markers(repo, 'done').length, 'M-1 legitimate: a finished editor call clears its mark and charges nothing extra')
           check(chargeInflight({ repo, run: 'done', ledgerPath: join(repo, 'evals/ledger.tsv') }) === 0, 'M-1 legitimate: nothing in flight, nothing to charge')
         }
-        // M-2 incident: SIGTERM during an evaluation → no eval child outlives the run, and what each had not yet spent (estimate 1.0 less the 0.3 row it wrote) is charged
+        // M-2 incident: SIGTERM during an evaluation → no eval child outlives the run, and what each had not yet spent is charged: the 0.7 left of the estimate, raised to one run's bound (1.0) because run 2 of 2 was in flight
         {
           const repo = repoFor()
           makeStubEval(repo)
@@ -696,7 +802,7 @@ setTimeout(() => {}, 30000)
           const exit = await closed
           check(exit.code === 130 && (await waitFor(() => children.every(dead), 3000)), `M-2 incident: no eval child may outlive a signalled run; got ${JSON.stringify(exit)} dead ${children.map(dead)}`)
           const total = inflightRows(repo).reduce((sum, row) => sum + Number(row.cost_usd), 0)
-          check(inflightRows(repo).length === 2 && Math.abs(total - 1.4) < 1e-9 && !markers(repo, 'm2').length, `M-2 incident: each case in flight is charged its unspent reserve (1.0 − 0.3), 1.4 in all; got ${inflightRows(repo).map((row) => row.cost_usd)}`)
+          check(inflightRows(repo).length === 2 && Math.abs(total - 2) < 1e-9 && !markers(repo, 'm2').length, `M-2 incident: each case in flight is charged one run's bound (1.0; the unspent estimate is only 0.7, run 2 of 2 not recorded), 2.0 in all; got ${inflightRows(repo).map((row) => row.cost_usd)}`)
           // SIGKILL: the children survive in their own groups, the marks stay, and chargeInflight (what a resume runs) charges the same amounts once
           const killed = start(repo, { mode: 'eval', run: 'm2k' })
           const files2 = ['t1', 't2'].map((name) => join(repo, `evals/ledger.tsv.pid-${name}`))
@@ -704,11 +810,48 @@ setTimeout(() => {}, 30000)
           check(await waitFor(() => files2.every((file) => pidOf(file) > 0)), 'M-2: the children of the second run started')
           killed.proc.kill('SIGKILL')
           await killed.closed
+          // m-17 incident: the marks carry the children's pids, and a resume refuses while one still answers, naming the pid and the run; nothing is charged or cleared
+          const childPids = files2.map(pidOf)
+          const markedPids = markers(repo, 'm2k').map((file) => JSON.parse(readFileSync(join(inflightDir(repo, 'm2k'), file), 'utf8')).pid).sort()
+          check(markedPids.join() === [...childPids].sort().join(), `m-17: each eval mark must carry its child's pid; marks ${markedPids} children ${childPids}`)
+          let refusal = ''
+          try {
+            assertNoLiveEvalChildren({ repo, run: 'm2k' })
+          } catch (error) {
+            refusal = error.message
+          }
+          check(childPids.some((pid) => new RegExp(`eval child pid ${pid} of run m2k is still running`).test(refusal)) && markers(repo, 'm2k').length === 2 && !inflightRows(repo).some((row) => row.plugin_ref?.includes('m2k')), `m-17 incident: a live eval child must stop a resume, naming pid and run; got «${refusal}»`)
           for (const file of files2) process.kill(pidOf(file), 'SIGKILL')
+          check(await waitFor(() => childPids.every(dead), 3000), 'm-17: the children are gone after the kill')
+          assertNoLiveEvalChildren({ repo, run: 'm2k' }) // legitimate: dead pids do not stop a resume
           const leftover = git(repo, 'worktree', 'list', '--porcelain').split('\n').find((line) => line.startsWith('worktree ') && line.includes('hc-'))?.slice(9)
           if (leftover) rmSync(dirname(leftover), { recursive: true, force: true }) // the SIGKILLed driver's temp worktree: no resume of this run follows
           const charged = chargeInflight({ repo, run: 'm2k', ledgerPath: join(repo, 'evals/ledger.tsv') })
-          check(Math.abs(charged - 0.6) < 1e-9 && !markers(repo, 'm2k').length && chargeInflight({ repo, run: 'm2k', ledgerPath: join(repo, 'evals/ledger.tsv') }) === 0, `M-2 incident: a resume charges the marks a SIGKILL left (estimate 2 × 0.3 mean − the 0.3 row each wrote = 0.6), once; got ${charged}`)
+          check(Math.abs(charged - 2) < 1e-9 && !markers(repo, 'm2k').length && chargeInflight({ repo, run: 'm2k', ledgerPath: join(repo, 'evals/ledger.tsv') }) === 0, `M-2 incident: a resume charges the marks a SIGKILL left (one run's bound, 1.0 each, while run 2 of 2 is in flight), once; got ${charged}`)
+        }
+        // m-17 through climb: a live pid in an eval mark refuses the resume (nothing charged or cleared, the temp worktree removed); once it is dead the resume goes on and charges the case
+        {
+          const repo = repoFor()
+          await climb(cfgFor(repo, 'm17', { maxIterations: 1 }), { evaluator: scripted({ trees: [], calls: [], edits: [] }), editor: editorWith([], { edits: [] }) })
+          const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' })
+          const closed = new Promise((resolveClose) => sleeper.on('close', resolveClose))
+          markInflight(repo, 'm17', 'eval-t1', { kind: 'eval', case: 't1', estimate: 1, before: 0, perRun: 1, runs: 3, invocation: `${INV}-m17`, pid: sleeper.pid })
+          let message = ''
+          try {
+            await climb(cfgFor(repo, 'm17', { maxIterations: 1, resume: true }), { evaluator: scripted({ trees: [], calls: [], edits: [] }), editor: editorWith([], { edits: [] }) })
+          } catch (error) {
+            message = error.message
+          }
+          check(new RegExp(`eval child pid ${sleeper.pid} of run m17 is still running`).test(message) && markers(repo, 'm17').length === 1 && !inflightRows(repo).length && !git(repo, 'worktree', 'list').includes('hc-'), `m-17 incident: a resume while an eval child lives must refuse (pid, run), charge nothing and keep the mark; got «${message}»`)
+          sleeper.kill('SIGKILL')
+          await closed
+          message = ''
+          try {
+            await climb(cfgFor(repo, 'm17', { maxIterations: 1, resume: true }), { evaluator: scripted({ trees: [], calls: [], edits: [] }), editor: editorWith([], { edits: [] }) })
+          } catch (error) {
+            message = error.message
+          }
+          check(!message && inflightRows(repo).length === 1 && Math.abs(Number(inflightRows(repo)[0].cost_usd) - 1) < 1e-9 && !markers(repo, 'm17').length, `m-17 legitimate: with the child dead the resume proceeds and charges the case; got «${message}» rows ${inflightRows(repo).map((row) => row.cost_usd)}`)
         }
         // M-2 legitimate: an evaluation that finishes leaves no mark (test 9 and its stub: the rows are the cost)
         {
@@ -755,19 +898,12 @@ setTimeout(() => {}, 30000)
       }
     }
   } finally {
-    for (const dir of cleanups) {
-      try {
-        execFileSync('git', ['worktree', 'prune'], { cwd: dir, stdio: 'ignore' })
-      } catch {
-        // already gone
-      }
-      rmSync(dir, { recursive: true, force: true })
-    }
+    cleanupTemp({ repos: cleanups, scratch })
   }
   if (problems.length) {
     console.error(`✘ hillclimb self-test: ${problems.length} problem(s)\n${problems.map((problem) => `  ${problem}`).join('\n')}`)
     return false
   }
-  console.log(`✔ hillclimb self-test (${checks} checks): metric, kept edit and its commit, train noise, holdout drop, bounds (outside, frontmatter, created file), cap, stop predicate, resume, failed-baseline resume refusal, no headroom, ledger spend (timed-out editor, resume, --jobs reserve), pending passthrough, short runs, editor argv, evaluator passthrough, no git identity, default split, killed-run worktree on resume (SIGKILL, SIGHUP), resume details, 14b: in-flight charge on signal and resume (M-1, M-2), room before the editor (m-6), cap handed to the child (m-7), no prune and a live-owner refusal (M-3, m-8), current-agent dry run (M-4), report-drop is the worst run (M-5), editor confinement and checkout check (S-1, S-2), invocation id (S-3)`)
+  console.log(`✔ hillclimb self-test (${checks} checks): metric, kept edit and its commit, train noise, holdout drop, bounds (outside, frontmatter, created file), cap, stop predicate, resume, failed-baseline resume refusal, no headroom, ledger spend (timed-out editor, resume, --jobs reserve), pending passthrough, short runs, editor argv, evaluator passthrough, no git identity, default split, killed-run worktree on resume (SIGKILL, SIGHUP), resume details, 14b: in-flight charge on signal and resume (M-1, M-2), room before the editor (m-6), cap handed to the child (m-7), no prune and a live-owner refusal (M-3, m-8), current-agent dry run (M-4), report-drop is the worst run (M-5), failed runs counted per case (M-6), enclosing-repo prune (m-16), live eval child on resume (m-17), in-flight run charge (m-18), shared pid helper (m-19), editor confinement and checkout check (S-1, S-2), invocation id (S-3)`)
   return true
 }
