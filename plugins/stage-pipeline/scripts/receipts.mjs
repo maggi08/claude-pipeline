@@ -27,7 +27,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, patchIds, readDataFiles, taskLanguage } from './hooks/pipeline-state.mjs'
+import { OPEN_STATUS, patchIds, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
@@ -41,7 +41,7 @@ const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
  * The Force block of the task when the rules apply to it: `{ date, start, block, stages }` (start — midnight of the run date, ms; with no readable date, of the day
  * the snapshot recorded; stages — the STAGES.md text), else null.
  */
-function receiptRun(dataDir, taskDir) {
+export function receiptRun(dataDir, taskDir) {
   const stages = readTaskFile(taskDir, 'STAGES.md')
   if (stages === null) return null
   const block = lastForceBlock(stages)
@@ -57,16 +57,7 @@ function receiptRun(dataDir, taskDir) {
 const receiptsName = (ticket) => join('receipts', `${String(ticket).replace(/[^\w.-]/g, '_')}.jsonl`)
 
 export function readReceipts(dataDir, ticket) {
-  return readDataFiles(dataDir, receiptsName(ticket))
-    .reverse()
-    .flatMap((text) => text.split('\n'))
-    .flatMap((line) => {
-      try {
-        return line.trim() ? [JSON.parse(line)] : []
-      } catch {
-        return []
-      }
-    })
+  return readDataJsonl(dataDir, receiptsName(ticket))
 }
 
 function appendReceipt(dataDir, ticket, receipt) {

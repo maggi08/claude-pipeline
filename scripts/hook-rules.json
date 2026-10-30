@@ -189,6 +189,105 @@
         "frames-guard AC-5b.1: the page closed with close_page — passes"
       ],
       "head": "you leave running what you opened"
+    },
+    "agent-guard/plan-problems": {
+      "incident": [
+        "agent-guard: stage-implement for a stage with plan-check problems — denied, both named"
+      ],
+      "legitimate": [
+        "plan-check O-1 legitimate: a running confirmed block already in STAGES.md before the first hook call"
+      ],
+      "head": "plan-check finds"
+    },
+    "git-guard/maker-commit": {
+      "incident": [
+        "maker AC-11.2 incident: a code file written by the orchestrator, no maker record — denied"
+      ],
+      "legitimate": [
+        "maker AC-11.2 legitimate: a deletion the Force block names passes"
+      ],
+      "head": "code not written by stage-implement"
+    },
+    "git-guard/index-changer": {
+      "incident": [
+        "maker K11a.2 incident: `git update-index --add src/o.ts && git commit` — denied"
+      ],
+      "legitimate": [
+        "maker K11a.2 legitimate: `git add src/m.ts` in its own call, then `git commit`"
+      ],
+      "head": "also does something to the index or to HEAD"
+    },
+    "git-guard/commit-chain": {
+      "incident": [
+        "maker K11b.3 incident: "
+      ],
+      "legitimate": [
+        "maker K11b.3 legitimate: "
+      ],
+      "head": "stage with `git add` in its own call, then commit"
+    },
+    "force-guard/data-dir-write": {
+      "incident": [
+        "force K11b.2 incident: "
+      ],
+      "legitimate": [
+        "force K11b.2 legitimate: "
+      ],
+      "head": "the call writes into the plugin data directory"
+    },
+    "journal-gate/data-dir-write": {
+      "incident": [
+        "journal-gate K11b.2: the same Write in a new run is still denied"
+      ],
+      "legitimate": [
+        "journal-gate K11b.2 D7: a Write into the data directory in a run already going at the first look"
+      ],
+      "head": "the call writes into the plugin data directory"
+    },
+    "maker-guard/missing-section": {
+      "incident": [
+        "maker AC-11.1 incident: a hand-back without `Product-visible:`"
+      ],
+      "legitimate": [
+        "maker AC-11.1 legitimate: the live hand-back"
+      ],
+      "head": "the hand-back is not whole"
+    },
+    "maker-guard/checks-no-numbers": {
+      "incident": [
+        "maker K11.2: with a type_check command in the config a checks line without numbers is blocked"
+      ],
+      "legitimate": [
+        "maker K11.2: the same checks line with numbers stops"
+      ],
+      "head": "the hand-back is not whole"
+    },
+    "maker-guard/too-long": {
+      "incident": [
+        "maker AC-11.1 incident: a hand-back over 4000 characters"
+      ],
+      "legitimate": [
+        "maker AC-11.1 legitimate: the live hand-back"
+      ],
+      "head": "the hand-back is not whole"
+    },
+    "maker-guard/changed-stale": {
+      "incident": [
+        "maker AC-11.1 incident: `Changed:` names a file that did not change"
+      ],
+      "legitimate": [
+        "maker AC-11.1 legitimate: the live hand-back"
+      ],
+      "head": "the hand-back is not whole"
+    },
+    "maker-guard/changed-unnamed": {
+      "incident": [
+        "maker AC-11.1 incident: a changed file missing from `Changed:`"
+      ],
+      "legitimate": [
+        "maker AC-11.1 legitimate: the live hand-back"
+      ],
+      "head": "the hand-back is not whole"
     }
   }
 }

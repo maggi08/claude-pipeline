@@ -53,9 +53,11 @@ const input = await readHookInput()
 const tool = input.tool_name ?? ''
 const toolInput = input.tool_input ?? {}
 const target = tool === 'Bash' ? '' : String(toolInput.file_path ?? '')
-if (tool !== 'Bash' && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
-const { recordFiring } = await import('./firing.mjs')
-const { hasPipelineConfig, pluginDataDir, readBounded, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
+// R-2: a file under the plugin data directory, in a force run, is denied before the edit (the same rule as force-guard's for Bash). Only a path that could be there reaches the state read.
+const dataTarget = tool !== 'Bash' && input.hook_event_name === 'PreToolUse' && (/stage-pipeline|CLAUDE_PLUGIN_DATA/.test(target) || Boolean(process.env.CLAUDE_PLUGIN_DATA && target.includes(process.env.CLAUDE_PLUGIN_DATA)))
+if (tool !== 'Bash' && !dataTarget && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
+const { denyTool, recordFiring } = await import('./firing.mjs')
+const { dataDirReason, hasPipelineConfig, namesDataDir, pluginDataDir, readBounded, readDataFiles, readPipelineState, reportNames } = await import('./pipeline-state.mjs')
 const cwd = input.cwd ?? process.cwd()
 const pre = input.hook_event_name === 'PreToolUse'
 
@@ -116,6 +118,20 @@ const saveStamp = (path, data) => {
 }
 if (pre && !hasPipelineConfig(cwd)) process.exit(0)
 
+if (dataTarget) {
+  const dir = namesDataDir(`${target}\n${real(resolve(cwd, target))}`)
+  const dataState = dir ? readPipelineState(cwd) : null
+  const task = dataState?.tasks.find((candidate) => candidate.current)
+  // K11b.2: only a run that is new by the first look is denied — the maker rules' own gate (`makerRun`); a run already going keeps the rules it started with (D7). An error: not denied.
+  const isNew = task?.forceActive
+    ? await import('../maker.mjs').then(({ makerRun }) => Boolean(makerRun(pluginDataDir(), task.dir))).catch(() => false)
+    : false
+  if (isNew) {
+    denyTool('journal-gate/data-dir-write', dataDirReason(task.ticket, dir), { input, task: task.ticket, repo: dataState.worktree })
+  }
+  if (!/STAGES|checks[/\\]/.test(target)) process.exit(0)
+}
+
 if (pre && tool !== 'Bash') {
   // Before an Edit / Write of a task file whose snapshot already exists there is nothing to do: no git, no task reads — except the Force heading a Write is about to replace.
   const file = real(resolve(cwd, target))
@@ -124,6 +140,16 @@ if (pre && tool !== 'Bash') {
     // through the bounded reader, as every hook read of a journal (m-3): a new journal, or one over 4 MB that no rule can read, has no heading before
     const heading = freshestForceHeading(readBounded(file).text ?? '')?.[0] ?? null
     saveStamp(writeStampPath, { file, heading })
+  }
+  if (basename(file) === 'STAGES.md') {
+    // The plan snapshot (VT-5 stage 10, D7) is the first look at the plan: taken here, before the edit lands, and only when none exists. A Write that creates the file
+    // snapshots an empty plan, so a new task's stages and Force blocks are all new. Needs only the stage numbers and Force headings; fails open.
+    try {
+      const { readPlanSnapshot, takePlanSnapshot } = await import('../plan-check.mjs')
+      if (!readPlanSnapshot(pluginDataDir(), dirname(file))) takePlanSnapshot(pluginDataDir(), dirname(file), readBounded(file).text ?? '')
+    } catch {
+      // no plan snapshot now — plan-check takes it at its first call
+    }
   }
   const dir = basename(dirname(file)) === 'checks' ? dirname(dirname(file)) : dirname(file)
   const { baselineName, snapshotCurrent } = await import('../baseline-file.mjs')
@@ -182,6 +208,25 @@ if (tool === 'Bash') {
       for (const task of state.tasks.filter((task) => named(task))) baselineInfo(pluginDataDir(), real(task.dir))
     } catch {
       // no snapshot now — the PostToolUse run takes it, as before
+    }
+    // K11a.3 (S-1c): the plan snapshot is the first look at a plan, and a plan written only through Bash (`cat <<EOF`, `sed -i`) would otherwise be first seen already confirmed and
+    // open, and recorded as a run already going. Every STAGES.md the command names — a task's directory or ticket, or the file itself — is looked at here, before the command runs.
+    try {
+      const dirs = new Set(state.tasks.filter((task) => named(task)).map((task) => real(task.dir)))
+      for (const token of command.match(/[^\s'"`<>|;&()=]*STAGES\.md/g) ?? []) dirs.add(dirname(real(resolve(cwd, token))))
+      const { readPlanSnapshot, takePlanSnapshot } = await import('../plan-check.mjs')
+      // a task directory the command is about to create (`mkdir -p … && cat > …/STAGES.md`) has an empty plan: every stage and Force block written into it is new
+      const tasksRoot = real(state.taskDir)
+      const known = new Set(state.tasks.map((task) => real(task.dir)))
+      for (const dir of dirs) {
+        const exists = Boolean(statOf(dir))
+        if (!known.has(dir) && real(dirname(dir)) !== tasksRoot) continue
+        const target = exists ? dir : join(real(dirname(dir)), basename(dir))
+        if (readPlanSnapshot(pluginDataDir(), target)) continue
+        takePlanSnapshot(pluginDataDir(), target, exists ? (readBounded(join(dir, 'STAGES.md')).text ?? '') : '')
+      }
+    } catch {
+      // no plan snapshot now — plan-check takes it at its first call
     }
     // with the freshest Force heading of each stamped task: the post-hook tells the call that closed the block from one that only ran while it closed
     try {

@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rea
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { commandSegments } from './git-command.mjs'
 import {
   BRANCH_BOUNDARY,
   BRANCH_LABEL,
@@ -159,6 +160,163 @@ export function legacyDataDir(dataDir) {
   return basename(dataDir).startsWith('stage-pipeline-') ? join(dirname(dataDir), 'stage-pipeline') : null
 }
 
+/**
+ * The text of the plugin data directory a command or a file path names, else null: the directory itself (as given, real, legacy), its `plugins/data/stage-pipeline…` form,
+ * `CLAUDE_PLUGIN_DATA`. Shared by force-guard (Bash) and journal-gate (Edit / Write / MultiEdit): those files are written by the hooks only (K11a.1, R-2).
+ */
+export function namesDataDir(text) {
+  const dirs = []
+  try {
+    const dir = pluginDataDir().replace(/[/\\]+$/, '')
+    for (const candidate of [dir, legacyDataDir(dir)]) {
+      if (!candidate) continue
+      dirs.push(candidate)
+      try {
+        dirs.push(realpathSync(candidate))
+      } catch {
+        // not there yet
+      }
+    }
+  } catch {
+    // no resolvable directory: the generic forms below still apply
+  }
+  for (const dir of dirs) if (dir.length > 8 && text.includes(dir)) return dir
+  const generic = /plugins\/data\/stage-pipeline[\w.-]*|CLAUDE_PLUGIN_DATA/.exec(text)
+  return generic ? generic[0] : null
+}
+
+/** The plugin data directories a command can name, as text: the directory itself (as given, real, legacy). */
+function dataDirTexts() {
+  const dirs = []
+  try {
+    const dir = pluginDataDir().replace(/[/\\]+$/, '')
+    for (const candidate of [dir, legacyDataDir(dir)]) {
+      if (!candidate) continue
+      dirs.push(candidate)
+      try {
+        dirs.push(realpathSync(candidate))
+      } catch {
+        // not there yet
+      }
+    }
+  } catch {
+    // no resolvable directory: the generic forms still apply
+  }
+  return dirs.filter((dir) => dir.length > 8)
+}
+
+const WRITE_COPIERS = new Set(['cp', 'rsync', 'install', 'ln']) // the data dir as the destination (the last operand, or `-t`)
+const WRITE_ANY_OPERAND = new Set(['rm', 'unlink', 'shred', 'truncate', 'tee']) // any operand in the data dir
+const COMMAND_WRAPPERS = new Set(['command', 'time', 'nice', 'nohup', 'env', 'export', 'sudo', 'exec'])
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'eval'])
+// A write form in inline code (K11c.3, M-1): any mutating or executing primitive as a word (write, append, unlink, rm, rename, copy, symlink, mkdir, chmod, system, exec*, spawn*, subprocess, shutil, Popen, File.delete …)
+// or an `open(` / `.open(` / `openSync(` call with a mode literal containing w, a, x or + (or a `mode=` keyword). A word scan, no backtracking: every pattern is a flat alternation or a bounded window.
+const INLINE_MUTATE = /write|append|unlink|remove|rename|copy|symlink|truncate|mkdir|makedirs|chmod|chown|utime|delete|spawn|popen|subprocess|child_process|shutil|exec|system|move|\b(?:rm|cp|mv|ln|link|dd|tee)(?:Sync|dir|\b)/i
+const INLINE_OPEN = /\bopen\w*\s*\(/g
+const INLINE_MODE = /,\s*['"][rbt]{0,3}[wax+][rwabxt+]{0,3}['"]\s*[,)]|\bmode\s*=/
+// a read call naming the directory (`readFileSync('<dir>/x')`): its argument is a read of the data dir, not a write (a copy out)
+const INLINE_READ_CALL = /\b(?:readFileSync|readFile|readdirSync|readdir|statSync|existsSync|read_text|read_bytes|listdir|load)\s*\([^)]{0,300}\)?/g
+function inlineWrites(code) {
+  if (INLINE_MUTATE.test(code)) return true
+  for (const match of code.matchAll(INLINE_OPEN)) {
+    const window = code.slice(match.index, match.index + 200)
+    const close = window.search(/\)\s*(?:[;.\n]|$)/)
+    if (INLINE_MODE.test(close > 0 ? window.slice(0, close + 1) : window)) return true
+  }
+  return false
+}
+/** The file operands of a `sed` command: its script and the values of `-e` / `-f` are not paths. */
+function sedFiles(words) {
+  const files = []
+  let scripted = false
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]
+    if (/^(?:-e|-f|--expression|--file)$/.test(word)) {
+      scripted = true
+      i++
+    } else if (/^(?:--expression|--file)=/.test(word) || /^-[A-Za-z]*[ef]./.test(word)) scripted = true
+    else if (word && !word.startsWith('-')) files.push(word)
+  }
+  return scripted ? files : files.slice(1)
+}
+const INLINE_CODE = /^(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl)$/
+
+/**
+ * K11b.2 (VT-5 B3): the text of the plugin data directory a Bash command WRITES into, else null. Only write forms: a redirect (`>`, `>>`), `tee`, `cp`/`rsync`/`install`/`ln`
+ * with the directory as the destination, `mv` with it as an operand, `rm`/`unlink`/`shred`/`truncate`/`sed -i` on a path in it, `dd of=`, and an inline `node -e` / `python -c` that names a path in it with a write form (K11c.3)
+ * (A11: deleting a maker record turns the commit rule off for the run, so a delete is a write). The bare word `CLAUDE_PLUGIN_DATA`, `cat`/`grep`/`ls`, `cp -R <data dir> <scratch>` (a copy out)
+ * and `CLAUDE_PLUGIN_DATA=<temp dir> node …` name no write into it. One linear pass over the lexer's words; a `bash -c '…'` string is read the same way, three levels deep.
+ * The guard catches the habit, not a determined workaround: a path built at run time still reaches the files.
+ */
+export function writesDataDir(command, depth = 0) {
+  const dirs = dataDirTexts()
+  // cheap exit for nearly every call: no directory, no `plugins/data/stage-pipeline`, no variable in the text
+  if (!dirs.some((dir) => command.includes(dir)) && !command.includes('plugins/data/stage-pipeline') && !command.includes('CLAUDE_PLUGIN_DATA')) return null
+  const segments = commandSegments(command)
+  // an own `CLAUDE_PLUGIN_DATA=<dir>` in the command points the variable somewhere else: `$CLAUDE_PLUGIN_DATA` and the bare word then name that directory, not the hooks' one
+  const overridden = segments.some((words) => words.some((word) => /^(?:CLAUDE_PLUGIN_DATA)=/.test(word)))
+  const names = (word) => {
+    for (const dir of dirs) if (word.includes(dir)) return dir
+    const generic = /plugins\/data\/stage-pipeline[\w.-]*/.exec(word)
+    if (generic) return generic[0]
+    if (!overridden && /\$\{?CLAUDE_PLUGIN_DATA\b/.test(word)) return 'CLAUDE_PLUGIN_DATA'
+    return null
+  }
+  const firstNamed = (words) => {
+    for (const word of words) {
+      const dir = names(word)
+      if (dir) return dir
+    }
+    return null
+  }
+  for (const words of segments) {
+    // a redirect: `> file`, `>> file`, `2>file`, `>|file` — the target is the rest of the word or the next one (`&1` is a descriptor)
+    for (let i = 0; i < words.length; i++) {
+      const found = /^\d*>[>|]?(.*)$/.exec(words[i])
+      if (!found || found[1].startsWith('&')) continue
+      const dir = names(found[1] || words[i + 1] || '')
+      if (dir) return dir
+    }
+    let i = 0
+    while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || COMMAND_WRAPPERS.has(words[i]))) i++
+    const name = (words[i] ?? '').split('/').at(-1)
+    const rest = words.slice(i + 1)
+    const operands = rest.filter((word) => !/^-/.test(word) && !/^\d*[<>]/.test(word))
+    if (SHELLS.has(name) && depth < 3) {
+      const inner = name === 'eval' ? rest.join(' ') : rest[rest.indexOf('-c') + 1]
+      const dir = inner && (name === 'eval' || rest.includes('-c')) ? writesDataDir(inner, depth + 1) : null
+      if (dir) return dir
+    } else if (INLINE_CODE.test(name) && rest.some((word) => /^(?:-e|-p|-pe|-c|--eval|--print|-E)$/.test(word))) {
+      // K11c.3 (B6): inline code is denied for a write form on a path in the directory — the bare word `CLAUDE_PLUGIN_DATA` is not one (the variable is not set in the Bash tool)
+      const code = rest.filter((word) => !/^-/.test(word)).join('\n')
+      const masked = code.replace(INLINE_READ_CALL, '')
+      const named = dirs.find((dir) => masked.includes(dir)) ?? /plugins\/data\/stage-pipeline[\w.-]*/.exec(masked)?.[0]
+      if (named && inlineWrites(masked)) return named
+    } else if (WRITE_ANY_OPERAND.has(name) || (name === 'sed' && rest.some((word) => word === '--in-place' || /^-[A-Za-z]*i/.test(word)))) {
+      // K11c.3 (B6): sed's script (the first operand, or the value of `-e` / `-f`) is text, not a path — only its file operands are judged
+      const dir = firstNamed(name === 'sed' ? sedFiles(rest) : operands)
+      if (dir) return dir
+    } else if (name === 'mv') {
+      const dir = firstNamed(operands)
+      if (dir) return dir
+    } else if (WRITE_COPIERS.has(name)) {
+      const target = rest.find((word) => word.startsWith('--target-directory='))?.slice(18) ?? (rest.includes('-t') ? rest[rest.indexOf('-t') + 1] : operands.at(-1))
+      const dir = target ? names(target) : null
+      if (dir) return dir
+    } else if (name === 'dd') {
+      const dir = firstNamed(rest.filter((word) => word.startsWith('of=')))
+      if (dir) return dir
+    }
+  }
+  return null
+}
+
+/** The denial text for a call that writes into the plugin data directory in a force run. */
+export const dataDirReason = (ticket, dir) =>
+  `stage-pipeline: force run ${ticket} — the call writes into the plugin data directory (\`${dir}\`). The maker records, plan snapshots and receipts there are written by the hooks only; ` +
+  'a record written by hand stands in for a stage-implement run that did not happen. A rejection is not a reason to look for a workaround (stage-force, Step 2): ' +
+  'if the state there is wrong, put it into `Blockers:` of the Force run block and carry on with what does not depend on it.'
+
 /** The texts of a data file in the main directory and in the legacy one, main first; a missing file is skipped. */
 export function readDataFiles(dataDir, ...path) {
   return [dataDir, legacyDataDir(dataDir)].flatMap((dir) => {
@@ -169,6 +327,24 @@ export function readDataFiles(dataDir, ...path) {
       return []
     }
   })
+}
+
+/**
+ * The records of a JSONL data file, oldest first (the legacy directory's lines before the main one's): only lines that parse to an object. A blank line, a broken one, `null`,
+ * a number or an array is skipped, never a crash: the files under the plugin data directory are written by the hooks, but a line that is not an object must not take a hook down.
+ */
+export function readDataJsonl(dataDir, ...path) {
+  return readDataFiles(dataDir, ...path)
+    .reverse()
+    .flatMap((text) => text.split('\n'))
+    .flatMap((line) => {
+      try {
+        const record = line.trim() ? JSON.parse(line) : null
+        return record && typeof record === 'object' && !Array.isArray(record) ? [record] : []
+      } catch {
+        return []
+      }
+    })
 }
 
 const registryPath = () => join(pluginDataDir(), 'task-dirs.json')

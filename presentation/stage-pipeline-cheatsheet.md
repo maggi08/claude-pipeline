@@ -1,6 +1,6 @@
 # Stage Pipeline · cheatsheet
 
-A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.20.0 — 20 skills, 13 agents.
+A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.21.0 — 20 skills, 13 agents.
 
 ---
 

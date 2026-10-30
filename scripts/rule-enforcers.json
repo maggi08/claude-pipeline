@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 205,
+  "proseBaseline": 207,
   "rules": {
     "dead-code#d0f5092819": {
       "to": "prose",
@@ -835,6 +835,11 @@
       "text": "dependent questions do not go in one batch. before sending, sort the selected ones by dependencies: for a ques",
       "baseline": true
     },
+    "stage-force#8e732d15cc": {
+      "to": "prose",
+      "text": "every question with a choice carries your recommendation — as the first option and with a one-line reason (\"i",
+      "baseline": true
+    },
     "stage-force#dbe18bdda7": {
       "to": "prose",
       "text": "files the plan deletes (git rm by the criteria) are named one by one in the text of the question about boundar",
@@ -852,6 +857,11 @@
     "stage-force#b835b914d5": {
       "to": "prose",
       "text": "do not rerun lint/typecheck/floor-guard yourself if the stage-implement summary has numbers against the baseli",
+      "baseline": true
+    },
+    "stage-force#33182506d8": {
+      "to": "prose",
+      "text": "one maker at a time. never run two stage-implement at once in one worktree in a force run: makers in parallel ",
       "baseline": true
     },
     "stage-force#8b27bb2916": {

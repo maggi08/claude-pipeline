@@ -152,6 +152,7 @@ not "we'll do it along the way". A paired table to "Not included in the plan": t
 <a row for EVERY overlap from the Step 2.1 scan. An empty "Owner" = a duplicate that will arrive
 as repeated edits at the manual PR review. A consuming stage refers to the owner in "Reuse".
 The table is read by /stage-kickoff (before implementing a stage) and /stage-check (the inventory in the pro-review prompt).>
+Pairs checked: <N — the number of stage pairs the Step 2.1 scan went through; required when the table has no rows>
 
 ## ⚠ Awaiting user confirmation
 <product-visible changes accepted during implementation but not yet confirmed by the user ON DATA WHERE THEY ARE VISIBLE. Format: date — what changed against the old behavior — where to see it (link/state/client type). An item is lifted only by an explicit confirmation; the block is read at every kickoff and in the final checks>
@@ -167,6 +168,6 @@ The table is read by /stage-kickoff (before implementing a stage) and /stage-che
 
 ## Step 5. Agreement
 
-Show the user a compact table of stages (name, screens, size, order) and ask whether they agree with the split BEFORE considering the plan final. After edits, update STAGES.md.
+Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs <STAGES.md>` and fix what it reports as a problem (a criterion without `[verify:]`, a `path:line` that does not resolve, an empty Stage cell in the coverage table, an empty "Shared elements" without `Pairs checked: N`); what it reports as a warning goes to the user with the table. Then show the user a compact table of stages (name, screens, size, order) and ask whether they agree with the split BEFORE considering the plan final. After edits, update STAGES.md.
 
 Rules for maintaining the file: update statuses and the "Journal" at every change; never delete stages — mark cancelled ones; do not use relative dates, only absolute ones. **Keep STAGES.md compact** — every session reads it: fold done/cancelled stages down to the heading and the "Commit"/`Decisions:` lines, full records go to `STAGES-ARCHIVE.md` next to it (the archiving rule is in /stage-check, Step 4.2); journal entries are 3–6 lines with links to `checks/*.md`; word statuses neutrally and descriptively, without imperatives and commands.

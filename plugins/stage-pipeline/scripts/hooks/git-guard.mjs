@@ -40,7 +40,8 @@ const { journalText, openLedgers, readTaskFile, reportNames } = await import('..
 const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
 const { PARITY_TABLE } = await import('../markers.mjs')
 const { commitVerdict, finishPending, savePending } = await import('../receipts.mjs')
-const { commitScope, gitInvocations } = await import('./git-command.mjs')
+const { commitMakerVerdict, makerRuleApplies } = await import('../maker.mjs')
+const { commitChainProblems, commitScope, gitInvocations, indexChangers } = await import('./git-command.mjs')
 const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
 
 const cwd = input.cwd ?? process.cwd()
@@ -59,6 +60,16 @@ if (input.hook_event_name === 'PostToolUse') {
 }
 // The invocation being judged: the firing row names its task and repo.
 let judged = null
+// K11b.3 (B4): a commit hidden in a wrapper (`bash -c 'git apply --cached p && git commit'`) has no visible `git commit` for the loop below; the same staging rule judges it from the cwd's task.
+const chain = commitChainProblems(command)
+if (chain.length && !invocations.some(({ subcommand }) => subcommand === 'commit')) {
+  const state = readPipelineState(cwd)
+  const task = state?.tasks.find((candidate) => candidate.current)
+  if (task?.forceActive && !task.unreadable && guarded(() => makerRuleApplies({ dataDir: pluginDataDir(), taskDir: task.dir, ticket: task.ticket, worktree: state.worktree }))) {
+    judged = { state, task }
+    denyStaging('git-guard/commit-chain', chain)
+  }
+}
 for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
@@ -104,18 +115,32 @@ for (const { subcommand, dir, args } of invocations) {
     )
   }
 
-  const paths = commitPaths(invocations, state.worktree)
+  const makerArgs = { dataDir: pluginDataDir(), taskDir: task.dir, ticket: task.ticket, worktree: state.worktree }
+  // K11a.2 (S-1b), before the empty-commit shortcut below (a path put into the index by `update-index` is not in `paths` yet). The rule judges the blob a commit takes from the
+  // working tree for the paths `git add` of this command stages, and from the index for the rest. A path put into the index by another subcommand of the same command
+  // (`git update-index --add x && git commit`, `GIT_INDEX_FILE=… git commit`) is neither: the rule cannot see what the commit will take.
+  // K11b.3 (B4): besides the index-changing forms, a command that commits chains only add, commit, status, diff, log, show and rev-parse, and hides no git call in a wrapper.
+  const changers = indexChangers(command)
+  const tampered = [...new Set([...changers, ...chain])]
+  if (tampered.length && guarded(() => makerRuleApplies(makerArgs))) denyStaging(changers.length ? 'git-guard/index-changer' : 'git-guard/commit-chain', tampered)
+  const specs = commitSpecs(invocations, state.worktree)
+  const paths = commitPaths(specs, state.worktree)
   if (paths?.length === 0) continue
+  // the files of the commit, computed once for the receipt rule and for the maker rule (K11a.8 m-2); a throw gives neither rule a verdict
+  const changed = guarded(() => changedFiles(state.worktree, paths))
 
   // Stage receipts (VT-1 stage 3): the window of this commit holds the stage's checkers — only for a Force block opened after this version first saw the task (receipts.mjs).
-  const verdict = commitVerdict({
-    dataDir: pluginDataDir(),
-    taskDir: task.dir,
-    ticket: task.ticket,
-    branch: state.branch,
-    worktree: state.worktree,
-    changed: changedFiles(state.worktree, paths),
-  })
+  // K11a.1: a crash inside one receipt rule never skips the rules after it (floor-guard, parity, kit overrides): the rule that threw gives no verdict.
+  const verdict = guarded(() =>
+    commitVerdict({
+      dataDir: pluginDataDir(),
+      taskDir: task.dir,
+      ticket: task.ticket,
+      branch: state.branch,
+      worktree: state.worktree,
+      changed,
+    }),
+  )
   if (verdict?.missing.length) {
     deny(
       'git-guard/checker-receipts',
@@ -123,7 +148,20 @@ for (const { subcommand, dir, args } of invocations) {
         'The window is the checker reports written after the previous force commit on this branch (and after the Force block date); a fix commit that touches only the files of the previous force commit needs no new reports.',
     )
   }
-  if (verdict) savePending(pluginDataDir(), callId, { ...verdict, ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim() })
+  if (verdict) guarded(() => savePending(pluginDataDir(), callId, { ...verdict, ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim() }))
+
+  // Maker receipts (VT-1 stage 11): a code path of a force commit must be the blob a `stage-implement` stop recorded last. `git add x && git commit` is judged before the add runs:
+  // the blob of a path the command itself stages is read from the working tree, the blob of any other path from the index — the one that will be committed.
+  const foreign = guarded(() => commitMakerVerdict({ ...makerArgs, changed, staged: stagedByCommand(specs, state.worktree) }))
+  if (foreign?.length) {
+    deny(
+      'git-guard/maker-commit',
+      `stage-pipeline: code not written by stage-implement — hand it to a fix round. The commit is rejected; the code paths below do not match the last blob a stage-implement stop recorded:\n` +
+        `${foreign.slice(0, 12).map((path) => `- ${path}`).join('\n')}${foreign.length > 12 ? `\n- … ${foreign.length - 12} more` : ''}\n` +
+        'Launch `stage-implement` in fix mode with the change as a finding (stage-force, Step 3) instead of editing code in the main context; a deletion is allowed when the Force block names the path. ' +
+        'Lockfiles, generated files, markdown and JSON are not code and pass.',
+    )
+  }
 
   const journal = journalText(task.dir)
   const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
@@ -182,28 +220,51 @@ for (const { subcommand, dir, args } of invocations) {
 process.exit(0)
 
 /**
- * The paths that go into this command's commit — pathspecs from the worktree root: the index already built,
- * the paths from `git add`/`git commit`, all tracked files with `-a`/`-u`. `null` — the whole tree including
- * untracked files (`git add -A` without paths, paths from a file, pathspec magic with `:`), `[]` — nothing to commit.
+ * The pathspecs a force commit command names, from the worktree root (K11a.8 m-2: the one parser for the commit's paths and for what the command itself stages).
+ * `{ all, tracked, specs }`: `all` — the whole tree including untracked files (`git add -A` without paths, pathspec magic with `:`), `tracked` — `-a`/`-u`
+ * (every tracked change), `specs` — the pathspecs inside the worktree (`.` for the root).
  */
-function commitPaths(calls, worktree) {
+function commitSpecs(calls, worktree) {
   const scope = commitScope(calls.filter(({ dir }) => toplevel(dir) === worktree))
-  if (scope.all) return null
-  const paths = new Set()
+  if (scope.all) return { all: true, tracked: false, specs: [] }
+  const specs = []
   for (const { dir, spec } of scope.specs) {
-    if (spec.startsWith(':')) return null
+    if (spec.startsWith(':')) return { all: true, tracked: false, specs: [] }
     // The root from git is a real path, the call directory can go through a symlink (`/var` → `/private/var` on macOS).
     const real = realDir(dir)
     if (!real) continue
     const path = relative(worktree, resolve(real, spec))
     if (path.startsWith('..') || isAbsolute(path)) continue
-    paths.add(path || '.')
+    specs.push(path || '.')
   }
+  return { all: false, tracked: Boolean(scope.tracked), specs }
+}
+
+/**
+ * The paths that go into this command's commit — pathspecs from the worktree root: the index already built, the paths from `git add`/`git commit`, all tracked files
+ * with `-a`/`-u`. `null` — the whole tree including untracked files, `[]` — nothing to commit.
+ */
+function commitPaths({ all, tracked, specs }, worktree) {
+  if (all) return null
+  const paths = new Set(specs)
   // Names from git are literal: `[PLI-1] page.ts` as a glob would not match itself.
   const names = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean).map((name) => `:(literal)${name}`)
   for (const name of names('diff', '--cached', '--name-only', '--no-renames', '-z')) paths.add(name)
-  if (scope.tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
+  if (tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
   return [...paths]
+}
+
+/**
+ * The files the command stages by itself before it commits, for the maker receipts: `null` — the whole tree (`git add -A`, pathspec magic), else a Set of the changed
+ * files inside its pathspecs (`git add x`, `git commit x`) and, with `-a`/`-u`, the tracked changes. A plain `git commit` stages nothing (an empty Set).
+ */
+function stagedByCommand({ all, tracked, specs }, worktree) {
+  if (all) return null
+  const out = new Set()
+  const list = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean)
+  if (tracked) for (const name of list('diff', '--name-only', '--no-renames', '-z', 'HEAD')) out.add(name)
+  if (specs.length) for (const name of changedFiles(worktree, specs)) out.add(name)
+  return out
 }
 
 /** The files this commit changes: tracked changes against HEAD plus untracked files, inside the commit's pathspecs (`null` — the whole tree). */
@@ -274,6 +335,24 @@ function gitOut(cwd, ...args) {
     return execFileSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
   } catch {
     return ''
+  }
+}
+
+function denyStaging(rule, tampered) {
+  deny(
+    rule,
+    `stage-pipeline: the commit command also does something to the index or to HEAD other than \`git add\` and \`git commit\` (${tampered.map((name) => `\`${name}\``).join(', ')}) — rejected: ` +
+      'stage with `git add` in its own call, then commit; a commit command may chain only add, commit, status, diff, log, show and rev-parse, with no git call inside `bash -c`, `eval`, `xargs`, backticks or `$( … )`. ' +
+      'The maker receipt judges the code of a force commit by the blob that goes into it, and cannot read it from a command that builds the index another way.',
+  )
+}
+
+/** Runs one rule: a throw is no verdict (null), so the rules after it still run. */
+function guarded(rule) {
+  try {
+    return rule()
+  } catch {
+    return null
   }
 }
 

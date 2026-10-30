@@ -44,7 +44,7 @@ const LOGIC_ONLY_TAIL = /^\s*(?:,\s*(?!(?:then|and|but|so|which|while|потом
 const logicOnlyWrapped = (before, after) => (/\[$/.test(before) && /^\]/.test(after)) || (/`$/.test(before) && /^`/.test(after)) || (/(?:\(|,\s*)$/.test(before) && /^\)/.test(after))
 
 /** Where the `[status: …]` bracket of a heading starts and ends (brackets nested in it, such as a quoted `[live: …]`, are skipped): `{ start, end }` or null. */
-function statusBracket(heading) {
+export function statusBracket(heading) {
   const start = heading.search(/\[status:/i)
   if (start === -1) return null
   let depth = 0
@@ -81,8 +81,8 @@ export const STAGE_MENTION = /(?:этап[а-я]*|(?<![\w-])stage)\s+([\w.]+)/i
 export const STAGE_FILE = /(?:stage|этап)-?(\d+[a-z]?)\b/i
 
 export const STATUS_LINE = /^## (?:Статус|Status):\s*(.+)$/m
-/** A closed stage in a `[status: …]` heading; the last alternative is the Russian form of "cancelled". */
-export const CLOSED_STAGE = /\[status:\s*(done|cancelled|отмен)/i
+/** A closed stage in a `[status: …]` heading: done, cancelled (either spelling), or the Russian form of "cancelled". The one definition: plan-check, archive-stages and the resume point read it. */
+export const CLOSED_STAGE = /\[status:\s*(done|cancel+ed|отмен)/i
 
 export const JOURNAL_HEADING = /^## (?:Журнал|Journal)(?:\s|$)/i
 /** Sections inside which stage headings are not stages. */
@@ -180,7 +180,11 @@ export function freshestForceHeading(stages) {
 /** A Force heading without its closing tail: `## Force run 2026-10-22 — completed with blockers` → `## Force run 2026-10-22`. The block is the same block before and after its close. */
 export function forceKey(heading) {
   const at = heading.search(CLOSED_WORD)
-  return (at === -1 ? heading : heading.slice(0, at)).trimEnd().replace(/[—–:,;(-]+$/, '').trim()
+  const head = (at === -1 ? heading : heading.slice(0, at)).trimEnd()
+  // the trailing dash / colon run is cut by index: `[—–:,;(-]+$` is quadratic over a heading ending in a long run (S-4)
+  let end = head.length
+  while (end > 0 && '—–:,;(-'.includes(head[end - 1])) end--
+  return head.slice(0, end).trim()
 }
 
 /**
@@ -224,6 +228,42 @@ export const NOT_CLOSED = /не\s+завершён|not\s+completed/i
 
 /** The `Confirmed:` line (or the Russian form) in the Force block. */
 export const CONFIRMED_LINE = /^[ \t]*(?:[-*][ \t]*)?\**(?:Подтвержд[её]н[оа]?|Confirmed)\**\s*:/im
+/** The field names of a Force block, for cutting a multi-line field (`Taxonomy:`) at the next field. */
+const FORCE_FIELD_NAMES =
+  'Mode|Режим|Interview answers|Ответы интервью|Assumptions|Допущения|Unresolved|Незакрытое|Boundaries|Границы|Confirmed|Подтверждено|Подтверждён|Blockers|Блокеры|Stage dependencies|Зависимости этапов|Taxonomy|Таксономия|Checked before start|Проверено до старта|Not proven|Не доказано|Blocker forecast|Прогноз блокеров'
+export const FORCE_FIELD_LINE = new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?\\**(?:${FORCE_FIELD_NAMES})\\**\\s*:`, 'i')
+const forceField = (names) => new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?\\**(?:${names})\\**\\s*:`, 'im')
+/** The `Stage dependencies:` line of a Force block (VT-5 stage 10): which stage waits for which, written by the orchestrator at the interview. */
+export const STAGE_DEPENDENCIES_LINE = forceField('Stage dependencies|Зависимости этапов')
+/** The `Taxonomy:` line: the 12 interview categories, each with its status. */
+export const TAXONOMY_LINE = forceField('Taxonomy|Таксономия')
+/**
+ * The 12 categories of the interview taxonomy (stage-force, Step 0), in both languages. `test` finds a category by either name in a `Taxonomy:` line;
+ * the short Russian names are matched as whole words.
+ */
+const word = (source) => new RegExp(`(?<![\\wа-яё])(?:${source})(?![\\wа-яё])`, 'i')
+export const TAXONOMY_CATEGORIES = [
+  { en: 'Screens and states', ru: 'Экраны и состояния', test: word('screens\\s+and\\s+states|экраны\\s+и\\s+состояния') },
+  { en: 'Copy and i18n', ru: 'Тексты и i18n', test: word('copy\\s+and\\s+i18n|тексты\\s+и\\s+i18n') },
+  { en: 'Permissions and gating', ru: 'Доступы и гейтинг', test: word('permissions\\s+and\\s+gating|доступы\\s+и\\s+гейтинг') },
+  { en: 'Breakpoints', ru: 'Брейкпоинты', test: word('breakpoints|брейкпоинты') },
+  { en: 'Motion', ru: 'Анимация', test: word('motion|анимация') },
+  { en: 'A11y', ru: 'A11y', test: word('a11y') },
+  { en: 'Data', ru: 'Данные', test: word('data|данные') },
+  { en: 'Platform parity', ru: 'Паритет платформ', test: word('platform\\s+parity|паритет\\s+платформ') },
+  { en: 'Look', ru: 'Вид', test: word('look|вид') },
+  { en: 'Terminology', ru: 'Терминология', test: word('terminology|терминология') },
+  { en: 'Boundaries', ru: 'Границы', test: word('boundaries|границы') },
+  { en: 'Environment and access', ru: 'Окружение и доступ', test: word('environment\\s+and\\s+access|окружение\\s+и\\s+доступ') },
+]
+/** `Pairs checked: N` (or the Russian form) under "Shared elements" — the overlap scan was done even when the table has no rows. Group 1 is the number. */
+export const PAIRS_CHECKED = /(?:pairs\s+checked|проверено\s+пар)\s*(?::\s*)?\**(\d+)/i
+/** A stage field line, by its names in the two languages (`State × action:`). */
+export const STATE_ACTION_FIELD = /(?:^|\n)[ \t]*(?:[-*][ \t]*)?\**(?:State\s*[×x]\s*action|Состояние\s*[×x]\s*действие)\**\s*:/i
+/** The "Design source coverage" and "Shared elements" sections. */
+export const COVERAGE_SECTION = /^## (?:Design source coverage|Покрытие дизайн-источника)/m
+export const SHARED_SECTION = /^## (?:Shared elements|Общие элементы)/m
+
 /** The word "mode" in a subagent prompt: `Mode: whole-branch` (or the Russian form). */
 export const MODE_WORD = 'режим|mode'
 

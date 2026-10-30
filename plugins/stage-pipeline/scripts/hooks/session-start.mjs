@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { planArchive } from '../archive-stages.mjs'
 import { ensureBaseline, releaseGate } from '../journal-check.mjs'
 import { FORCE_BLOCK_PRESENT } from '../markers.mjs'
+import { OUTPUT_MAX, resumePoint } from '../resume-point.mjs'
 import { AFTER_CLOSE_DAYS, closedForceDate, pluginDataDir, readHookInput, readPipelineState, registerTaskDir, STALE_DAYS, unjournaledCommits } from './pipeline-state.mjs'
 
 /**
@@ -118,7 +119,22 @@ const lines = [
   ...afterClose,
 ]
 if (!lines.length) process.exit(0)
-process.stdout.write(
+let output =
   `stage-pipeline — tasks in this repo:\n${lines.join('\n')}\n` +
-    'When continuing a task, read its STAGES.md selectively (the current stage), not as a whole.\n',
-)
+  'When continuing a task, read its STAGES.md selectively (the current stage), not as a whole.\n'
+
+// K11.7: after /compact or a resume, an open force run of the current task gets its resume point. A startup prints what it always did. Fails open.
+if (input.source === 'compact' || input.source === 'resume') {
+  try {
+    const task = current.find((candidate) => candidate.forceActive && !candidate.unreadable)
+    const resume = task && resumePoint({ dataDir: pluginDataDir(), state, task, budget: Math.max(2500, OUTPUT_MAX - output.length) })
+    if (resume) {
+      output += `${resume}\n`
+      // The status lines give way to the resume point, never the other way round (A7: the whole output within the limit).
+      if (output.length > OUTPUT_MAX) output = `${output.slice(0, OUTPUT_MAX - resume.length - 3)}…\n${resume}\n`
+    }
+  } catch {
+    // no resume point — the status line stands
+  }
+}
+process.stdout.write(output)

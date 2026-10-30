@@ -66,6 +66,13 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Force block field | `Boundaries:` | `Границы:` |
 | Force block field (the line the hooks require) | `Confirmed: <date> — <what>` | `Подтверждено: <дата> — <что>` |
 | Force block field | `Blockers:` | `Блокеры:` |
+| Force block field, new (written by the orchestrator at the interview) | `Stage dependencies:` | `Зависимости этапов:` |
+| Force block field, new: the 12 interview categories, each with its status (Clear / Partially / Not covered) | `Taxonomy:` | `Таксономия:` |
+| Force block field, new (from the interview probe) | `Checked before start: <fact> — <evidence>` | `Проверено до старта: <факт> — <чем подтверждено>` |
+| Force block field, new (from the interview probe) | `Not proven:` | `Не доказано:` |
+| Force block field, new (the blocker forecast per stage) | `Blocker forecast:` | `Прогноз блокеров:` |
+| Taxonomy categories (the names `plan-check` looks for on the `Taxonomy:` line; either language) | Screens and states · Copy and i18n · Permissions and gating · Breakpoints · Motion · A11y · Data · Platform parity · Look · Terminology · Boundaries · Environment and access | Экраны и состояния · Тексты и i18n · Доступы и гейтинг · Брейкпоинты · Анимация · A11y · Данные · Паритет платформ · Вид · Терминология · Границы · Окружение и доступ |
+| Shared elements, empty table | `Pairs checked: N` | `Проверено пар: N` |
 | Blocker line `B<n> — …` closed by the words | `lifted by`, `resolved by`, `closed by`, `answered by`, `user answer`, `user decision` (the last two lift a blocker only with a date or a quotation right after the words, with at most `on`, `dated`, `(`, `in chat`, a colon or a dash between them: "user decision 2026-10-17: v2", "user decision (2026-10-17): v2", `user answer "token is set"`; a request — `needs`, `waiting for`, `awaiting`, `pending` before the words, or quoted options `"v1" or "v2"` after them — does not lift) | `снят`, `решён`, `закрыт`, `отвечен`, `ответ пользователя`, `решение пользователя` (последние два снимают блокер только с датой или цитатой сразу после слов, между ними допустимы «от», «(», «в чате», двоеточие или тире: «решение пользователя 17.10.2026», «решение пользователя от 17.10.2026», `ответ пользователя «токен задан»`; запрос — «нужно», «необходимо», «ждём», «ожидаем» перед словами или варианты в кавычках `«v1» или «v2»` после них — не снимает) |
 | Blocker lift field (the only lift in a Force block dated 2026-10-26 or later; opens a segment of the blocker's line, or stands on an indented sub-item under it; followed by who and when; in a block dated before 2026-10-26, put it on the blocker's own line) | `Lifted: <who> <date> — <answer>` (a who of at most 4 words; the answer after the date; no request or condition word outside quotes) | `Снят: <кто> <дата> — <ответ>` |
 | Blocker carried from an earlier run | `B<n> (<run>) — …` | `B<n> (<прогон>) — …` |
@@ -98,6 +105,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Config gate command: none | `none` | `нет` |
 | Config field, kit overrides off | `kit_overrides: off` (also `false`, `no`, `disabled`) | `kit_overrides: нет` |
 | Config field | `language: en` | `language: ru` |
+| Run digest heading (the maker's stored items, `run-digest.mjs`; the count in the short view) | `### From the maker's hand-backs (N)` | `### Из отчётов исполнителя (N)` |
 | FEATURE-MAP header | `# Feature map: …` / `Date:` / `Repos:` / `Base:` | `# Feature map: …` / `Дата:` / `Репо:` / `База:` |
 | FEATURE-MAP section (read by figma-compare, proto-compare, stage-force, stage-implement) | `## Orientation` | `## Ориентация` |
 | FEATURE-MAP Orientation fields | `Essence:`, `Entry points:`, `Data:`, `Flags:`, `Careful:` | `Суть:`, `Точки входа:`, `Данные:`, `Флаги:`, `Осторожно:` |

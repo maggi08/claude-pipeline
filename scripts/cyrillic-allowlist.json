@@ -69,7 +69,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|unreadable|noRuntime|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort|browser): ",
+      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|unreadable|noRuntime|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort|browser|maker|makerShort|makerKinds|makerLine): ",
       "reason": "run digest headings and lines written for a ru task (the ones before 0.18.1 byte for byte as before; `browser` is the session browser line of 0.18.1)"
     },
     {
@@ -194,6 +194,16 @@
       "glob": "scripts/run-audit.mjs",
       "line": "Force-прогон|Подтверждено|этап\\[а-яё\\]|cancel\\|отмен|,и&",
       "reason": "RU alternatives of the structural markers of a Russian-language task (Force-run heading, Confirmed line, stage word, cancelled status): the same forms the plugin parsers read; the digest must read a Russian journal"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/plan-check.mjs",
+      "line": "(?:/\\^|/\\(\\?|= /|\\.test\\(line\\))",
+      "reason": "RU alternatives of the plan-check regexes (stage, visual reference, Force fields, closing words); only lines with a regex literal"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
+      "line": "режим\\)\\\\s\\*\\(\\?::\\\\s\\*\\)\\?\\\\\\*\\*fix",
+      "reason": "RU alternative of the mode word in the fix-mode regex (stage-implement prompt in a Russian task)"
     }
   ]
 }
