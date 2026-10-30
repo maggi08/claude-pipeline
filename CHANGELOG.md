@@ -37,6 +37,8 @@ What changes against 0.22.0: the free tooling, one measured `effort:` line, and 
 
 The rule: an agent gets an `effort:` line only where the pass rate and the cost do not get worse. `pro-review` and `human-text-check` lost one run at both levels, so they keep no line. `docs-lookup` has the same pass rate at every level (`docs-lookup-not-installed` fails 3 of 3 whatever the level, `docs-lookup-version-mismatch` passes 3 of 3), is about 10 % cheaper and about 10 s faster at `medium` and `low`; `medium` was chosen over `low` as the smaller cut for the same measured gain. The line is `effort: medium` in `agents/docs-lookup.md`.
 
+eval: skipped docs-lookup — `docs-lookup-not-installed` fails 3 of 3 on `df9ed47` with `effort: medium` and failed 9 of 9 before the line on the same plugin (no line, `low`, `medium`), so the failure is not this release's change and is listed for the next version; `docs-lookup-version-mismatch` passes 3 of 3 on `df9ed47`. Both rows are in `evals/releases.tsv` (invocation 20261030T102038-02dd).
+
 **What this does not show.** N=3 is small: one missed run decided `pro-review` and `human-text-check` (a 17/18 or 11/12 can be noise as well as a real loss), and the `docs-lookup` gain is a 10 % difference between runs of one case pair. No agent other than these three was measured, and `high`, `xhigh` and `max` were not tried.
 
 ### The hill-climb did not run in this release
