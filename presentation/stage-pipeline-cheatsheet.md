@@ -1,6 +1,6 @@
 # Stage Pipeline · cheatsheet
 
-A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.21.0 — 20 skills, 13 agents.
+A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.22.0 — 21 skills, 13 agents.
 
 ---
 
@@ -10,7 +10,7 @@ A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`
 claude plugin marketplace add maggi08/claude-pipeline
 claude plugin install stage-pipeline@magzhan
 # restart Claude Code
-claude plugin details stage-pipeline   # check: 20 skills, 13 agents, 2 MCP
+claude plugin details stage-pipeline   # check: 21 skills, 13 agents, 2 MCP
 ```
 
 The repository is public — no access rights and no cloning needed.
@@ -98,6 +98,7 @@ If you do not need a broad Bash allowlist, `--minimal` allows only skills and MC
 | `/task-wrapup` | an MR description from the task journal → `PR.md`, by the human-text rules; manual only |
 | `/human-text` | text about a project for people (team, manager, newcomer, client): fact card, draft by the rules, closed-question check; manual only. Also installs alone: `human-text@magzhan` |
 | `/feature-doc` | a doc on a finished feature in `docs/features/` for someone who has not seen it; manual only, outside the pipeline |
+| `/promote` | repeated findings of a repo become the highest working rule (stage, types, lint, `## Repo rules` row, CLAUDE.md line), proven on two pre-fix versions; repeated dismissals become skip patterns; each proposal waits for a yes; manual only |
 
 ## Agents
 

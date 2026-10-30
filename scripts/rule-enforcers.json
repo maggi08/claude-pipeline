@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 207,
+  "proseBaseline": 219,
   "rules": {
     "dead-code#d0f5092819": {
       "to": "prose",
@@ -144,6 +144,11 @@
     "devtools-verify#af957ba37d": {
       "to": "prose",
       "text": "the \"could not verify\" section is mandatory.",
+      "baseline": true
+    },
+    "devtools-verify#e7b9b6845d": {
+      "to": "prose",
+      "text": "a symptom that matches a class of references/false-positives.md with its proof goes under \"could not verify\" w",
       "baseline": true
     },
     "ds-parity#063c02a93e": {
@@ -396,6 +401,11 @@
       "text": "do not impose a foreign mechanism on the project.",
       "baseline": true
     },
+    "i18n-sweep#52a67d7e36": {
+      "to": "prose",
+      "text": "a string that matches a class of references/false-positives.md with its proof: write it into the report as ski",
+      "baseline": true
+    },
     "pipeline-doctor#d55eafd84b": {
       "to": "prose",
       "text": "via npx on the first call, chrome must be installed.",
@@ -538,14 +548,72 @@
       "text": "always flag: comments that retell the code, commented-out code, todo/fixme, noisy banners, jsdoc that duplicat",
       "baseline": true
     },
+    "pro-review#2b935855a8": {
+      "to": "prose",
+      "text": "a convention that a row of the config's ## repo rules table enforces is not re-reported here: floor-guard owns",
+      "baseline": true
+    },
     "pro-review#1de91c488e": {
       "to": "prose",
       "text": "a behavior divergence between the copies — record as a question, do not leave it silently.",
       "baseline": true
     },
-    "pro-review#7c2a8ade45": {
+    "promote#bd4451a474": {
       "to": "prose",
-      "text": "a move of styles is especially dangerous (styled-components → utility classes, deleting styled.ts) — the types",
+      "text": "it never calls gh or glab (in force they are denied; the user exports review comments by hand), never fetches,",
+      "baseline": true
+    },
+    "promote#98c2f631ad": {
+      "to": "prose",
+      "text": "a task directory that is not registered (a shared one outside any repo): pass it as another target, and keep o",
+      "baseline": true
+    },
+    "promote#187b088c98": {
+      "to": "prose",
+      "text": "if a higher level does not prove, say why and go one down; do not skip levels to the easy one.",
+      "baseline": true
+    },
+    "promote#9c99e95d40": {
+      "to": "script:plugins/stage-pipeline/scripts/promote-proof.mjs",
+      "text": "headfiles narrows the sweep to named files, and the result then says so; a narrowed probe is not a head proof,"
+    },
+    "promote#dfa86fed76": {
+      "to": "script:plugins/stage-pipeline/scripts/promote-proof.mjs",
+      "text": "the runner uses the project's own eslint (never npx), counts only files that eslint really linted, and prints "
+    },
+    "promote#8aa486758c": {
+      "to": "prose",
+      "text": "the project's lint config, claude.md and types are never edited by this skill: they change in a stage that goe",
+      "baseline": true
+    },
+    "promote#2b2640f76d": {
+      "to": "prose",
+      "text": "a ## repo rules row: written only after that yes, to the config the hooks read (configroot: the main tree's .c",
+      "baseline": true
+    },
+    "promote#426c7e848f": {
+      "to": "prose",
+      "text": "for each checker whose findings were closed as false two or more times for the same reason (read the outcome l",
+      "baseline": true
+    },
+    "promote#cdccedf19d": {
+      "to": "prose",
+      "text": "read the file first: if the pattern is there, propose a \"do not skip when\" line instead, when the repeat shows",
+      "baseline": true
+    },
+    "promote#a967695518": {
+      "to": "prose",
+      "text": "the \"never skipped\" list at the top of each file is not negotiable: an entry never overlaps it (the format: re",
+      "baseline": true
+    },
+    "promote#30f34b255d": {
+      "to": "prose",
+      "text": "this direction never writes into ${claudepluginroot}: for a teammate that is the versioned cache of the instal",
+      "baseline": true
+    },
+    "promote#f2f67055f6": {
+      "to": "prose",
+      "text": "a pattern for kit-override-scan also needs a code change in the scan and its self-test: propose that as a task",
       "baseline": true
     },
     "proto-compare#fd5d615df2": {
@@ -825,6 +893,11 @@
       "text": "then ask the selected ones in one batch (askuserquestion — up to 4 questions per call; if one call is not enou",
       "baseline": true
     },
+    "stage-force#8e732d15cc": {
+      "to": "prose",
+      "text": "every question with a choice carries your recommendation — as the first option and with a one-line reason (\"i ",
+      "baseline": true
+    },
     "stage-force#ec55e8b3fa": {
       "to": "prose",
       "text": "do not ask what is resolved by reading. skin and structural forks are closed by a fact from the source (figma-",
@@ -833,11 +906,6 @@
     "stage-force#4d1313070e": {
       "to": "prose",
       "text": "dependent questions do not go in one batch. before sending, sort the selected ones by dependencies: for a ques",
-      "baseline": true
-    },
-    "stage-force#8e732d15cc": {
-      "to": "prose",
-      "text": "every question with a choice carries your recommendation — as the first option and with a one-line reason (\"i",
       "baseline": true
     },
     "stage-force#dbe18bdda7": {

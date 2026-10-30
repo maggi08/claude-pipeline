@@ -27,8 +27,8 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, patchIds, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
-import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf } from './markers.mjs'
+import { OPEN_STATUS, configRoot, patchIds, readConfig, readDataFiles, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
+import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
 const NOT_UI = /\.(?:test|spec|stories|story)\.\w+$|(?:^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//
@@ -67,6 +67,39 @@ function appendReceipt(dataDir, ticket, receipt) {
   } catch {
     // no receipt — the digest just lacks this commit
   }
+}
+
+const floorOkName = (ticket) => join('floor-ok', `${String(ticket).replace(/[^\w.-]/g, '_')}.jsonl`)
+
+/**
+ * The `floor-ok:` exceptions of the project's repo rules that a force commit went through with (stage 13): `[{ rule, file, line, reason }]`, one line each in
+ * `<plugin data>/floor-ok/<TICKET>.jsonl` for the run digest. Built-in rules are not recorded here: they are in the stage journal and "Awaiting user confirmation".
+ */
+export function recordFloorOk(dataDir, ticket, branch, exceptions) {
+  if (!exceptions.length) return
+  try {
+    mkdirSync(join(dataDir, 'floor-ok'), { recursive: true })
+    const at = new Date().toISOString()
+    appendFileSync(join(dataDir, floorOkName(ticket)), exceptions.map((exception) => `${JSON.stringify({ at, branch, ...exception })}\n`).join(''))
+  } catch {
+    // no record — the digest just lacks these lines
+  }
+}
+
+/** What `recordFloorOk` kept for this task, from `sinceMs` on, each exception once (the last record of the same rule, place and reason). */
+export function readFloorOk(dataDir, taskDir, sinceMs = 0) {
+  const seen = new Map()
+  for (const text of readDataFiles(dataDir, floorOkName(basename(taskDir))).reverse()) {
+    for (const line of text.split('\n')) {
+      try {
+        const entry = line.trim() ? JSON.parse(line) : null
+        if (entry?.rule && entry.file && Date.parse(entry.at) >= sinceMs) seen.set(`${entry.rule}|${entry.file}|${entry.line}|${entry.reason}`, entry)
+      } catch {
+        // a broken line — skipped
+      }
+    }
+  }
+  return [...seen.values()]
 }
 
 /** The stage(s) a commit now closes: in-progress ones, else done ones whose commit line is still open. `[{ heading, logicOnly, skips }]`. */
@@ -229,6 +262,20 @@ export function finishPending(dataDir, id, worktree) {
   return receipt
 }
 
+/** PostToolUse of a commit: the `floor-ok` waivers saved before it count only if HEAD moved (the commit exists). */
+export function finishFloorOk(dataDir, id, worktree) {
+  const path = pendingPath(dataDir, id)
+  let pending
+  try {
+    pending = JSON.parse(readFileSync(path, 'utf8'))
+    rmSync(path, { force: true })
+  } catch {
+    return
+  }
+  const sha = git(worktree, 'rev-parse', 'HEAD')
+  if (sha && sha !== pending.head) recordFloorOk(dataDir, pending.ticket, pending.branch, pending.waived ?? [])
+}
+
 /**
  * When HEAD's tree appeared on the branch. The branch's own reflog comes first: the run of its newest entries that carry this very tree.
  * An amend that keeps the tree is an entry with the same tree; a rebase sequence (`--force-rebase`, `-i` reword or fixup) is a single
@@ -283,6 +330,8 @@ function dirtyTracked(worktree, taskDir) {
  * Closing a Force block as "completed": the whole-branch pro-review and task-converge reports must be newer than when HEAD's tree appeared
  * and the tracked files must have no uncommitted edits; "completed with blockers" — each missing one named in an open blocker by its marker
  * (`[final: pro-review — not run]`, markers.mjs). A blocker that names the checker in prose does not count: it gets the marker to add.
+ * A project whose config names a repo-local team review skill (`- team_review: cleanup-review`) gets one more wanted report, `checks/<skill>-branch.md`,
+ * under the same rule (a re-run `-branch-2.md` / `-branch-fresh.md` counts); a config without the line asks for no extra report. The ledger classifier reads any `checks/<name>-branch*.md` as a checker report, config line or not.
  * Only for a closing written after the snapshot, a block of the new rules' dates, the current task.
  */
 export function finalReviewViolations(dataDir, worktree, taskDir) {
@@ -296,6 +345,11 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const wanted = [
     { checker: 'pro-review', match: (name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
     { checker: 'task-converge', match: (name) => reportChecker(name) === 'task-converge', how: 'the `task-converge` agent, `checks/task-converge.md`' },
+    ...teamReviewSkills(readConfig(configRoot(worktree, worktree) ?? worktree)).map((skill) => ({
+      checker: skill,
+      match: (name) => reportChecker(name) === skill.toLowerCase(),
+      how: `a general-purpose subagent that follows the project skill \`${skill}\` on the whole branch (the config names it as \`team_review\`), writing \`checks/${skill}-branch.md\` under the checker-report contract`,
+    })),
   ].filter((item) => dirty.length || !newReports(taskDir, since).some((name) => item.match(name) && readTaskFile(taskDir, 'checks', name) !== null))
   const bGate = blockerGate(dataDir, taskDir)
   const blockers = openBlockers(run.block, bGate)

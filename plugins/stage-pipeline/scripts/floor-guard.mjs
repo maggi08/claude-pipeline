@@ -23,10 +23,18 @@
  * `xxxx`, `0000`) do not count as secrets.
  * The rules adapt to the repo: `# noqa` and `# type: ignore` are suppression only if the repo has the
  * Python linter / type checker they are addressed to.
+ *
+ * Repo rules (stage 13): a `## Repo rules` table in the project's `pipeline.config.md` (id · pattern · files · message · evidence, parsed by `parseRepoRules`
+ * in markers.mjs) adds the project's own rules, applied to ADDED lines only: a violation is printed as `[repo:<id>]` with the rule's message, and
+ * `floor-ok: <reason>` on the same or the previous line exempts it like any other rule. The config is found as the hooks find it (`configRoot`: this tree, else the
+ * main tree of a linked worktree whose `.claude/` is excluded). No table — no change in the output. A row that cannot be used is a config problem, printed once:
+ * the other rows still apply, exit code 2 ("could not check") when nothing else failed, never a silent pass.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { configRoot, readConfig } from './hooks/pipeline-state.mjs'
+import { parseRepoRules, repoRuleAppliesAll, testLines } from './markers.mjs'
 
 const args = process.argv.slice(2)
 const json = args.includes('--json')
@@ -49,6 +57,25 @@ const tryGit = (...cmd) => {
 const root = tryGit('rev-parse', '--show-toplevel')?.trim()
 if (!root) bail('not a git repository')
 process.chdir(root)
+
+// The project's rules. A config that cannot be read is no config; a row that cannot be used is a problem to print, never a crash.
+const repoRules = (() => {
+  try {
+    const configAt = configRoot(root, root)
+    return configAt ? parseRepoRules(readConfig(configAt)) : { rules: [], problems: [] }
+  } catch {
+    return { rules: [], problems: [] }
+  }
+})()
+// The table quotes its own patterns, so the config files are not checked against them.
+const REPO_RULE_SKIP = /(^|\/)pipeline\.config(\.local)?\.md$/
+// A long minified line is cut here. This is not the guard against a backtracking pattern (60 characters are enough to hang one): `parseRepoRules` rejects the
+// shapes it can see, and `testLines` runs each rule on a file's lines in a `vm` that stops it after REPO_RULE_MS, drops the row with a named problem and
+// goes on — the built-in rules never depend on a row.
+const REPO_LINE_MAX = 4000
+const REPO_RULE_MS = 1000
+const REPO_TOTAL_MS = 3000
+let repoSpent = 0
 
 let base = 'HEAD'
 if (baseArg) {
@@ -236,11 +263,65 @@ const fileJustification = (path) => {
   return TESTISH.test(path) || fileMarker(tryGit('show', `${base}:${path}`)) ? why : null
 }
 
-const record = (rule, path, line, text, lines, index, { redact = false, justifiable = true } = {}) => {
+const record = (rule, path, line, text, lines, index, { redact = false, justifiable = true, message = null } = {}) => {
   const shown = redact ? '(value hidden)' : text.trim().slice(0, 120)
   // A secret is not justified by anything — neither by a line nor by a file.
   const why = rule === 'secret' ? null : currentFileOk ?? (justifiable && lines ? justification(lines, index, rule) : null)
-  ;(why ? accepted : violations).push({ rule, file: path, line, text: shown, ...(why ? { justification: why } : {}), ...notInGit(path) })
+  ;(why ? accepted : violations).push({ rule, file: path, line, text: shown, ...(message ? { message } : {}), ...(why ? { justification: why } : {}), ...notInGit(path) })
+}
+
+// The rows of the Repo rules table, one row at a time over the whole commit: one glob run over all paths and one pattern run over all covered added lines (one `vm`
+// context each). A context per file and row spent the budget on setup, not on matching (1200 files x 8 rows ended in exit 2 with no violation). All rows share one
+// budget: many slow rows must not add up past the hook's kill (the built-in rules below would be lost with it), so what the budget does not reach is skipped and named.
+const repoHitsByPath = new Map() // path → Map(rule id → boolean[] per added line)
+if (repoRules.rules.length) {
+  const scanned = [...files].filter(([path, { added }]) => added.length && !SKIP_PATH.test(path) && !REPO_RULE_SKIP.test(path))
+  const names = scanned.map(([path]) => path)
+  const coveredByAny = new Set()
+  for (const [at, rule] of repoRules.rules.entries()) {
+    const left = REPO_TOTAL_MS - repoSpent
+    if (left <= 0) {
+      repoRules.problems.push(`Repo rules: the time budget of ${REPO_TOTAL_MS} ms for all rows ran out before row "${rule.id}" — it and the ${repoRules.rules.length - at - 1} row(s) after it were skipped (many rows or files, or a slow pattern or glob; the built-in rules ran)`)
+      break
+    }
+    const limit = Math.min(REPO_RULE_MS, left)
+    const gone = (what, set) =>
+      repoRules.problems.push(
+        set < REPO_RULE_MS
+          ? `Repo rules row "${rule.id}": the time budget of ${REPO_TOTAL_MS} ms for all rows ran out during its ${what} — the row was skipped, the rows after it too, the built-in rules ran`
+          : `Repo rules row "${rule.id}": the ${what} did not finish within ${REPO_RULE_MS} ms (backtracking) — the row was skipped, the other rules ran`,
+      )
+    let started = Date.now()
+    const applies = repoRuleAppliesAll(rule, names, limit)
+    repoSpent += Date.now() - started
+    if (applies === null) {
+      gone('files glob', limit)
+      continue
+    }
+    const covered = scanned.filter((_, index) => applies[index])
+    if (!covered.length) continue
+    const texts = covered.flatMap(([, { added }]) => added.map(({ text }) => text.slice(0, REPO_LINE_MAX)))
+    started = Date.now()
+    const patternLimit = Math.min(REPO_RULE_MS, Math.max(1, REPO_TOTAL_MS - repoSpent))
+    const hits = testLines(rule.regex, texts, patternLimit)
+    repoSpent += Date.now() - started
+    if (!hits) {
+      gone('pattern', patternLimit)
+      continue
+    }
+    let offset = 0
+    for (const [path, { added }] of covered) {
+      coveredByAny.add(path)
+      if (!repoHitsByPath.has(path)) repoHitsByPath.set(path, new Map())
+      repoHitsByPath.get(path).set(rule.id, hits.slice(offset, offset + added.length))
+      offset += added.length
+    }
+  }
+  // A repo rule looks at the first REPO_LINE_MAX characters of a line: what stands further is not checked, and that is said, not passed over.
+  for (const [path, { added }] of scanned) {
+    const longLines = coveredByAny.has(path) ? added.filter(({ text }) => text.length > REPO_LINE_MAX).length : 0
+    if (longLines) repoRules.problems.push(`Repo rules: ${longLines} added line(s) in ${path} are longer than ${REPO_LINE_MAX} characters — repo rules were checked on the first ${REPO_LINE_MAX} only, not checked after that`)
+  }
 }
 
 // An untracked file may not have been created by the stage — whoever knows the stage's file list decides.
@@ -259,9 +340,14 @@ for (const [path, { added, removed }] of files) {
   const isTestish = TESTISH.test(path)
   const isPython = path.endsWith('.py')
 
+  // The hits of the Repo rules rows on this file, computed for the whole commit before this loop (`repoHitsByPath`).
+  const repoHits = repoHitsByPath.get(path) ?? new Map()
   added.forEach(({ line, text }, i) => {
     if (SECRET.some((pattern) => pattern.exec(text) && !PLACEHOLDER.test(text.match(pattern)[0]))) {
       record('secret', path, line, text, added, i, { redact: true, justifiable: false })
+    }
+    for (const rule of repoRules.rules) {
+      if (repoHits.get(rule.id)?.[i]) record(`repo:${rule.id}`, path, line, text, added, i, { message: rule.message })
     }
     if (!isCode && !isConfig) return
     if (HARD_SUPPRESSION.test(text)) record('silenced-checker', path, line, text, added, i, { justifiable: false })
@@ -339,18 +425,28 @@ const baseLabel = `${baseArg ? `${baseArg} (merge-base ${base.slice(0, 8)})` : '
 const size = { files: [...files.keys()].filter((path) => !SKIP_PATH.test(path)).length, added: addedTotal, removed: removedTotal }
 
 if (json) {
-  process.stdout.write(JSON.stringify({ base: baseLabel, size, violations, accepted }, null, 2) + '\n')
+  process.stdout.write(JSON.stringify({ base: baseLabel, size, violations, accepted, ...(repoRules.problems.length ? { configProblems: repoRules.problems } : {}) }, null, 2) + '\n')
 } else {
   console.log(`floor-guard: base ${baseLabel} · diff +${size.added} −${size.removed} lines in ${size.files} files (without lock/build)`)
   if (!violations.length) console.log('✔ no violations')
   else {
     console.log(`✘ violations: ${violations.length}`)
-    for (const v of violations) console.log(`  - [${v.rule}] ${v.file}${v.line ? `:${v.line}` : ''}${v.untracked ? ' (not in git)' : ''} — ${RULES[v.rule]}: ${v.text}`)
+    for (const v of violations) console.log(`  - [${v.rule}] ${v.file}${v.line ? `:${v.line}` : ''}${v.untracked ? ' (not in git)' : ''} — ${v.message ?? RULES[v.rule]}: ${v.text}`)
+  }
+  // Once per run, not once per line: a row that cannot be used is a problem of the config, and the rows after it still ran.
+  if (repoRules.problems.length) {
+    console.log(`⚠ config problem: ${repoRules.problems.length} row(s) of the Repo rules table did not run:`)
+    for (const problem of repoRules.problems) console.log(`  - ${problem}`)
   }
   if (accepted.length) {
     console.log(`justified exceptions: ${accepted.length} (for the stage journal and "⚠ Awaiting user confirmation")`)
     for (const a of accepted) console.log(`  - [${a.rule}] ${a.file}:${a.line} — ${a.justification}`)
   }
+}
+// A bad row is never a pass: with nothing else wrong the exit code is 2 ("could not check"), which the force-commit hook reports as an unchecked commit.
+if (!violations.length && repoRules.problems.length) {
+  console.error(`floor-guard: could not check the project's repo rules — ${repoRules.problems[0]}${repoRules.problems.length > 1 ? ` (+${repoRules.problems.length - 1} more)` : ''}`)
+  process.exit(2)
 }
 process.exit(violations.length ? 1 : 0)
 

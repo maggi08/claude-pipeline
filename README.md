@@ -39,7 +39,7 @@ Update: `claude plugin update stage-pipeline` (pulls the fresh `main`). After an
 
 Rollout to a team is a catalog in GitLab that points to this repository: [ROLLOUT.md](ROLLOUT.md).
 
-Check that it arrived: `claude plugin details stage-pipeline` — it must show 20 skills, 13 agents, 2 MCP servers. Then `/pipeline-doctor` in the target repository checks the environment (MCP, dev server, baseline).
+Check that it arrived: `claude plugin details stage-pipeline` — it must show 21 skills, 13 agents, 2 MCP servers. Then `/pipeline-doctor` in the target repository checks the environment (MCP, dev server, baseline).
 
 ### Development mode — a marketplace from a local clone
 
@@ -102,4 +102,4 @@ Releasing a version: raise `version` in `plugin.json` + add a section to `CHANGE
 
 Vendored human-text: `plugins/stage-pipeline/skills/human-text/`, `agents/human-text-check.md` and `human-text.lock.json` are a copy of the repo `maggi08/human-text`, which is the source of truth. Edit the rules there, then run `node scripts/sync-human-text.mjs [path-to-human-text | git-ref]` here; `validate.mjs` fails on a hand edit of the copy.
 
-Retro over real tasks: `node plugins/stage-pipeline/scripts/retro.mjs ~/programming/<repo>` — the share of false findings, fix-loop rounds, skips per checker, bloated STAGES.md files.
+Retro over real tasks: `node plugins/stage-pipeline/scripts/retro.mjs ~/programming/<repo>` — the share of false findings, fix-loop rounds, skips per checker, bloated STAGES.md files. `retro.mjs <repo> --findings` lists the repeated findings with their outcomes; `/promote` turns each repeat into a rule it has proven on two pre-fix versions, and asks before writing anything (plugin README, "Repo rules and /promote").

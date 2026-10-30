@@ -128,6 +128,7 @@ Pipeline:
 - [ ] pro-review whole-branch (the `pro-review` agent in whole-branch mode on `review_model`, `opus` by default, via the `model` parameter — the selection rule is in `/stage-check`, Step 3.3; the whole branch from the merge-base with `origin/<main_branch>` — the PR target, e.g. `dev`; with a fresh eye it catches what the per-stage `--stage` cannot see — duplicates between stages, the blast radius of shared modules, a broken committed HEAD)
 - [ ] devtools-verify: shared-radius — screens of changed shared modules that lie outside any stage go to devtools-verify — `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-map.mjs --radius <changed shared files>` lists their importers' routes and mapped features, the checker drives each feature's primary path (`/stage-check`, Step 3.2). Skip the item when no stage touched a module imported from outside its own area
 - [ ] security-review
+- [ ] team-review: `<skill>` from the config's `team_review` (`## Final checks`; add the line only if the config has `team_review`, one line per skill) — the repo-local review skill on the whole branch, report `checks/<skill>-branch.md`
 - [ ] metrics-guard (only if the config has `bundle_size`: a run on HEAD vs `checks/metrics-baseline.txt`)
 - [ ] ds-parity: duplicates with the design system — what is replaced by a kit component, what asks to go INTO the kit (`${CLAUDE_PLUGIN_ROOT}/skills/ds-parity`; on a redesign this is the main source of repeated edits at manual review)
 - [ ] dead-code: what was orphaned across the whole task (`${CLAUDE_PLUGIN_ROOT}/skills/dead-code`)

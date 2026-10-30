@@ -13,3 +13,23 @@ The branch pinned a beta version of the UI kit while `node_modules` was a symlin
 ## B. Senior best practices (universal)
 
 The shared info block of a step was rewritten from styled-components to Tailwind in the redesign tree; FIVE legacy screens imported it through the shared path, including one outside the scope of the task — on the classic design the headings became 21px instead of 24/28px and lost their centering and bottom margin. It went through the whole pipeline and was caught only by the final whole-branch review.
+
+## Dedup repo-wide, open the reused helper (lenses, Step 2/3)
+
+A locale-less `formatDate` called from a new place was seen three times in reviews and closed «false» because «the helper existed before the task»; the team lead raised it as major. Two more majors (history time in UTC, English months under a regional locale) came from helpers the diff called but did not change.
+
+## Maintainability lane and the contract scenario (Step 4)
+
+A finding about a nullable field was dropped because «no live ad reproduces it»; the null case gave a 500. Scenario from the type counts.
+
+## Deleted-code parity and the yardstick (lenses)
+
+A removal asked for by an AC, or disclosed in the awaiting list, was raised again by the team lead in 13 of 36 deleted-behaviour rows: the AC is the author's yardstick, not proof. A report accepted «"Send guest data" opens the send modal» as done; the reviewer's later round found the old flow gone.
+
+## Copied code is new code (Step 4)
+
+15 findings sat in code ported 1:1 from a reference branch and dismissed as «untouched».
+
+## The report names the search (lenses, Evidence per aspect)
+
+25 aspects were reported checked with no search named; 5 named searches missed the file type (`src/index.css`, a `.env`) or the value (a brand-light `rgba`) the diff added.

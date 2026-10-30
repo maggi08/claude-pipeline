@@ -53,14 +53,19 @@
       "reason": "gate description in the run digest of a ru task"
     },
     {
+      "glob": "plugins/stage-pipeline/scripts/retro-findings.mjs",
+      "line": "^(?:  \\['[a-z0-9-]+', /|const lastJournalDate|  const section = stages\\.split)",
+      "reason": "Russian words of live reports in the keyword table that cuts findings into first-cut classes, and the RU journal heading the last-journal-line fallback reads (retro --findings)"
+    },
+    {
       "glob": "plugins/stage-pipeline/scripts/kit-override-scan.mjs",
       "line": "^\\s+(?:'[a-z ]+'|[a-z]+): '[а-я ]+',$",
       "reason": "Russian labels of override kinds in the kit-overrides report of a ru task"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/kit-override-scan.mjs",
-      "line": "^\\s*(?:title: 'рабочее|summary: \\(n\\) => `Находки|'Переопределения кита|'переопределение остаётся|columns: \\['\\| # \\| Файл|none: 'Переопределений|unverified: '## Не|'- стили, собранные|const title = base \\?)",
-      "reason": "kit-overrides report text written into a ru task, byte for byte as before"
+      "line": "^\\s*(?:title: 'рабочее|summary: \\(n\\) => `Находки|'Переопределения кита|'переопределение остаётся|columns: \\['\\| # \\| Файл|none: 'Переопределений|skippedHeading: \\(n\\) => `## Проп|skippedIntro: 'Это не|unverified: '## Не|'- стили, собранные|const title = base \\?)",
+      "reason": "kit-overrides report text written into a ru task, byte for byte as before; its new skipped-section lines"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/report-language.mjs",
@@ -69,7 +74,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|unreadable|noRuntime|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort|browser|maker|makerShort|makerKinds|makerLine): ",
+      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|unreadable|noRuntime|repoOk|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort|browser|maker|makerShort|makerKinds|makerLine): ",
       "reason": "run digest headings and lines written for a ru task (the ones before 0.18.1 byte for byte as before; `browser` is the session browser line of 0.18.1)"
     },
     {
@@ -86,6 +91,11 @@
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
       "line": "^\\s*if \\(/\\^\\(\\?:нет",
       "reason": "RU forms of \"nothing unverified\" next to the EN ones"
+    },
+    {
+      "glob": "scripts/floor-guard-test.mjs",
+      "line": "^      '\\.claude/pipeline\\.config\\.md': .*## Правила репо",
+      "reason": "the fixture of the Russian heading of the Repo rules table (the second supported config language); one line"
     },
     {
       "glob": "scripts/hooks-test.mjs",

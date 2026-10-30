@@ -8,6 +8,8 @@
  * stay with the scripts.
  */
 
+import { createContext, runInContext } from 'node:vm'
+
 const re = (source, flags = '') => new RegExp(source, flags)
 
 /** Code in backticks and quoted text ("…", «…», “…”): identifiers or copy, not the wording of an outcome ("the untested import is removed"). */
@@ -433,9 +435,9 @@ export const BLOCKER_LIFTED = new RegExp(
 // The marker an open blocker carries when a final whole-task report is missing or stale and the run closes "completed with blockers" (VT-1 B1):
 // `[final: pro-review — not run]`, `[final: task-converge — stale]`, the Russian state words in a ru task. The brackets, `final:`, the report name and the dash
 // are the same in both languages. Prose is not read: "pro-review found a critical; report missing a recheck" names a finding, not a review that did not run.
-const FINAL_MARKER = /\[final:\s*(pro-review|task-converge)\s*[—–-]\s*(?:not\s+run|stale|не\s+запускался|устарел)\s*\]/gi
+const FINAL_MARKER = /\[final:\s*([\w.-]+)\s*[—–-]\s*(?:not\s+run|stale|не\s+запускался|устарел)\s*\]/gi
 const FINAL_STATE = { en: { missing: 'not run', stale: 'stale' }, ru: { missing: 'не запускался', stale: 'устарел' } }
-/** The final reports a line names by the marker: a Set of `pro-review` / `task-converge`. */
+/** The final reports a line names by the marker: a Set of `pro-review` / `task-converge` / a configured team review skill. */
 export const finalMarkerReports = (line) => new Set([...line.matchAll(FINAL_MARKER)].map((found) => found[1].toLowerCase()))
 /** The marker to write: `state` is `missing` or `stale`, `language` is `en` or `ru` (anything else — `en`). */
 export const finalMarker = (report, state, language) => `[final: ${report} — ${(FINAL_STATE[language] ?? FINAL_STATE.en)[state]}]`
@@ -457,6 +459,14 @@ export const UNVERIFIED_HEADING = /^#{2,3}\s*(?:Не удалось провер
 export const SUMMARY_STANDARD = /(?:Находки|Findings):\s*critical\s*\d+\s*·\s*major\s*\d+/i
 
 // --- pipeline.config.md ---
+
+/** `- team_review: cleanup-review, other-skill` — repo-local review skills the project asks to run as a final checker (stage 12, opt-in). */
+const TEAM_REVIEW_LINE = /^[ \t]*-[ \t]*team_review[ \t]*:[ \t]*(.+)$/im
+/** The team review skills a config names: skill names (`[\w.-]+`) from the `team_review:` line, `—`/`none`/a placeholder gives an empty list. */
+export const teamReviewSkills = (configText) => {
+  const value = TEAM_REVIEW_LINE.exec(configText ?? '')?.[1].split('#')[0].replace(/`/g, '') ?? ''
+  return value.split(/[,\s]+/).filter((name) => /^[a-z][\w.-]*$/i.test(name) && !NO_GATE_COMMAND.test(name) && !/^(?:skill|name)$/i.test(name))
+}
 
 /** The heading of the CI gates table. */
 export const CI_GATES_HEADING = /^(#{2,4})[ \t]*(?:Гейты\s+CI|CI\s+gates)\b.*$/im
@@ -564,3 +574,202 @@ export const RERUN_SUFFIX = /^(?:r\d+|fresh[\w-]*|recheck(?:-?\d+)?)\.md$/i
 export const RERUN_SCREEN = /^(?:checks\/)?screens\/[\w.-]+\.(?:png|jpe?g|webp)$/i
 /** A partial devtools-verify run: the recheck of named findings (`devtools-verify-<stage>-r<k>.md`) and the before-fix repro (`…-repro.md`). It measures what it was asked to, not the geometry of every width. */
 export const PARTIAL_RUN = /^(?:devtools-verify(?:-\w+)*|(?:stage|этап)-?\d+[a-z]?-devtools-verify)-(?:r\d+|repro|recheck(?:-?\d+)?)\.md$/i
+
+// --- `## Repo rules` (stage 13): project rules that floor-guard applies to added lines ---
+
+/** The heading of the repo rules table (`## Repo rules`, in a ru config its Russian form from references/language.md). */
+export const REPO_RULES_HEADING = /^(#{2,4})[ \t]*(?:Правила\s+репо(?:зитория)?|Repo\s+rules)(?![\wа-яё]).*$/im
+
+const MAX_GLOB_WILDCARDS = 4
+
+/**
+ * A glob of the `files` column as a RegExp over a repo-relative path with `/`: `**` any depth, `*` inside a segment, `?` one character, `{a,b}`
+ * alternatives. A glob with no `/` matches the name at any depth (`*.vue` is every Vue file).
+ */
+export function globToRegExp(glob) {
+  let out = ''
+  let braces = 0
+  let wildcards = 0
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') {
+      // Each `*` is a backtracking point: `*a*a*a*a*a*a*a*b` on a long path of `a` never finishes. A real glob has two or three; more is a config problem, not a hang.
+      if (glob[i - 1] !== '*' && ++wildcards > MAX_GLOB_WILDCARDS) throw new Error(`more than ${MAX_GLOB_WILDCARDS} wildcards (\`*\`, \`**\`) in one glob can backtrack without end — split it into several globs`)
+      if (glob[i + 1] === '*') {
+        i++
+        if (glob[i + 1] === '/') {
+          i++
+          out += '(?:.*/)?'
+        } else out += '.*'
+      } else out += '[^/]*'
+    } else if (c === '?') out += '[^/]'
+    else if (c === '{') {
+      braces++
+      out += '(?:'
+    } else if (c === '}' && braces) {
+      braces--
+      out += ')'
+    } else if (c === ',' && braces) out += '|'
+    else out += c.replace(/[.+^$()|[\]\\{}]/g, '\\$&')
+  }
+  if (braces) throw new Error('unclosed {')
+  return new RegExp(`^${glob.includes('/') ? '' : '(?:.*/)?'}${out}$`)
+}
+
+const unwrap = (cell) => cell.trim().replace(/^`([\s\S]*)`$/, '$1').replace(/\\\|/g, '|').trim()
+
+/** `**`, `*`, `any`, `all` or a dash: every file. */
+const EVERY_FILE = /^(?:\*\*?|\*\*\/\*|any|all|—|-|все)$/i
+
+/**
+ * The repo rules of a config text: `{ rules, problems }`. A row is `| id | pattern | files | message | evidence |` under the `## Repo rules` heading
+ * (every table of the section; the cells are split on `|` not escaped by a backslash, so a pattern writes an alternation as `\|`).
+ *  - `pattern` — a JS regular expression, bare or as `/source/flags` (flags from `imsu`); in backticks if it has a `|` or a space.
+ *  - `files` — globs separated by commas outside braces or by spaces (`src/**\/*.vue, !**\/*.test.*`), the cell in one code span or each glob in its own; a leading `!` excludes; `*` — every file.
+ *    A glob is repo-relative: one with a backtick left, a leading `./` or a trailing `/` is a problem (a directory is written `dir/**`).
+ *  - `message` — what the violation says, naming the fix; `evidence` — where the rule came from (optional, not read by the guard).
+ * A row that cannot be used (an id that is not `[\w.-]+`, a pattern that does not compile or matches an empty string, a duplicate id, a bad glob) goes
+ * to `problems` as a line naming the row; the rows that are fine are still returned. No heading or no rows — `{ rules: [], problems: [] }`.
+ * A rule: `{ id, source, flags, regex, files: { include: RegExp[], exclude: RegExp[] }, message, evidence }`.
+ */
+export function parseRepoRules(configText) {
+  const rules = []
+  const problems = []
+  const heading = (configText ?? '').match(REPO_RULES_HEADING)
+  if (!heading) return { rules, problems }
+  const rest = configText.slice(heading.index + heading[0].length).split('\n')
+  const end = rest.findIndex((line) => new RegExp(`^#{1,${heading[1].length}}\\s`).test(line))
+  let columns = 5 // the width of the table: its header row says (4 or 5), else 5
+  for (const line of end === -1 ? rest : rest.slice(0, end)) {
+    if (!/^\s*\|/.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) continue
+    const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/)
+    const id = cells[0]?.replace(/[*`]/g, '').trim() ?? ''
+    if (/^(?:id|ид|идентификатор)$/i.test(id) && /pattern|шаблон|regex/i.test(cells[1] ?? '')) {
+      columns = Math.min(5, Math.max(4, cells.length))
+      continue
+    }
+    const fail = (why) => problems.push(`Repo rules row "${id || line.trim().slice(0, 40)}": ${why}`)
+    if (cells.length < 4) {
+      fail('needs at least 4 cells: id, pattern, files, message')
+      continue
+    }
+    if (cells.length > columns) {
+      fail(`has ${cells.length} cells, the table has ${columns} columns (id, pattern, files, message${columns === 5 ? ', evidence' : ''}): an unescaped \`|\` in a cell splits it — write \`\\|\` for a \`|\` inside the pattern`)
+      continue
+    }
+    // a pattern with `|` sits in backticks: a pattern or files cell that opens a code span it does not close was split by an unescaped `|`, whatever the width of the table
+    const brokenSpan = cells.slice(1, 3).find((cell) => /^`/.test(cell.trim()) !== /`$/.test(cell.trim()) && cell.trim() !== '`')
+    if (brokenSpan !== undefined) {
+      fail(`the cell ${JSON.stringify(brokenSpan.trim().slice(0, 40))} opens or closes a code span without its pair: an unescaped \`|\` in a cell splits it — write \`\\|\` for a \`|\` inside the pattern`)
+      continue
+    }
+    if (!/^[\w.-]+$/.test(id)) {
+      fail('the id must be letters, digits, `.`, `_` or `-`')
+      continue
+    }
+    if (rules.some((rule) => rule.id === id)) {
+      fail('the id is already used by an earlier row')
+      continue
+    }
+    const raw = unwrap(cells[1])
+    const slashed = raw.match(/^\/([\s\S]+)\/([a-z]*)$/)
+    const source = slashed ? slashed[1] : raw
+    const flags = slashed ? slashed[2] : ''
+    if (!source) {
+      fail('the pattern is empty')
+      continue
+    }
+    let regex
+    try {
+      if (!/^[imsu]*$/.test(flags)) throw new Error(`flags "${flags}" are not allowed (only i, m, s, u)`)
+      regex = new RegExp(source, flags)
+    } catch (error) {
+      fail(`the pattern does not compile — ${error.message}`)
+      continue
+    }
+    if (regex.test('')) {
+      fail('the pattern matches an empty string, so it would flag every line')
+      continue
+    }
+    const slow = backtrackingRisk(source, regex)
+    if (slow) {
+      fail(`the pattern can backtrack without end (${slow}), so it would hang the commit check — rewrite it without a repeated group that repeats (e.g. \`(\\w+\\s?)+\` → \`\\w[\\w ]*\`)`)
+      continue
+    }
+    const globs = unwrap(cells[2])
+      .split(/[\s,]+(?![^{]*\})/)
+      .map((glob) => glob.replace(/^`|`$/g, '')) // each glob in its own code span: `a`, `!b`
+      .filter(Boolean)
+    const badGlob = globs.find((glob) => /`/.test(glob) || /^!?(?:\.\.?)?\//.test(glob) || /\/$/.test(glob))
+    if (badGlob !== undefined) {
+      fail(`the glob ${JSON.stringify(badGlob)} cannot match: globs match repo-relative paths (no backtick, no leading \`./\`, \`../\` or \`/\`), and a directory needs \`/**\` (\`src/components/**\`), not a trailing \`/\``)
+      continue
+    }
+    const files = { include: [], exclude: [] }
+    try {
+      if (!globs.length) throw new Error('no files named (use `*` for every file)')
+      if (!(globs.length === 1 && EVERY_FILE.test(globs[0]))) {
+        for (const glob of globs) (glob.startsWith('!') ? files.exclude : files.include).push(globToRegExp(glob.replace(/^!/, '')))
+      }
+    } catch (error) {
+      fail(`the files column is not usable — ${error.message}`)
+      continue
+    }
+    const message = unwrap(cells[3])
+    if (!message) {
+      fail('the message is empty — it must say what to do instead')
+      continue
+    }
+    rules.push({ id, source, flags, regex, files, message, evidence: unwrap(cells[4] ?? '') })
+  }
+  return { rules, problems }
+}
+
+// A quantified group that holds a quantifier (`(a+)+`, `(\w+\s?)*`, `(a{1,5})+`), or an alternation under a quantifier whose branches share a start (`(a|ab)*`).
+const NESTED_QUANTIFIER = /\((?:\?:)?(?:[^()\\[\]]|\\.|\[(?:[^\]\\]|\\.)*\])*[+*}](?:[^()\\[\]]|\\.|\[(?:[^\]\\]|\\.)*\])*\)(?:[+*]|\{\d+,\d*\})/
+const ALTERNATION_UNDER_QUANTIFIER = /\((?:\?:)?([^()|]+)\|([^()|]+)\)(?:[+*]|\{\d+,\d*\})/
+const PROBE_LINES = ['a'.repeat(48) + '!', 'ab '.repeat(24) + '!', 'a,'.repeat(30) + '!', ' '.repeat(60) + '!', '"' + 'a '.repeat(30) + '!', 'x.y'.repeat(20) + '!']
+const PROBE_MS = 40
+
+/**
+ * Why a regex of a repo rule may hang the commit check, or null: a nested quantifier, an alternation whose branches begin alike under a quantifier,
+ * or (the net for what a source heuristic cannot see) a run of synthetic lines it cannot finish within PROBE_MS, timed in a `vm` that stops it.
+ */
+export function backtrackingRisk(source, regex) {
+  if (NESTED_QUANTIFIER.test(source)) return 'a repeated group that holds a repeat'
+  const alternation = source.match(ALTERNATION_UNDER_QUANTIFIER)
+  if (alternation && (alternation[1].startsWith(alternation[2][0]) || alternation[2].startsWith(alternation[1][0]))) return 'a repeated alternation whose branches begin alike'
+  return testLines(regex, PROBE_LINES, PROBE_MS) === null ? `it did not finish on a synthetic line within ${PROBE_MS} ms` : null
+}
+
+/** `regex.test` for each text, stopped after `timeoutMs` in total: the array of booleans, or null when the regex did not finish (a backtracking pattern). */
+export function testLines(regex, texts, timeoutMs) {
+  try {
+    return runInContext('t.map((text) => r.test(text))', createContext({ r: new RegExp(regex.source, regex.flags), t: texts }), { timeout: timeoutMs })
+  } catch {
+    return null
+  }
+}
+
+/** `repoRuleApplies` for many paths in one `vm` run under one time limit: an array of booleans in the order of `paths`, or null when the globs did not finish. */
+export function repoRuleAppliesAll(rule, paths, timeoutMs) {
+  try {
+    return runInContext('p.map((x) => (!i.length || i.some((g) => g.test(x))) && !e.some((g) => g.test(x)))', createContext({ i: rule.files.include, e: rule.files.exclude, p: paths }), { timeout: timeoutMs })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a repo rule applies to a repo-relative path: it matches an include glob (or the rule names every file) and no exclude glob.
+ * With `timeoutMs` the glob match runs in a `vm` that stops it (the same guard as the pattern): the answer is then null when the globs did not finish.
+ */
+export function repoRuleApplies(rule, path, timeoutMs = null) {
+  const applies = () => (!rule.files.include.length || rule.files.include.some((glob) => glob.test(path))) && !rule.files.exclude.some((glob) => glob.test(path))
+  if (timeoutMs === null) return applies()
+  try {
+    return runInContext('(!i.length || i.some((g) => g.test(p))) && !e.some((g) => g.test(p))', createContext({ i: rule.files.include, e: rule.files.exclude, p: path }), { timeout: timeoutMs })
+  } catch {
+    return null
+  }
+}
