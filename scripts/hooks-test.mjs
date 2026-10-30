@@ -4650,13 +4650,16 @@ rmSync(retroRoot, { recursive: true, force: true })
       puppeteerShaped.status !== 0 && puppeteerShaped.pid > 0 && (await goneWithin(puppeteerShaped.pid)) && new RegExp(`journey: browser closed \\(pid ${puppeteerShaped.pid}\\)`).test(puppeteerShaped.stdout),
       puppeteerShaped.stdout + puppeteerShaped.stderr,
     )
-    // S-6: the browser crashed early and its PID is another process by the end — close() resolves at once, as a crashed browser's does; no SIGKILL may follow
+    // S-6: the browser crashed early and its PID is another process by the end — close() resolves at once, as a crashed browser's does; no SIGKILL may follow.
+    // The stand-in writes a ready file once its SIGUSR2 handler is in place: signalled before that, a slow runner's node dies of the default action instead.
+    const reusedReady = join(bRoot, 'journey-reused-ready')
     const reusedJourney = runJourney('journey-reused', [
       "import { spawn } from 'node:child_process'",
+      "import { existsSync } from 'node:fs'",
       `import { withBrowser } from ${JSON.stringify(JOURNEY_LIB)}`,
-      `const child = spawn(process.execPath, ${JSON.stringify(chromeArgv([`--user-data-dir=${join(bRoot, 'puppeteer_dev_chrome_profile-crashed')}`, '--remote-debugging-pipe'], REUSED('SIGUSR2')))}, { argv0: ${JSON.stringify(CHROME_EXE)}, stdio: 'ignore', detached: true })`,
+      `const child = spawn(process.execPath, ${JSON.stringify(chromeArgv([`--user-data-dir=${join(bRoot, 'puppeteer_dev_chrome_profile-crashed')}`, '--remote-debugging-pipe'], `${REUSED('SIGUSR2')}require('node:fs').writeFileSync(${JSON.stringify(reusedReady)}, '');`))}, { argv0: ${JSON.stringify(CHROME_EXE)}, stdio: 'ignore', detached: true })`,
       'child.unref()',
-      "await withBrowser(async () => ({ process: () => child, close: async () => {} }), async () => { process.kill(child.pid, 'SIGUSR2'); await new Promise((done) => setTimeout(done, 300)); throw new Error('step 3 failed midway') }, { closeTimeoutMs: 300 })",
+      `await withBrowser(async () => ({ process: () => child, close: async () => {} }), async () => { const until = Date.now() + 5000; while (!existsSync(${JSON.stringify(reusedReady)}) && Date.now() < until) await new Promise((done) => setTimeout(done, 20)); process.kill(child.pid, 'SIGUSR2'); await new Promise((done) => setTimeout(done, 300)); throw new Error('step 3 failed midway') }, { closeTimeoutMs: 300 })`,
     ])
     check(
       'journey S-6: a PID that is another process by the close (start time / command line changed) gets no SIGKILL',
