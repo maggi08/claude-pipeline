@@ -1,8 +1,21 @@
 {
   "rules": [
     {
+      "glob": "plugins/stage-pipeline/skills/human-text/references/rules.md",
+      "line": "^- [«а-я]",
+      "reason": "vendored copy of the human-text repo: the RU marker list of rule 11, the words the check looks for in Russian text; edit in the human-text repo"
+    },
+    {
+      "glob": "evals/cases/human-text-check-*/case.json",
+      "reason": "Russian draft of a status update in the prompt: the check agent is run on a Russian text on purpose"
+    },
+    {
       "glob": "evals/cases/**/locales/ru.json",
       "reason": "Russian locale of the fixture app: i18n evals check the ru locale on purpose"
+    },
+    {
+      "glob": "evals/pending/**/locales/ru.json",
+      "reason": "the same fixture locale of a case that waits in evals/pending/ for a discriminating proof"
     },
     {
       "glob": "plugins/stage-pipeline/references/language.md",
@@ -16,8 +29,18 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/journal-check.mjs",
-      "line": "^\\s*(?:const (?:FIXED_WORD|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
+      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|NEGATED_FIXED|FALSE_OUTCOME|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN|CLOSING_TAIL_WORD|CLOSING_TAIL_TOKEN|FIELD_CLOSING_MARK)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
       "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones); messages are not covered"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/decisions.mjs",
+      "line": "^\\s*(?:(?:export )?const [A-Z_]+ = |/|inForce = |const at = |const tail = |    if \\(/)",
+      "reason": "RU alternatives of the rollback-cost and basis regexes (RU|EN pairs), and the Force heading regexp"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/dismissals.mjs",
+      "line": "^\\s*(?:(?:export )?const [A-Z_]+ = |if \\((?:DEFERRED|SELF_SOURCED)|const before = |    ')",
+      "reason": "RU alternatives of the weak-dismissal phrase regexes (RU|EN pairs)"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/archive-stages.mjs",
@@ -26,8 +49,13 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/ci-gates.mjs",
-      "line": "^\\s*(?:ru: \\{ green|\\? `«\\$\\{gate\\.name\\}»)",
+      "line": "^\\s*(?:ru: \\{ green|const RED_CODE|\\? `«\\$\\{gate\\.name\\}»)",
       "reason": "gate description in the run digest of a ru task"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/retro-findings.mjs",
+      "line": "^(?:  \\['[a-z0-9-]+', /|const lastJournalDate|  const section = stages\\.split)",
+      "reason": "Russian words of live reports in the keyword table that cuts findings into first-cut classes, and the RU journal heading the last-journal-line fallback reads (retro --findings)"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/kit-override-scan.mjs",
@@ -36,8 +64,8 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/kit-override-scan.mjs",
-      "line": "^\\s*(?:title: 'рабочее|summary: \\(n\\) => `Находки|'Переопределения кита|'переопределение остаётся|columns: \\['\\| # \\| Файл|none: 'Переопределений|unverified: '## Не|'- стили, собранные|const title = base \\?)",
-      "reason": "kit-overrides report text written into a ru task, byte for byte as before"
+      "line": "^\\s*(?:title: 'рабочее|summary: \\(n\\) => `Находки|'Переопределения кита|'переопределение остаётся|columns: \\['\\| # \\| Файл|none: 'Переопределений|skippedHeading: \\(n\\) => `## Проп|skippedIntro: 'Это не|unverified: '## Не|'- стили, собранные|const title = base \\?)",
+      "reason": "kit-overrides report text written into a ru task, byte for byte as before; its new skipped-section lines"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/report-language.mjs",
@@ -46,18 +74,28 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted): ",
-      "reason": "run digest headings written for a ru task, byte for byte as before"
+      "line": "^    (?:blockers|none|gates|noOutcome|notVerified|minor|accepted|labels|noneOf|verifiedJournal|verifiedReports|stage|otherStage|title|run|sameDay|checkers|file|notWritten|notReady|unreadable|noRuntime|repoOk|noRuntimeLine|dismissed|dismissedLine|notFinding|dismissedShort|browser|maker|makerShort|makerKinds|makerLine): ",
+      "reason": "run digest headings and lines written for a ru task (the ones before 0.18.1 byte for byte as before; `browser` is the session browser line of 0.18.1)"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
-      "line": "^\\s*(?:'ledger-(?:parked|unproven|unknown)': |`checks/\\$\\{name\\}: \\$\\{what\\}, а итогов|`\\(\\$\\{LEDGER_DOC\\}\\)\\. Находку)",
+      "line": "^\\s*(?:'ledger-(?:parked|unproven|unknown|weak|critical-fresh)': |`checks/\\$\\{name\\}: \\$\\{what\\}, а итогов|`\\(\\$\\{LEDGER_DOC\\}\\)\\. Находку)",
       "reason": "the lines of the \"findings without outcome\" section of a ru task's run digest, byte for byte as the base hook messages"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/receipts.mjs",
+      "line": "^\\s*(?:const WHOLE_BRANCH|const commitOpen|const RUNTIME_SKIP_REASON)",
+      "reason": "RU alternatives of the whole-branch, commit-line and runtime-skip-reason regexes (RU|EN pairs)"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",
       "line": "^\\s*if \\(/\\^\\(\\?:нет",
       "reason": "RU forms of \"nothing unverified\" next to the EN ones"
+    },
+    {
+      "glob": "scripts/floor-guard-test.mjs",
+      "line": "^      '\\.claude/pipeline\\.config\\.md': .*## Правила репо",
+      "reason": "the fixture of the Russian heading of the Repo rules table (the second supported config language); one line"
     },
     {
       "glob": "scripts/hooks-test.mjs",
@@ -66,8 +104,8 @@
     },
     {
       "glob": "scripts/hooks-test.mjs",
-      "line": "^check\\('(?:journal: a new \"✅ pro-review по коду|stage-implement: a new Force block w|neighbouring repo on master: \"Ветка:|force \"завершён с блокерами\" — close|FAIL on a criterion is a finding, \"б|outcome: \"оставляю\" — ledger-parked |\\[live\\] because of \"нет броней\" — liv|RU checker report with «Находки: cri|visual reference: RU stage field is |snapshot v1 → v2: the old line \"\\[x\\] |outcome \"оставляю\" — returned in the|\"завершён\" with an open blocker — re|\"завершён с блокерами\" — the run sum|gates: the \"Гейты CI\" table — names |gates: \"e2e: НЕТ\" is not a gate|EN gates: \"kit_overrides: disabled\" |devtools-verify on a stage with a \"Э|closing \"завершён\" without a CI gate|\"с блокерами\": a non-green gate name)",
-      "reason": "the 19 check names that quote a Russian token (STAGES.md/report phrase) in quotes; a new Russian check name is not allowed"
+      "line": "^check\\('(?:journal: a new \"✅ pro-review по коду|stage-implement: a new Force block w|neighbouring repo on master: \"Ветка:|force \"завершён с блокерами\" — close|FAIL on a criterion is a finding, \"б|outcome: \"оставляю\" — ledger-parked |\\[live\\] because of \"нет броней\" — liv|RU checker report with «Находки: cri|visual reference: RU stage field is |snapshot v1 → v2: the old line \"\\[x\\] |outcome \"оставляю\" — returned in the|\"завершён\" with an open blocker — re|gates: the \"Гейты CI\" table — names |gates: \"e2e: НЕТ\" is not a gate|EN gates: \"kit_overrides: disabled\" |devtools-verify on a stage with a \"Э|closing \"завершён\" without a CI gate|\"с блокерами\": a non-green gate name)",
+      "reason": "the 18 check names that quote a Russian token (STAGES.md/report phrase) in quotes; a new Russian check name is not allowed"
     },
     {
       "glob": "scripts/hooks-test.mjs",
@@ -83,6 +121,25 @@
       "glob": "scripts/validate.mjs",
       "line": "^(?:\\s*// A count in any form, Russian or English|\\s*// \"Шаг 4 скилла\" /| \\* Not a count: |\\s*'скилл\\|skill': |\\s*'агент\\|agent': |\\s*const notAfter = '(?:[^Ѐ-ӿ]|\\[(?:Шш|Ээ|Пп)\\](?:аг|тап|ункт)\\[а-я\\]\\*)*'$|\\s*const phraseEnd = '(?:[^Ѐ-ӿ]|\\(?:и\\|)*'$|\\s*return new RegExp\\(`\\$\\{notAfter\\}(?:[^Ѐ-ӿ]|\\(\\?:ов\\|а\\)|\\[а-яё\\])*`\\)$)",
       "reason": "the Russian form of the \"N skills / N agents\" showcase count and its exceptions, next to the English one"
+    },
+    {
+      "glob": "scripts/validate.mjs",
+      "line": "^\\s*(?:// m-2: «Отклонение»|expectMatches\\('a finding under (?:a ru H1 title with «Отклонение»|«Отклонения от макета»|«Отклонено» is dropped)')",
+      "reason": "the Russian noun for a deviation against the kept marker for a dismissed item, as the finding grader's self-test feeds them"
+    },
+    {
+      "glob": "scripts/validate.mjs",
+      "line": "^\\s*expectMatches\\('a finding (?:after «Не удалось проверить» is dropped|under «Итог находок» is dropped|under «Отброшено при перепроверке» is dropped)'",
+      "reason": "the Russian section markers of a report, as the finding grader's self-test feeds them"
+    },
+    {
+      "glob": "scripts/eval-lib.mjs",
+      "reason": "the leak lint's word list and the negation patterns of the finding grader match Russian words, as a Russian task report and a Russian-speaking developer produce them"
+    },
+    {
+      "glob": "scripts/eval.mjs",
+      "line": "^ \\*.*кейс",
+      "reason": "the header names the Russian leak words the lint looks for"
     },
     {
       "glob": "plugins/stage-pipeline/skills/*/SKILL.md",
@@ -115,11 +172,11 @@
       "reason": "the language-pair cases quote the Russian \"Language:\" and \"Findings:\" markers in the English why"
     },
     {
-      "glob": "evals/cases/pro-review-language-ru/base/tasks/EVAL-1/STAGES.md",
+      "glob": "evals/cases/pro-review-language-ru/base/tasks/PRF-8/STAGES.md",
       "reason": "the RU fixture of the language case: a task with the Russian language line"
     },
     {
-      "glob": "evals/cases/stage-implement-reuse/base/tasks/EVAL-1/STAGES.md",
+      "glob": "evals/cases/stage-implement-reuse/base/tasks/PAY-14/STAGES.md",
       "line": "^- `AC-2\\.3`.*«Время оплаты истекло»",
       "reason": "the Russian locale string that the eval checks in locales/ru.json"
     },
@@ -127,6 +184,11 @@
       "glob": "plugins/stage-pipeline/skills/i18n-sweep/SKILL.md",
       "line": "^6\\. \\*\\*Hand-made pluralization\\*\\*.*«товар, товара, товаров»",
       "reason": "plural-category example in Russian"
+    },
+    {
+      "glob": "plugins/stage-pipeline/skills/feature-doc/SKILL.md",
+      "line": "^\\*\\*6\\. The ending and the markup\\.\\*\\*.*данный",
+      "reason": "Russian marker words that the doc rule adds to rule 11 for a document written in Russian"
     },
     {
       "glob": "scripts/cyrillic-allowlist.json",
@@ -137,6 +199,21 @@
       "glob": "scripts/validate.mjs",
       "line": "^\\s*(?:const s = h\\[2\\]\\.match\\(|const stepRe = new RegExp\\(|const sectionRe = |const query = norm\\(name\\))",
       "reason": "the Russian form of the step reference that the xref check still reads next to the English one"
+    },
+    {
+      "glob": "scripts/run-audit.mjs",
+      "line": "Force-прогон|Подтверждено|этап\\[а-яё\\]|cancel\\|отмен|,и&",
+      "reason": "RU alternatives of the structural markers of a Russian-language task (Force-run heading, Confirmed line, stage word, cancelled status): the same forms the plugin parsers read; the digest must read a Russian journal"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/plan-check.mjs",
+      "line": "(?:/\\^|/\\(\\?|= /|\\.test\\(line\\))",
+      "reason": "RU alternatives of the plan-check regexes (stage, visual reference, Force fields, closing words); only lines with a regex literal"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
+      "line": "режим\\)\\\\s\\*\\(\\?::\\\\s\\*\\)\\?\\\\\\*\\*fix",
+      "reason": "RU alternative of the mode word in the fix-mode regex (stage-implement prompt in a Russian task)"
     }
   ]
 }

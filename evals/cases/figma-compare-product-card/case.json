@@ -1,0 +1,81 @@
+{
+  "agent": "figma-compare",
+  "why": "the static design checker reads the node through the design MCP (production tool names), compares at the token level and reports the gap, padding and radius deviations and a raw hex with file:line, without flagging what matches",
+  "identity": {
+    "repo": "shop-components",
+    "ticket": "SHOP-13",
+    "user": "Theo Brandvold",
+    "email": "theo.brandvold@shop-components.dev"
+  },
+  "mcp": [
+    "figma"
+  ],
+  "mcpServers": {
+    "figma": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "{stubs}/figma-stub.mjs"
+      ],
+      "env": {}
+    }
+  },
+  "prompt": "Ticket SHOP-13, stage 1. Language: en. Figma node: 12:34 (Product card, file \"Storefront UI\"). Code: src/components/ProductCard.tsx and src/components/ProductCard.css. Stage criteria tagged figma-compare:\n- `AC-1.1` WHEN the card is rendered THEN its padding, gap and corner radius equal the design values\n- `AC-1.2` WHEN the card is rendered THEN its colors come from the design tokens",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "ProductCard\\.css",
+      "line": 4,
+      "why": "gap 8px against the design's 16px (space/md)"
+    },
+    {
+      "severity": "critical|major",
+      "file": "ProductCard\\.css",
+      "line": 5,
+      "why": "padding 20px against the design's 16px (space/md)"
+    },
+    {
+      "severity": "critical|major",
+      "file": "ProductCard\\.css",
+      "line": 8,
+      "why": "corner radius 8px against the design's 12px (radius/lg)"
+    },
+    {
+      "severity": "critical",
+      "file": "ProductCard\\.css",
+      "line": 24,
+      "why": "a raw hex for the price is critical even though it equals the accent token's value: the token is what carries dark mode"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "critical|major|minor",
+      "file": "button[^\\n]*radius|radius[^\\n]*button",
+      "why": "the button radius already uses the 8px token and matches the design"
+    }
+  ],
+  "trace": [
+    {
+      "tool": "mcp__plugin_stage-pipeline_figma__(get_design_context|get_variable_defs|get_metadata)",
+      "why": "the node was read through the design server under its production tool name"
+    }
+  ],
+  "unchanged": [
+    "src/components/ProductCard.css",
+    "src/components/ProductCard.tsx"
+  ],
+  "provenFailing": {
+    "on": "ablate:skill:figma-compare",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@0494f328e",
+    "runs": 2,
+    "failed": 2,
+    "caseHash": "9186f185296a2ede",
+    "failures": [
+      "no finding line: a raw hex for the price is critical even though it equals the accent token's value: the token is what carries dark mode (critical /ProductCard\\",
+      "finding that must not be raised: the button radius already uses the 8px token and matches the design (- **M-3 (major)**: card corner radius. Expected 12px (`rad"
+    ]
+  }
+}

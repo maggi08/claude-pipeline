@@ -44,7 +44,7 @@ git status --short
 
 If the branch is already merged or the base is not available locally — say so and suggest `git fetch` or a review in `--diff` mode.
 
-**Whole-branch: the committed HEAD must compile.** The working tree and HEAD are different things: uncommitted fixes mask broken commits. In a whole-branch review run `type_check` from the config on the state of HEAD itself (the tree is clean — just run it; dirty — `git stash` for the duration of the run, or a separate worktree) and compare with the baseline.
+**Whole-branch: the committed HEAD must compile.** The working tree and HEAD are different things: uncommitted fixes mask broken commits. In a whole-branch review run `type_check` from the config on the state of HEAD itself (the tree is clean — just run it; dirty — `git stash` for the duration of the run, or a separate worktree) and compare with the baseline. When the diff changes build config, env files, CI files or manifests, run `build` from the config on HEAD the same way: a type check does not see a broken bundle.
 
 **Did you check against the manifest or against a symlink?** Before you trust any green run, compare the installed tree with what HEAD declares: where the package physically lives (`ls -la node_modules/<package>` or the equivalent of the project's package manager) against the version in the manifest. A symlink/`link:`/`portal:` to a neighbouring repo with a pinned registry version means that `type_check`, the tests and the build ran on code that is NOT in the pinned version — only CI or a colleague's machine will go red. A branch that changes the version of a UI library or relies on its fresh API must be checked against the PINNED version: download it from the registry into a separate directory (`npm pack <package>@<version>` and the like) and grep the public types — answered in a minute. A runtime gap is dangerous separately: a missing prop gives a type error and so is visible, while a changed INNER logic of a component (a render condition, a gate) does not break the types and shows only to the eye — list such places in the report explicitly.
 
@@ -56,6 +56,9 @@ For every changed file:
 - Read the **whole file**, not just the diff hunks — bugs are often in how the new code interacts with the old.
 - Understand the intent of the task: look at the commit messages (`git log "$BASE"..HEAD --oneline`), the branch name, the linked ticket in the name.
 - Read `CLAUDE.md` in the root and the Conventions section in `pipeline.config.md` — they are the sources of truth for the project conventions.
+
+- Open every helper the diff **newly calls** (a reused function, a shared hook), not only the files it changes: a reused helper's defect at a new call site is the diff's defect, "it existed before the task" does not make it untouched.
+- Every file the diff deletes or rewrites: the parity list from the base (whole-branch: `$BASE`; stage mode: the previous stage's commit, `HEAD` for an uncommitted stage) (`references/lenses.md`, "Deleted and rewritten code").
 
 Do not review blind: first understand what the task was supposed to do, then check whether it did it right and completely.
 
@@ -72,6 +75,8 @@ The source of the rubric is the repository itself, not this skill: `CLAUDE.md` (
 - **Structure**: the code layout from the config (where components/hooks/utils go).
 - **Feature flags**: the project's mechanism, not home-made conditions.
 
+A convention that a row of the config's `## Repo rules` table enforces is not re-reported here: floor-guard owns it on every force commit, so the review spends its attention on what the row cannot see (a pattern that is dodged by another spelling, a file the row's `files` do not cover, the same defect in an unchanged neighbour).
+
 Keep project checklists in the project's repo (CLAUDE.md / pipeline.config Conventions), NOT in this skill: the skill arrives with the plugin and is read in all repositories — someone else's rubric gives false Majors (verified: the rules of one project's store, API layer and set of locales lived here and were applied to another project).
 
 ### B. Senior best practices (universal)
@@ -79,19 +84,23 @@ Keep project checklists in the project's repo (CLAUDE.md / pipeline.config Conve
 - **Correctness**: edge cases, null/undefined, empty arrays, races, wrong async/await, leaks (timers/subscriptions/listeners), framework-specific reactivity traps (reactivity lost on destructuring, stale closures in hooks, forgotten effect dependencies, prop mutation).
 - **Security**: XSS (innerHTML/v-html/dangerouslySetInnerHTML), leaking tokens/secrets, trusting user input, unsafe redirects, PII in logs/URLs.
 - **Performance**: extra re-renders, heavy computations in the render path, N+1 requests, no debounce, large bundles, synchronous work on the critical path of the first paint.
-- **Readability/maintenance**: duplication (DRY), functions/components that are too long, unclear naming, dead code, magic numbers. A change that grows an already large file (≳1000 lines) instead of extracting — judge the resulting structure, not the size of the diff: a "small addition" is growth too. A refactoring that moves code but does not reduce the number of concepts the reader holds in mind is not a simplification.
-- **Dedup against the reference**: check new components/hooks against `reuse_baseline` from the config (the existing implementation of the same feature on another platform/in another layer). The same pattern implemented twice is Major: extract it into the shared code. A behavior divergence between the copies — record as a question, do not leave it silently.
-- **Blast radius of a changed shared module.** For every CHANGED (not new) file find all importers — `grep -rn "<name>" --include=*` — and separately those that lie OUTSIDE the scope of the task: the old/legacy tree, another app of the monorepo, a neighbouring package. A change to the visuals or props of a shared component silently changes screens that are not in the diff, and nobody looks at them: neither the checkers (they compare the screens of the stage), nor the author, nor the reviewer. A move of styles is especially dangerous (styled-components → utility classes, deleting `styled.ts`) — the types do not break, the screen just looks different. Flag as Major listing the affected screens; the typical fix is a copy of the old version in the legacy layer, not a shared component with a flag.
+- **Readability/maintenance** (the maintainability lane, proof of cost instead of a scenario: `references/lenses.md`): duplication (DRY), functions/components that are too long, unclear naming, dead code, magic numbers. A change that grows an already large file (≳1000 lines) instead of extracting — judge the resulting structure, not the size of the diff: a "small addition" is growth too. A refactoring that moves code but does not reduce the number of concepts the reader holds in mind is not a simplification.
+- **Dedup, repo-wide.** Search the whole repo for the SHAPE of every new symbol (what it does, its parameters, its literals), not only `reuse_baseline`: core, api, utils, the kit at the INSTALLED version, the libraries in the manifest. Make it executable on a big diff: first a mechanical inventory (git diff, grep the added declarations: functions, components, hooks, constants, string literals used 2+ times), then search each item in the diff ITSELF (twins, thin wrappers, repeated literals, the same expression in two branches, the same helper in two files) and in repo/kit/core at the installed version; a big diff is no reason to sample. The report names the inventory size and what was searched; one helper searched reads as incomplete. Once one duplicate is found, search for every other instance before reporting. The same pattern implemented twice is Major: extract it into the shared code. A behavior divergence between the copies — record as a question, do not leave it silently.
+- **Blast radius** of every changed shared module, with a proof level: `references/radius.md` (importers incl. outside the task's scope, props/emits, API shape against a real response, related repos, build/env).
 - **Completeness of the task**: are all branches of the requirements covered, error handling and loading states, i18n, a11y.
+- **Lenses**: states of every new async flow, double action, symptom vs root cause, tests of behaviour vs implementation — `references/lenses.md`.
 - **Tests**: what is customary to cover in this project (look at the neighbouring tests) — is the new code covered to the same extent.
 - **Consistency**: does the new code match the style of its surroundings.
+
+**The report names the search** for every aspect it calls checked: the pattern, the files, what was found; derived from the diff (its file types and added values), not chosen by hand (`references/lenses.md`, "Evidence per aspect"). No search named — the aspect is not checked.
 
 ## Step 4. Re-check every finding adversarially
 
 Before you put a remark into the report, try to **refute** it:
-- Open the real code and make sure the problem is really there in this branch (and not in untouched code).
+- Open the real code and make sure the problem is really there in this branch (and not in untouched code). Copied or moved code is new code: "pre-existing" / "untouched" needs a base sha that shows the same code in the same context.
 - Check that there is no handling you missed (a guard higher up the code, a global middleware, a default in the type).
-- Come up with a concrete scenario (input → wrong result/crash). If the scenario cannot be built — **throw the finding out**.
+- Come up with a concrete scenario (input → wrong result/crash). A scenario derived from the type or the contract counts without a live reproduction (a nullable field, an enum value, a failing request). If the scenario cannot be built — **throw the finding out**; except a maintainability-lane finding that carries its cost proof (`references/lenses.md`).
+- The task's yardstick (an AC, a spec line, a fix item, a test) is not proof the code is right: it can encode the defect.
 - **A claim about the API of a third-party library** (signature, option, default, deprecated, behavior) check against the installed package of EXACTLY the version in the lockfile: the types (`node_modules/<pkg>/…d.ts`), the package's `CHANGELOG.md`, the source if needed. The model's memory lags behind the version in the repo in both directions: "there is no such option" about a fresh API and "you can do that" about a removed one are equally false Majors. Not confirmed — throw it out or downgrade it to a question; the package is not installed — mark the finding "not checked against the package".
 
 Better 5 confirmed remarks than 20 with false ones. Drop the uncertain ones.
@@ -110,13 +119,15 @@ Print it to the chat, grouped by severity. Within a group — by importance. The
 
 A report saved to `checks/` follows the common contract `${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`: the title, then the second line `Findings: critical N · major N · minor N` (Nit is not a severity of the contract and is not counted), and at the end the "Could not verify" section ("everything verified" if empty).
 
-If the prompt passes acceptance criteria `AC-*`, every item carries the ID of the criterion it violates (violates none — `—`), and at the end comes a line for every passed criterion. **What exactly confirms it is written for a PASS too, not only for a FAIL**: "`AC-2.1` — PASS, the gate stands in `useAuth.ts:42` and covers both entries" instead of a bare `PASS`, which is indistinguishable from an unchecked criterion. Did not get to the criterion — `not checked` (in a `ru` task, its form from `${CLAUDE_PLUGIN_ROOT}/references/language.md`), not PASS. Without the IDs the second iteration of the fix-loop does not understand what exactly is being rechecked.
+If the prompt passes acceptance criteria `AC-*`, every item carries the ID of the criterion it violates (violates none — `—`), and at the end comes a line for every passed criterion. **What exactly confirms it is written for a PASS too, not only for a FAIL**, and what would have failed it (an input, a state, the line whose absence fails it): "`AC-2.1` — PASS, the gate stands in `useAuth.ts:42` and covers both entries" instead of a bare `PASS` (or "the AC says so"), which is indistinguishable from an unchecked criterion. Did not get to the criterion — `not checked` (in a `ru` task, its form from `${CLAUDE_PLUGIN_ROOT}/references/language.md`), not PASS. Without the IDs the second iteration of the fix-loop does not understand what exactly is being rechecked.
 
 Severity:
 - **🔴 Critical** — a bug/vulnerability/data loss, breaks prod or the task. Cannot be merged.
 - **🟠 Major** — a real defect, a violation of the project conventions, serious debt. Fix before the merge.
 - **🟡 Minor** — worsens quality/maintenance, but is not a blocker.
 - **⚪ Nit** — style/taste, optional.
+
+For deleted/rewritten files the report carries the parity list: each lost behaviour restored (`path:line`) or a question for the user decision, plus the list for the PR text.
 
 At the end — a short verdict (2–4 lines): what is done well (to the point, no filler), the main risk, and the recommendation: **Approve / Approve with comments / Request changes**.
 

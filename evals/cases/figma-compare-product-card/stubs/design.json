@@ -1,0 +1,24 @@
+{
+  "file": "Storefront UI",
+  "nodes": {
+    "12:34": {
+      "fill": "#ffffff",
+      "metadata": "<frame id=\"12:34\" name=\"Product card\" x=\"0\" y=\"0\" width=\"288\" height=\"236\">\n  <text id=\"12:35\" name=\"Title\" x=\"16\" y=\"16\" width=\"256\" height=\"24\" />\n  <text id=\"12:36\" name=\"Price\" x=\"16\" y=\"52\" width=\"256\" height=\"20\" />\n  <frame id=\"12:37\" name=\"Add to cart button\" x=\"16\" y=\"84\" width=\"256\" height=\"40\" />\n</frame>",
+      "variables": {
+        "surface/card": "#FFFFFF",
+        "border/subtle": "#E3DED3",
+        "text/primary": "#1D2430",
+        "text/accent": "#0B6E4F",
+        "action/primary": "#1F6F5C",
+        "space/md": "16px",
+        "space/sm": "8px",
+        "space/lg": "24px",
+        "radius/lg": "12px",
+        "radius/md": "8px",
+        "type/title": "Inter 18/24 semibold",
+        "type/price": "Inter 16/20 bold"
+      },
+      "context": "Node 12:34 \"Product card\" (frame, vertical auto-layout)\n  fill: surface/card (#FFFFFF)\n  stroke: border/subtle (#E3DED3) 1px inside\n  corner radius: radius/lg (12px)\n  padding: space/md (16px) on all sides\n  children:\n    12:35 \"Title\" text: \"Stone mug\" - type/title (Inter 18/24, weight 600), fill text/primary (#1D2430)\n    12:36 \"Price\" text: \"12.90 EUR\" - type/price (Inter 16/20, weight 700), fill text/accent (#0B6E4F)\n    12:37 \"Add to cart button\" (auto-layout, padding 8px 14px, corner radius radius/md (8px), fill action/primary (#1F6F5C))\n       12:38 text: \"Add to cart\" - white, Inter 16/24 regular\n  vertical gap between Title, Price and the button: space/md (16px)\n\nSuggested code:\n<article className=\"card\">\n  <h2 className=\"card__title\">Stone mug</h2>\n  <p className=\"card__price\">12.90 EUR</p>\n  <button className=\"card__button\">Add to cart</button>\n</article>"
+    }
+  }
+}

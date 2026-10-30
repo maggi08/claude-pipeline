@@ -1,0 +1,65 @@
+{
+  "agent": "proto-compare",
+  "why": "the prototype checker reads the rendered skin first (the baked-in html class overrides the base rules), reports a wrong-skin build as one finding, and finds the copy case, the spacing, the missing promo banner and the missing SPEC guard without flagging the prototype's scenario bar",
+  "identity": {
+    "repo": "shop-checkout",
+    "ticket": "SHOP-15",
+    "user": "Ines Marchetti",
+    "email": "ines.marchetti@shop-checkout.dev"
+  },
+  "prompt": "Ticket SHOP-15, stage 1. Language: en. Prototype: prototype/flow-checkout.html#screen-review (SPEC §1). Code: src/pages/Review/ReviewPage.tsx and src/pages/Review/ReviewPage.css. Stage criteria tagged proto-compare:\n- `AC-1.1` WHEN the review screen is shown THEN its look and copy follow the prototype\n- `AC-1.2` WHEN the terms checkbox is unchecked THEN the place-order button is disabled (SPEC §1)",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical",
+      "file": "skin-flat|wrong skin|rendered variant|soft (rules|skin)",
+      "why": "the code is built on the soft base rules that the baked-in skin-flat class overrides: one critical finding for the screen"
+    },
+    {
+      "severity": "critical|major",
+      "file": "Place Order[^\\n]*Place order|Place order[^\\n]*Place Order",
+      "why": "the button label differs in case from the prototype's copy"
+    },
+    {
+      "severity": "critical|major",
+      "file": "ReviewPage\\.css",
+      "line": 5,
+      "why": "card padding 24px against the prototype's 16px"
+    },
+    {
+      "severity": "critical|major",
+      "file": "(disabled|guard|terms)[^\\n]*(button|CTA|place)|(button|CTA|place)[^\\n]*(disabled|guard|terms)",
+      "why": "SPEC §1: the place-order button must be disabled until the terms are accepted"
+    },
+    {
+      "severity": "critical|major",
+      "file": "promo|free shipping",
+      "why": "the promo banner of the prototype is not in the code"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "critical|major|minor",
+      "file": "proto-nav|scenario",
+      "why": "the prototype's scenario bar is its own tool, not part of the design"
+    }
+  ],
+  "unchanged": [
+    "src/pages/Review/ReviewPage.tsx",
+    "src/pages/Review/ReviewPage.css",
+    "prototype/prototype.css"
+  ],
+  "provenFailing": {
+    "on": "ablate:skill:proto-compare",
+    "date": "2026-10-27",
+    "plugin": "0.18.1@0494f328e",
+    "runs": 1,
+    "failed": 1,
+    "caseHash": "1d4d1ef58d64539e",
+    "failures": [
+      "no finding line: the code is built on the soft base rules that the baked-in skin-flat class overrides: one critical finding for the screen (critical /skin-flat|",
+      "no finding line: the button label differs in case from the prototype's copy (critical|major /Place Order[^\\n]*Place order|Place order[^\\n]*Place Order/)"
+    ]
+  }
+}

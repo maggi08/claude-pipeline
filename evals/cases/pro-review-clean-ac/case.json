@@ -1,7 +1,13 @@
 {
   "agent": "pro-review",
   "why": "a clean diff gets no false Request changes, and the PASS of a criterion carries file:line evidence",
-  "prompt": "Ticket EVAL-1, stage 1. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN name is empty, null or whitespace THEN `t('profile.anonymous')` is shown instead of the name (locale selection is out of scope — we do not touch `src/i18n.ts`) — [verify: pro-review]",
+  "identity": {
+    "repo": "profile-app",
+    "ticket": "PRF-5",
+    "user": "Iris Calder",
+    "email": "iris.calder@profile-app.dev"
+  },
+  "prompt": "Ticket PRF-5, stage 1. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN name is empty, null or whitespace THEN `t('profile.anonymous')` is shown instead of the name (locale selection is out of scope — we do not touch `src/i18n.ts`) — [verify: pro-review]",
   "expect": [
     {
       "pattern": "AC-1\\.1[^\\n]*PASS[^\\n]*ProfileName\\.tsx:\\d+",

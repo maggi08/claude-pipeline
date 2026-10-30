@@ -1,0 +1,7 @@
+{
+  "guests.delete.title": "Delete guest",
+  "guests.delete.confirm": "Delete",
+  "guests.delete.cancel": "Keep",
+  "guests.archive.title": "Archive guest",
+  "guests.archive.confirm": "Archive"
+}

@@ -1,0 +1,66 @@
+{
+  "kind": "decision",
+  "why": "a force run with every stage done goes to its final checks: the whole-branch review is launched on the config's review model, in its own mode and against the right base",
+  "identity": {
+    "repo": "inventory-console",
+    "ticket": "INV-11",
+    "user": "Victor Reyes",
+    "email": "victor.reyes@inventory-console.dev",
+    "branch": "feature"
+  },
+  "prompt": "/stage-pipeline:stage-force INV-11",
+  "maxTurns": 25,
+  "budgetUsd": 1.2,
+  "timeoutSec": 600,
+  "expectAgents": [
+    "pro-review"
+  ],
+  "forbidAgents": [
+    "stage-implement",
+    "figma-compare"
+  ],
+  "agentPrompts": [
+    {
+      "agent": "pro-review",
+      "contains": [
+        {
+          "pattern": "whole[- ]branch",
+          "why": "the whole-branch mode"
+        },
+        {
+          "pattern": "\\bmain\\b|\\b[0-9a-f]{7,40}\\b",
+          "why": "the comparison base"
+        },
+        {
+          "pattern": "Language:\\s*en",
+          "why": "the task language"
+        }
+      ]
+    }
+  ],
+  "agentModel": [
+    {
+      "agent": "pro-review",
+      "model": "config:review_model",
+      "why": "the whole-branch review runs on review_model"
+    }
+  ],
+  "forbidTools": [
+    {
+      "tool": "AskUserQuestion",
+      "why": "the final checks of a confirmed run ask nothing"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.18.0",
+    "date": "2026-10-27",
+    "plugin": "0.18.0@6d7388eac",
+    "runs": 2,
+    "failed": 2,
+    "detection": "2/2",
+    "caseHash": "87f1c4b92a3ea11d",
+    "failures": [
+      "pro-review model: the whole-branch review runs on review_model wanted opus, got none"
+    ]
+  }
+}

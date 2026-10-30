@@ -440,8 +440,8 @@
       <span class="pill">3 projects</span>
       <span class="pill">16 tasks</span>
       <span class="pill">161 checker reports</span>
-      <span class="pill">18 skills · 12 agents</span>
-      <span class="pill">v0.16.1</span>
+      <span class="pill">21 skills · 13 agents</span>
+      <span class="pill">v0.22.0</span>
     </div>
     <div class="sig">Magzhan Mussaiyn · 21 Jul → 21 Aug 2026 · plugin <b>stage-pipeline@magzhan</b></div>
   </section>
@@ -722,8 +722,8 @@
         <pre>
 <span class="cm"># installed once, works in every repo</span>
 <b>stage-pipeline@magzhan</b>
-├── skills/     16 commands
-├── agents/      9 checkers
+├── skills/     21 skills
+├── agents/     13 agents
 └── .mcp.json    figma · chrome-devtools
 
 <span class="cm"># in the project, created by /pipeline-init</span>
@@ -767,7 +767,7 @@
 
   <!-- 7 -->
   <section class="slide" aria-label="Skills catalog">
-    <div class="eyebrow"><span class="num">06</span><span>Catalog</span><span class="spacer"></span><span>18 skills</span></div>
+    <div class="eyebrow"><span class="num">06</span><span>Catalog</span><span class="spacer"></span><span>21 skills · 1 of 2</span></div>
     <h2>Skills: the commands you type by hand</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -783,12 +783,34 @@
             <tr><td class="name">/stage-force</td><td>autonomous run of the whole task: questions in one batch at the start, then no stops</td><td class="when">instead of the cycle</td></tr>
             <tr><td class="name">/pro-review</td><td>senior review — by default the whole branch against main</td><td class="when">manual</td></tr>
             <tr><td class="name">/figma-compare · /proto-compare</td><td>checks code against a mockup or an HTML prototype</td><td class="when">manual</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Notes</span>
+    The catalog is split over two slides so that nothing is cut off. This one is the cycle itself and the checks; the next is the narrow passes and the manual commands.
+  </div>
+
+  <!-- 7b -->
+  <section class="slide" aria-label="Skills catalog">
+    <div class="eyebrow"><span class="num">07</span><span>Catalog</span><span class="spacer"></span><span>21 skills · 2 of 2</span></div>
+    <h2>Skills: the commands you type by hand</h2>
+    <div class="body">
+      <div class="table-wrap" style="flex:1">
+        <table>
+          <thead><tr><th>Command</th><th>What it does</th><th>When</th></tr></thead>
+          <tbody>
             <tr><td class="name">/devtools-verify</td><td>runtime check in the browser</td><td class="when">manual</td></tr>
             <tr><td class="name">/root-cause</td><td>root-cause debugging: a fix didn't work, unexplained symptom, blank page</td><td class="when">on a defect</td></tr>
             <tr><td class="name">/dead-code · /i18n-sweep · /deps-audit</td><td>narrow passes: junk from the task, internationalization, dependencies</td><td class="when">manual</td></tr>
             <tr><td class="name">/ds-parity</td><td>design-system duplicates: replace with kit, move INTO kit</td><td class="when">before PR</td></tr>
             <tr><td class="name">/task-converge</td><td>code at HEAD vs the whole task's intent: promised but not done, done but not asked for</td><td class="when">before PR</td></tr>
-            <tr><td class="name">/task-wrapup</td><td>rolls the stage journals into <code>PR.md</code>: what and why, how to verify, blind spots</td><td class="when">manual, when you need a description</td></tr>
+            <tr><td class="name">/task-wrapup</td><td>rolls the stage journals into <code>PR.md</code> by the human-text rules and checks the draft: what and why, how to verify, blind spots</td><td class="when">manual, when you need a description</td></tr>
+            <tr><td class="name">/human-text</td><td>text about a project for people (team, manager, newcomer): fact card, draft by the rules, closed-question check; also installs alone as <code>human-text@magzhan</code></td><td class="when">manual only</td></tr>
+            <tr><td class="name">/feature-doc</td><td>a doc on a finished feature in <code>docs/features/</code> for someone who hasn't seen it; outside the pipeline</td><td class="when">manual only</td></tr>
+            <tr><td class="name">/promote</td><td>repeated findings become repo rules (lint, <code>## Repo rules</code>), proven on two pre-fix versions; repeated false positives become skip patterns; every proposal waits for a yes</td><td class="when">manual only</td></tr>
           </tbody>
         </table>
       </div>
@@ -804,8 +826,8 @@
 
   <!-- 8 -->
   <section class="slide" aria-label="Agents catalog">
-    <div class="eyebrow"><span class="num">07</span><span>Catalog</span><span class="spacer"></span><span>12 agents</span></div>
-    <h2>Agents: subagents the orchestrator launches itself</h2>
+    <div class="eyebrow"><span class="num">08</span><span>Catalog</span><span class="spacer"></span><span>13 agents · 1 of 2</span></div>
+    <h2>Agents: subagents launched by the orchestrator and by skills</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
         <table>
@@ -819,10 +841,30 @@
             <tr><td class="name">proto-compare</td><td>the same against a prototype, plus behavior per SPEC.md (transitions, CTAs, guards)</td><td class="when">after code</td></tr>
             <tr><td class="name">devtools-verify</td><td>runtime: console and hydration, light/dark, widths 1440/1280/1024, live state</td><td class="when">after code</td></tr>
             <tr><td class="name">pro-review</td><td>correctness, security, repo conventions, duplicates, naming — with an adversarial re-check of every finding</td><td class="when">always</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  <div class="notes">
+    <span class="label">Notes</span>
+    The catalog is split over two slides so that nothing is cut off. This one: the makers, the spec extractors and the main checkers; the next has the narrow passes, the intent check and the notes on launch.
+  </div>
+
+  <!-- 8b -->
+  <section class="slide" aria-label="Agents catalog">
+    <div class="eyebrow"><span class="num">09</span><span>Catalog</span><span class="spacer"></span><span>13 agents · 2 of 2</span></div>
+    <h2>Agents: subagents launched by the orchestrator and by skills</h2>
+    <div class="body">
+      <div class="table-wrap" style="flex:1">
+        <table>
+          <thead><tr><th>Agent</th><th>What it does</th><th>Launch</th></tr></thead>
+          <tbody>
             <tr><td class="name">dead-code</td><td>what was orphaned <b>by this diff</b>: symbols, files, locale keys, assets</td><td class="when">something was deleted</td></tr>
             <tr><td class="name">i18n-sweep</td><td>hardcoded user text, incomplete locales, concatenated keys, number and date format without a locale</td><td class="when">text appeared</td></tr>
             <tr><td class="name">deps-audit</td><td>new dependencies and assets: justification, an equivalent in the repo, manifest section, weight</td><td class="when">manifest touched</td></tr>
             <tr><td class="name">task-converge</td><td>the only one that doesn't look at the diff: compares the code state with the criteria of all stages — <code>missing</code> / <code>partial</code> / <code>contradicts</code> / <code>unrequested</code></td><td class="when">before PR</td></tr>
+            <tr><td class="name">human-text-check</td><td>checks a draft of a text for people against 14 closed questions in a clean context; only the violations come back</td><td class="when">text for people</td></tr>
           </tbody>
         </table>
       </div>
@@ -850,7 +892,7 @@
 
   <!-- 9 -->
   <section class="slide" aria-label="Getting started">
-    <div class="eyebrow"><span class="num">08</span><span>Practice</span><span class="spacer"></span><span>install in 5 minutes</span></div>
+    <div class="eyebrow"><span class="num">10</span><span>Practice</span><span class="spacer"></span><span>install in 5 minutes</span></div>
     <h2>How to start on your side</h2>
     <div class="body">
       <div class="cols cols-2-1" style="flex:1;min-height:0">
@@ -911,7 +953,7 @@ claude plugin details stage-pipeline
 
   <!-- 10 -->
   <section class="slide" aria-label="Two modes">
-    <div class="eyebrow"><span class="num">09</span><span>Practice</span><span class="spacer"></span><span>manual mode and force</span></div>
+    <div class="eyebrow"><span class="num">11</span><span>Practice</span><span class="spacer"></span><span>manual mode and force</span></div>
     <h2>Two modes: where you are in the cycle and where you aren't</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
@@ -949,7 +991,7 @@ claude plugin details stage-pipeline
 
   <!-- 11 -->
   <section class="slide" aria-label="Demo">
-    <div class="eyebrow"><span class="num">10</span><span>Demo</span><span class="spacer"></span><span>5 minutes live</span></div>
+    <div class="eyebrow"><span class="num">12</span><span>Demo</span><span class="spacer"></span><span>5 minutes live</span></div>
     <h2>Demo: I show it on a real task</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
@@ -996,7 +1038,7 @@ claude plugin details stage-pipeline
 
   <!-- 12 -->
   <section class="slide" aria-label="Report example">
-    <div class="eyebrow"><span class="num">11</span><span>Demo</span><span class="spacer"></span><span>what a finding looks like</span></div>
+    <div class="eyebrow"><span class="num">13</span><span>Demo</span><span class="spacer"></span><span>what a finding looks like</span></div>
     <h2>A real report: pro-review on a task branch</h2>
     <div class="body">
       <div class="cols cols-2-1" style="flex:1;min-height:0">
@@ -1046,7 +1088,7 @@ claude plugin details stage-pipeline
 
   <!-- 13 -->
   <section class="slide" aria-label="Results">
-    <div class="eyebrow"><span class="num">12</span><span>Results</span><span class="spacer"></span><span>a month of work, three projects</span></div>
+    <div class="eyebrow"><span class="num">14</span><span>Results</span><span class="spacer"></span><span>a month of work, three projects</span></div>
     <h2>What we got, in numbers</h2>
     <div class="body">
       <div class="stat-grid">
@@ -1087,7 +1129,7 @@ claude plugin details stage-pipeline
 
   <!-- 14 -->
   <section class="slide" aria-label="Findings">
-    <div class="eyebrow"><span class="num">13</span><span>Results</span><span class="spacer"></span><span>what actually got caught</span></div>
+    <div class="eyebrow"><span class="num">15</span><span>Results</span><span class="spacer"></span><span>what actually got caught</span></div>
     <h2>What would have gone to prod without the checkers</h2>
     <div class="body">
       <div class="cols cols-3" style="flex:1;min-height:0">
@@ -1132,7 +1174,7 @@ claude plugin details stage-pipeline
 
   <!-- 15 -->
   <section class="slide" aria-label="How it was built">
-    <div class="eyebrow"><span class="num">14</span><span>Process</span><span class="spacer"></span><span>v0 → v8 in a month</span></div>
+    <div class="eyebrow"><span class="num">16</span><span>Process</span><span class="spacer"></span><span>v0 → v8 in a month</span></div>
     <h2>How it was built: each version a reaction to a measurement or a failure</h2>
     <div class="body">
       <div class="timeline" style="flex:1;min-height:0;overflow:auto">
@@ -1158,7 +1200,7 @@ claude plugin details stage-pipeline
 
   <!-- 16 -->
   <section class="slide" aria-label="Prompts">
-    <div class="eyebrow"><span class="num">15</span><span>Process</span><span class="spacer"></span><span>what to tell the agent</span></div>
+    <div class="eyebrow"><span class="num">17</span><span>Process</span><span class="spacer"></span><span>what to tell the agent</span></div>
     <h2>Prompts that really moved the process</h2>
     <div class="body">
       <div class="cols cols-3" style="flex:1;min-height:0">
@@ -1194,7 +1236,7 @@ claude plugin details stage-pipeline
 
   <!-- 17 -->
   <section class="slide" aria-label="Limitations">
-    <div class="eyebrow"><span class="num">16</span><span>Honestly</span><span class="spacer"></span><span>weak spots and pitfalls</span></div>
+    <div class="eyebrow"><span class="num">18</span><span>Honestly</span><span class="spacer"></span><span>weak spots and pitfalls</span></div>
     <h2>Where it doesn't work and what cost the most</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
@@ -1239,7 +1281,7 @@ claude plugin details stage-pipeline
 
   <!-- 18 -->
   <section class="slide" aria-label="What next">
-    <div class="eyebrow"><span class="num">17</span><span>Next</span><span class="spacer"></span><span>what we need from the team</span></div>
+    <div class="eyebrow"><span class="num">19</span><span>Next</span><span class="spacer"></span><span>what we need from the team</span></div>
     <h2>What next</h2>
     <div class="body">
       <div class="cols cols-2" style="flex:1;min-height:0">
@@ -1285,7 +1327,7 @@ claude plugin details stage-pipeline
 
   <!-- 19 -->
   <section class="slide" aria-label="Cheatsheet">
-    <div class="eyebrow"><span class="num">18</span><span>Cheatsheet</span><span class="spacer"></span><span>one page</span></div>
+    <div class="eyebrow"><span class="num">20</span><span>Cheatsheet</span><span class="spacer"></span><span>one page</span></div>
     <h2>Cheatsheet</h2>
     <div class="body">
       <div class="cols cols-3" style="flex:1;min-height:0">
@@ -1349,7 +1391,7 @@ claude plugin install stage-pipeline@magzhan
   <button id="next" aria-label="Next slide">→</button>
   <div class="ticks" id="ticks" aria-hidden="true"></div>
   <button id="notesBtn" aria-label="Show speaker notes">notes · S</button>
-  <span class="count" id="count">1 / 19</span>
+  <span class="count" id="count">1 / 21</span>
 </div>
 
 <script>

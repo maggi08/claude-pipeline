@@ -65,7 +65,8 @@ Base: <git rev-parse --short HEAD> (<branch>)   <!-- by this SHA the next task w
 - **Careful:** <risk zones in one line: reverts, SSR traps, legacy | —>
 
 ## Entry points
-| Platform | Route/screen | Files |
+| ID | Platform | Route/screen | Files |
+The `ID` column (the feature id in the map, `—` for a route the map does not hold) is there only when the verify map README exists; without it the table is `| Platform | Route/screen | Files |`.
 
 ## Data architecture
 stores, composables, API endpoints, flags
@@ -90,4 +91,36 @@ Write only facts from the code with `file:line` references — not assumptions. 
 
 Always fill in the header with `Base:` — without it the next task will not be able to update the map and will build it anew.
 
-At the end give the user a short summary (5–10 sentences) and the path to FEATURE-MAP.md.
+## Verify map entry (only when the repo has a map)
+
+The repo's verify map is `<repo>/<verify_map>/` (config key `verify_map:` in "Task state", default `.claude/verify/`): a `README.md` plus one `features/<id>.md` per feature — the user's journeys through the feature, driven by `devtools-verify`. **No `README.md` there — there is no map: skip this whole section, add no ID column, create nothing.** (Not created here: `/pipeline-init` writes the README.)
+
+With a README, in addition to FEATURE-MAP.md:
+
+1. Read the README and the `features/` list. A feature file for this feature (by route: `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-map.mjs --changed` lists what a diff touches, and a feature file's `Routes:` header is the join key) already exists — **do not rewrite it**: put its id into the ID column and note in the summary what in it looks stale against the code. A feature without a file — draft one.
+2. **Draft `features/<id>.md`** (`<id>` is the kebab-case feature id; the file is in the language of the README — its headings come from the verify map rows of the table in `${CLAUDE_PLUGIN_ROOT}/references/language.md`):
+
+```markdown
+# <Feature name>
+Routes: <route> · Auth: yes|no · Platforms: desktop, adaptive, webview · Status: draft
+<One paragraph: what the user can do.>
+## Sub-features
+- `<id>-open` · `<id>-draft` · `<id>-submit`
+## How to get to it (user POV)
+- Header → «…» · Cabinet → «…» → «…» · deep link /…?from=push
+## Driving it with Chrome DevTools MCP
+Preconditions: doctor ok, auth ok; <state reset>.
+- **Header entry.** click `link "…"` → URL /…, `heading "…"`.
+- **Guard.** empty «…» → `button "Next"` disabled.
+## Gotchas
+- <what trips a driver: SSR timing, writes to the shared stand, a deep link that opens a middle step>
+```
+
+   - **User-facing, no code.** Routes, labels as the page shows them (`button "Save"` as `take_snapshot` prints it), URLs and request paths — yes; **file paths, component or store names, `file:line` — no**: those live in FEATURE-MAP.md, which stays the per-task code map. The route is the join key between the two.
+   - `Status: draft` always: only `devtools-verify` flips it to `verified <date> <sha>` after a first successful drive. What you could not establish from the code (a label, a request) is a `TODO: confirm` in the line, not a guess.
+   - One entry point per way in (header, cabinet, deep link, push): each is a bullet in "How to get to it" and in "Driving it".
+3. **Lint it**: `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-map.mjs --lint <repo>/<verify_map>/features/<id>.md` — header line, the four sections, no file paths. Fix every line it prints before going on.
+4. Add the line `- [<id>](features/<id>.md) — <route>` to the README's "Features" list, in the order a sweep should visit them.
+5. In FEATURE-MAP.md, the "Entry points" table gets the **ID column** (first column, `ID`; the Russian table: `ID` too): the feature id for every row whose route the feature file holds, `—` for the rest. The Orientation `Entry points:` line is unchanged.
+
+At the end give the user a short summary (5–10 sentences) and the path to FEATURE-MAP.md (and, in a repo with a map, to the drafted feature file, which the user should read: it is a draft).

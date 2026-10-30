@@ -1,7 +1,13 @@
 {
   "agent": "dead-code",
   "why": "replacing a component left an orphaned component and an orphaned locale key",
-  "prompt": "Ticket EVAL-1, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status). The stage replaced the banner on the home page.",
+  "identity": {
+    "repo": "storefront-web",
+    "ticket": "SHOP-12",
+    "user": "Dana Whitfield",
+    "email": "dana.whitfield@storefront-web.dev"
+  },
+  "prompt": "Ticket SHOP-12, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status). The stage replaced the banner on the home page.",
   "expect": [
     {
       "pattern": "OldBanner",
@@ -12,10 +18,11 @@
       "why": "the orphaned locale key banner.old"
     }
   ],
-  "forbid": [
+  "findingsForbid": [
     {
-      "pattern": "PromoBanner[^\\n]{0,40}(осиротел|orphan|мёртв|dead)",
-      "why": "the used PromoBanner is called dead"
+      "severity": "any",
+      "file": "PromoBanner\\.tsx",
+      "why": "the used PromoBanner (added by the task) is called orphaned"
     }
   ]
 }

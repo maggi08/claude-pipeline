@@ -59,7 +59,7 @@ Check on your own machine before the announcement:
 ```bash
 claude plugin marketplace add https://gitlab.<host>/<group>/claude-code-marketplace.git
 claude plugin install stage-pipeline@mycar-frontend
-claude plugin details stage-pipeline    # 18 skills, 12 agents, 2 MCP servers
+claude plugin details stage-pipeline    # 20 skills, 13 agents, 2 MCP servers
 ```
 
 Later the catalog can be extended — a second team plugin is added with the same kind of entry.
@@ -120,16 +120,40 @@ The team: `claude plugin update stage-pipeline` + restart. What changed and what
 
 `main` is a moving branch: the team gets everything that lands in it. If a review gate is needed, a tag goes into the catalog entry instead of `"ref": "main"` (`"ref": "stage-pipeline--v0.7.0"`), and then every update becomes an MR in GitLab with a one-line edit. It is simpler to start with `main`; you can switch at any moment.
 
+## human-text and feature-doc
+
+- **Who installs human-text without the pipeline.** Anyone who writes status updates, handoffs or docs for people and does not run the staged workflow. That is the personal channel, with no tag pin: `claude plugin marketplace add maggi08/claude-pipeline`, then `claude plugin install human-text@magzhan`; for the team, add `human-text` to the catalog (next bullet) and install `human-text@mycar-frontend`; the skill is `/human-text:human-text <to whom> <about what>`. It needs no config, MCP or permission profile. Whoever has `stage-pipeline` already has the same skill as `/stage-pipeline:human-text` and needs nothing extra; installing both is harmless, the two commands are separate.
+- **The catalog entry for the team.** Next to `stage-pipeline` in the `plugins` array of the GitLab catalog (the catalog itself is not edited here), the pin is a tag of the human-text repo:
+
+  ```json
+  {
+    "name": "human-text",
+    "description": "Rules for writing work text people actually read (status updates, handoffs, docs) and a closed-question check of a draft in a clean context",
+    "category": "writing",
+    "source": {
+      "source": "github",
+      "repo": "maggi08/human-text",
+      "ref": "v0.1.0"
+    }
+  }
+  ```
+  The tag does not exist yet: tag the human-text repo (`v0.1.0` matches its `plugin.json`) before the entry is added.
+- **`feature-docs@mycar` (the mycar-frontend catalog).** If a developer has it installed, leave it: `/stage-pipeline:feature-doc` does the same job (a doc on a finished feature in `docs/features/`) and does not replace it. Both are called only by hand, and neither runs on its own, so they do not collide; pick one per repository so the docs do not get two writers.
+- **The source of human-text** is the repo `maggi08/human-text`; `stage-pipeline` carries a pinned copy (`human-text.lock.json`). A change in the rules reaches the team in two steps: the human-text repo, then a `stage-pipeline` release with a fresh sync.
+
 ## Hooks
 
-The plugin installs six hooks. They work only in a repository with `.claude/pipeline.config.md` and stay silent elsewhere.
+The plugin installs seven hooks. They work only in a repository with `.claude/pipeline.config.md` and stay silent elsewhere.
 
-- **session-start** — at the start of a session puts into the context a status line for the task of the current branch and reminds you to shrink a bloated `STAGES.md`. After a closed force run it names the branch commits that are not in the task journal — work that did not pass the checkers.
+- **session-start** — at the start of a session puts into the context a status line for the task of the current branch and reminds you to shrink a bloated `STAGES.md`. Since 0.21.0, after `/compact` or a resume in an open force run it prints a resume point (stage, uncommitted code vs the maker, reports and their outcome state, blockers, one next action). After a closed force run it names the branch commits that are not in the task journal — work that did not pass the checkers.
 - **git-guard** — in normal mode on a task branch the agent's `git add`/`git commit` are rejected at any stage status: the agent hands over a ready commit text, and the developer commits in their own terminal — even if the agent is asked to. In force mode (`/stage-force`) the agent commits itself, but the commit goes through `floor-guard` and is rejected if the diff has a silenced checker, a weakened test or a leftover stub. Only what will go into the commit is checked — saved pages and drafts next to the code do not block the commit. A service signature in the message (`Co-Authored-By`) is rejected.
-- **force-guard** — before a Bash command in a force run: a call that would stop on a confirmation (`pkill`/`killall`, subcommands under `ask` in the settings) is rejected at once with an explanation and recorded as a run blocker. Outside force the hook is silent.
-- **agent-guard** — the final review of the whole branch goes only on `review_model` (opus by default), and the implementation agent in force starts only after the run interview — no separate "yes" is asked after the answers.
-- **journal-gate** — after an edit of the task journal returns to the agent a criterion closed without the checker named in it, and a bare PASS without a measurement in a checker report. Old tasks are not checked — only what is written now.
-- **frames-guard** — when devtools-verify finishes: the agent is not let go until it has opened every frame it captured.
+- **force-guard** — before a Bash command in a force run: a call that would stop on a confirmation (`pkill`/`killall`, subcommands under `ask` in the settings) is rejected at once with an explanation and recorded as a run blocker. Outside force the hook is silent. In an open force run in a run that is new by the first look it also rejects a command that writes into the plugin data directory (redirect, `tee`, `cp`/`mv` into it, `rm`, `sed -i`, inline `node -e`; reads and the bare variable name pass; the maker records and receipts are written by the hooks only); journal-gate rejects an Edit / Write / MultiEdit of a file there.
+- **agent-guard** — the final review of the whole branch goes only on `review_model` (opus by default), and the implementation agent in force starts only after the run interview — no separate "yes" is asked after the answers. Since 0.21.0 it also denies the start of `stage-implement` while the plan has a new `plan-check` problem, and records the tree at the spawn for maker-guard.
+- **journal-gate** — after an edit of the task journal returns to the agent a criterion closed without the checker named in it, and a bare PASS without a measurement in a checker report. Old tasks are not checked — only what is written now. Since 0.18.1, when the session's own edit closes a force run as "completed", the hook also closes that session's MCP browser by PID (`browser-cleanup.mjs --session`; another session's browser never); `STAGE_PIPELINE_BROWSER_CLEANUP=off` in the environment turns this off.
+- **Repo rules (floor-guard, since 0.22.0)** — a `## Repo rules` table in `pipeline.config.md` (id · pattern · files · message · evidence) adds the project's own rules to the force-commit floor, on added lines only; `floor-ok: <reason>` waives one and the run digest lists it. No table, no change. The table is written by `/promote` only after an explicit yes per rule, and the file is shared: commit it separately. The pilot repository does not need it before it has a repeated finding.
+- **frames-guard** — when devtools-verify finishes: the agent is not let go until it has opened every frame it captured and closed the pages and browsers it opened.
+- **The firing log (0.19.0).** Every block or deny of these hooks also writes a row (rule ID, task, repo, time, tool, read or not) to `firings.jsonl` in the plugin data dir, capped at 1 MB with one older generation; `retro.mjs <repo>` prints it as «Hook firings» for that repo (`--all`: the whole machine). Nothing to roll out: no config, and IDs and paths only.
+- **maker-guard** — when `stage-implement` finishes (since 0.21.0): the stop is blocked, up to 3 times, until the hand-back has its sections, fits 4000 characters and names the files that actually changed since the spawn and that the maker wrote (a file it did not write goes under `Not done / blocker:` as `not mine: <path>`); what the maker handed back is stored for the run digest. With the spawn snapshot of agent-guard it lets git-guard deny a force commit of code the maker did not write (`STAGE_PIPELINE_MAKER_RECEIPTS=off` turns that off; the rule fails open when the spawn snapshot did not finish, and a commit command that chains anything but add/commit/status/diff/log/show/rev-parse, or hides a git call in `bash -c`/`eval`/`xargs`/`$( )`, is rejected in such a run; a commit made without `git commit` is not judged). Runs that began before 0.21.0 keep their rules.
 
 The hook recognizes the task by the branch: the line ``Branch: `<branch>` `` in the `STAGES.md` header, and without it the ticket (the name of the task directory) in the branch name. A task spanning two repositories, whose `STAGES.md` lies in the task directory of the neighbouring one, is seen by the hook when the ticket is in the branch name and `STAGES.md` names the repository. It does not see the tasks of other branches, so parallel tasks, worktrees, sessions and neighbouring repositories do not get in each other's way, and old tasks block nothing — there is no need to rewrite them for a new version. A task whose `STAGES.md` has not changed for 21 days the hook considers abandoned and does not see; if you come back to it, the first kickoff or check updates the file and the guard turns on again.
 
@@ -155,3 +179,4 @@ The agent's commits on a task branch are rejected at any stage status — this i
 - [ ] The pilot repository has `.claude/pipeline.config.md` from `/pipeline-init`
 - [ ] One developer went through the onboarding of Step 3 from scratch, `/pipeline-doctor` is green
 - [ ] The README of the plugin, this file and CHANGELOG are sent to the team
+- [ ] Whoever writes for people without the pipeline knows about `human-text@magzhan`; whoever has `feature-docs@mycar` knows `/stage-pipeline:feature-doc` is the same job, by hand

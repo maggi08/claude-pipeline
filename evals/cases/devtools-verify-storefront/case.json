@@ -1,0 +1,81 @@
+{
+  "agent": "devtools-verify",
+  "why": "the runtime checker finds a horizontal overflow at one width, a clipped note and a console error on a page served locally, takes its frames, opens each of them, and drives the browser through the plugin's own server (production tool names)",
+  "identity": {
+    "repo": "shop-storefront",
+    "ticket": "SHOP-12",
+    "user": "Mira Lindqvist",
+    "email": "mira.lindqvist@shop-storefront.dev"
+  },
+  "serve": {
+    "dir": "public"
+  },
+  "mcp": [
+    "chrome-devtools"
+  ],
+  "mcpServers": {
+    "chrome-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@1.6.0",
+        "--isolated",
+        "--headless"
+      ],
+      "env": {}
+    }
+  },
+  "prompt": "Ticket SHOP-12, stage 1. Language: en. Check the listing page at http://127.0.0.1:{port}/ in the browser. Widths: 1440, 1280, 1024; the light theme only, skip the dark pass. Stage criteria tagged devtools-verify:\n- `AC-1.1` WHEN the page loads THEN the browser console has no errors\n- `AC-1.2` WHEN the viewport is 1440, 1280 or 1024 px wide THEN the page has no horizontal scroll\n- `AC-1.3` WHEN the page is open THEN the warranty note text is fully visible",
+  "budgetUsd": 2,
+  "timeoutSec": 900,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "(overflow|horizontal scroll|scrollWidth)[^\\n]*1024|1024[^\\n]*(overflow|horizontal scroll|scrollWidth)",
+      "why": "the horizontal overflow at 1024 is a finding with a severity"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "(warranty|returns)[^\\n]*(clip|cut|truncat|hidden|overflow)|(clip|cut|truncat|hidden|overflow)[^\\n]*(warranty|returns)",
+      "why": "the clipped warranty note is a finding"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "cart[^\\n]*(404|fail|error)|(404|fail|error)[^\\n]*cart",
+      "why": "the failed cart request in the console is a finding"
+    }
+  ],
+  "screenshotsRead": {
+    "min": 2
+  },
+  "trace": [
+    {
+      "tool": "mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_page)",
+      "why": "the page was opened through the plugin's chrome-devtools server under its production name"
+    },
+    {
+      "tool": "Bash",
+      "input": "node\\s+\\S*verify-doctor\\.mjs",
+      "before": "mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_page)",
+      "why": "verify-doctor ran before the first navigation"
+    }
+  ],
+  "traceForbid": [
+    {
+      "tool": "mcp__chrome-devtools__.*",
+      "why": "never a project's own chrome-devtools server"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.15.1",
+    "date": "2026-10-27",
+    "plugin": "0.15.1@e42bbb7fa",
+    "runs": 1,
+    "failed": 1,
+    "caseHash": "468a51ed6e9b6fa5",
+    "failures": [
+      "trace: verify-doctor ran before the first navigation (Bash /node\\s+\\S*verify-doctor\\.mjs/ before mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_"
+    ]
+  }
+}

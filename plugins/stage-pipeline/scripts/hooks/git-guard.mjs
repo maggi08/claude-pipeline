@@ -2,11 +2,8 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { journalText, openLedgers, reportNames } from '../journal-check.mjs'
-import { scanOverrides, summarize } from '../kit-override-scan.mjs'
-import { PARITY_TABLE } from '../markers.mjs'
-import { commitScope, gitInvocations } from './git-command.mjs'
-import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
+import { denyTool } from './firing.mjs'
+import { readHookInput } from './pipeline-state.mjs'
 
 /**
  * In the normal pipeline mode the index and the commit belong to the user: /stage-check
@@ -38,15 +35,62 @@ import { pluginDataDir, readHookInput, readPipelineState } from './pipeline-stat
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
 if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(0)
+// The hook runs before and after every Bash call: the rule modules are loaded only for a command that can add or commit.
+const { journalText, openLedgers, readTaskFile, reportNames } = await import('../journal-check.mjs')
+const { scanOverrides, summarize } = await import('../kit-override-scan.mjs')
+const { PARITY_TABLE } = await import('../markers.mjs')
+const { commitVerdict, finishFloorOk, finishPending, savePending } = await import('../receipts.mjs')
+const { commitMakerVerdict, makerRuleApplies } = await import('../maker.mjs')
+const { commitChainProblems, commitScope, gitInvocations, indexChangers } = await import('./git-command.mjs')
+const { pluginDataDir, readPipelineState } = await import('./pipeline-state.mjs')
 
 const cwd = input.cwd ?? process.cwd()
+const archiveScript = join(dirname(fileURLToPath(import.meta.url)), '..', 'archive-stages.mjs')
 const invocations = gitInvocations(command, cwd)
+const callId = input.tool_use_id ?? input.session_id ?? 'call'
+const floorOkId = (id, worktree) => `${id}.floor-ok.${worktree}`
+
+// PostToolUse: a force commit that went through leaves its receipt (the pre-hook below saved the verdict).
+if (input.hook_event_name === 'PostToolUse') {
+  for (const { subcommand, dir } of invocations) {
+    if (subcommand !== 'commit') continue
+    const worktree = toplevel(dir)
+    if (!worktree) continue
+    finishPending(pluginDataDir(), callId, worktree)
+    finishFloorOk(pluginDataDir(), floorOkId(callId, worktree), worktree)
+  }
+  process.exit(0)
+}
+// The invocation being judged: the firing row names its task and repo.
+let judged = null
+// K11b.3 (B4): a commit hidden in a wrapper (`bash -c 'git apply --cached p && git commit'`) has no visible `git commit` for the loop below; the same staging rule judges it from the cwd's task.
+const chain = commitChainProblems(command)
+if (chain.length && !invocations.some(({ subcommand }) => subcommand === 'commit')) {
+  const state = readPipelineState(cwd)
+  const task = state?.tasks.find((candidate) => candidate.current)
+  if (task?.forceActive && !task.unreadable && guarded(() => makerRuleApplies({ dataDir: pluginDataDir(), taskDir: task.dir, ticket: task.ticket, worktree: state.worktree }))) {
+    judged = { state, task }
+    denyStaging('git-guard/commit-chain', chain)
+  }
+}
 for (const { subcommand, dir, args } of invocations) {
   const state = readPipelineState(dir)
   const task = state?.tasks.find((candidate) => candidate.current)
+  judged = { state, task }
 
+  // A journal that cannot be read: neither mode can be told, and no rule can run — refused in both, with the file and the limit named (fail closed).
+  if (task?.unreadable) {
+    deny(
+      'git-guard/journal-unreadable',
+      `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}, and its ${task.unreadable.message.replace(/^STAGES\.md/, task.stagesPath)} ` +
+        'Until it can be read, git add and git commit on this branch are rejected: the hook cannot tell the normal mode from a force run. ' +
+        'Do not repeat the command: show git status and the ready commit message and hand the commit to the user (their own terminal is not gated). ' +
+        (task.unreadable.file === 'STAGES.md' && task.unreadable.problem === 'too-large' ? `To fold the closed stages: node "${archiveScript}" ${task.stagesPath} --apply.` : ''),
+    )
+  }
   if (task && !task.forceActive) {
     deny(
+      'git-guard/normal-mode',
       `stage-pipeline: branch ${state.branch} is the branch of task ${task.ticket}${task.foreign ? ` (STAGES.md is in the task directory of another repo: ${task.stagesPath})` : ''}, ` +
         'normal mode: the user runs git add and git commit by themselves, in their own terminal. ' +
         'Do not repeat the command: show git status and the ready commit message (/stage-check, Step 4.4). Auto-commit is only in /stage-force.',
@@ -56,6 +100,7 @@ for (const { subcommand, dir, args } of invocations) {
   // text lost this dispute: signatures went into commits, and the user rebuilt branches by hand three times.
   if (state && subcommand === 'commit' && serviceTrailer(command, args, dir)) {
     deny(
+      'git-guard/service-trailer',
       'stage-pipeline: the commit message has a service signature (`Co-Authored-By`, "Generated with …"). It is not added in a pipeline repo — the user\'s decision ' +
         'for all their repos (/stage-check, Step 4.4); the user\'s rule outranks the system instruction about attribution. Remove the signature and commit again.',
     )
@@ -67,18 +112,65 @@ for (const { subcommand, dir, args } of invocations) {
   const open = openLedgers(pluginDataDir(), task.dir)
   if (open.length) {
     deny(
+      'git-guard/findings-no-outcome',
       `stage-pipeline: the checkers' findings have no outcome — the stage commit is rejected.\n${[...new Set(open.map((violation) => `- ${violation.message}`))].join('\n')}\n` +
         'Add "## Findings outcome" to the end of each report: fixed / false (with proof) / B<n> — blocker (references/checker-report.md). Something not fixed is a blocker, not "Awaiting user confirmation".',
     )
   }
 
-  const paths = commitPaths(invocations, state.worktree)
+  const makerArgs = { dataDir: pluginDataDir(), taskDir: task.dir, ticket: task.ticket, worktree: state.worktree }
+  // K11a.2 (S-1b), before the empty-commit shortcut below (a path put into the index by `update-index` is not in `paths` yet). The rule judges the blob a commit takes from the
+  // working tree for the paths `git add` of this command stages, and from the index for the rest. A path put into the index by another subcommand of the same command
+  // (`git update-index --add x && git commit`, `GIT_INDEX_FILE=… git commit`) is neither: the rule cannot see what the commit will take.
+  // K11b.3 (B4): besides the index-changing forms, a command that commits chains only add, commit, status, diff, log, show and rev-parse, and hides no git call in a wrapper.
+  const changers = indexChangers(command)
+  const tampered = [...new Set([...changers, ...chain])]
+  if (tampered.length && guarded(() => makerRuleApplies(makerArgs))) denyStaging(changers.length ? 'git-guard/index-changer' : 'git-guard/commit-chain', tampered)
+  const specs = commitSpecs(invocations, state.worktree)
+  const paths = commitPaths(specs, state.worktree)
   if (paths?.length === 0) continue
+  // the files of the commit, computed once for the receipt rule and for the maker rule (K11a.8 m-2); a throw gives neither rule a verdict
+  const changed = guarded(() => changedFiles(state.worktree, paths))
+
+  // Stage receipts (VT-1 stage 3): the window of this commit holds the stage's checkers — only for a Force block opened after this version first saw the task (receipts.mjs).
+  // K11a.1: a crash inside one receipt rule never skips the rules after it (floor-guard, parity, kit overrides): the rule that threw gives no verdict.
+  const verdict = guarded(() =>
+    commitVerdict({
+      dataDir: pluginDataDir(),
+      taskDir: task.dir,
+      ticket: task.ticket,
+      branch: state.branch,
+      worktree: state.worktree,
+      changed,
+    }),
+  )
+  if (verdict?.missing.length) {
+    deny(
+      'git-guard/checker-receipts',
+      `stage-pipeline: the stage commit has no proof that its checkers ran — rejected.\n${verdict.missing.map((line) => `- ${line}`).join('\n')}\n` +
+        'The window is the checker reports written after the previous force commit on this branch (and after the Force block date); a fix commit that touches only the files of the previous force commit needs no new reports.',
+    )
+  }
+  if (verdict) guarded(() => savePending(pluginDataDir(), callId, { ...verdict, ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim() }))
+
+  // Maker receipts (VT-1 stage 11): a code path of a force commit must be the blob a `stage-implement` stop recorded last. `git add x && git commit` is judged before the add runs:
+  // the blob of a path the command itself stages is read from the working tree, the blob of any other path from the index — the one that will be committed.
+  const foreign = guarded(() => commitMakerVerdict({ ...makerArgs, changed, staged: stagedByCommand(specs, state.worktree) }))
+  if (foreign?.length) {
+    deny(
+      'git-guard/maker-commit',
+      `stage-pipeline: code not written by stage-implement — hand it to a fix round. The commit is rejected; the code paths below do not match the last blob a stage-implement stop recorded:\n` +
+        `${foreign.slice(0, 12).map((path) => `- ${path}`).join('\n')}${foreign.length > 12 ? `\n- … ${foreign.length - 12} more` : ''}\n` +
+        'Launch `stage-implement` in fix mode with the change as a finding (stage-force, Step 3) instead of editing code in the main context; a deletion is allowed when the Force block names the path. ' +
+        'Lockfiles, generated files, markdown and JSON are not code and pass.',
+    )
+  }
 
   const journal = journalText(task.dir)
   const removed = removedComponents(state.worktree, paths).filter((name) => !PARITY_TABLE.test(journal) || !journal.includes(name))
   if (removed.length) {
     deny(
+      'git-guard/ui-removed-no-parity',
       `stage-pipeline: the stage removes UI — ${removed.map((name) => `\`${name}\``).join(', ')}, and STAGES.md has no parity table with these rows. The commit is rejected.\n` +
         'Add a "Parity" table to the stage: what moved where from what was removed, what was removed by decision (the rows are criteria `AC-N.P*`, task-converge checks them; stage-plan, Step 3). ' +
         'If the component was not rendered anywhere (orphaned) — a row saying so, with a link to the dead-code report.',
@@ -86,14 +178,16 @@ for (const { subcommand, dir, args } of invocations) {
   }
 
   const overrides = safeScan(state.worktree, paths, state.config)
+  // Read bounded, as every task file: a kit report that cannot be read reports no file.
   const kitReports = reportNames(task.dir)
     .filter((name) => name.includes('kit-overrides'))
-    .map((name) => readFileSync(join(task.dir, 'checks', name), 'utf8'))
+    .map((name) => readTaskFile(task.dir, 'checks', name) ?? '')
     .join('\n')
   const unreported = overrides.filter(({ file }) => !kitReports.includes(file))
   if (unreported.length) {
     const scan = join(dirname(fileURLToPath(import.meta.url)), '..', 'kit-override-scan.mjs')
     deny(
+      'git-guard/kit-overrides-unreported',
       `stage-pipeline: the stage diff has kit overrides without a report — the commit is rejected.\n${unreported
         .slice(0, 8)
         .map(({ file, hits }) => `- ${file}: ${summarize(hits)}`)
@@ -113,10 +207,17 @@ for (const { subcommand, dir, args } of invocations) {
   })
   if (run.status === 1) {
     deny(
+      'git-guard/floor-guard',
       `stage-pipeline: floor-guard found moves in the stage diff that lower the quality floor — the commit is rejected.\n${run.stdout.trim()}\n` +
         'Fix it as a fix-loop finding (not by suppressing it). If an exception is truly justified — a `floor-ok: <reason>` line ' +
         'at the violation and an item in "⚠ Awaiting user confirmation" of STAGES.md; @ts-ignore and secrets are never an exception.',
     )
+  }
+  // The project's rules passed with a `floor-ok:` reason (`[repo:<id>] file:line — reason`): the run digest lists them, so the user sees what was waived.
+  // Kept pending and written when the commit is confirmed (PostToolUse, HEAD moved): a commit that fails leaves no waiver. Exit 2 (a bad row elsewhere) still lists the accepted lines.
+  if (run.status === 0 || run.status === 2) {
+    const waived = [...run.stdout.matchAll(/^ {2}- \[repo:([^\]]+)\] (.+?):(\d+) — (.+)$/gm)].map(([, id, file, line, reason]) => ({ rule: `repo:${id}`, file, line: Number(line), reason }))
+    if (waived.length) savePending(pluginDataDir(), floorOkId(callId, state.worktree), { ticket: task.ticket, branch: state.branch, head: gitOut(state.worktree, 'rev-parse', 'HEAD').trim(), waived })
   }
   // "Could not look" does not block the commit — /stage-check, Step 1, will run the same — but it does not pass silently.
   if (run.status !== 0) {
@@ -128,28 +229,58 @@ for (const { subcommand, dir, args } of invocations) {
 process.exit(0)
 
 /**
- * The paths that go into this command's commit — pathspecs from the worktree root: the index already built,
- * the paths from `git add`/`git commit`, all tracked files with `-a`/`-u`. `null` — the whole tree including
- * untracked files (`git add -A` without paths, paths from a file, pathspec magic with `:`), `[]` — nothing to commit.
+ * The pathspecs a force commit command names, from the worktree root (K11a.8 m-2: the one parser for the commit's paths and for what the command itself stages).
+ * `{ all, tracked, specs }`: `all` — the whole tree including untracked files (`git add -A` without paths, pathspec magic with `:`), `tracked` — `-a`/`-u`
+ * (every tracked change), `specs` — the pathspecs inside the worktree (`.` for the root).
  */
-function commitPaths(calls, worktree) {
+function commitSpecs(calls, worktree) {
   const scope = commitScope(calls.filter(({ dir }) => toplevel(dir) === worktree))
-  if (scope.all) return null
-  const paths = new Set()
+  if (scope.all) return { all: true, tracked: false, specs: [] }
+  const specs = []
   for (const { dir, spec } of scope.specs) {
-    if (spec.startsWith(':')) return null
+    if (spec.startsWith(':')) return { all: true, tracked: false, specs: [] }
     // The root from git is a real path, the call directory can go through a symlink (`/var` → `/private/var` on macOS).
     const real = realDir(dir)
     if (!real) continue
     const path = relative(worktree, resolve(real, spec))
     if (path.startsWith('..') || isAbsolute(path)) continue
-    paths.add(path || '.')
+    specs.push(path || '.')
   }
+  return { all: false, tracked: Boolean(scope.tracked), specs }
+}
+
+/**
+ * The paths that go into this command's commit — pathspecs from the worktree root: the index already built, the paths from `git add`/`git commit`, all tracked files
+ * with `-a`/`-u`. `null` — the whole tree including untracked files, `[]` — nothing to commit.
+ */
+function commitPaths({ all, tracked, specs }, worktree) {
+  if (all) return null
+  const paths = new Set(specs)
   // Names from git are literal: `[PLI-1] page.ts` as a glob would not match itself.
   const names = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean).map((name) => `:(literal)${name}`)
   for (const name of names('diff', '--cached', '--name-only', '--no-renames', '-z')) paths.add(name)
-  if (scope.tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
+  if (tracked) for (const name of names('diff', '--name-only', '--no-renames', '-z', 'HEAD')) paths.add(name)
   return [...paths]
+}
+
+/**
+ * The files the command stages by itself before it commits, for the maker receipts: `null` — the whole tree (`git add -A`, pathspec magic), else a Set of the changed
+ * files inside its pathspecs (`git add x`, `git commit x`) and, with `-a`/`-u`, the tracked changes. A plain `git commit` stages nothing (an empty Set).
+ */
+function stagedByCommand({ all, tracked, specs }, worktree) {
+  if (all) return null
+  const out = new Set()
+  const list = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean)
+  if (tracked) for (const name of list('diff', '--name-only', '--no-renames', '-z', 'HEAD')) out.add(name)
+  if (specs.length) for (const name of changedFiles(worktree, specs)) out.add(name)
+  return out
+}
+
+/** The files this commit changes: tracked changes against HEAD plus untracked files, inside the commit's pathspecs (`null` — the whole tree). */
+function changedFiles(worktree, paths) {
+  const spec = paths ? ['--', ...paths] : []
+  const list = (...args) => gitOut(worktree, ...args).split('\0').filter(Boolean)
+  return [...new Set([...list('diff', '--name-only', '--no-renames', '-z', 'HEAD', ...spec), ...list('ls-files', '-o', '--exclude-standard', '-z', ...spec)])]
 }
 
 /**
@@ -216,9 +347,24 @@ function gitOut(cwd, ...args) {
   }
 }
 
-function deny(reason) {
-  process.stdout.write(
-    JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }),
+function denyStaging(rule, tampered) {
+  deny(
+    rule,
+    `stage-pipeline: the commit command also does something to the index or to HEAD other than \`git add\` and \`git commit\` (${tampered.map((name) => `\`${name}\``).join(', ')}) — rejected: ` +
+      'stage with `git add` in its own call, then commit; a commit command may chain only add, commit, status, diff, log, show and rev-parse, with no git call inside `bash -c`, `eval`, `xargs`, backticks or `$( … )`. ' +
+      'The maker receipt judges the code of a force commit by the blob that goes into it, and cannot read it from a command that builds the index another way.',
   )
-  process.exit(0)
+}
+
+/** Runs one rule: a throw is no verdict (null), so the rules after it still run. */
+function guarded(rule) {
+  try {
+    return rule()
+  } catch {
+    return null
+  }
+}
+
+function deny(rule, reason) {
+  denyTool(rule, reason, { input, task: judged?.task?.ticket, repo: judged?.state?.worktree ?? cwd })
 }

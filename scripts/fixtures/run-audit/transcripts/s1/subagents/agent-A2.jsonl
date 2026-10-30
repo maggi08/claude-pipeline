@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-03-02T10:50:00Z","sessionId":"s1","isSidechain":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"y1","name":"mcp__demo__chrome-devtools__take_screenshot","input":{"filePath":"/synthetic/shots/other.png"}}]}}

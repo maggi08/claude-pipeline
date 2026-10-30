@@ -27,6 +27,8 @@ Precedent: `node_modules` was a symlink to a local checkout of the UI kit with a
 
 While the symptom is described in words ("the header sometimes shifts"), there is nothing to verify a fix against. Write down **URL + state + width + theme + profile type** — exactly the set that will later go into `devtools-verify`. Does not reproduce stably — keep collecting data, do not build hypotheses.
 
+**A runtime defect is reproduced by observing it, not by writing it down.** Name the correct final state and the broken one (one observable each), then launch the `devtools-verify` subagent in **repro mode** ("Repro mode" of `${CLAUDE_PLUGIN_ROOT}/skills/devtools-verify/SKILL.md`): it observes the broken state twice with a reset in between. Not reproduced twice → the dismissal form `not reproduced (2 attempts, <route>)`, and no cause is named on it. From inside a subagent (`stage-implement`) you cannot launch it: put the repro request (route, state, correct and broken final state) into `Not done`, and the orchestrator runs it before the fix round.
+
 A separate line — **what changed**: the stage's `git diff`, recent commits, updated packages, a rebase. A symptom that appeared after a rebase is looked for in the conflict resolution, not in the logic.
 
 ## Step 2. Evidence at the boundaries — before hypotheses
@@ -50,7 +52,7 @@ At runtime measure with numbers (`getComputedStyle`, store contents, array lengt
 
 You found where the value is wrong — do not fix it there. Go up: template ← prop ← composable/hook ← store ← API response ← request. Stop where the value first becomes wrong and fix **there**.
 
-Separately check the **radius of the future fix**: an edit at the source is an edit of a shared module. Find all importers (`grep -rn "<name>"`), especially outside the task's area. Precedent: the shared info block of a step was rewritten in Tailwind in the redesign tree, and five legacy screens imported it through the shared path — the headings shifted where nobody was looking.
+Separately check the **radius of the future fix**: an edit at the source is an edit of a shared module. Find all importers (`grep -rn "<name>"`), especially outside the task's area; `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify-map.mjs --radius <file>…` does the same grep up to the page files and lists their routes and the mapped features with each primary path — that list goes into the recheck (`/stage-check`, Step 3.2). Precedent: the shared info block of a step was rewritten in Tailwind in the redesign tree, and five legacy screens imported it through the shared path — the headings shifted where nobody was looking.
 
 ## Step 4. One hypothesis, minimal check
 
@@ -70,11 +72,13 @@ Not confirmed — a new hypothesis from scratch, not one more edit on top. If yo
 
 Step 2 must not be skipped: if the symptom did not come back on revert, you fixed the wrong thing, and the coincidence has another reason (a dev server restart, a cache clean, another state). This is the cheapest check in the whole cycle and the most often skipped one.
 
+A runtime defect that was reproduced in repro mode (Step 1) is proven the same way it was found: the **same path, twice, with the same cross-check** (the correct final state both times, the broken reading never) through the `devtools-verify` subagent; its `-r<k>` report is what the `fixed` line cites.
+
 ## Three failed fixes — a question for the architecture, not for a hypothesis
 
 The sign: every edit fixes its own place and uncovers the same problem next to it; the fixes ask for ever wider refactoring. This is not a series of wrong hypotheses — it is a wrong component boundary or a wrong place for the state.
 
-In `/stage-check` this corresponds to the end of the fix-loop: two iterations of the orchestrator plus a fresh checker run. Exhausted — escalate **as an architecture question**, listing all the attempts and what each uncovered, not as "could not fix it".
+In `/stage-check` this corresponds to the end of the fix-loop: two iterations of the orchestrator plus a fresh checker run. Exhausted — escalate **as an architecture question**, listing all the attempts and what each uncovered, not as "could not fix it". Before the escalation write one line: **the premise the failed rounds shared** (what every attempt took for granted: "the value is wrong in the store", "the request is sent once") and **the observation that would refute it**; then make that observation first — a premise nobody tested is the usual reason three different edits missed.
 
 ## Typical frontend symptom-fixes
 

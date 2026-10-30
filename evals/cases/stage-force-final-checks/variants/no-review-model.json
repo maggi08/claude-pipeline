@@ -1,0 +1,7 @@
+{
+  "why": "the final checks without the review model: stage-force Step 4 and stage-check Step 3 no longer name review_model or the model parameter, and the final fresh-run item of stage-check is gone",
+  "edits": [
+    { "file": "skills/stage-force/SKILL.md", "find": "; the Agent call must carry `model: <review_model>` (the config's value, `opus` by default; without it agent-guard denies the call — `/stage-check`, Step 3.3),", "replace": "," },
+    { "file": "skills/stage-check/SKILL.md", "deleteLines": "^3\\. Did not converge after the 2nd iteration" }
+  ]
+}

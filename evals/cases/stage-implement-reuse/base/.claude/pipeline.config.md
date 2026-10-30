@@ -1,6 +1,6 @@
-# Pipeline config — eval-fixture
+# Pipeline config — checkout-ui
 ## Project
-- slug: eval-fixture
+- slug: checkout-ui
 - stack: React 18 / TS
 - package_manager: npm
 - main_branch: main

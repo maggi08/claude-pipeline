@@ -1,7 +1,13 @@
 {
   "agent": "i18n-sweep",
   "why": "hardcoded copy in a button and a key added to one locale only",
-  "prompt": "Ticket EVAL-1, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status). The stage added the empty cart state and the pay button.",
+  "identity": {
+    "repo": "cart-service-web",
+    "ticket": "CART-23",
+    "user": "Noah Kessler",
+    "email": "noah.kessler@cart-service-web.dev"
+  },
+  "prompt": "Ticket CART-23, stage 1. Comparison base: uncommitted changes (git diff HEAD + git status). The stage added the empty cart state and the pay button.",
   "expect": [
     {
       "pattern": "Continue to payment",
@@ -10,6 +16,13 @@
     {
       "pattern": "cart\\.empty[\\s\\S]{0,200}ru|ru[\\s\\S]{0,200}cart\\.empty",
       "why": "the key cart.empty is missing in ru"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "any",
+      "file": "(h2|cart\\.title)[^\\n]{0,60}(hardcod|not translated|missing)",
+      "why": "the translated heading cart.title is flagged"
     }
   ]
 }

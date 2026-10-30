@@ -288,6 +288,84 @@ const CASES = [
     args: ['--base'],
     exitCode: 2,
   },
+  // ── repo rules (stage 13): `## Repo rules` of pipeline.config.md, applied to added lines ──
+  {
+    name: 'repo rule incident: an added line that matches a row is a violation with the rule id and its message',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n", 'src/A.vue': '<template><div /></template>\n' },
+    change: { 'src/A.vue': '<template><div /></template>\n<script>const c = resolveComponent(name)</script>\n' },
+    expect: ['repo:no-resolve-component'],
+    stdout: /import it statically/,
+  },
+  {
+    name: 'repo rule legitimate: the same line with floor-ok is an exception, not a violation',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n", 'src/A.vue': '<template><div /></template>\n' },
+    change: { 'src/A.vue': '<template><div /></template>\n// floor-ok: the name comes from the CMS and cannot be known at build time\n<script>const c = resolveComponent(name)</script>\n' },
+    expect: [],
+    accepted: 1,
+    acceptedRule: 'repo:no-resolve-component',
+  },
+  {
+    name: 'repo rule legitimate: the pattern on an unchanged line is not flagged',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n", 'src/A.vue': '<script>const c = resolveComponent(name)</script>\n' },
+    change: { 'src/A.vue': '<script>const c = resolveComponent(name)</script>\n<template><div /></template>\n' },
+    expect: [],
+  },
+  {
+    name: 'repo rule legitimate: a config with no table — nothing changes (AC-13.1)',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n", 'src/A.vue': '<template><div /></template>\n' },
+    change: { 'src/A.vue': '<script>const c = resolveComponent(name)</script>\n' },
+    expect: [],
+  },
+  {
+    name: 'repo rule legitimate: no config at all — nothing changes (AC-13.1)',
+    base: { 'src/A.vue': '<template><div /></template>\n' },
+    change: { 'src/A.vue': '<script>const c = resolveComponent(name)</script>\n' },
+    expect: [],
+  },
+  {
+    name: 'repo rule legitimate: a file outside the glob (a test) is not flagged',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n", 'src/A.test.vue': '<template />\n', 'lib/b.ts': 'export const b = 1\n' },
+    change: { 'src/A.test.vue': 'resolveComponent(x)\n', 'lib/b.ts': 'export const b = resolveComponent(1)\n' },
+    expect: [],
+  },
+  {
+    name: 'repo rule incident: the Russian heading, flags and an escaped alternation in the pattern',
+    base: {
+      '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + '## Правила репо\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-moment | `/moment\\|dayjs-old/i` | `*.ts` | Use date-fns. | PR 12 |\n',
+      'src/a.ts': 'export const a = 1\n',
+    },
+    change: { 'src/a.ts': "import Moment from 'moment'\n" },
+    expect: ['repo:no-moment'],
+    stdout: /Use date-fns/,
+  },
+  {
+    name: 'repo rule incident: a repo rule and a built-in rule on the same diff are both reported',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n", 'src/A.vue': '<template />\n' },
+    change: { 'src/A.vue': '<script>const c = resolveComponent(name) as any</script>\n' },
+    expect: ['repo:no-resolve-component', 'type-escape'],
+  },
+  {
+    name: 'repo rule incident: a bad row is reported once as a config problem, the good rows still run',
+    base: {
+      '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n" + '| broken | `resolveComponent(` | * | never loads | |\n| empty | `x*` | * | matches everything | |\n',
+      'src/A.vue': '<template />\n',
+    },
+    change: { 'src/A.vue': '<script>resolveComponent(a)\nresolveComponent(b)</script>\n' },
+    expect: ['repo:no-resolve-component', 'repo:no-resolve-component'],
+    configProblems: 2,
+  },
+  {
+    name: 'repo rule incident: only bad rows and a clean diff — code 2, not a silent pass',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + '## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| broken | `(` | * | never loads | |\n', 'src/a.ts': 'export const a = 1\n' },
+    change: { 'src/a.ts': 'export const a = 2\n' },
+    exitCode: 2,
+  },
+  {
+    name: 'repo rule legitimate: the config file that quotes the pattern is not checked against it',
+    base: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n" },
+    change: { '.claude/pipeline.config.md': "# config\n\n- main_branch: main\n\n" + "## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve-component | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | Resolving a component by name hides it from the bundler: import it statically. | WEB-2229 |\n" + '\nNote: do not call `resolveComponent(` by name.\n' },
+    expect: [],
+  },
   {
     name: 'no merge-base — code 2, not clean',
     base: { 'src/a.ts': 'export const a = 1\n' },
@@ -336,9 +414,117 @@ for (const spec of CASES) {
     const marked = out.violations.filter((v) => v.untracked).length
     if (spec.untrackedMarked !== undefined && marked !== spec.untrackedMarked) problems.push(`marked "not in git" ${marked}, expected ${spec.untrackedMarked}`)
     if (spec.forbidOutput?.test(run.stdout)) problems.push('the secret value is in the output')
+    if (spec.stdout && !spec.stdout.test(run.stdout)) problems.push(`the output lacks ${spec.stdout}`)
+    if (spec.acceptedRule && !out.accepted.some((a) => a.rule === spec.acceptedRule)) problems.push(`no exception of ${spec.acceptedRule}`)
+    if (spec.configProblems !== undefined && (out.configProblems?.length ?? 0) !== spec.configProblems) problems.push(`config problems ${out.configProblems?.length ?? 0}, expected ${spec.configProblems}`)
   }
   rmSync(repo, { recursive: true, force: true })
   console.log(`${problems.length ? '✘' : '✔'} ${spec.name}${problems.length ? ` — ${problems.join('; ')}` : ''}`)
   if (problems.length) failed++
 }
+
+// A linked worktree whose `.claude/` is excluded and uncommitted has no config of its own: the rules come from the main tree, as the hooks read it (`configRoot`).
+{
+  const main = mkdtempSync(join(tmpdir(), 'floor-guard-wt-'))
+  const linked = `${main}-linked`
+  git(main, 'init', '-q', '-b', 'main')
+  git(main, 'config', 'user.email', 'test@example.com')
+  git(main, 'config', 'user.name', 'test')
+  write(main, { 'src/A.vue': '<template />\n', '.git/info/exclude': '.claude/\n' })
+  git(main, 'add', '-A')
+  git(main, 'commit', '-qm', 'base')
+  write(main, { '.claude/pipeline.config.md': '- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-resolve | `resolveComponent\\(` | `**/*.vue` | Import the component statically. | WEB-2229 |\n' })
+  git(main, 'worktree', 'add', '-q', '-b', 'feat/x', linked)
+  write(linked, { 'src/A.vue': '<script>resolveComponent(n)</script>\n' })
+  const run = spawnSync('node', [GUARD, '--json'], { cwd: linked, encoding: 'utf8' })
+  const out = run.status === 1 ? JSON.parse(run.stdout) : null
+  const ok = out?.violations.length === 1 && out.violations[0].rule === 'repo:no-resolve' && out.violations[0].message === 'Import the component statically.'
+  console.log(`${ok ? '✔' : '✘'} repo rule incident: a linked worktree with an excluded .claude/ reads the rules of the main tree${ok ? '' : ` — exit ${run.status}, ${run.stdout.slice(0, 200)}`}`)
+  if (!ok) failed++
+  rmSync(linked, { recursive: true, force: true })
+  rmSync(main, { recursive: true, force: true })
+}
+
+// ── Stage 13a of VT-6, fix round 1 (security 1, 2, 5): the repo rules cannot take the built-in rules down with them ───────────────────────────────────────────────────
+// Incident: a glob with many wildcards, many slow rows and a very long line must not push floor-guard past the hook's 12 s kill (the commit would go through unchecked, the secret scan lost).
+// Legitimate: an ordinary row still fires, and a line inside the cap is checked as before.
+{
+  const SECRET_LINE = `const k = "${'AKIA'}${'QWERTYUIOPASDFGH'}"\n`
+  const withConfig = (rows) => `- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n${rows}\n`
+  const timedRun = (name, base, change, check) => {
+    const repo = mkdtempSync(join(tmpdir(), 'floor-guard-13a-'))
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    write(repo, base)
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'base')
+    write(repo, change)
+    git(repo, 'add', '-A')
+    const started = Date.now()
+    const run = spawnSync('node', [GUARD, '--json'], { cwd: repo, encoding: 'utf8', timeout: 12_000 })
+    const ms = Date.now() - started
+    let out = null
+    try {
+      out = JSON.parse(run.stdout)
+    } catch {}
+    const problem = check({ run, out, ms })
+    rmSync(repo, { recursive: true, force: true })
+    console.log(`${problem ? '✘' : '✔'} ${name}${problem ? ` — ${problem} (exit ${run.status}, ${ms} ms)` : ''}`)
+    if (problem) failed++
+  }
+  const A = 'a'.repeat(60)
+  timedRun('repo rules incident: a files glob with seven wildcards is a named config problem and the secret scan still runs, fast', { '.claude/pipeline.config.md': withConfig('| g | `foo` | `*a*a*a*a*a*a*a*b` | no |') }, { [`${A}.ts`]: SECRET_LINE }, ({ run, out, ms }) =>
+    run.status === 1 && ms < 6000 && out?.violations.some((v) => v.rule === 'secret') && /more than 4 wildcards/.test(out.configProblems?.[0] ?? '') ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  const slowRows = Array.from({ length: 14 }, (_, i) => `| r${i} | \`(?:\\d+\\d+\\d+\\d+\\d+\\d+\\d+)z${i}\` | * | no |`).join('\n')
+  timedRun('repo rules incident: fourteen slow rows share one time budget — the secret is reported before the hook would kill the run, the skipped rows are named', { '.claude/pipeline.config.md': withConfig(slowRows) }, { 'src/a.ts': `const n = "${'1'.repeat(3000)}"\n${SECRET_LINE}` }, ({ run, out, ms }) =>
+    run.status === 1 && ms < 9000 && out?.violations.some((v) => v.rule === 'secret') && out.configProblems?.some((line) => /time budget/.test(line)) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems?.slice(-1))}`)
+  const nofoo = '| nofoo | `forbiddenCall\\(` | * | no |'
+  timedRun('repo rules incident: a line longer than the cap is named as not checked by repo rules, not passed in silence', { '.claude/pipeline.config.md': withConfig(nofoo) }, { 'src.ts': `${'x'.repeat(4100)}forbiddenCall(1)\n` }, ({ run, out }) =>
+    run.status === 2 && out?.configProblems?.some((line) => /longer than 4000 characters/.test(line)) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  timedRun('repo rules legitimate: a line inside the cap is checked, an ordinary row fires, nothing is reported as skipped', { '.claude/pipeline.config.md': withConfig(nofoo) }, { 'src.ts': `${'x'.repeat(3000)}forbiddenCall(1)\n` }, ({ run, out }) =>
+    run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'repo:nofoo' && !out.configProblems ? null : `status ${run.status}, ${JSON.stringify(out)}`)
+  timedRun('repo rules legitimate: realistic globs with four wildcards apply on a deep path', { '.claude/pipeline.config.md': withConfig('| g | `forbiddenCall\\(` | `**/__tests__/**/*.test.*` | no |') }, { 'a/b/__tests__/c/d.test.ts': 'forbiddenCall(1)\n' }, ({ run, out }) =>
+    run.status === 1 && out?.violations.some((v) => v.rule === 'repo:g') ? null : `status ${run.status}, ${JSON.stringify(out)}`)
+}
+
+// Stage 13c of VT-6 (B5): the `files` cell written as several code spans, and the globs that can never match.
+// Incident: `src/**/*.vue`, `!**/*.test.*` loaded as two globs with a backtick left in them, so the row covered no file and nothing said so.
+// Legitimate: the single-span cell loads and denies as before; a glob with a `/**` directory is fine.
+{
+  const withConfig = (rows) => `- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n${rows}\n`
+  const guarded = (name, config, change, verify) => {
+    const repo = mkdtempSync(join(tmpdir(), 'floor-guard-13c-'))
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    write(repo, { '.claude/pipeline.config.md': config, 'src/A.vue': '<template />\n' })
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'base')
+    write(repo, change)
+    git(repo, 'add', '-A')
+    const run = spawnSync('node', [GUARD, '--json'], { cwd: repo, encoding: 'utf8', timeout: 12_000 })
+    let out = null
+    try {
+      out = JSON.parse(run.stdout)
+    } catch {}
+    const problem = verify({ run, out })
+    rmSync(repo, { recursive: true, force: true })
+    console.log(`${problem ? '✘' : '✔'} ${name}${problem ? ` — ${problem} (exit ${run.status})` : ''}`)
+    if (problem) failed++
+  }
+  const hit = { 'src/A.vue': '<template />\n<script>const c = resolveComponent(name)</script>\n' }
+  const denies = ({ run, out }) => (run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'repo:rc' && !out.configProblems ? null : `status ${run.status}, ${JSON.stringify(out)}`)
+  guarded('repo rule incident (13c): a files cell written as one code span per glob denies a matching added line with [repo:<id>]', withConfig('| rc | `resolveComponent\\(` | `src/**/*.vue`, `!**/*.test.*` | import it statically |'), hit, denies)
+  guarded('repo rule legitimate (13c): the single-span files cell still loads and denies as before', withConfig('| rc | `resolveComponent\\(` | `src/**/*.vue, !**/*.test.*` | import it statically |'), hit, denies)
+  guarded('repo rule legitimate (13c): the multi-span exclusion still excludes', withConfig('| rc | `resolveComponent\\(` | `src/**/*.vue`, `!**/*.test.*` | import it statically |'), { 'src/A.test.vue': '<script>resolveComponent(x)</script>\n' }, ({ run, out }) => (run.status === 0 && !out?.violations.length ? null : `status ${run.status}, ${JSON.stringify(out)}`))
+  guarded('repo rule legitimate (13c): a directory written dir/** loads without a problem', withConfig('| rc | `resolveComponent\\(` | `src/**` | import it statically |'), hit, denies)
+  const named = (id, glob) => ({ run, out }) => (run.status === 2 && out?.configProblems?.length === 1 && out.configProblems[0].includes(`"${id}"`) && /repo-relative/.test(out.configProblems[0]) && out.configProblems[0].includes(glob) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  guarded('repo rule incident (13c): a ./ glob is a config problem naming the row', withConfig('| dot | `resolveComponent\\(` | `./src/**` | import it statically |'), hit, named('dot', './src/**'))
+  guarded('repo rule incident (13c): a leading-slash glob is a config problem naming the row', withConfig('| lead | `resolveComponent\\(` | `/src/**` | import it statically |'), hit, named('lead', '/src/**'))
+  guarded('repo rule incident (13c): a ../ glob is a config problem naming the row', withConfig('| up | `resolveComponent\\(` | `../x/**` | import it statically |'), hit, named('up', '../x/**'))
+  guarded('repo rule incident (13c): a backtick inside a glob is a config problem naming the row and the glob', withConfig('| bt | `resolveComponent\\(` | `src/**/*.vue`, !`**/*.test.*` | m |'), hit, named('bt', '!`**/*.test.*'))
+  guarded('repo rule incident (13c): a trailing-slash directory glob is a config problem naming the row', withConfig('| dir | `resolveComponent\\(` | `src/components/` | import it statically |'), hit, named('dir', 'src/components/'))
+}
+
 process.exit(failed ? 1 : 0)

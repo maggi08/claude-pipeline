@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "stage-pipeline",
-  "version": "0.16.1",
+  "version": "0.22.0",
   "description": "A staged maker/checker workflow for large UI tasks: splitting into stages, a spec from the design, checks by subagents (Figma/prototype, runtime, code review, dead code, i18n, dependencies), an autonomous force run, a state journal kept in files and a PR description",
   "author": {
     "name": "Magzhan Mussaiyn"

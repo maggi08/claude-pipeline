@@ -2,29 +2,127 @@
 /**
  * Pipeline retro from the facts in task files, not from memory.
  *
- *   node retro.mjs <repo | task_dir | STAGES.md> [...]
+ *   node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all]
+ *   node retro.mjs <repo | task_dir | STAGES.md> [...] --findings [--json] [--corpus <tsv>] [--repo <name>] [--root <dir>] [--dismissals] [--own-tasks-only]
+ *
+ * `--findings` is the input of /promote instead of the retro: critical and major findings of the tasks with their outcomes, grouped into classes with counts and
+ * recurrence, the commits made on each task branch after the task closed, and — with `--corpus` — the rows of the VT-1 review corpus for the repo (`--repo` is the
+ * name in its `repo` column, by default the folder name of the repo root; `--root` names the repo when the task directory lies outside it). `--json` prints
+ * the machine-readable form, otherwise a short text view. Tasks of the repo that live in another repo's task directory (a task over several repos keeps its STAGES.md in one of them)
+ * are found through the task directory registry when their STAGES.md header names the repo or a branch with the task's ticket exists in it (`--own-tasks-only` leaves them out); `--dismissals` adds the findings closed as false, per checker
+ * (the reverse direction of /promote); the examples carry the commits of the task branch that touched their file (the `fixes` of a proof). Without the flag nothing below changes.
  *
  * Sources: `metrics:` lines from the journals of STAGES.md / STAGES-ARCHIVE.md (format —
  * /stage-check, Step 4.1), the stage pipeline checklists and the reports in checks/. Tasks from before
  * the `metrics:` line appeared give only checklists and reports — this is visible in the output too.
+ * Hook firings come from `<plugin data>/firings.jsonl` (and its rotated `.1`), written by every block or deny of journal-gate, git-guard, agent-guard,
+ * force-guard and frames-guard (hooks/firing.mjs): per rule, repeats per task (the same rule and task more than once), and firings on reads.
+ * The log is the whole machine's, so only the rows whose `repo` lies under a retro target, or shares its git common dir (a linked worktree of the repo), are counted (a task dir or STAGES.md stands for the repo that contains it);
+ * `--all` is the machine view. When a target does not say which repo it belongs to (a task dir outside any git repo), nothing is filtered and the section says so.
+ * One block of a hook that names several rules (journal-gate, frames-guard) writes one row per rule at the same moment: the headline counts those as one block.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
-import { readConfig, taskDirFromConfig } from './hooks/pipeline-state.mjs'
-import { STAGE_HEADING, STAGE_MENTION } from './markers.mjs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
+import { FIRINGS_FILE } from './hooks/firing.mjs'
+import { isCurrentTask, knownTaskDirs, namesRepo, pluginDataDir, readConfig, readTaskFile, taskBranches, taskDirFromConfig } from './hooks/pipeline-state.mjs'
+import { STAGE_MENTION, stageBlocksOf } from './markers.mjs'
 
-const targets = process.argv.slice(2)
+const argv = process.argv.slice(2)
+const FINDINGS = argv.includes('--findings')
+const flagValue = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null)
+const findingsFlags = ['--findings', '--json', '--corpus', '--repo', '--root', '--dismissals', '--own-tasks-only']
+const targets = []
+let machineView = false
+let firingsArg = null
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--all') machineView = true
+  else if (argv[i] === '--firings') {
+    firingsArg = argv[i + 1]
+    if (!firingsArg || firingsArg.startsWith('--')) {
+      console.error('--firings needs a file: --firings <firings.jsonl>')
+      process.exit(2)
+    }
+    i++
+  } else if (FINDINGS && findingsFlags.includes(argv[i])) {
+    if (['--corpus', '--repo', '--root'].includes(argv[i])) i++
+  } else targets.push(argv[i])
+}
+const firingsFile = firingsArg ? resolve(firingsArg) : join(pluginDataDir(), FIRINGS_FILE)
 if (!targets.length || targets.includes('--help')) {
-  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...]')
+  console.log('Usage: node retro.mjs <repo | task_dir | STAGES.md> [...] [--firings <firings.jsonl>] [--all] [--findings [--json] [--corpus <tsv>] [--repo <name>] [--root <dir>] [--dismissals] [--own-tasks-only]]')
   process.exit(targets.length ? 0 : 2)
 }
 
 const taskDirs = new Set()
 for (const target of targets.map((t) => resolve(t))) collectTaskDirs(target)
 
+// Findings mode: the repo, and the tasks of this repo that live in another repo's task directory (the registry), are known before the "no STAGES.md" exit —
+// a repo whose only tasks sit in a neighbour's directory is not empty.
+const toplevel = (cwd) => {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return null
+  }
+}
+// The repo: `--root`, else a target that is a repo, else the repo the first task directory lies in (a task directory outside any repo gives no post-done count).
+const isRepo = (path) => existsSync(join(path, '.git')) && !existsSync(join(path, 'STAGES.md'))
+const resolvedTargets = targets.map((t) => resolve(t))
+const root = !FINDINGS ? null : flagValue('--root') ? resolve(flagValue('--root')) : (resolvedTargets.find(isRepo) ?? (taskDirs.size ? toplevel([...taskDirs][0]) : null))
+// A registry task counts when STAGES.md names the repo in its HEADER (the lines before the first `##`: Branch, repo, contexts) or a branch that carries the task's ticket exists in the repo (the hooks' rule: the `Branch: master` of a neighbour's task is no link, `master` exists in every repo): a repo
+// named only in the body of another repo's task is a mention (a neighbour, a reference), and its findings are not this repo's.
+const tryGit = (cwd, ...args) => {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return null
+  }
+}
+const branchInRepo = (repo, branch) => ['refs/heads/', 'refs/remotes/origin/'].some((prefix) => tryGit(repo, 'rev-parse', '--verify', '--quiet', `${prefix}${branch}`) !== null)
+const foreign = []
+if (FINDINGS && root && !argv.includes('--own-tasks-only')) {
+  const own = new Set([...taskDirs].map((dir) => resolve(dir)))
+  for (const registered of knownTaskDirs()) {
+    let names = []
+    try {
+      names = readdirSync(registered)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      const dir = join(registered, name)
+      try {
+        if (own.has(resolve(dir)) || !statSync(dir).isDirectory()) continue
+        const stages = readTaskFile(dir, 'STAGES.md') ?? ''
+        if (!namesRepo(stages.split(/^## /m)[0], basename(root)) && !taskBranches(stages).some((branch) => isCurrentTask(name, [], branch) && branchInRepo(root, branch))) continue
+      } catch {
+        continue
+      }
+      taskDirs.add(dir)
+      foreign.push(dir)
+    }
+  }
+}
+
 if (!taskDirs.size) {
   console.error('No STAGES.md found')
   process.exit(1)
+}
+
+if (FINDINGS) {
+  const { findingsReport, renderFindings } = await import('./retro-findings.mjs')
+  const corpusPath = flagValue('--corpus')
+  if (corpusPath && !existsSync(corpusPath)) {
+    console.error(`No corpus file: ${corpusPath}`)
+    process.exit(2)
+  }
+  const report = findingsReport([...taskDirs].sort(), { repoRoot: root, corpus: corpusPath ? { path: resolve(corpusPath), repo: flagValue('--repo') ?? (root ? basename(root) : '') } : null })
+  if (foreign.length) report.registryTasks = foreign
+  // exit in the write callback: process.exit right after the write cuts a pipe at 64 KB
+  const text = argv.includes('--json') ? `${JSON.stringify(report, null, 2)}\n` : `${renderFindings(report, { dismissals: argv.includes('--dismissals') })}${foreign.length ? `\nTasks found through the task directory registry (their STAGES.md header names the repo, or a branch with the task's ticket is in it): ${foreign.join(', ')}\n` : ''}`
+  await new Promise((done) => process.stdout.write(text, done))
+  process.exit(0)
 }
 
 const CHECKERS = ['figma-compare', 'proto-compare', 'devtools-verify', 'pro-review', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'figma-spec', 'proto-spec']
@@ -109,7 +207,7 @@ for (const dir of taskDirs) {
 
   acOutcomes.done += (text.match(/AC-\d+\.\d+ ✅/g) ?? []).length
   acOutcomes.userReview += (text.match(/AC-\d+\.\d+ ⏳/g) ?? []).length
-  acOutcomes.live += (text.match(/AC-\d+\.\d+ \[live: user-side\]/g) ?? []).length
+  acOutcomes.live += (text.match(/AC-\d+\.\d+ \[live: user-side\b/g) ?? []).length
 
   // Report names in live tasks diverged (pro-review-2.md, stage2-pro-review.md, stage-2/pro-review.md),
   // so the checker is searched for anywhere in the file name, not by an exact pattern.
@@ -119,22 +217,6 @@ for (const dir of taskDirs) {
   }
 
   stagesSizes.push({ ticket: basename(dir), kb: Math.round(statSync(join(dir, 'STAGES.md')).size / 1024) })
-}
-
-/**
- * Stage blocks: `### Stage 3 …` / `## Stage A0 …` (or the Russian form) up to the next heading of the same or a higher level.
- * If the file has stage headings with `[status: …]`, only they count as stages — otherwise
- * journal subheadings "### Stage 6 — progress" would count as a second stage 6.
- */
-function stageBlocksOf(text) {
-  const lines = text.split('\n')
-  const headings = lines.map((line, index) => ({ index, match: line.match(STAGE_HEADING) })).filter(({ match }) => match)
-  const withStatus = headings.filter(({ index }) => /\[status:/i.test(lines[index]))
-  return (withStatus.length ? withStatus : headings).map(({ index, match }) => {
-    let end = index + 1
-    while (end < lines.length && !(lines[end].match(/^(#{1,6}) /)?.[1].length <= match[1].length)) end++
-    return { number: match[2], block: lines.slice(index, end).join('\n'), start: index, end }
-  })
 }
 
 /**
@@ -238,3 +320,104 @@ const oversized = stagesSizes.filter((task) => task.kb > STAGES_BUDGET_KB).sort(
 console.log('')
 console.log(`## STAGES.md larger than ${STAGES_BUDGET_KB} KB (read by every session — archive the done stages, /stage-check Step 4.2)`)
 console.log(oversized.length ? oversized.map((task) => `- ${task.ticket}: ${task.kb} KB`).join('\n') : '- none')
+
+/** Rows of the firings log: the rotated generation first, then the live file. A line that is not a row with a rule is skipped. */
+function readFirings(file) {
+  return [`${file}.1`, file].flatMap((path) => {
+    try {
+      return readFileSync(path, 'utf8')
+        .split('\n')
+        .flatMap((line) => {
+          try {
+            const row = JSON.parse(line)
+            return row && typeof row.rule === 'string' ? [row] : []
+          } catch {
+            return []
+          }
+        })
+    } catch {
+      return []
+    }
+  })
+}
+
+const realOf = (path) => {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path).replace(/^\/private(?=\/(?:tmp|var)\/)/, '')
+  }
+}
+/** The repo a retro target belongs to: itself when it has a pipeline config or `.git`, else the nearest ancestor with `.git`; null when it cannot be told. */
+function repoOf(target) {
+  let dir = existsSync(target) && statSync(target).isFile() ? dirname(target) : target
+  for (;;) {
+    if (existsSync(join(dir, '.git')) || existsSync(join(dir, '.claude/pipeline.config.md'))) return realOf(dir)
+    const up = dirname(dir)
+    if (up === dir) return null
+    dir = up
+  }
+}
+const scopeRoots = targets.map((t) => repoOf(resolve(t)))
+const scoped = !machineView && scopeRoots.every(Boolean)
+const under = (path, roots) => roots.some((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep))
+const logged = readFirings(firingsFile)
+// The hooks write `repo: state.worktree`, so a lane run in a linked worktree (`git worktree add ../repo-lane`) logs a path outside the repo. A row also counts when its
+// repo shares the git common dir with a target that is a repo root; a path that git cannot resolve (deleted worktree, not a repo) falls back to the path test alone.
+const commonDirOf = (dir) => {
+  try {
+    return realOf(execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim())
+  } catch {
+    return null
+  }
+}
+const scopeCommon = new Set(scoped ? scopeRoots.filter((root) => existsSync(join(root, '.git'))).map(commonDirOf).filter(Boolean) : [])
+const commonCache = new Map()
+const sameRepo = (repo) => {
+  if (!scopeCommon.size) return false
+  if (!commonCache.has(repo)) commonCache.set(repo, commonDirOf(repo))
+  return scopeCommon.has(commonCache.get(repo))
+}
+const firings = scoped ? logged.filter((row) => typeof row.repo === 'string' && (under(realOf(row.repo), scopeRoots) || sameRepo(row.repo))) : logged
+console.log('')
+console.log('## Hook firings (blocks and denials, by rule)')
+console.log(
+  machineView
+    ? `- scope: the whole machine (--all), ${logged.length} rows`
+    : scoped
+      ? `- scope: rows under ${[...new Set(scopeRoots)].join(', ')} (${firings.length} of ${logged.length} rows in the log; --all for the machine view)`
+      : `- scope: all ${logged.length} rows of the log - a target here does not say which repo it belongs to (a task dir outside any git repo)`,
+)
+if (!firings.length) console.log('- none logged')
+else {
+  const perRule = new Map()
+  const perTask = new Map()
+  // A block that names several rules writes one row per rule at one moment (firing.mjs `blockWith`): same repo, task, event, tool and ts. Rows from before that shared moment may count as more blocks.
+  const blocks = new Map()
+  for (const row of firings) {
+    const entry = perRule.get(row.rule) ?? { count: 0, tasks: new Set(), reads: 0 }
+    entry.count++
+    entry.tasks.add(row.task ?? '-')
+    if (row.read === true) entry.reads++
+    perRule.set(row.rule, entry)
+    const key = `${row.task ?? '-'}\t${row.rule}`
+    perTask.set(key, (perTask.get(key) ?? 0) + 1)
+    const block = [row.repo, row.task, row.event, row.tool, row.ts].join('\t')
+    blocks.set(block, (blocks.get(block) ?? true) && row.read === true)
+  }
+  const readBlocks = [...blocks.values()].filter(Boolean).length
+  console.log(`- blocks: ${blocks.size} (${firings.length} rule rows: a block that names several rules counts once here, once per rule below) in ${perRule.size} rules, ${readBlocks} on reads (${pct(readBlocks, blocks.size)})`)
+  console.log('| Rule | Rows | Tasks | On reads |')
+  console.log('|---|---|---|---|')
+  for (const [rule, entry] of [...perRule.entries()].sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))) {
+    console.log(`| ${rule} | ${entry.count} | ${entry.tasks.size} | ${entry.reads} |`)
+  }
+  const repeats = [...perTask.entries()].filter(([, count]) => count > 1).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  console.log('')
+  console.log('Repeats per task (the same rule fired for the same task more than once — a rule the agent does not learn from):')
+  console.log(repeats.length ? repeats.map(([key, count]) => `- ${key.replace('\t', ' / ')}: ${count}`).join('\n') : '- none')
+  const onReads = [...perRule.entries()].filter(([, entry]) => entry.reads).sort((a, b) => b[1].reads - a[1].reads)
+  console.log('')
+  console.log('Firings on reads (a rule that stops a call which changes nothing):')
+  console.log(onReads.length ? onReads.map(([rule, entry]) => `- ${rule}: ${entry.reads} of ${entry.count}`).join('\n') : '- none')
+}
