@@ -6,10 +6,11 @@
  * checkout are evals/hillclimb/<run>/decision.tsv, its ledger rows and its eval results.
  */
 import { execFileSync, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import { appendLedger, meanCost, readLedger, spentSince } from './eval-lib.mjs'
+import { INVOCATION_RE, appendLedger, meanCost, newInvocationId, readLedger, spentSince } from './eval-lib.mjs'
 
 // pro-review-cross-stage-dup is out of the default train: every recorded run of it is W- («Task was denied although the harness allows it»), a harness failure that says nothing about the agent.
 export const DEFAULT_TRAIN = ['pro-review-recall-logic', 'pro-review-recall-parity', 'pro-review-language-en']
@@ -17,6 +18,7 @@ export const DEFAULT_HOLDOUT = ['pro-review-clean-ac', 'pro-review-language-ru']
 export const MIN_GAIN = 0.1
 const EPS = 1e-9
 const EDITOR_CASE = 'hillclimb-editor'
+const INFLIGHT_CASE = 'hillclimb-inflight'
 
 /**
  * The ledger rows of one run: the eval runs carry `--label hillclimb:<run>` (plugin_ref `working-tree+hillclimb:<run>`), the editor rows `hillclimb:<run>`. The spend of a run is
@@ -51,7 +53,8 @@ const NEGATIVE = 'FSM' // forbid, forbidSummary, findingsForbid
 
 /**
  * One run from its ledger marks: hit positive graders / their count − violated negative graders / their count. Null for a harness failure (`W-`): that run says nothing
- * about the agent. A side with no graders contributes 0.
+ * about the agent. A side with no graders contributes 0. A run that fails a grader outside the metric (`D1-` report saved, `L1-`, `T-`, `V-`, … any token other than E/N/F/S/M
+ * with `-`) is the WORST run, −1: otherwise an edit that makes the agent drop its report would score as perfect (every F grader passes on a missing report) and be kept.
  */
 export function runScore(marks) {
   const tokens = String(marks ?? '').split(/\s+/).filter(Boolean)
@@ -60,6 +63,10 @@ export function runScore(marks) {
   for (const token of tokens) {
     const [, letter, ok] = /^([A-Z])\d+([+-])$/.exec(token) ?? []
     if (!letter) continue
+    if (!POSITIVE.includes(letter) && !NEGATIVE.includes(letter)) {
+      if (ok === '-') return -1
+      continue
+    }
     if (POSITIVE.includes(letter)) {
       pos++
       if (ok === '+') hit++
@@ -102,7 +109,7 @@ export function decisionHeader({ run, agent, base, train, holdout, runs, target,
     `# train: ${train.join(', ')}`,
     `# holdout: ${holdout.join(', ')}`,
     `# runs per case: ${runs}`,
-    '# metric: per run = hit positive graders (expect, findings) / their count − violated negative graders (forbid, findingsForbid, forbidSummary) / their count; case = median of its runs; split = mean of its cases',
+    '# metric: per run = hit positive graders (expect, findings) / their count − violated negative graders (forbid, findingsForbid, forbidSummary) / their count; case = median of its runs; split = mean of its cases; a run that fails any other grader (D1 report saved, L, T, V, …) is the worst run, -1, so an edit that makes runs drop their report is never kept',
     `# keep: train mean >= best train mean so far + ${MIN_GAIN} (one grader flip in one case's median) AND holdout mean >= the baseline holdout mean; otherwise the edit is undone by path`,
     `# stop: (train mean >= ${target} AND attempts >= ${minAttempts}) OR attempts >= ${maxIterations} OR no headroom (best train mean + ${MIN_GAIN} > 1: no edit could be kept, stopped-no-headroom) OR the cap: no eval or editor call starts whose estimate, on top of the ledger spend of this run, passes $${capUsd}; the reason is the last row`,
     `# editor: ${editorModel}, at most $${editorBudget} per call; one edit in skills/${agent}/references/ or the body of agents/${agent}.md`,
@@ -210,83 +217,218 @@ export function undoChanges(worktree, changed) {
 
 // ── the temp worktree ───────────────────────────────────────────────────────────────────────────────────────────────
 
-/**
- * A run killed by SIGKILL (or by a signal during the editor call, or SIGHUP before the handler) leaves its temp worktree registered on `hillclimb/<run>`, and `git worktree add`
- * then refuses the branch. On resume: prune, and remove a worktree still registered on the branch only when it is one of ours — `<os.tmpdir()>/hc-*\/wt`. Any other path is not touched
- * (the error names it).
- */
-export function clearStaleWorktree(repo, branch) {
-  git(repo, 'worktree', 'prune')
-  const real = (path) => {
+/** The real path of `path`, also when it (and some of its parents) no longer exists: the nearest existing ancestor is resolved, the rest is appended. */
+const realPath = (path) => {
+  const rest = []
+  let dir = resolve(path)
+  for (;;) {
     try {
-      return realpathSync(path)
+      return join(realpathSync(dir), ...rest)
     } catch {
-      return resolve(path)
-    }
-  }
-  let current = null
-  for (const line of git(repo, 'worktree', 'list', '--porcelain').split('\n')) {
-    if (line.startsWith('worktree ')) current = line.slice(9)
-    else if (line === `branch refs/heads/${branch}` && current) {
-      const holder = dirname(current)
-      if (basename(current) !== 'wt' || !/^hc-/.test(basename(holder)) || real(dirname(holder)) !== real(tmpdir())) throw new Error(`branch ${branch} is checked out at ${current}, which is not a hill-climb temp worktree: remove it yourself, then resume`)
-      git(repo, 'worktree', 'remove', '--force', current)
-      git(repo, 'worktree', 'prune')
-      rmSync(holder, { recursive: true, force: true })
+      if (dirname(dir) === dir) return resolve(path)
+      rest.unshift(basename(dir))
+      dir = dirname(dir)
     }
   }
 }
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
+}
+const LOCK_REASON = /^hillclimb pid (\d+)$/
 
-/** A temp worktree under os.tmpdir() on `hillclimb/<run>` (new from HEAD, or the existing branch when `resume`). `remove()` deletes the worktree and keeps the branch. */
+/**
+ * Deletes the admin entry of ONE worktree (`<git-common-dir>/worktrees/<id>`, the one whose `gitdir` file names `<path>/.git`) and nothing else. Used when the directory is gone and
+ * `git worktree remove` has nothing to work on: never a repo-wide `git worktree prune`, which would also drop the registrations of other checkouts that merely sit on an unmounted disk.
+ */
+export function dropAdminEntry(repo, path) {
+  const common = resolve(repo, git(repo, 'rev-parse', '--git-common-dir').trim())
+  const root = join(common, 'worktrees')
+  if (!existsSync(root)) return false
+  for (const id of readdirSync(root)) {
+    let target = ''
+    try {
+      target = readFileSync(join(root, id, 'gitdir'), 'utf8').trim()
+    } catch {
+      continue
+    }
+    if (realPath(dirname(target)) === realPath(path)) {
+      rmSync(join(root, id), { recursive: true, force: true })
+      return true
+    }
+  }
+  return false
+}
+
+/** Removes the worktree at `path` (ours only): unlock, `worktree remove --force`, and when that fails or the directory was already gone, our own admin entry by hand. */
+function removeOwnWorktree(repo, path) {
+  try {
+    git(repo, 'worktree', 'unlock', path)
+  } catch {
+    // not locked, or not registered
+  }
+  try {
+    git(repo, 'worktree', 'remove', '--force', path)
+  } catch {
+    rmSync(path, { recursive: true, force: true })
+    dropAdminEntry(repo, path)
+  }
+}
+
+/**
+ * A run killed by SIGKILL (or by a signal during the editor call, or SIGHUP before the handler) leaves its temp worktree registered on `hillclimb/<run>`, and `git worktree add`
+ * then refuses the branch. On resume: the one worktree registered on the branch is removed only when it is one of ours — `<os.tmpdir()>/hc-*\/wt` — and its owner is gone: the lock reason
+ * `hillclimb pid <pid>` names the process, and while it answers the resume stops. Any other path is not touched (the error names it). No other registration is ever pruned or removed.
+ */
+export function clearStaleWorktree(repo, branch) {
+  let current = null
+  const entries = []
+  for (const line of [...git(repo, 'worktree', 'list', '--porcelain').split('\n'), '']) {
+    if (line.startsWith('worktree ')) current = { path: line.slice(9), branch: null, locked: null }
+    else if (current && line.startsWith('branch ')) current.branch = line.slice(7)
+    else if (current && (line === 'locked' || line.startsWith('locked '))) current.locked = line.slice(7)
+    else if (!line && current) {
+      entries.push(current)
+      current = null
+    }
+  }
+  for (const entry of entries.filter((item) => item.branch === `refs/heads/${branch}`)) {
+    const holder = dirname(entry.path)
+    if (basename(entry.path) !== 'wt' || !/^hc-/.test(basename(holder)) || realPath(dirname(holder)) !== realPath(tmpdir())) throw new Error(`branch ${branch} is checked out at ${entry.path}, which is not a hill-climb temp worktree: remove it yourself, then resume`)
+    const pid = Number(LOCK_REASON.exec(entry.locked ?? '')?.[1])
+    if (pid && pid !== process.pid && pidAlive(pid)) throw new Error(`run ${branch.replace(/^hillclimb\//, '')} is still running as pid ${pid} (worktree ${entry.path}): stop it first, then resume`)
+    removeOwnWorktree(repo, entry.path)
+    rmSync(holder, { recursive: true, force: true })
+  }
+}
+
+/**
+ * A temp worktree under os.tmpdir() on `hillclimb/<run>` (new from HEAD, or the existing branch when `resume`), locked with the owner's pid so that a resume can tell a live run from a
+ * dead one. `remove()` deletes the worktree and keeps the branch.
+ */
 export function makeWorktree(repo, run, { resume = false } = {}) {
   const holder = mkdtempSync(join(tmpdir(), 'hc-'))
   const dir = join(holder, 'wt')
   const branch = `hillclimb/${run}`
-  if (resume) {
-    clearStaleWorktree(repo, branch)
-    git(repo, 'worktree', 'add', dir, branch)
-  } else git(repo, 'worktree', 'add', '-b', branch, dir, 'HEAD')
+  const lock = ['--lock', '--reason', `hillclimb pid ${process.pid}`]
+  try {
+    if (resume) {
+      clearStaleWorktree(repo, branch)
+      git(repo, 'worktree', 'add', ...lock, dir, branch)
+    } else git(repo, 'worktree', 'add', ...lock, '-b', branch, dir, 'HEAD')
+  } catch (error) {
+    rmSync(holder, { recursive: true, force: true })
+    throw error
+  }
   return {
     dir, branch, holder,
     remove() {
-      try {
-        git(repo, 'worktree', 'remove', '--force', dir)
-      } catch {
-        rmSync(dir, { recursive: true, force: true })
-        try {
-          git(repo, 'worktree', 'prune')
-        } catch {
-          // nothing to prune
-        }
-      }
+      removeOwnWorktree(repo, dir)
       rmSync(holder, { recursive: true, force: true })
     },
   }
 }
 
+// ── in-flight marks: charge before spending ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Before a paid call starts (the editor, one eval child) a mark `evals/hillclimb/<run>/inflight/<key>.json` is written: what the call may still spend. A signal charges the marks of the
+ * calls it interrupts into the ledger before the process exits, and a resume charges what a SIGKILL left behind; a mark is cleared only after the call's own rows are written. So the
+ * spend of an interrupted call is in the ledger — the cap and the lane budget read it from there — even when no row of its own ever came.
+ */
+export const inflightDir = (repo, run) => join(repo, 'evals/hillclimb', run, 'inflight')
+export function markInflight(repo, run, key, data) {
+  const dir = inflightDir(repo, run)
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, `${key.replace(/[^\w.-]/g, '_')}.json`)
+  writeFileSync(path, JSON.stringify({ ...data, ts: new Date().toISOString() }))
+  return path
+}
+export const clearInflight = (path) => rmSync(path, { force: true })
+
+/** Charges every mark of the run into the ledger (an editor call its whole budget, an eval case what its estimate has not yet spent) and removes it. Returns the dollars charged. */
+export function chargeInflight({ repo, run, ledgerPath }) {
+  const dir = inflightDir(repo, run)
+  if (!existsSync(dir)) return 0
+  const ledger = readLedger(ledgerPath)
+  let total = 0
+  for (const file of readdirSync(dir).filter((name) => name.endsWith('.json')).sort()) {
+    let mark = null
+    try {
+      mark = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+    } catch {
+      // a half-written mark names no amount
+    }
+    if (mark) {
+      const charge = mark.kind === 'editor' ? Number(mark.charge) : Math.max(0, Number(mark.estimate) - (spentByRun(ledger, run, mark.case) - Number(mark.before || 0)))
+      if (charge > 0) {
+        appendLedger({
+          ts: new Date().toISOString(), invocation: `hillclimb-${run}`, case: INFLIGHT_CASE, attempt: mark.attempt ?? '', plugin_ref: climbLabel(run), marks: `interrupted ${mark.kind}${mark.case ? ` ${mark.case}` : ''}`,
+          pass: 0, cost_usd: charge.toFixed(4),
+        }, ledgerPath)
+        total += charge
+      }
+    }
+    rmSync(join(dir, file), { force: true })
+  }
+  return total
+}
+
 // ── the real evaluator: the worktree's own scripts/eval.mjs ─────────────────────────────────────────────────────────
+
+// The eval children of this process, each in its own process group (`detached`): a signal to the driver stops them through these, and the exit hook is the net under an uncaught error.
+const evalChildren = new Set()
+const killEvalChildren = (signal = 'SIGTERM') => {
+  for (const child of evalChildren) {
+    try {
+      process.kill(-child.pid, signal)
+    } catch {
+      // already gone
+    }
+  }
+}
+let exitHookInstalled = false
 
 /**
  * Runs each case through `<worktree>/scripts/eval.mjs` (so the plugin copy it tests is the edited one), `jobs` cases at a time, with EVAL_LEDGER / EVAL_RESULTS pointing at
- * the starting checkout, `--label hillclimb:<run>` on every call (the ledger rows tell the run's spend and are never a release row), and `--budget-usd/--budget-since` passed
- * through. A case that is not under evals/cases/ but under evals/pending/ of the worktree is run with `--pending`. Before each case starts, the estimates of the cases already
- * running (what they have not spent yet) are reserved: the run's cap `capUsd` and the lane budget are checked against the ledger spend + that reserve + this case's estimate, and
- * the lane budget handed to the child is what the others leave. A case that does not fit is not started (`capped` names it). Scores come from the ledger rows of the invocation;
- * a case with fewer graded runs than `runs` (a harness failure, a budget exit, a crash) is `failed`, never scored on what is left.
+ * the starting checkout, `--label hillclimb:<run>` on every call (the ledger rows tell the run's spend and are never a release row), and `--invocation <id>` made here: the rows of a
+ * case are read back by that id, never by text the child printed (the agent's own words reach its output). A case that is not under evals/cases/ but under evals/pending/ of the worktree
+ * is run with `--pending`. Before each case starts, the estimates of the cases already running (what they have not spent yet) are reserved: the run's cap `capUsd` and the lane budget are
+ * checked against the ledger spend + that reserve + this case's estimate, and the child gets the tighter of the lane budget and what remains under the cap, so its runs 2 and 3 are
+ * checked too. A case that does not fit is not started (`capped` names it). Every child has an in-flight mark (see markInflight) from before its spawn to after its rows. Scores come from the
+ * ledger rows of the invocation; a case with fewer graded runs than `runs` (a harness failure, a budget exit, a crash) is `failed`, never scored on what is left.
+ * `killAll()` sends SIGTERM to the process group of every child that runs.
  */
 export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSince, capUsd, ledgerPath, resultsDir, nodeBin = process.execPath }) {
+  if (!exitHookInstalled) {
+    exitHookInstalled = true
+    process.on('exit', () => killEvalChildren('SIGKILL'))
+  }
   const isPending = (worktree, name) => !existsSync(join(worktree, 'evals/cases', name, 'case.json')) && existsSync(join(worktree, 'evals/pending', name, 'case.json'))
-  const runOne = (worktree, name, budget) =>
+  const runOne = (worktree, name, { budget, since }) =>
     new Promise((resolve) => {
-      const args = [join(worktree, 'scripts/eval.mjs'), '--runs', String(runs), ...(run ? ['--label', climbLabel(run)] : []), ...(isPending(worktree, name) ? ['--pending'] : []), ...(budget ? ['--budget-usd', String(budget)] : []), ...(budgetUsd && budgetSince ? ['--budget-since', budgetSince] : []), name]
-      const child = spawn(nodeBin, args, { cwd: worktree, env: { ...process.env, EVAL_LEDGER: ledgerPath, EVAL_RESULTS: resultsDir }, stdio: ['ignore', 'pipe', 'pipe'] })
+      const invocation = newInvocationId()
+      const args = [join(worktree, 'scripts/eval.mjs'), '--runs', String(runs), '--invocation', invocation, ...(run ? ['--label', climbLabel(run)] : []), ...(isPending(worktree, name) ? ['--pending'] : []), ...(budget ? ['--budget-usd', String(budget)] : []), ...(budget && since ? ['--budget-since', since] : []), name]
+      const child = spawn(nodeBin, args, { cwd: worktree, env: { ...process.env, EVAL_LEDGER: ledgerPath, EVAL_RESULTS: resultsDir }, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+      evalChildren.add(child)
       let out = ''
       child.stdout.on('data', (chunk) => (out += chunk))
       child.stderr.on('data', (chunk) => (out += chunk))
-      child.on('error', (error) => resolve({ name, status: -1, out: String(error) }))
-      child.on('close', (status) => resolve({ name, status, out }))
+      child.on('error', (error) => {
+        evalChildren.delete(child)
+        resolve({ name, invocation, status: -1, out: String(error) })
+      })
+      child.on('close', (status) => {
+        evalChildren.delete(child)
+        resolve({ name, invocation, status, out })
+      })
     })
   return {
+    killAll: () => killEvalChildren('SIGTERM'),
     async evaluate(worktree, cases) {
       const results = []
       const queue = [...cases]
@@ -303,8 +445,16 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
           if (capUsd && spent + reserved + estimate > capUsd + EPS) capped = `${name} not started: spent $${spent.toFixed(2)} + $${reserved.toFixed(2)} reserved for the cases running + ~$${estimate.toFixed(2)} would pass the cap $${capUsd}`
           else if (budgetUsd && lane + reserved + estimate > budgetUsd + EPS) capped = `${name} not started: lane spend $${lane.toFixed(2)} + $${reserved.toFixed(2)} reserved + ~$${estimate.toFixed(2)} would pass the lane budget $${budgetUsd}`
           if (capped) break
-          inflight.set(name, { estimate, before: spentByRun(ledger, run, name) })
-          results.push(await runOne(worktree, name, budgetUsd ? Math.max(0.01, budgetUsd - reserved) : undefined))
+          // The child's own budget check (before each of its runs) gets the tighter limit: the lane's, or what is left under the run's cap, in the lane's terms (spent since its start).
+          const capLeft = capUsd ? capUsd - spent - reserved : null
+          let limit = { budget: undefined, since: undefined }
+          if (budgetUsd) limit = { budget: Math.max(0.01, Math.min(budgetUsd - reserved, capLeft === null ? Infinity : lane + capLeft)), since: budgetSince }
+          else if (capLeft !== null) limit = { budget: Math.max(0.01, capLeft), since: new Date().toISOString() }
+          const before = spentByRun(ledger, run, name)
+          inflight.set(name, { estimate, before })
+          const mark = run && repo ? markInflight(repo, run, `eval-${name}`, { kind: 'eval', case: name, estimate, before }) : null
+          results.push(await runOne(worktree, name, limit))
+          if (mark) clearInflight(mark)
           inflight.delete(name)
         }
       }))
@@ -315,8 +465,8 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
       for (const name of cases) {
         const result = results.find((entry) => entry.name === name)
         if (!result) continue // not started: `capped` says why
-        const invocation = /invocation (\S+)/.exec(result.out)?.[1]
-        const rows = invocation ? ledger.filter((row) => row.invocation === invocation && row.case === name) : []
+        const { invocation } = result
+        const rows = ledger.filter((row) => row.invocation === invocation && row.case === name)
         cost += rows.reduce((sum, row) => sum + Number(row.cost_usd || 0), 0)
         const scores = rows.map((row) => runScore(row.marks)).filter((score) => score !== null)
         if (!rows.length || scores.length < runs || result.status === 2 || result.status === -1) {
@@ -333,14 +483,30 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
 
 // ── the editor ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The `claude -p` argv of the editor, settings isolated the way scripts/eval.mjs isolates a run: only project settings, no MCP, no session, dontAsk, six tools. */
-export function editorArgs({ prompt, model, budget }) {
+/** `//<abs path>` : the absolute-path form of a permission rule (`//` + the path without its leading slash). */
+const absRule = (path) => `//${resolve(path).replace(/^\//, '')}`
+export const EDITOR_TOOLS = 'Read,Edit,Write,Glob,Grep'
+
+/**
+ * The `claude -p` argv of the editor, settings isolated the way scripts/eval.mjs isolates a run: only project settings, no MCP, no session, dontAsk.
+ * - `--tools` names the toolset: exactly Read Edit Write Glob Grep, no Bash, no Agent, no WebFetch (`--allowedTools` only pre-approves, it removes nothing).
+ * - the allow rules are path-scoped: reads anywhere in the worktree, writes only in `skills/<agent>/references/` and the one `agents/<agent>.md`; under dontAsk anything else is denied.
+ * - `--settings` sets `blockWritesOutsideWorkingDirectories` and `blockReadsOutsideWorkingDirectories`: no allow rule lifts them, so nothing outside the temp worktree (the starting checkout,
+ *   its ledger, the user's home) is read or written.
+ * - the deny rules keep the measurement away: the cases and graders of the worktree's `evals/`, and, by absolute path, the starting checkout's `evals/` and the results dir.
+ */
+export function editorArgs({ prompt, model, budget, agent = '<agent>', repo = null, resultsDir = null }) {
+  const references = `./plugins/stage-pipeline/skills/${agent}/references/**`
+  const agentFile = `./plugins/stage-pipeline/agents/${agent}.md`
+  const evals = ['./evals/**', ...(repo ? [`${absRule(repo)}/evals/**`] : []), ...(resultsDir ? [`${absRule(resultsDir)}/**`] : [])]
   return [
     '-p', prompt, '--model', model,
     '--setting-sources', 'project', '--strict-mcp-config', '--no-session-persistence', '--permission-mode', 'dontAsk',
-    '--allowedTools', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+    '--settings', JSON.stringify({ permissions: { blockWritesOutsideWorkingDirectories: true, blockReadsOutsideWorkingDirectories: true } }),
+    '--tools', EDITOR_TOOLS,
+    '--allowedTools', 'Read(./**)', 'Glob(./**)', 'Grep(./**)', `Edit(${references})`, `Write(${references})`, `Edit(${agentFile})`,
     // The cases and their graders are the measurement: the editor sees the misses of the train cases in its prompt and nothing of the holdout.
-    '--disallowedTools', 'Read(./evals/**)', 'Grep(./evals/**)', 'Glob(./evals/**)', 'Edit(./evals/**)', 'Write(./evals/**)',
+    '--disallowedTools', ...evals.flatMap((path) => ['Read', 'Grep', 'Glob', 'Edit', 'Write'].map((tool) => `${tool}(${path})`)),
     '--max-budget-usd', String(budget), '--output-format', 'json',
   ]
 }
@@ -351,7 +517,7 @@ const excerpt = (text, max) => (text.length > max ? `${text.slice(0, max)}\n… 
 export function missExcerpts(train, resultsDir, perCaseChars = 2400) {
   const parts = []
   for (const [name, entry] of Object.entries(train?.perCase ?? {})) {
-    const dir = entry.invocation ? join(resultsDir, entry.invocation) : null
+    const dir = INVOCATION_RE.test(entry.invocation ?? '') ? join(resultsDir, entry.invocation) : null
     const available = Boolean(dir && existsSync(dir))
     const files = available ? readdirSync(dir).filter((file) => file.startsWith(`${name}--`) && file.endsWith('.md')).sort() : []
     const bad = files.map((file) => readFileSync(join(dir, file), 'utf8')).filter((text) => !/## Failures\n\n—/.test(text))
@@ -397,15 +563,17 @@ function parseEditorOutput(stdout) {
   return Array.isArray(parsed) ? parsed.filter((event) => event.type === 'result').pop() ?? {} : parsed
 }
 
-function runEditor(bin, args, cwd, timeoutMs) {
+function runEditor(bin, args, cwd, timeoutMs, live) {
   return new Promise((resolveRun) => {
     const child = spawn(bin, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    live.add(child)
     let stdout = ''
     let stderr = ''
     const killChild = () => child.kill('SIGKILL')
     process.once('exit', killChild)
     const timer = setTimeout(killChild, timeoutMs)
     const done = (result) => {
+      live.delete(child)
       clearTimeout(timer)
       process.removeListener('exit', killChild)
       resolveRun({ stdout, stderr, ...result })
@@ -421,23 +589,36 @@ function runEditor(bin, args, cwd, timeoutMs) {
  * One `claude -p` call by the editor model in the worktree. Appends a ledger row (case `hillclimb-editor`) so the budget counts it. Returns { ok, cost, summary }.
  */
 export function makeEditor({ repo, run, model = 'opus', budget = 1.5, ledgerPath, resultsDir, claudeBin = 'claude', timeoutSec = 900 }) {
+  const live = new Set()
   return {
     model,
     budget,
+    /** SIGKILL to the editor call that runs (the signal handler of the driver calls it, then charges the in-flight mark). */
+    kill() {
+      for (const child of live) child.kill('SIGKILL')
+    },
     async edit({ worktree, attempt, context }) {
       const prompt = editorPrompt({ ...context, run, attempt, resultsDir })
       const started = Date.now()
-      // Async, not spawnSync: a SIGTERM/SIGHUP to this process is handled at once (the temp worktree removed, the child killed) and not after a 15-minute call.
-      const ran = await runEditor(claudeBin, editorArgs({ prompt, model, budget }), worktree, timeoutSec * 1000)
+      // Charge before spending: the mark says the call may cost its whole budget; it is cleared only after the call's own ledger row is written.
+      const mark = markInflight(repo, run, 'editor', { kind: 'editor', attempt, charge: budget })
+      // Async, not spawnSync: a SIGTERM/SIGHUP to this process is handled at once (the call killed and charged, the temp worktree removed) and not after a 15-minute call.
+      const ran = await runEditor(claudeBin, editorArgs({ prompt, model, budget, agent: context.agent, repo, resultsDir }), worktree, timeoutSec * 1000, live)
       const final = parseEditorOutput(ran.stdout)
       // A call that timed out (killed, no output) or reported no cost may have spent up to its --max-budget-usd: the ledger is charged that.
       const unknownCost = ran.error || ran.signal || typeof final.total_cost_usd !== 'number'
       const cost = unknownCost ? budget : Number(final.total_cost_usd)
-      const sha = git(worktree, 'rev-parse', 'HEAD').trim()
+      let sha = ''
+      try {
+        sha = git(worktree, 'rev-parse', 'HEAD').trim()
+      } catch {
+        // the row is written without it: the spend must reach the ledger
+      }
       appendLedger({
         ts: new Date().toISOString(), invocation: `hillclimb-${run}`, case: EDITOR_CASE, attempt, plugin_ref: climbLabel(run), plugin_version: '', plugin_sha: sha,
         claude_version: '', models: model, marks: 'edit', pass: final.is_error || ran.status !== 0 ? 0 : 1, cost_usd: cost.toFixed(4), seconds: Math.round((Date.now() - started) / 1000),
       }, ledgerPath)
+      clearInflight(mark)
       const ok = ran.status === 0 && !final.is_error && typeof final.result === 'string'
       const text = String(final.result ?? '')
       const summary = (/^EDIT:\s*(.+)$/m.exec(text)?.[1] ?? text.split('\n').find((line) => line.trim()) ?? String(ran.stderr ?? '').trim().split('\n')[0] ?? '').slice(0, 200)
@@ -454,19 +635,27 @@ export function resumedTrain(ledger, row) {
   const invocations = Object.fromEntries(String(row.train_invocations ?? '').split(';').filter(Boolean).map((part) => [part.split('=')[0], part.slice(part.indexOf('=') + 1)]))
   return Object.fromEntries(String(row.train_cases ?? '').split(';').filter(Boolean).map((part) => {
     const name = part.split('=')[0]
-    const invocation = invocations[name]
+    const invocation = INVOCATION_RE.test(invocations[name] ?? '') ? invocations[name] : undefined
     const rows = invocation ? ledger.filter((entry) => entry.invocation === invocation && entry.case === name) : []
     return [name, { score: Number(part.split('=')[1]), scores: rows.map((entry) => runScore(entry.marks)).filter((score) => score !== null), marks: rows.map((entry) => entry.marks), invocation, resumed: true }]
   }))
 }
 
-/** Per case, what the ledger says (the dry run prints it): runs, harness failures (`W-`), and the last invocation's median score and marks. */
-export function caseLedgerSummary(ledger, name) {
-  const rows = ledger.filter((row) => row.case === name).sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
+/**
+ * Per case, what the ledger says about the CURRENT agent (the dry run prints it): runs, harness failures (`W-`), and the last invocation's median score and marks. Only rows of the
+ * working tree itself count — `plugin_ref` exactly `working-tree` (the filter buildReleaseRows and seedModels use: no `+hillclimb:<run>` candidate, no `--ref`, effort or ablation run) —
+ * at the starting checkout's plugin `version`, and, with `treeOf`, only rows measured on a clean sha whose agent bytes (`agentTree`) are the checkout's. `excluded` counts the rows left out.
+ */
+export function caseLedgerSummary(ledger, name, { version = null, treeOf = null, agentTree = null } = {}) {
+  const ofCase = ledger.filter((row) => row.case === name)
+  const rows = ofCase
+    .filter((row) => row.plugin_ref === 'working-tree' && (version === null || row.plugin_version === version))
+    .filter((row) => !treeOf || (!/\+dirty$/.test(row.plugin_sha ?? '') && treeOf(row.plugin_sha) === agentTree))
+    .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
   const failures = rows.filter((row) => /(^|\s)W-/.test(row.marks ?? '')).length
   const last = rows.filter((row) => row.invocation === rows.at(-1)?.invocation)
   const scores = last.map((row) => runScore(row.marks)).filter((score) => score !== null)
-  return { runs: rows.length, failures, score: median(scores), marks: last.map((row) => row.marks).join(' | ') }
+  return { runs: rows.length, failures, score: median(scores), marks: last.map((row) => row.marks).join(' | '), sha: last[0]?.plugin_sha ?? '', version: last[0]?.plugin_version ?? '', excluded: ofCase.length - rows.length }
 }
 
 // ── estimates ───────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -502,8 +691,20 @@ export async function climb(cfg, deps) {
 
   const ledgerNow = () => readLedger(cfg.ledgerPath)
   const wt = makeWorktree(repo, run, { resume: cfg.resume })
+  // A resume got past the owner-pid check of makeWorktree: what a SIGKILLed earlier part left in flight (an editor call, eval children) is charged now.
+  if (cfg.resume) {
+    const charged = chargeInflight({ repo, run, ledgerPath: cfg.ledgerPath })
+    if (charged > 0) log(`charged $${charged.toFixed(2)} for the calls the previous process left in flight`)
+  }
+  // A signal: stop what runs (eval children by process group, the editor call), charge what they may have spent into the ledger before exiting, then drop the temp worktree.
   const onSignal = () => {
-    wt.remove()
+    for (const stopIt of [() => deps.evaluator.killAll?.(), () => deps.editor.kill?.(), () => chargeInflight({ repo, run, ledgerPath: cfg.ledgerPath }), () => wt.remove()]) {
+      try {
+        stopIt()
+      } catch {
+        // the next step still runs: the charge must not depend on the kill
+      }
+    }
     process.exit(130)
   }
   process.once('SIGINT', onSignal)
@@ -589,13 +790,15 @@ export async function climb(cfg, deps) {
         return { rows, branch: wt.branch, stopped: 'stopped-target' }
       }
       const attempt = numbered + 1
-      const blocked = room(estimateEdit(ledgerNow(), deps.editor.budget ?? cfg.editorBudget))
+      // A kept edit needs the editor, the train eval and the holdout eval: when they cannot all fit under the cap, the editor is not paid for an edit nobody could measure.
+      const blocked = room(estimateEdit(ledgerNow(), deps.editor.budget ?? cfg.editorBudget) + estimateEval(ledgerNow(), train, runs) + estimateEval(ledgerNow(), holdout, runs))
       if (blocked) {
         stop('stopped-cap', blocked)
         return { rows, branch: wt.branch, stopped: 'stopped-cap' }
       }
 
       const before = spent()
+      const outside = checkoutState(repo, cfg.ledgerPath)
       const edit = await deps.editor.edit({ worktree: wt.dir, attempt, context: { agent, attempt, baseline, best, train: lastTrain, history: rows, holdoutNames: holdout }, run, ledgerPath: cfg.ledgerPath })
       const changed = changedPaths(wt.dir)
       const files = changed.map((entry) => entry.path).join(', ')
@@ -603,6 +806,12 @@ export async function climb(cfg, deps) {
       const undoAndWrite = (fields) => {
         undoChanges(wt.dir, changed)
         write(row(fields))
+      }
+      // The editor works in the temp worktree: the starting checkout's tracked tree must be as it was and its ledger only longer. Otherwise the run stops, with a row of its own.
+      const touched = checkoutProblems(outside, checkoutState(repo, cfg.ledgerPath))
+      if (touched.length) {
+        undoAndWrite({ decision: 'stopped-checkout-touched', summary: `the editor call changed the starting checkout: ${touched.join('; ')}; look at ${repo} before continuing`.slice(0, 400) })
+        return { rows, branch: wt.branch, stopped: 'stopped-checkout-touched' }
       }
       if (!edit.ok) {
         undoAndWrite({ decision: 'editor-failed' })
@@ -670,6 +879,23 @@ export async function climb(cfg, deps) {
     process.removeListener('SIGHUP', onSignal)
     wt.remove()
   }
+}
+
+/** The starting checkout as the editor call must leave it: its HEAD and tracked diff (a fingerprint) and the ledger text. */
+function checkoutState(repo, ledgerPath) {
+  let tracked
+  try {
+    tracked = `${git(repo, 'rev-parse', 'HEAD').trim()} ${createHash('sha1').update(git(repo, 'diff', 'HEAD', '--binary', '--no-ext-diff')).digest('hex')}`
+  } catch (error) {
+    tracked = `unreadable: ${error.message}`
+  }
+  return { tracked, ledger: existsSync(ledgerPath) ? readFileSync(ledgerPath, 'utf8') : '' }
+}
+export function checkoutProblems(before, after) {
+  const problems = []
+  if (before.tracked !== after.tracked) problems.push('its tracked files or HEAD changed')
+  if (!after.ledger.startsWith(before.ledger)) problems.push('its ledger was rewritten, not only appended to')
+  return problems
 }
 
 async function evalSplit(deps, worktree, train, holdout, ctx) {

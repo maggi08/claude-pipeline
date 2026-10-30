@@ -817,3 +817,19 @@ export function meanCost(rows, name) {
   const past = rows.filter((row) => row.case === name && Number(row.cost_usd) > 0)
   return past.length ? past.reduce((sum, row) => sum + Number(row.cost_usd), 0) / past.length : null
 }
+
+// ── invocation ids and the agent session's environment ──────────────────────────────────────────────────────────────
+
+/** An eval invocation id: `<yyyymmddThhmmss>-<base36>`. It names a directory under the results dir, so it is checked by this format before any path join. */
+export const INVOCATION_RE = /^\d{8}T\d{6}-[a-z0-9]+$/
+export const newInvocationId = () => `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}-${Math.random().toString(36).slice(2, 6).padEnd(4, '0')}`
+
+/**
+ * The environment of an agent's `claude -p` session: the caller's, plus the data dir, minus what points at the harness. CLAUDE_PLUGIN_DATA is Claude Code's own variable; EVAL_LEDGER
+ * and EVAL_RESULTS (a hill-climb's absolute paths to the starting checkout) would tell the agent under test, and the Bash tool it runs, where the graders and earlier reports are.
+ */
+export function sessionEnv(base, dataDir) {
+  const env = { ...base, STAGE_PIPELINE_DATA_DIR: dataDir, MCP_CONNECTION_NONBLOCKING: 'false' }
+  for (const key of ['CLAUDE_PLUGIN_DATA', 'EVAL_LEDGER', 'EVAL_RESULTS']) delete env[key]
+  return env
+}

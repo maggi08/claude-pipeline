@@ -48,6 +48,7 @@
  * CLAUDE_PLUGIN_DATA for hooks, so that variable alone never reached them). The working tree, --ablate and --variant runs carry a pluginDataDir() that honours the override;
  * a `--ref` tag before 0.19.0 does not, so preparePlugin patches the archived scripts/hooks/pipeline-state.mjs (aborting when the function is not found exactly once);
  * with that, nothing of the live data directory is read or written. Cases under evals/pending/ (awaiting a discriminating proof) are skipped by --list, --lint, --record-release, validate.mjs and every run, unless a run names them with --pending (`node scripts/eval.mjs --pending <case>`: a name that is not under evals/cases/ is looked up under evals/pending/; the other free modes refuse the flag).
+ * `--invocation <id>` names the invocation (`<yyyymmddThhmmss>-<4 chars>`): the hill-climb makes the id and reads the rows back by it, so no text the model wrote can pick the run that is scored.
  * `--label <text>` adds <text> to the plugin_ref of the run's ledger rows (`working-tree+<text>`): the hill-climb labels its runs `hillclimb:<run>`, and a labelled run never stands for a release.
  *
  * Expectations in case.json (deterministic graders are the floor):
@@ -109,7 +110,7 @@ import { join, relative } from 'node:path'
 import { wantedFor, loadProfile } from '../plugins/stage-pipeline/scripts/permission-profile.mjs'
 import {
   CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, STATIC_SERVER, agentModelsOf, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
-  spentSince, subagentRun, toolCalls, validEffort, walk, withEffort,
+  INVOCATION_RE, newInvocationId, sessionEnv, spentSince, subagentRun, toolCalls, validEffort, walk, withEffort,
 } from './eval-lib.mjs'
 import { agentCases, agentTreeAt, buildReleaseRows, mergeReleases, modelDrift, ownModels, readModels, readReleases, releaseWarnings, seedModels, shaProblem, writeModels, writeReleases } from './release-lib.mjs'
 
@@ -143,6 +144,10 @@ function parseArgs(argv) {
     else if (arg === '--ablate') result.ablate = value(arg)
     else if (arg === '--variant') result.variant = value(arg)
     else if (arg === '--label') result.label = value(arg)
+    else if (arg === '--invocation') {
+      result.invocation = value(arg)
+      if (!INVOCATION_RE.test(result.invocation)) fail('--invocation expects an id like 20261030T102038-02dd')
+    }
     else if (arg === '--budget-usd') result.budget = Number(value(arg))
     else if (arg === '--budget-since') result.budgetSince = value(arg)
     else if (['--list', '--lint', '--record-failing', '--record-release', '--seed-models', '--accept-models', '--show-plugin', '--pending'].includes(arg)) result.flags.add(arg)
@@ -311,7 +316,7 @@ if (opts.flags.has('--show-plugin')) {
   process.exit(0)
 }
 const claudeVersion = (spawnSync('claude', ['--version'], { encoding: 'utf8' }).stdout ?? '').trim().split('\n')[0] || '?'
-const invocation = `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}-${Math.random().toString(36).slice(2, 6)}`
+const invocation = opts.invocation ?? newInvocationId()
 const resultsDir = join(RESULTS, invocation)
 mkdirSync(resultsDir, { recursive: true })
 const labelSlug = plugin.refLabel.replace(/[^\w=,:-]/g, '_')
@@ -323,8 +328,7 @@ const wanted = wantedFor(plugin.dir, profile.defaultGroups, profile)
 const allowed = [...new Set([...wanted.allow, 'Agent', 'Task'])]
 
 function runClaude(args, cwd, seconds, dataDir) {
-  const env = { ...process.env, STAGE_PIPELINE_DATA_DIR: dataDir, MCP_CONNECTION_NONBLOCKING: 'false' }
-  delete env.CLAUDE_PLUGIN_DATA
+  const env = sessionEnv(process.env, dataDir)
   const started = Date.now()
   // In -p, servers from --mcp-config connect asynchronously: MCP_CONNECTION_NONBLOCKING=false makes the session wait for them.
   const result = spawnSync('claude', args, { cwd, encoding: 'utf8', timeout: seconds * 1000, env, maxBuffer: 1 << 28 })

@@ -28,13 +28,16 @@
  *   --budget-usd/--budget-since   passed to every eval.mjs call (less what the cases running in parallel have reserved) and checked here too (the whole ledger since that time, editor rows included)
  *
  * A run stops with a row of its own: stopped-no-headroom (the baseline train mean + 0.1 passes 1: no edit could be kept; train on cases with headroom), stopped-eval-failed (a case with a
- * harness failure or fewer graded runs than --runs, named in the row), stopped-cap, stopped-target, stopped-max-iterations. --resume refuses a run whose baseline row is not `baseline`.
+ * harness failure or fewer graded runs than --runs, named in the row), stopped-cap, stopped-target, stopped-max-iterations, stopped-checkout-touched (the editor call changed the starting checkout's tracked files or rewrote its ledger).
+ * A signal charges the editor call and the eval children in flight into the ledger before the run exits (evals/hillclimb/<run>/inflight/ marks; a SIGKILL's are charged by the next --resume); --resume refuses while the
+ * previous process of the run is alive (the worktree lock names its pid) and never prunes or removes any worktree but the run's own. --resume refuses a run whose baseline row is not `baseline`.
  *   --run <id>  --resume <id>
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, readCase, readLedger } from './eval-lib.mjs'
+import { agentTreeAt } from './release-lib.mjs'
 import { DEFAULT_HOLDOUT, DEFAULT_TRAIN, caseLedgerSummary, climb, decisionPath, editorArgs, estimateEdit, estimateEval, makeEditor, makeEvaluator } from './hillclimb-lib.mjs'
 
 const argv = process.argv.slice(2)
@@ -104,19 +107,32 @@ if (opts.dryRun) {
   console.log(`hillclimb dry run — nothing is created, no model is called\n  run ${opts.run}, agent ${opts.agent}, branch hillclimb/${opts.run}, decision log ${decisionPath(ROOT, opts.run)}\n  train: ${opts.train.join(', ')}\n  holdout: ${opts.holdout.join(', ')}\n  runs per case ${opts.runs}, jobs ${opts.jobs}, max iterations ${opts.maxIterations}, min attempts ${opts.minAttempts}, target ${opts.target}`)
   console.log(`  estimates from the ledger: baseline $${(trainEst + holdEst).toFixed(2)}, one iteration $${(editEst + trainEst + holdEst).toFixed(2)} (editor $${editEst.toFixed(2)}, train $${trainEst.toFixed(2)}, holdout $${holdEst.toFixed(2)}); cap $${opts.capUsd}${opts.budgetUsd ? `, lane budget $${opts.budgetUsd} since ${opts.budgetSince ?? 'the start of the ledger'}` : ''}`)
   const fmt = (value) => (value === null || value === undefined ? '-' : value.toFixed(3))
-  const summaries = Object.fromEntries([...opts.train, ...opts.holdout].map((name) => [name, caseLedgerSummary(ledger, name)]))
-  console.log('  per case, from the ledger (last invocation: median score and marks; runs; harness failures W-):')
+  // Only the CURRENT agent counts: rows of the working tree (plugin_ref exactly `working-tree`, not a hill-climb candidate, `--ref`, effort or ablation run) at this checkout's plugin version, on a clean
+  // sha whose agent bytes (agents/<a>.md + skills/<a>/) are HEAD's. A score of an older plugin says nothing about the headroom of this one.
+  const version = JSON.parse(readFileSync(join(SOURCE_PLUGIN, '.claude-plugin/plugin.json'), 'utf8')).version
+  const gitHere = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  const headTree = agentTreeAt(gitHere, 'HEAD', opts.agent)
+  const trees = new Map()
+  const treeOf = (sha) => {
+    if (!trees.has(sha)) trees.set(sha, agentTreeAt(gitHere, String(sha).replace(/\+dirty$/, ''), opts.agent))
+    return trees.get(sha)
+  }
+  const summaries = Object.fromEntries([...opts.train, ...opts.holdout].map((name) => [name, caseLedgerSummary(ledger, name, { version, treeOf, agentTree: headTree })]))
+  console.log(`  per case, from the ledger — runs of the current ${opts.agent} only (plugin ${version}, plugin_ref working-tree, agent_tree ${headTree ?? 'unknown'}); last invocation: median score and marks; runs; harness failures W-:`)
   for (const [split, names] of [['train', opts.train], ['holdout', opts.holdout]]) {
     for (const name of names) {
-      const { runs, failures, score, marks } = summaries[name]
-      console.log(`    ${split} ${name}: last score ${fmt(score)} [${marks || 'no run'}], ${runs} run(s), ${failures} W-`)
+      const { runs, failures, score, marks, sha, excluded } = summaries[name]
+      if (!runs) console.log(`    ${split} ${name}: unmeasured — the current ${opts.agent} has no run of this case in the ledger${excluded ? ` (${excluded} row(s) of another plugin, sha or label ignored)` : ''}: headroom unknown`)
+      else console.log(`    ${split} ${name}: last score ${fmt(score)} [${marks}] at ${String(sha).slice(0, 9)}, ${runs} run(s), ${failures} W-${excluded ? `; ${excluded} row(s) of another plugin, sha or label ignored` : ''}`)
     }
   }
+  const unmeasured = opts.train.filter((name) => !summaries[name].runs || summaries[name].score === null)
   const scored = opts.train.map((name) => summaries[name].score).filter((score) => score !== null)
   const trainMean = scored.length ? scored.reduce((sum, score) => sum + score, 0) / scored.length : null
-  if (trainMean !== null && trainMean >= 0.9) console.log(`  ⚠ train mean of the last scores is ${trainMean.toFixed(3)} >= 0.9: little headroom, an edit may not be keepable (+0.1 on the train mean)`)
+  if (unmeasured.length) console.log(`  headroom unknown: no scored run of the current ${opts.agent} for the train case(s) ${unmeasured.join(', ')}; the baseline measures them`)
+  else if (trainMean !== null && trainMean >= 0.9) console.log(`  ⚠ train mean of the last scores is ${trainMean.toFixed(3)} >= 0.9: little headroom, the run would stop right after the baseline (~$${(trainEst + holdEst).toFixed(2)}) as stopped-no-headroom if it measures the same`)
   for (const name of [...opts.train, ...opts.holdout]) if (summaries[name].runs > 0 && summaries[name].failures === summaries[name].runs) console.log(`  ⚠ ${name}: every recorded run is W- (a harness failure): it would stop the run as stopped-eval-failed; pick another case`)
-  console.log(`  editor: ${opts.editorModel}, per call $${opts.editorBudget}; argv: claude ${editorArgs({ prompt: '<prompt>', model: opts.editorModel, budget: opts.editorBudget }).join(' ')}`)
+  console.log(`  editor: ${opts.editorModel}, per call $${opts.editorBudget}; argv: claude ${editorArgs({ prompt: '<prompt>', model: opts.editorModel, budget: opts.editorBudget, agent: opts.agent, repo: ROOT, resultsDir: RESULTS_DIR }).join(' ')}`)
   process.exit(0)
 }
 
