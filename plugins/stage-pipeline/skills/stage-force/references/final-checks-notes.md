@@ -30,6 +30,8 @@ The round's diff is reviewed by your own read of it, or by a stage-mode `pro-rev
 - The other final checkers (security-review, ds-parity, dead-code, i18n-sweep, deps-audit, devtools-verify) are not rerun: their fixed findings are rechecked by `file:line` in the fix round's diff. A runtime finding is rechecked by the short run of `/stage-check`, Step 3.2, with its `-r<k>` report.
 - The bound is the hook's: a delta counts only when the full report's `head:` is an ancestor of HEAD and the change since it is at most 400 lines. A fix round over it gets a full whole-branch review, which becomes the new anchor; later deltas extend that report.
 - A delta sees the round's diff and its radius, not the whole branch. What it does not check: whether a finding of the first review that the round did not touch still holds, and a defect that lies in the unchanged code around the round. Those stay with the full review.
+- An autonomous run is exactly the mode where an uncovered criterion or a silently widened scope will be caught by no one along the way, hence the mandatory `task-converge`.
+- A delta re-run caused only by staleness (a report older than HEAD's tree) is not a new round: the round counts stay as they were.
 - Minors of a delta are not fixed in the run; they go to «Not included in the plan» as next-version items.
 - A fix of the final checks that touches the pro-review agent or skill reruns the pro-review eval cases within the budget the Force block names (S2-D6 of VT-7).
 

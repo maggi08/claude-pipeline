@@ -214,6 +214,11 @@
       "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
       "line": "режим\\)\\\\s\\*\\(\\?::\\\\s\\*\\)\\?\\\\\\*\\*fix",
       "reason": "RU alternative of the mode word in the fix-mode regex (stage-implement prompt in a Russian task)"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
+      "line": "дельта",
+      "reason": "RU forms of the delta mode of pro-review (a prompt of a Russian-language task)"
     }
   ]
 }

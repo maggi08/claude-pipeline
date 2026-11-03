@@ -38,9 +38,12 @@ const DESIGN = ['figma-compare', 'proto-compare']
 const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
 /** A delta review (`delta:` line) counts only while the change since the full review's head stays within this many added plus deleted lines (VT-7, S1-D2). */
 export const DELTA_MAX_LINES = 400
-const HEAD_LINE = /^[ \t]*(?:[-*][ \t]+)?head:[ \t]*([0-9a-f]{7,40})[ \t]*$/m
+const HEAD_LINE = /^[ \t]*(?:[-*][ \t]+)?head:[ \t]*([0-9a-f]{7,40})[ \t]*$/im
 const DELTA_LINE = /^[ \t]*(?:[-*][ \t]+)?delta:[ \t]*(\S+)[ \t]+([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})[ \t]*$/m
-const HAS_DELTA = /^[ \t]*(?:[-*][ \t]+)?delta:/m
+// Detection is loose (any case, list dash, `>`, `*`/`_`/backtick markup) so a mis-formatted delta line cannot turn a delta into a "full" report; parsing stays strict (S3-D1).
+const HAS_DELTA = /^[ \t>]*(?:[-*+][ \t]+)?[*_`]*delta[*_`]*[ \t]*:/im
+/** A report is a delta when its file name says so or its header has a delta line, however it is written. */
+const isDeltaReport = (name, text) => /-branch-delta-/.test(name) || HAS_DELTA.test(reportHeader(text))
 /** The report header — everything before its first `## ` heading: the only place `head:` and `delta:` are read (S1-D1). */
 const reportHeader = (text) => text.split(/^#{2,6}[ \t]/m)[0]
 
@@ -142,13 +145,14 @@ const legitSkip = (skip) => (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_R
 const skipDeclared = (stages, checkers) => stages.flatMap((stage) => stage.skips).filter((skip) => checkers.includes(skip.checker))
 
 /** git output as is: `status --porcelain` starts with a significant space. */
-const gitRaw = (cwd, ...args) => {
+const gitTry = (cwd, ...args) => {
   try {
     return execFileSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
   } catch {
-    return ''
+    return null
   }
 }
+const gitRaw = (cwd, ...args) => gitTry(cwd, ...args) ?? ''
 const git = (cwd, ...args) => gitRaw(cwd, ...args).trim()
 
 /** HEAD is the commit the receipt was written for, or its rewrite (amend, rebase, cherry-pick): the same sha, the same tree or the same patch-id. */
@@ -337,11 +341,13 @@ function dirtyTracked(worktree, taskDir) {
   return files.filter((file) => !taskRel || !(file === taskRel || file.startsWith(`${taskRel}/`)))
 }
 
-/** Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory; a binary file counts 0 (S1-D2). */
+/** Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory (a move out of it counts by its destination); a binary file counts 0 (S1-D2); null when git fails. */
 function changedLinesSince(worktree, taskDir, base) {
   const taskRel = taskRelPath(worktree, taskDir)
+  const out = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, 'HEAD')
+  if (out === null) return null
   let sum = 0
-  for (const line of git(worktree, 'diff', '--numstat', base, 'HEAD').split('\n').filter(Boolean)) {
+  for (const line of out.trim().split('\n').filter(Boolean)) {
     const [added, deleted, ...rest] = line.split('\t')
     const path = rest.join('\t')
     if (taskRel && (path === taskRel || path.startsWith(`${taskRel}/`))) continue
@@ -350,37 +356,34 @@ function changedLinesSince(worktree, taskDir, base) {
   return sum
 }
 
-const FULL_RUN = (how) => `run ${how} (a full review, it becomes the new anchor)`
-
 /**
- * Why a report with a `delta:` line does not count, or null when it does: `{ why, run }` — the failed condition and the review to run (VT-7, D2–D3).
- * All must hold: the named full report is in this task's checks/ and carries `head:` equal to the delta's base (shas compared after rev-parse, S1-D3);
- * the base is an ancestor of HEAD; the delta is newer than HEAD's tree; the change since the base is within DELTA_MAX_LINES.
+ * Why a delta report does not count, or null when it does: `{ why, run }` — the failed condition and the review to run (VT-7, D2–D3).
+ * All must hold: the named full report is a whole-branch report of the same checker (`item.match`), in this task's checks/, not a delta itself, and carries `head:` equal
+ * to the delta's base (shas compared after rev-parse, S1-D3); the base is an ancestor of HEAD; the range end has HEAD's tree; the delta is newer than HEAD's tree
+ * (`isFresh`); the change since the base is within DELTA_MAX_LINES.
  */
-function deltaProblem(worktree, taskDir, name, text, since, how) {
+function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
   const match = DELTA_LINE.exec(reportHeader(text))
-  const redo = `re-run the delta review (\`pro-review --delta checks/<full report>\`) after the last fix`
-  if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: FULL_RUN(how) }
-  const [, file, baseRaw] = match
-  const full = /^[\w.-]+\.md$/.test(file) ? readTaskFile(taskDir, 'checks', file) : null
-  if (full === null) return { why: `it names \`${file}\`, which is not in this task's checks/`, run: FULL_RUN(how) }
-  if (HAS_DELTA.test(reportHeader(full))) return { why: `\`${file}\` is itself a delta report, not a full one`, run: FULL_RUN(how) }
+  const redo = `re-run the delta review (${item.checker === 'pro-review' ? '`pro-review --delta checks/<full report>`' : `the delta mode of the project skill \`${item.checker}\``}) after the last fix`
+  const fullRun = `run ${item.how} (a full review, it becomes the new anchor)`
+  if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: fullRun }
+  const [, file, baseRaw, endRaw] = match
+  const full = /^[\w.-]{1,120}\.md$/.test(file) && item.match(file) ? readTaskFile(taskDir, 'checks', file) : null
+  const shown = file.slice(0, 120)
+  if (full === null) return { why: `it names \`${shown}\`, which is not in this task's checks/, or is not a whole-branch report of ${item.checker}`, run: fullRun }
+  if (isDeltaReport(file, full)) return { why: `\`${shown}\` is itself a delta report, not a full one`, run: fullRun }
   const anchor = HEAD_LINE.exec(reportHeader(full))?.[1]
-  if (!anchor) return { why: `the full report \`${file}\` has no \`head: <sha>\` line (a report from before the anchor)`, run: FULL_RUN(how) }
+  if (!anchor) return { why: `the full report \`${shown}\` has no \`head: <sha>\` line (a report from before the anchor)`, run: fullRun }
   const resolve = (sha) => git(worktree, 'rev-parse', '--verify', '--quiet', `${sha}^{commit}`)
   const base = resolve(baseRaw)
-  if (!base || base !== resolve(anchor)) return { why: `its base \`${baseRaw}\` is not the \`head:\` of \`${file}\` (\`${anchor}\`)`, run: FULL_RUN(how) }
-  if (git(worktree, 'merge-base', base, 'HEAD') !== base) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (the branch was rebased or reset)`, run: FULL_RUN(how) }
-  const mtime = (() => {
-    try {
-      return statSync(join(taskDir, 'checks', name)).mtimeMs
-    } catch {
-      return 0
-    }
-  })()
-  if (mtime < since) return { why: `it is older than HEAD's tree (the tree appeared ${new Date(since).toISOString()})`, run: redo }
+  if (!base || base !== resolve(anchor)) return { why: `its base \`${baseRaw}\` is not the \`head:\` of \`${shown}\` (\`${anchor}\`)`, run: fullRun }
+  if (git(worktree, 'merge-base', base, 'HEAD') !== base) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (the branch was rebased or reset)`, run: fullRun }
+  const tree = (rev) => git(worktree, 'rev-parse', '--verify', '--quiet', `${rev}^{tree}`)
+  if (!resolve(endRaw) || !tree(endRaw) || tree(endRaw) !== tree('HEAD')) return { why: `the delta reviewed \`${endRaw}\`, not HEAD (its tree differs from HEAD's or the commit is unknown)`, run: redo }
+  if (!isFresh) return { why: `it is older than HEAD's tree (the tree appeared ${new Date(since).toISOString()})`, run: redo }
   const lines = changedLinesSince(worktree, taskDir, base)
-  if (lines > DELTA_MAX_LINES) return { why: `${lines} lines changed since the full review's head \`${base.slice(0, 8)}\`, over the bound of ${DELTA_MAX_LINES}`, run: FULL_RUN(how) }
+  if (lines === null) return { why: `could not count the change since the base \`${base.slice(0, 8)}\``, run: fullRun }
+  if (lines > DELTA_MAX_LINES) return { why: `${lines} lines changed since the full review's head \`${base.slice(0, 8)}\`, over the bound of ${DELTA_MAX_LINES}`, run: fullRun }
   return null
 }
 
@@ -415,8 +418,9 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const counts = (item, name) => {
     const text = item.match(name) ? readTaskFile(taskDir, 'checks', name) : null
     if (text === null) return false
-    if (!HAS_DELTA.test(reportHeader(text))) return fresh.has(name)
-    const problem = deltaProblem(worktree, taskDir, name, text, since, item.how)
+    if (!isDeltaReport(name, text)) return fresh.has(name)
+    if (item.checker === 'task-converge') return false // a delta never counts for it, and it is not read as a full report either (S3-D2)
+    const problem = deltaProblem(worktree, taskDir, name, text, since, item, fresh.has(name))
     if (problem) deltaWhy.set(item.checker, [...(deltaWhy.get(item.checker) ?? []), { name, ...problem }])
     return !problem
   }

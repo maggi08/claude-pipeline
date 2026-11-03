@@ -955,7 +955,7 @@
       "text": "skip the wrapup line in the \"final checks\" of old stages.md — do not mark it or run it by the path to the skil",
       "baseline": true
     },
-    "stage-force#dcdc704a5b": {
+    "stage-force#27a7af5300": {
       "to": "hook:journal-gate/close",
       "text": "task-converge is mandatory in a force run and is started before the summary (after the last fix commit: a repo"
     },

@@ -25,7 +25,8 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, review
 const CONFIRM_SINCE = '2026-10-03'
 const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(?::\\s*)?\\**whole[-\\s]branch`, 'i')
 // The delta mode of pro-review (`--delta <full report>`, VT-7) reviews the whole-branch lenses over a fix round: held to review_model too.
-const DELTA_MODE = /--delta\b|\bdelta[-\s]mode\b/i
+// Also `Mode: delta`, `delta review`, the Russian forms, and a prompt naming a `-branch-delta-` report; a stage prompt that only mentions "the delta of the round" stays allowed.
+const DELTA_MODE = new RegExp(`--delta\\b|\\bdelta[-\\s](?:mode|review)\\b|(?:${MODE_WORD})\\s*(?::\\s*)?\\**delta\\b|дельта[-\\s]?(?:режим|ревью)|(?:${MODE_WORD})\\s*:?\\s*\\**дельта|-branch-delta-`, 'i')
 
 // the spawn the pending line was written for (K11b.1); a deny closes it with a `denied` line
 let spawned = null

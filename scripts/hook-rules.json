@@ -4,7 +4,9 @@
     "agent-guard/review-model": {
       "incident": [
         "whole-branch pro-review without model — denied",
-        "delta pro-review (--delta) without model — denied, as a whole-branch one"
+        "delta pro-review (--delta) without model — denied, as a whole-branch one",
+        "delta mode pro-review: `Mode: delta` — denied",
+        "delta mode pro-review: Russian mode-delta form — denied"
       ],
       "legitimate": [
         "whole-branch pro-review on opus — passes",
