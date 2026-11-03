@@ -12,6 +12,7 @@ Where this comes from. In three tasks in three repos reviewed on 2026-10-04, mos
 2. **Severity is only `critical`, `major` or `minor`.** "Question", "ask the backend", "minor-major", "not frontend" are not severities. Weigh the consequences for the user and pick one of the three. Put a question for product or backend into the text of the finding. Example: in one task devtools-verify recorded a 20-point score mismatch as a "conclusion" with no severity, and a day later it became a user's fix.
 3. **A FAIL on a criterion is a finding too**, even if the table has no row for it.
 4. **The "Could not verify" section is mandatory.** If it is empty, say so: "everything verified" (of what was passed in). In a runtime checker, "no data", "no bookings on the account" and "no test leads" are not a reason: the state is put in place (`skills/devtools-verify`, "States without data").
+5. **A whole-branch report records its commit:** `head: <full sha>` on a line of its own in the header, before the first `## ` heading (pro-review and a team review of the branch). A delta review (`checks/<name>-branch-delta-<k>.md`) adds `delta: <full report file name> <base sha>..<new head sha>`; the hook counts it only on top of that full report. The two lines keep the English skeleton in a `ru` task.
 
 ## Findings outcome — written by the orchestrator
 

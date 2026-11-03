@@ -420,6 +420,10 @@ check('stage-implement: confirmation is there — passes', agentHook('stage-pipe
 withForce('## Force-прогон 2026-09-24', 'Режим: автономный.')
 check('stage-implement: a block opened before 0.12 is left alone', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2') === 'allow')
 check('other agents — silent', agentHook('stage-pipeline:devtools-verify', 'whole-branch mode') === 'allow')
+check('delta pro-review (--delta) without model — denied, as a whole-branch one', agentHook('stage-pipeline:pro-review', 'Ticket T-7, pro-review --delta checks/pro-review-branch.md. Base 3f2a9c1.') === 'deny')
+check('delta mode pro-review without model — denied (the prose form)', agentHook('stage-pipeline:pro-review', 'Ticket T-7, delta mode on checks/pro-review-branch.md.') === 'deny')
+check('delta pro-review on opus — passes', agentHook('stage-pipeline:pro-review', 'Ticket T-7, pro-review --delta checks/pro-review-branch.md.', 'opus') === 'allow')
+check('stage pro-review that only mentions the delta of the stage — no model required', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 2. Look at the delta of the fix round.') === 'allow')
 withForce('## Force run 2026-10-05', 'Mode: autonomous.\nInterview answers: branch — from dev')
 check('EN stage-implement: new Force block without "Confirmed:" — denied', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2, implement mode') === 'deny')
 withForce('## Force run 2026-10-05', 'Mode: autonomous.\nInterview answers: branch — from dev\nConfirmed: 2026-10-05 — "yes, go"')
@@ -2577,6 +2581,74 @@ rmSync(retroRoot, { recursive: true, force: true })
   gitAt(fr.dir, 9, 'commit', '-qm', 'docs only')
   const docs = frGate()
   check('receipts m-3: a docs-only commit after the reports still counts as a change — rejected', docs.decision === 'block' && /no whole-task report/.test(docs.text), docs.text)
+
+  // VT-7 stage 1: a delta review counts only on top of a full whole-branch review that records its commit (`head:`), within DELTA_MAX_LINES since it.
+  // Tree timeline: full review of the anchor commit at +4h, the fix commit (the tree HEAD has now) at +6h, the delta report at +8h; each rule has its incident and its legitimate form.
+  {
+    const deltaFx = (name, { lines = 5, fullHeader = (anchor) => `head: ${anchor}\n`, fullFile = 'pro-review-branch.md', deltaFile = 'pro-review-branch-delta-1.md', deltaHeader, deltaHours = 8, rewrite = false, skipDelta = false } = {}) => {
+      const fx = fixture(name, { stages: '' })
+      fx.report('pro-review-1.md', 'pro-review', 2)
+      fx.commit({ 'src/a.ts': 'export const a = 2\n' }, 3)
+      const anchor = git(fx.dir, 'rev-parse', 'HEAD').trim()
+      const put = (file, header, hours) => {
+        write(fx.dir, { [`.claude/tasks/${fx.ticket}/checks/${file}`]: `# pro-review\nFindings: critical 0 · major 1 · minor 0\n${header}### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n` })
+        utimesSync(join(fx.tdir, 'checks', file), at(hours), at(hours))
+      }
+      put(fullFile, fullHeader(anchor), 4)
+      if (rewrite) git(fx.dir, 'reset', '-q', '--hard', 'main')
+      write(fx.dir, { 'src/a.ts': Array.from({ length: lines }, (_, i) => `export const v${i} = ${i}`).join('\n') + '\n' })
+      git(fx.dir, 'add', '-A')
+      gitAt(fx.dir, 6, 'commit', '-qm', 'fix round')
+      const newHead = git(fx.dir, 'rev-parse', 'HEAD').trim()
+      if (!skipDelta) put(deltaFile, (deltaHeader ?? ((a, n, f) => `head: ${n}\ndelta: ${f} ${a}..${n}\n`))(anchor, newHead, fullFile), deltaHours)
+      fx.report('task-converge.md', 'task-converge', 8)
+      const closedText = `# ${fx.ticket}: task\nBranch: \`${fx.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`
+      fx.journal(closedText)
+      return { fx, anchor, newHead, close: () => runHook('journal-gate.mjs', { cwd: fx.dir, tool_name: 'Write', tool_input: { file_path: join(fx.tdir, 'STAGES.md') } }) }
+    }
+    const verdict = (result) => result.decision === 'block'
+    const proReviewOnly = (result) => /pro-review: no whole-task report/.test(result.text) && !/task-converge: no whole-task/.test(result.text)
+
+    const within = deltaFx('delta-within')
+    const withinResult = within.close()
+    check('delta AC-1.1: a full report older than the tree and a delta anchored on it, newer than the tree and within the bound — the close is accepted', !verdict(withinResult), withinResult.text)
+    check('delta AC-1.1: the full report alone (older than the tree, no delta) is still stale — the close is denied', verdict(deltaFx('delta-none', { skipDelta: true }).close()))
+    const atBound = deltaFx('delta-at-bound', { lines: rc.DELTA_MAX_LINES - 1 }) // +1 line of the one-line a.ts of the anchor commit replaced: 399 added, 1 deleted = 400
+    check('delta AC-1.2 legit: exactly DELTA_MAX_LINES changed lines since the base — accepted', !verdict(atBound.close()), atBound.close().text)
+    const over = deltaFx('delta-over', { lines: rc.DELTA_MAX_LINES + 100 }).close()
+    check('delta AC-1.2: over the bound — denied, the message names the count and the bound and asks for a full review', verdict(over) && proReviewOnly(over) && /over the bound of 400/.test(over.text) && /full review/.test(over.text), over.text)
+    const rebased = deltaFx('delta-rebased', { rewrite: true }).close()
+    check('delta AC-1.2: the base is not an ancestor of HEAD (a rebase) — denied, named, a full review asked', verdict(rebased) && proReviewOnly(rebased) && /not an ancestor of HEAD/.test(rebased.text) && /full review/.test(rebased.text), rebased.text)
+    const noHead = deltaFx('delta-full-no-head', { fullHeader: () => '' }).close()
+    check('delta AC-1.2: the full report has no `head:` line — denied, named', verdict(noHead) && proReviewOnly(noHead) && /no `head: <sha>` line/.test(noHead.text), noHead.text)
+    const missingFull = deltaFx('delta-missing-full', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch-0.md ${a}..${n}\n` }).close()
+    check('delta AC-1.2: the delta names a report that is not in checks/ — denied, named', verdict(missingFull) && proReviewOnly(missingFull) && /`pro-review-branch-0\.md`, which is not in this task's checks/.test(missingFull.text), missingFull.text)
+    const wrongBase = deltaFx('delta-wrong-base', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch.md ${n}..${n}\n` }).close()
+    check('delta AC-1.2: the delta base is not the `head:` of the report it names — denied, named', verdict(wrongBase) && /is not the `head:` of/.test(wrongBase.text), wrongBase.text)
+    const oldDelta = deltaFx('delta-older', { deltaHours: 5 }).close()
+    check('delta AC-1.2: the delta is older than HEAD\'s tree — denied, a re-run of the delta asked', verdict(oldDelta) && proReviewOnly(oldDelta) && /older than HEAD's tree/.test(oldDelta.text) && /re-run the delta review/.test(oldDelta.text), oldDelta.text)
+    const malformed = deltaFx('delta-malformed', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch.md ${a}\n` }).close()
+    check('delta AC-1.2: a `delta:` line that is not `<file> <base>..<head>` — denied, never read as a full report', verdict(malformed) && /does not count: its `delta:` line is not/.test(malformed.text), malformed.text)
+    const namedFull = deltaFx('delta-named-full', { deltaFile: 'pro-review-branch.md', fullFile: 'pro-review-branch-2.md', deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch-2.md ${a}..${n}\n`, lines: rc.DELTA_MAX_LINES + 100 }).close()
+    check('delta D3: a report with a `delta:` line is not a full one even under a whole-branch name that is fresh — over the bound it is denied', verdict(namedFull) && /does not count/.test(namedFull.text), namedFull.text)
+
+    // A full re-run `-branch-2.md` stays a full report: no delta line, today's rule alone, whatever the size since the first review.
+    const rerun = deltaFx('delta-full-rerun', { deltaFile: 'pro-review-branch-2.md', deltaHeader: (a, n) => `head: ${n}\n`, lines: rc.DELTA_MAX_LINES + 100 })
+    const rerunResult = rerun.close()
+    check('delta AC-1.2 legit: a full re-run `pro-review-branch-2.md` with `head:` and no `delta:` line, newer than the tree — accepted, whatever the size since the first review', !verdict(rerunResult), rerunResult.text)
+    const rerunOld = deltaFx('delta-full-rerun-old', { deltaFile: 'pro-review-branch-2.md', deltaHeader: (a, n) => `head: ${n}\n`, deltaHours: 5 }).close()
+    check('delta AC-1.2: the same full re-run older than the tree — denied by today\'s rule, no delta message', verdict(rerunOld) && proReviewOnly(rerunOld) && !/delta report/.test(rerunOld.text), rerunOld.text)
+    // AC-1.3: a task whose reports have no `head:` / `delta:` keeps today's verdict.
+    const legacy = deltaFx('delta-legacy', { fullHeader: () => '', deltaFile: 'pro-review-branch-2.md', deltaHeader: () => '' }).close()
+    check('delta AC-1.3: reports with neither line — a fresh whole-branch report counts as before', !verdict(legacy), legacy.text)
+    // The header only: a `delta:` line quoted in a finding below the first heading is no delta.
+    const quoted = deltaFx('delta-quoted', { deltaFile: 'pro-review-branch-2.md', deltaHeader: () => '' })
+    write(quoted.fx.dir, { [`.claude/tasks/${quoted.fx.ticket}/checks/pro-review-branch-2.md`]: '# pro-review\nFindings: critical 0 · major 0 · minor 0\n## Notes\ndelta: nothing.md aaaaaaa..bbbbbbb\n## Could not verify\neverything verified\n' })
+    utimesSync(join(quoted.fx.tdir, 'checks/pro-review-branch-2.md'), at(8), at(8))
+    check('delta: a `delta:` line below the first `## ` heading is not read — the report stays a full one, accepted', !verdict(quoted.close()), quoted.close().text)
+    // A team review of the branch: the same rule through reportChecker.
+    check('delta S1-D6: reportChecker reads `<skill>-branch-delta-<k>.md` as that skill\'s report', jc.reportChecker('cleanup-review-branch-delta-1.md') === 'cleanup-review' && jc.reportChecker('pro-review-branch-delta-2.md') === 'pro-review')
+  }
 
   // m-4, then 5d AC-5d.1 (B1): a missing final report is named by its marker `[final: <report> — not run | stale]`, never by prose.
   const bl = fixture('blocker-words', { stages: '' })

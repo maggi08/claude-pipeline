@@ -3,10 +3,13 @@
   "rules": {
     "agent-guard/review-model": {
       "incident": [
-        "whole-branch pro-review without model — denied"
+        "whole-branch pro-review without model — denied",
+        "delta pro-review (--delta) without model — denied, as a whole-branch one"
       ],
       "legitimate": [
-        "whole-branch pro-review on opus — passes"
+        "whole-branch pro-review on opus — passes",
+        "delta pro-review on opus — passes",
+        "stage pro-review that only mentions the delta of the stage — no model required"
       ],
       "head": "whole-branch pro-review runs on review_model"
     },

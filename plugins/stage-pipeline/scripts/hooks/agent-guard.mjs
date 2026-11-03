@@ -24,6 +24,8 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, review
  */
 const CONFIRM_SINCE = '2026-10-03'
 const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(?::\\s*)?\\**whole[-\\s]branch`, 'i')
+// The delta mode of pro-review (`--delta <full report>`, VT-7) reviews the whole-branch lenses over a fix round: held to review_model too.
+const DELTA_MODE = /--delta\b|\bdelta[-\s]mode\b/i
 
 // the spawn the pending line was written for (K11b.1); a deny closes it with a `denied` line
 let spawned = null
@@ -36,13 +38,14 @@ if (agent !== 'pro-review' && agent !== 'stage-implement') process.exit(0)
 const state = readPipelineState(input.cwd ?? process.cwd())
 if (!state) process.exit(0)
 
-if (agent === 'pro-review' && WHOLE_BRANCH.test(toolInput.prompt ?? '')) {
+if (agent === 'pro-review' && (WHOLE_BRANCH.test(toolInput.prompt ?? '') || DELTA_MODE.test(toolInput.prompt ?? ''))) {
   const want = reviewModel(state.config)
   const got = String(toolInput.model || agentModel('pro-review')).toLowerCase()
   if (!got.includes(want) && !want.includes(got)) {
+    const delta = WHOLE_BRANCH.test(toolInput.prompt ?? '') ? '' : ' (a delta review in `--delta` mode is held to it as well)'
     deny(
       'agent-guard/review-model',
-      `stage-pipeline: whole-branch pro-review runs on review_model — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
+      `stage-pipeline: whole-branch pro-review runs on review_model${delta} — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
         `Repeat the same call with model: "${want}" (stage-check, Step 3.3).`,
     )
   }
