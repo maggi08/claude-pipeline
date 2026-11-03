@@ -5,6 +5,27 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.24.0 — 2026-11-03
+
+### A delta review replaces the second whole-branch review of a force run (VT-7)
+
+What changes against 0.23.0: a force run no longer ends every fix round after its final checks with another whole-branch `pro-review`. The fix round is re-reviewed by a **delta review** of what changed since the full one, and the hook counts a delta only on top of an anchored full review.
+
+- **The anchor.** A whole-branch `pro-review` report records the commit it reviewed, on a `head: <full sha>` line of the header. A delta report names the full report it extends and the range: `delta: <full report file name> <base sha>..<new head sha>`, plus its own `head:`. Both lines keep their English form in a `ru` task, like the `[live: …]` tag.
+- **`pro-review --delta <full report>`** (the skill, `/pro-review` by hand and the agent in a force run): the scope is the change since the full report's `head:` plus the uncommitted and the radius, with the whole-branch lenses. Findings of the full report that the round fixed are checked by `file:line`; the rest of the full report is not re-reviewed. The report is `checks/pro-review-branch-delta-<k>.md`.
+- **The hook.** A report with a `delta:` line closes a run only when its full report's `head:` is an ancestor of HEAD and at most 400 lines changed since it (added plus deleted of `git diff --numstat`, outside the task directory; a binary file counts 0). Over the bound, the whole-branch review is run in full and becomes the new anchor. agent-guard holds a delta spawn to `review_model` like a whole-branch one. A report written before 0.24.0 has no `head:` line: for it the rule stays the old one, a full review (no retrofit of old tasks).
+- **`/stage-force`, Step 4.** After the final checks, one fix round for their critical and major findings; then a delta review, a fresh `task-converge`, and a delta of the team review skill when the config names one. The other final checkers are not rerun: their fixed findings are rechecked by `file:line`, a runtime one by the short recheck run of `/stage-check`, Step 3.2. A critical or major from the delta gets one more fix round and a second delta, counted from the same full report; a critical or major from the second delta is a blocker, with no third round. Minors of a delta go to «Not included in the plan» as next-version items. The reasoning moved to `skills/stage-force/references/final-checks-notes.md`, so the skill stays within its 30 KB budget.
+- **`/stage-check`, Step 3** names the delta review as the re-review after a fix of whole-branch findings.
+- The rule → enforcer table: the imperatives of stage-force that moved or changed are mapped again; the prose baseline went from 219 to 220 (two new prose rules of the delta loop, one rule that was a sentence of the old text removed).
+
+**What the delta review replaces.** The second and later whole-branch opus reviews of a force run, which the freshness rule demanded after every fix round.
+
+**What it does not check.** A delta sees the round's diff and its radius, not the whole branch: a finding of the full review that the round did not touch is not looked at again, and a defect in unchanged code around the round stays with the full review. There is no eval case for the delta mode yet, and the paid eval below runs the six `pro-review` cases that exist, none of which is a delta. Whether a delta finds what a full review would on the same fix round is not measured.
+
+**The measured basis.** The speed audit of 2026-10-28 (18 force runs): the active time after the first whole-branch review is 61% of a median run; the repeated whole-branch opus reviews took 814 minutes against 237 minutes for the first review of each run; one delta review took 1.3 minutes. The 400-line bound is the user's choice, not a measurement of past fix rounds.
+
+- Evals: <pending — filled by the orchestrator after the paid run>
+
 ## 0.23.0 — 2026-10-30
 
 ### A tuning loop: measured effort, model drift, an eval gate on agent changes, a hill-climb driver (VT-1, stage 14)

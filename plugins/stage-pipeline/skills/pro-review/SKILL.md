@@ -33,6 +33,7 @@ Whole-branch (no argument) stays the default of a manual `/pro-review` **and of 
 ## Delta mode (`--delta <full report>`)
 
 The review of a fix round: what changed since a full whole-branch review, not the whole branch again. It counts only on top of a full report that records its commit.
+- The manual use: after fixing the findings of a whole-branch `/pro-review`, re-review with `/pro-review --delta <the saved full report>` instead of a second whole-branch run.
 - The full report is `checks/pro-review-branch*.md` of this task. Its `head: <full sha>` line is the base. No `head:` line (a report from before the anchor) → there is no delta: say so and run the whole-branch review.
 - The scope is `git diff <head>...HEAD` plus the uncommitted. The lenses are the whole-branch ones, not the stage ones, and the radius is part of the scope: open the callers and the consumers of every changed symbol outside the diff.
 - Findings of the full report that the round fixed are checked by `file:line` in the new code; the rest of the full report is not re-reviewed.
