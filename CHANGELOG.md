@@ -24,7 +24,7 @@ What changes against 0.23.0: a force run no longer ends every fix round after it
 
 **The measured basis.** The speed audit of 2026-10-28 (18 force runs): the active time after the first whole-branch review is 61% of a median run; the repeated whole-branch opus reviews took 814 minutes against 237 minutes for the first review of each run; one delta review took 1.3 minutes. The 400-line bound is the user's choice, not a measurement of past fix rounds.
 
-- Evals: <pending — filled by the orchestrator after the paid run>
+- Evals: the 6 `pro-review` cases at N=3 on the plugin at `1f153e9` (Claude Code 2.1.314) pass 18 of 18 runs: `pro-review-clean-ac` 3/3, `pro-review-cross-stage-dup` 3/3, `pro-review-language-en` 3/3, `pro-review-language-ru` 3/3, `pro-review-recall-logic` 3/3, `pro-review-recall-parity` 3/3 (invocations 20261103T061555-2e0i, 20261103T062043-y7rb, 20261103T062409-lag3). Total $3.01 at API prices, 29–65 s a run on average per case. The agent resolved to `claude-sonnet-5-5`, except in `pro-review-cross-stage-dup`, whose whole-branch parent passes `model: opus` by design (the `model drift` warning of that case is this, and `evals/models.json` is not changed). The rows are in `evals/releases.tsv` at 0.24.0. None of these cases runs the delta mode.
 
 ## 0.23.0 — 2026-10-30
 
