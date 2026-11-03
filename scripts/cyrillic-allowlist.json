@@ -217,7 +217,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
-      "line": "дельта",
+      "line": "^const DELTA_MODE = new RegExp\\(",
       "reason": "RU forms of the delta mode of pro-review (a prompt of a Russian-language task)"
     }
   ]

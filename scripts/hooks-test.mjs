@@ -2653,7 +2653,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('delta: a `delta:` line below the first `## ` heading is not read — the report stays a full one, accepted', !verdict(quoted.close()), quoted.close().text)
     // VT-7 stage 3 (S3-D1..S3-D4): a delta in any spelling is a delta; it counts only for the same checker's whole-branch anchor, never for task-converge, and only at HEAD's tree.
     const big = rc.DELTA_MAX_LINES + 100
-    for (const [label, line] of [['capitalised', (a, n, f) => `Delta: ${f} ${a}..${n}`], ['bold', (a, n, f) => `**delta:** ${f} ${a}..${n}`], ['backticked', (a, n, f) => `\`delta:\` ${f} ${a}..${n}`], ['quoted', (a, n, f) => `> delta: ${f} ${a}..${n}`]]) {
+    for (const [label, line] of [['capitalised', (a, n, f) => `Delta: ${f} ${a}..${n}`], ['bold', (a, n, f) => `**delta:** ${f} ${a}..${n}`], ['backticked', (a, n, f) => `\`delta:\` ${f} ${a}..${n}`], ['quoted', (a, n, f) => `> delta: ${f} ${a}..${n}`], ['dquoted', (a, n, f) => `\"delta\": ${f} ${a}..${n}`], ['squoted', (a, n, f) => `'delta': ${f} ${a}..${n}`], ['numbered', (a, n, f) => `1. delta: ${f} ${a}..${n}`], ['paren-numbered', (a, n, f) => `1) delta: ${f} ${a}..${n}`], ['bullet', (a, n, f) => `• delta: ${f} ${a}..${n}`]]) {
       const r = deltaFx(`delta-markup-${label}`, { lines: big, deltaFile: 'pro-review-branch-2.md', deltaHeader: (a, n, f) => `head: ${n}\n${line(a, n, f)}\n` }).close()
       check(`delta S3-D1: a ${label} delta line over the bound is still a delta — denied, never a fresh full report`, verdict(r) && /does not count/.test(r.text), r.text)
     }
@@ -2667,10 +2667,16 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('delta S3-D3: the anchor is a stage report, not a whole-branch one — denied', verdict(stageAnchor) && /not a whole-branch report of pro-review/.test(stageAnchor.text), stageAnchor.text)
     const notes = deltaFx('delta-notes-anchor', { fullFile: 'notes.md', deltaHeader: (a, n) => `head: ${n}\ndelta: notes.md ${a}..${n}\n` }).close()
     check('delta S3-D3: the anchor is notes.md — denied', verdict(notes) && /not a whole-branch report of pro-review/.test(notes.text), notes.text)
-    const tcDelta = deltaFx('delta-task-converge')
-    write(tcDelta.fx.dir, { [`.claude/tasks/${tcDelta.fx.ticket}/checks/task-converge.md`]: '# task-converge\ndelta: pro-review-branch.md aaaaaaa..bbbbbbb\n## Findings\n' })
+    // S3-D2: a delta for task-converge reaches the guard (its anchor is a valid `head:` full report, fresh, in bound, range end = HEAD's tree) and is denied with its own reason.
+    const tcDelta = deltaFx('delta-task-converge', { fullFile: 'task-converge.md', deltaFile: 'task-converge-branch-delta-1.md', deltaHeader: (a, n, f) => `head: ${n}\ndelta: ${f} ${a}..${n}\n` })
+    write(tcDelta.fx.dir, { [`.claude/tasks/${tcDelta.fx.ticket}/checks/task-converge.md`]: `# task-converge\nhead: ${tcDelta.anchor}\n## Findings\n` })
+    utimesSync(join(tcDelta.fx.tdir, 'checks/task-converge.md'), at(4), at(4))
     const tcClose = tcDelta.close()
-    check('delta S3-D2: a task-converge report with a delta line never counts for task-converge — denied', verdict(tcClose) && /task-converge: no whole-task/.test(tcClose.text), tcClose.text)
+    check('delta S3-D2: a task-converge delta with a valid anchor never counts — denied, the reason and the delta file named', verdict(tcClose) && /task-converge: no whole-task/.test(tcClose.text) && /task-converge-branch-delta-1\.md/.test(tcClose.text) && /task-converge has no delta mode/.test(tcClose.text), tcClose.text)
+    const plainDelta = deltaFx('delta-plain-capital', { deltaHeader: (a, n, f) => `head: ${n}\nDelta: ${f} ${a}..${n}\n` }).close()
+    check('delta S3-D1 legit: a plain `Delta:` line within the bound — accepted', !verdict(plainDelta), plainDelta.text)
+    const boldIn = deltaFx('delta-bold-in-bound', { deltaHeader: (a, n, f) => `head: ${n}\n**delta:** ${f} ${a}..${n}\n` }).close()
+    check('delta S3-D1: a `**delta:**` line within the bound — denied with the rewrite remedy, not a full review', verdict(boldIn) && /rewrite the line as plain/.test(boldIn.text) && !/full review/.test(boldIn.text), boldIn.text)
     const wrongEnd = deltaFx('delta-wrong-end', { deltaHeader: (a) => `head: ${a}\ndelta: pro-review-branch.md ${a}..${a}\n` }).close()
     check('delta S3-D4: the range end is not HEAD\'s tree — denied, "not HEAD"', verdict(wrongEnd) && /not HEAD/.test(wrongEnd.text), wrongEnd.text)
     const longName = deltaFx('delta-long-name', { deltaHeader: (a, n) => `head: ${n}\ndelta: ${'x'.repeat(5000)}.md ${a}..${n}\n` }).close()

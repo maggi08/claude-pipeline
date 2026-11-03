@@ -39,9 +39,9 @@ const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
 /** A delta review (`delta:` line) counts only while the change since the full review's head stays within this many added plus deleted lines (VT-7, S1-D2). */
 export const DELTA_MAX_LINES = 400
 const HEAD_LINE = /^[ \t]*(?:[-*][ \t]+)?head:[ \t]*([0-9a-f]{7,40})[ \t]*$/im
-const DELTA_LINE = /^[ \t]*(?:[-*][ \t]+)?delta:[ \t]*(\S+)[ \t]+([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})[ \t]*$/m
+const DELTA_LINE = /^[ \t]*(?:[-*][ \t]+)?delta:[ \t]*(\S+)[ \t]+([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})[ \t]*$/im
 // Detection is loose (any case, list dash, `>`, `*`/`_`/backtick markup) so a mis-formatted delta line cannot turn a delta into a "full" report; parsing stays strict (S3-D1).
-const HAS_DELTA = /^[ \t>]*(?:[-*+][ \t]+)?[*_`]*delta[*_`]*[ \t]*:/im
+const HAS_DELTA = /^[ \t>]*(?:(?:[-*+•]|\d+[.)])[ \t]+)?[*_`'"]*delta[*_`'"]*[ \t]*:/im
 /** A report is a delta when its file name says so or its header has a delta line, however it is written. */
 const isDeltaReport = (name, text) => /-branch-delta-/.test(name) || HAS_DELTA.test(reportHeader(text))
 /** The report header — everything before its first `## ` heading: the only place `head:` and `delta:` are read (S1-D1). */
@@ -366,7 +366,7 @@ function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
   const match = DELTA_LINE.exec(reportHeader(text))
   const redo = `re-run the delta review (${item.checker === 'pro-review' ? '`pro-review --delta checks/<full report>`' : `the delta mode of the project skill \`${item.checker}\``}) after the last fix`
   const fullRun = `run ${item.how} (a full review, it becomes the new anchor)`
-  if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: fullRun }
+  if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: 'rewrite the line as plain `delta: <full report file> <base sha>..<new head sha>` (no markup), or re-run the delta review' }
   const [, file, baseRaw, endRaw] = match
   const full = /^[\w.-]{1,120}\.md$/.test(file) && item.match(file) ? readTaskFile(taskDir, 'checks', file) : null
   const shown = file.slice(0, 120)
@@ -379,7 +379,8 @@ function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
   if (!base || base !== resolve(anchor)) return { why: `its base \`${baseRaw}\` is not the \`head:\` of \`${shown}\` (\`${anchor}\`)`, run: fullRun }
   if (git(worktree, 'merge-base', base, 'HEAD') !== base) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (the branch was rebased or reset)`, run: fullRun }
   const tree = (rev) => git(worktree, 'rev-parse', '--verify', '--quiet', `${rev}^{tree}`)
-  if (!resolve(endRaw) || !tree(endRaw) || tree(endRaw) !== tree('HEAD')) return { why: `the delta reviewed \`${endRaw}\`, not HEAD (its tree differs from HEAD's or the commit is unknown)`, run: redo }
+  const endTree = resolve(endRaw) && tree(endRaw)
+  if (!endTree || endTree !== tree('HEAD')) return { why: `the delta reviewed \`${endRaw}\`, not HEAD (its tree differs from HEAD's or the commit is unknown)`, run: redo }
   if (!isFresh) return { why: `it is older than HEAD's tree (the tree appeared ${new Date(since).toISOString()})`, run: redo }
   const lines = changedLinesSince(worktree, taskDir, base)
   if (lines === null) return { why: `could not count the change since the base \`${base.slice(0, 8)}\``, run: fullRun }
@@ -419,7 +420,10 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
     const text = item.match(name) ? readTaskFile(taskDir, 'checks', name) : null
     if (text === null) return false
     if (!isDeltaReport(name, text)) return fresh.has(name)
-    if (item.checker === 'task-converge') return false // a delta never counts for it, and it is not read as a full report either (S3-D2)
+    if (item.checker === 'task-converge') { // a delta never counts for it, and it is not read as a full report either (S3-D2)
+      deltaWhy.set(item.checker, [...(deltaWhy.get(item.checker) ?? []), { name, why: 'task-converge has no delta mode', run: `run ${item.how} (a full pass)` }])
+      return false
+    }
     const problem = deltaProblem(worktree, taskDir, name, text, since, item, fresh.has(name))
     if (problem) deltaWhy.set(item.checker, [...(deltaWhy.get(item.checker) ?? []), { name, ...problem }])
     return !problem
