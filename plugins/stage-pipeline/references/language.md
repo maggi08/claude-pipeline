@@ -21,7 +21,7 @@ Every task has one language: English (`en`) or Russian (`ru`). Nothing else is s
 
 ## Marker table
 
-The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run block and `pipeline.config.md`, plus the FEATURE-MAP template (read by the model: `/feature-checker` reuses a map written in either language). Write the column of the task language. Unchanged in both languages: `[verify: …]`, `[live: …]`, `⏳`, `✅`, `❌`, `AC-*`, `B<n>`, `M-<n>`, `D<n>`, `PASS`, `FAIL`, checker names, pipeline line keywords (`kickoff`, `implement`, `user-review`, `commit:`, `metrics:`, `skip`), `[status: todo | in-progress | done | cancelled]`.
+The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run block and `pipeline.config.md`, plus the FEATURE-MAP template (read by the model: `/feature-checker` reuses a map written in either language). Write the column of the task language. Unchanged in both languages: `[verify: …]`, `[live: …]`, `⏳`, `✅`, `❌`, `AC-*`, `B<n>`, `M-<n>`, `D<n>`, `PASS`, `FAIL`, checker names, pipeline line keywords (`kickoff`, `implement`, `user-review`, `commit:`, `metrics:`, `skip`), report-header keys (`head:`, `delta:`), `[status: todo | in-progress | done | cancelled]`.
 
 | Where | English | Russian |
 |---|---|---|

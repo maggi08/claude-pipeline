@@ -19,7 +19,21 @@ The round's diff is reviewed by your own read of it, or by a stage-mode `pro-rev
 
 ## The session browser close
 
-`browser-cleanup.mjs --session` closes by PID the browsers this session's DevTools MCP servers launched: the plugin's `--isolated` one, `stage-pipeline-chrome`. The run digest records its line (`Session browser: closed by PID …`). A close the hook rejects stays this session's: the edit that fixes the journal closes the browser.
+`browser-cleanup.mjs --session` closes by PID the browsers this session's DevTools MCP servers launched: the plugin's `--isolated` one, `stage-pipeline-chrome`; it touches nothing of another session. It runs on the call that renames the heading: an Edit or MultiEdit of the heading line, a Write of STAGES.md, or a Bash call that names the task directory. The run digest records its line (`Session browser: closed by PID …`). A close the hook rejects stays this session's: the edit that fixes the journal closes the browser.
+
+`Session browser: left open — …; close: …` means the user switched the close off (`STAGE_PIPELINE_BROWSER_CLEANUP=off`) or the heading was closed outside this session's call.
+
+## The delta loop after the final checks (Step 4)
+
+- Why a delta: the freshness rule makes every fix round end in another whole-branch review. The speed audit of 2026-10-28 (18 force runs) found that the active time after the first whole-branch review is 61% of a median run; the repeated whole-branch opus reviews took 814 minutes against 237 for the first review of each run, and one delta review took 1.3 minutes.
+- The rounds: final checks, fix round 1, delta 1 (+ a fresh `task-converge`, + a delta of the team review skill when the config names one). A critical or major in delta 1: fix round 2, delta 2. A critical or major in delta 2 is a blocker; there is no third round. The second delta counts from the same full report, so it sees both rounds.
+- The other final checkers (security-review, ds-parity, dead-code, i18n-sweep, deps-audit, devtools-verify) are not rerun: their fixed findings are rechecked by `file:line` in the fix round's diff. A runtime finding is rechecked by the short run of `/stage-check`, Step 3.2, with its `-r<k>` report.
+- The bound is the hook's: a delta counts only when the full report's `head:` is an ancestor of HEAD and the change since it is at most 400 lines. A fix round over it gets a full whole-branch review, which becomes the new anchor; later deltas extend that report.
+- A delta sees the round's diff and its radius, not the whole branch. What it does not check: whether a finding of the first review that the round did not touch still holds, and a defect that lies in the unchanged code around the round. Those stay with the full review.
+- An autonomous run is exactly the mode where an uncovered criterion or a silently widened scope will be caught by no one along the way, hence the mandatory `task-converge`.
+- A delta re-run caused only by staleness (a report older than HEAD's tree) is not a new round: the round counts stay as they were.
+- Minors of a delta are not fixed in the run; they go to «Not included in the plan» as next-version items.
+- A fix of the final checks that touches the pro-review agent or skill reruns the pro-review eval cases within the budget the Force block names (S2-D6 of VT-7).
 
 ## Mid-run (Step 2)
 
@@ -31,3 +45,6 @@ The round's diff is reviewed by your own read of it, or by a stage-mode `pro-rev
 - Why the short view is pasted whole: a summary once reduced everything to "kk/en texts and minor deviations", and under it lay two defects the user found themselves. That is why the choice of what the short view shows belongs to the script.
 - After the heading is renamed, the short view you paste says the browser was closed.
 - A decided-yourself line in "Awaiting user confirmation" is cheaper than a stop, and it is not lost.
+- Why a line carries its rollback cost: by the end of an autonomous run there are a dozen such lines, the user reads them at once and must see which to check first without opening each.
+- Why a finding is never "accepted as a compromise": a Request changes accepted that way once led the user to fix a duplicate of the request the next day.
+- Why the short view is chosen by the script: the script picks what it shows and every category is in it with a number; a hand-picked summary once lost two defects.

@@ -36,6 +36,16 @@ export const uiFiles = (files) => files.filter((file) => UI_FILE.test(file) && !
 
 const DESIGN = ['figma-compare', 'proto-compare']
 const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
+/** A delta review (`delta:` line) counts only while the change since the full review's head stays within this many added plus deleted lines (VT-7, S1-D2). */
+export const DELTA_MAX_LINES = 400
+const HEAD_LINE = /^[ \t]*(?:[-*][ \t]+)?head:[ \t]*([0-9a-f]{7,40})[ \t]*$/im
+const DELTA_LINE = /^[ \t]*(?:[-*][ \t]+)?delta:[ \t]*(\S+)[ \t]+([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})[ \t]*$/im
+// Detection is one rule, not a list of spellings (any non-letters, an optional `1.`, `delta` in any case, then `:` or a table `|`), so a mis-formatted delta line cannot turn a delta into a "full" report; parsing stays strict (S3-D1). Latin only: the Russian word is plain prose in real ru reports.
+const HAS_DELTA = /^[^\p{L}\p{N}\n]*(?:\d+[.)][^\p{L}\p{N}\n]*)?delta[^\p{L}\p{N}\n:|]*[:|]/imu
+/** A report is a delta when its file name says so or its header has a delta line, however it is written. */
+const isDeltaReport = (name, text) => /-branch-delta-/.test(name) || HAS_DELTA.test(reportHeader(text))
+/** The report header — everything before its first `## ` heading: the only place `head:` and `delta:` are read (S1-D1). */
+const reportHeader = (text) => text.split(/^#{2,6}[ \t]/m)[0]
 
 /**
  * The Force block of the task when the rules apply to it: `{ date, start, block, stages }` (start — midnight of the run date, ms; with no readable date, of the day
@@ -135,13 +145,14 @@ const legitSkip = (skip) => (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_R
 const skipDeclared = (stages, checkers) => stages.flatMap((stage) => stage.skips).filter((skip) => checkers.includes(skip.checker))
 
 /** git output as is: `status --porcelain` starts with a significant space. */
-const gitRaw = (cwd, ...args) => {
+const gitTry = (cwd, ...args) => {
   try {
     return execFileSync('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
   } catch {
-    return ''
+    return null
   }
 }
+const gitRaw = (cwd, ...args) => gitTry(cwd, ...args) ?? ''
 const git = (cwd, ...args) => gitRaw(cwd, ...args).trim()
 
 /** HEAD is the commit the receipt was written for, or its rewrite (amend, rebase, cherry-pick): the same sha, the same tree or the same patch-id. */
@@ -307,14 +318,18 @@ function treeSince(dataDir, worktree, ticket, branch) {
   return times.length ? Math.min(...times) : 0
 }
 
+/** The task directory relative to the repo top, or null when it is outside the repo. */
+function taskRelPath(worktree, taskDir) {
+  try {
+    return relative(realpathSync(git(worktree, 'rev-parse', '--show-toplevel')), realpathSync(taskDir)).split(sep).join('/')
+  } catch {
+    return null // task directory outside the repo: nothing to exclude
+  }
+}
+
 /** Tracked files with uncommitted edits outside the task directory (the journal and the reports change all the time and are not the code). */
 function dirtyTracked(worktree, taskDir) {
-  let taskRel = null
-  try {
-    taskRel = relative(realpathSync(git(worktree, 'rev-parse', '--show-toplevel')), realpathSync(taskDir)).split(sep).join('/')
-  } catch {
-    // task directory outside the repo: nothing to exclude
-  }
+  const taskRel = taskRelPath(worktree, taskDir)
   // `-z`: `XY path`, NUL-terminated, unquoted; a rename or a copy is followed by its source path as a field of its own.
   const fields = gitRaw(worktree, 'status', '--porcelain', '-z', '--untracked-files=no').split('\0')
   const files = []
@@ -324,6 +339,53 @@ function dirtyTracked(worktree, taskDir) {
     if (/[RC]/.test(fields[index].slice(0, 2))) index++
   }
   return files.filter((file) => !taskRel || !(file === taskRel || file.startsWith(`${taskRel}/`)))
+}
+
+/** Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory (a move out of it counts by its destination); a binary file counts 0 (S1-D2); null when git fails. */
+function changedLinesSince(worktree, taskDir, base) {
+  const taskRel = taskRelPath(worktree, taskDir)
+  const out = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, 'HEAD')
+  if (out === null) return null
+  let sum = 0
+  for (const line of out.trim().split('\n').filter(Boolean)) {
+    const [added, deleted, ...rest] = line.split('\t')
+    const path = rest.join('\t')
+    if (taskRel && (path === taskRel || path.startsWith(`${taskRel}/`))) continue
+    sum += (Number(added) || 0) + (Number(deleted) || 0)
+  }
+  return sum
+}
+
+/**
+ * Why a delta report does not count, or null when it does: `{ why, run }` — the failed condition and the review to run (VT-7, D2–D3).
+ * All must hold: the named full report is a whole-branch report of the same checker (`item.match`), in this task's checks/, not a delta itself, and carries `head:` equal
+ * to the delta's base (shas compared after rev-parse, S1-D3); the base is an ancestor of HEAD; the range end has HEAD's tree; the delta is newer than HEAD's tree
+ * (`isFresh`); the change since the base is within DELTA_MAX_LINES.
+ */
+function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
+  const match = DELTA_LINE.exec(reportHeader(text))
+  const redo = `re-run the delta review (${item.checker === 'pro-review' ? '`pro-review --delta checks/<full report>`' : `the delta mode of the project skill \`${item.checker}\``}) after the last fix`
+  const fullRun = `run ${item.how} (a full review, it becomes the new anchor)`
+  if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: 'rewrite the line as plain `delta: <full report file> <base sha>..<new head sha>` (no markup), or re-run the delta review' }
+  const [, file, baseRaw, endRaw] = match
+  const full = /^[\w.-]{1,120}\.md$/.test(file) && item.match(file) ? readTaskFile(taskDir, 'checks', file) : null
+  const shown = file.slice(0, 120)
+  if (full === null) return { why: `it names \`${shown}\`, which is not in this task's checks/, or is not a whole-branch report of ${item.checker}`, run: fullRun }
+  if (isDeltaReport(file, full)) return { why: `\`${shown}\` is itself a delta report, not a full one`, run: fullRun }
+  const anchor = HEAD_LINE.exec(reportHeader(full))?.[1]
+  if (!anchor) return { why: `the full report \`${shown}\` has no \`head: <sha>\` line (a report from before the anchor)`, run: fullRun }
+  const resolve = (sha) => git(worktree, 'rev-parse', '--verify', '--quiet', `${sha}^{commit}`)
+  const base = resolve(baseRaw)
+  if (!base || base !== resolve(anchor)) return { why: `its base \`${baseRaw}\` is not the \`head:\` of \`${shown}\` (\`${anchor}\`)`, run: fullRun }
+  if (git(worktree, 'merge-base', base, 'HEAD') !== base) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (the branch was rebased or reset)`, run: fullRun }
+  const tree = (rev) => git(worktree, 'rev-parse', '--verify', '--quiet', `${rev}^{tree}`)
+  const endTree = resolve(endRaw) && tree(endRaw)
+  if (!endTree || endTree !== tree('HEAD')) return { why: `the delta reviewed \`${endRaw}\`, not HEAD (its tree differs from HEAD's or the commit is unknown)`, run: redo }
+  if (!isFresh) return { why: `it is older than HEAD's tree (the tree appeared ${new Date(since).toISOString()})`, run: redo }
+  const lines = changedLinesSince(worktree, taskDir, base)
+  if (lines === null) return { why: `could not count the change since the base \`${base.slice(0, 8)}\``, run: fullRun }
+  if (lines > DELTA_MAX_LINES) return { why: `${lines} lines changed since the full review's head \`${base.slice(0, 8)}\`, over the bound of ${DELTA_MAX_LINES}`, run: fullRun }
+  return null
 }
 
 /**
@@ -350,7 +412,23 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
       match: (name) => reportChecker(name) === skill.toLowerCase(),
       how: `a general-purpose subagent that follows the project skill \`${skill}\` on the whole branch (the config names it as \`team_review\`), writing \`checks/${skill}-branch.md\` under the checker-report contract`,
     })),
-  ].filter((item) => dirty.length || !newReports(taskDir, since).some((name) => item.match(name) && readTaskFile(taskDir, 'checks', name) !== null))
+  ]
+  // A full report keeps today's rule; a report with a `delta:` line is never read as a full one: it counts only when deltaProblem finds nothing (VT-7, D3).
+  const fresh = new Set(newReports(taskDir, since))
+  const deltaWhy = new Map()
+  const counts = (item, name) => {
+    const text = item.match(name) ? readTaskFile(taskDir, 'checks', name) : null
+    if (text === null) return false
+    if (!isDeltaReport(name, text)) return fresh.has(name)
+    if (item.checker === 'task-converge') { // a delta never counts for it, and it is not read as a full report either (S3-D2)
+      deltaWhy.set(item.checker, [...(deltaWhy.get(item.checker) ?? []), { name, why: 'task-converge has no delta mode', run: `run ${item.how} (a full pass)` }])
+      return false
+    }
+    const problem = deltaProblem(worktree, taskDir, name, text, since, item, fresh.has(name))
+    if (problem) deltaWhy.set(item.checker, [...(deltaWhy.get(item.checker) ?? []), { name, ...problem }])
+    return !problem
+  }
+  const missing = wanted.filter((item) => dirty.length || !newReports(taskDir, 0).some((name) => counts(item, name)))
   const bGate = blockerGate(dataDir, taskDir)
   const blockers = openBlockers(run.block, bGate)
   const withBlockers = WITH_BLOCKERS.test(run.block.heading)
@@ -359,7 +437,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const reason = dirty.length
     ? `tracked files have uncommitted edits (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''})`
     : `newer than the code last changed (the tree of HEAD appeared ${new Date(since).toISOString()}; a rewrite that keeps the tree does not count)`
-  return wanted
+  return missing
     .filter((item) => !withBlockers || !blockers.some((line) => finalMarkerReports(line).has(item.checker)))
     .map((item) => {
       const marker = finalMarker(item.checker, newReports(taskDir, 0).some(item.match) ? 'stale' : 'missing', language)
@@ -372,6 +450,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
         message:
           `${item.checker}: no whole-task report ${reason} — "completed" needs it fresh. Run ${item.how} after the last fix; ` +
           `or close as "completed with blockers" with an open blocker that carries the marker \`${marker}\`, for example \`B<n> — ${marker} <why>\`.` +
+          (deltaWhy.get(item.checker) ?? []).map(({ name, why, run }) => ` The delta report \`${name}\` does not count: ${why}; ${run}.`).join('') +
           (lifted
             ? ` The blocker "${lifted.slice(0, 100)}" has a marker but reads as lifted (` +
               (fixedBlock
