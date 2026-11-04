@@ -40,8 +40,8 @@ const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
 export const DELTA_MAX_LINES = 400
 const HEAD_LINE = /^[ \t]*(?:[-*][ \t]+)?head:[ \t]*([0-9a-f]{7,40})[ \t]*$/im
 const DELTA_LINE = /^[ \t]*(?:[-*][ \t]+)?delta:[ \t]*(\S+)[ \t]+([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})[ \t]*$/im
-// Detection is loose (any case, list dash, `>`, `*`/`_`/backtick markup) so a mis-formatted delta line cannot turn a delta into a "full" report; parsing stays strict (S3-D1).
-const HAS_DELTA = /^[ \t>]*(?:(?:[-*+•]|\d+[.)])[ \t]+)?[*_`'"]*delta[*_`'"]*[ \t]*:/im
+// Detection is one rule, not a list of spellings (any non-letters, an optional `1.`, `delta` in any case, then `:` or a table `|`), so a mis-formatted delta line cannot turn a delta into a "full" report; parsing stays strict (S3-D1). Latin only: the Russian word is plain prose in real ru reports.
+const HAS_DELTA = /^[^\p{L}\p{N}\n]*(?:\d+[.)][^\p{L}\p{N}\n]*)?delta[^\p{L}\p{N}\n:|]*[:|]/imu
 /** A report is a delta when its file name says so or its header has a delta line, however it is written. */
 const isDeltaReport = (name, text) => /-branch-delta-/.test(name) || HAS_DELTA.test(reportHeader(text))
 /** The report header — everything before its first `## ` heading: the only place `head:` and `delta:` are read (S1-D1). */
