@@ -26,11 +26,14 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SELF = fileURLToPath(import.meta.url)
+// process.exit right after a large write drops what a pipe has not taken yet — wait until both streams have flushed.
+const drained = () => Promise.all([process.stdout, process.stderr].map((stream) => new Promise((done) => stream.write('', done))))
 const PLUGIN = join(dirname(SELF), '../plugins/stage-pipeline/scripts')
 const ARGV = process.argv.slice(2)
 const unitsArg = ARGV.find((arg) => arg.startsWith('--units='))?.slice(8) ?? (ARGV.includes('--units') ? ARGV[ARGV.indexOf('--units') + 1] : undefined)
 const MODE = ARGV.includes('--self-test') ? 'self-test' : ARGV.includes('--serial') ? 'serial' : unitsArg !== undefined ? 'worker' : 'run'
-if (ARGV.some((arg) => !['--serial', '--self-test', '--units'].includes(arg) && !arg.startsWith('--units=') && arg !== unitsArg)) {
+const unitsMissing = (ARGV.includes('--units') || ARGV.some((arg) => arg.startsWith('--units='))) && (!unitsArg || unitsArg.startsWith('--'))
+if (unitsMissing || ARGV.some((arg) => !['--serial', '--self-test', '--units'].includes(arg) && !arg.startsWith('--units=') && arg !== unitsArg)) {
   console.error('usage: hooks-test.mjs [--serial | --self-test | --units <id,id>]')
   process.exit(2)
 }
@@ -45,7 +48,7 @@ if (MODE === 'worker') {
   const fake = unitsArg.split(',').find((id) => id.startsWith('selftest-'))
   if (fake) {
     if (fake === 'selftest-fail') console.log('✔ fake check that passes\n✘ fake check that fails — detail of the failure')
-    else if (fake === 'selftest-crash') { console.error('boom: the fake worker died\n\nNode.js v99.0.0'); process.exit(3) }
+    else if (fake === 'selftest-crash') { throw new Error('boom: the fake worker died') }
     else if (fake === 'selftest-slow') { await new Promise((done) => setTimeout(done, 400)); console.log('✔ slow fake check') }
     else if (fake !== 'selftest-empty') console.log('✔ fake check')
     process.exit(fake === 'selftest-fail' ? 1 : 0)
@@ -195,24 +198,29 @@ const rowsIn = (dir, name = 'firings.jsonl') => {
   }
 }
 
+// The rows of the whole suite for the late checks: the rotated log first, then the current one.
+const suiteRows = (suiteData) => {
+  const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : suiteData
+  return [...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)]
+}
+
 // Stage 13b of VT-6 (AC-13b.5), legitimate side: no row of the whole suite carries a rule ID of that lane that hook-rules.json does not know (late: the rows of every unit, in both modes).
 lateChecks.push((suiteData) => {
-  const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : suiteData
-  const rows = [...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)]
+  const rows = suiteRows(suiteData)
   check('firing log (13b) legitimate: no row carries a rule ID of this lane that hook-rules.json does not know', rows.every((row) => !/^(?:git-guard|journal-gate)\/(?:repo-rule|team-review)/.test(row.rule)), 'a lane-invented ID')
 })
 
 // every rule ID of the hooks wrote a row somewhere in this suite (the fixtures above and all the earlier ones ran against the one data directory) (K11c.1: run at the end — the fixtures of VT-5 come after this point)
 lateChecks.push((suiteData) => {
-  const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : suiteData
-  const written = new Set([...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)].map((row) => row.rule))
+  const rows = suiteRows(suiteData)
+  const written = new Set(rows.map((row) => row.rule))
   const ids = new Set()
   for (const hookName of ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard', 'maker-guard']) {
     for (const m of readFileSync(join(PLUGIN, 'hooks', `${hookName}.mjs`), 'utf8').matchAll(new RegExp(`'(${hookName}/[a-z0-9-]+)'`, 'g'))) ids.add(m[1])
   }
   for (const id of [...ids].sort()) check(`firings AC-7.2: ${id} wrote a row in this suite`, written.has(id))
   check('firings: the suite found the rule IDs it should (21 at this stage, never fewer)', ids.size >= 21, `${ids.size}`)
-  check('firings: every row of the suite has the fields retro needs', [...rowsIn(suiteDir)].every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
+  check('firings: every row of the suite has the fields retro needs', rows.every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
 })
 
 // What a finished worker was, from what it printed and how it ended.
@@ -223,8 +231,11 @@ const classify = (out, err, code, signal) => {
   const state = signal || (code !== 0 && code !== 1) || (code === 1 && !failedChecks) ? 'crashed' : failedChecks || code === 1 ? 'failed' : passed ? 'ok' : 'empty'
   return { passed, failedChecks, state, code, signal, err }
 }
-// The line a unit that did not pass adds to the output, naming the unit; a crash carries the last line of its stderr that is not node's `Node.js vXX` trailer (the whole of it is printed above).
-const causeOf = (err) => err.split('\n').map((line) => line.trim()).filter((line) => line && !/^Node\.js v\d/.test(line)).at(-1)
+// The line a unit that did not pass adds to the output, naming the unit; a crash carries the error line of its stderr (`Error: …`, `TypeError: …`), else the last line that is neither node's `Node.js vXX` trailer nor a stack frame (the whole of it is printed above).
+const causeOf = (err) => {
+  const lines = err.split('\n').map((line) => line.trim()).filter((line) => line && !/^Node\.js v\d/.test(line))
+  return lines.find((line) => /^(?:[A-Z]\w*)?Error\b/.test(line)) ?? lines.filter((line) => !/^at\s/.test(line)).at(-1)
+}
 const problemOf = (id, { state, code, signal, err, failedChecks }) =>
   state === 'crashed' ? `✘ unit "${id}" crashed (${signal ? `signal ${signal}` : `exit ${code}`})${causeOf(err) ? `: ${causeOf(err)}` : ''}`
     : state === 'failed' ? `✘ unit "${id}" failed ${failedChecks} check${failedChecks === 1 ? '' : 's'}`
@@ -289,7 +300,9 @@ if (MODE === 'self-test') {
   const get = (id) => results.get(id)
   const verdict = (ids) => report(fakes.filter(({ id }) => ids.includes(id)), results, { quiet: true })
   check('runner self-test: a unit whose check fails — state failed, one failed check, named in the problem line', get('selftest-fail').state === 'failed' && get('selftest-fail').failedChecks === 1 && /unit "selftest-fail" failed 1 check/.test(verdict(['selftest-fail']).lines[0]))
-  check('runner self-test: a worker that crashes — state crashed, its stderr kept, the problem line quotes the last line that is not the Node.js trailer', get('selftest-crash').state === 'crashed' && get('selftest-crash').err.includes('Node.js v99') && /unit "selftest-crash" crashed \(exit 3\): boom: the fake worker died$/.test(verdict(['selftest-crash']).lines[0]))
+  check('runner self-test: a worker that crashes — state crashed, its stderr kept, the problem line quotes the error line, not a stack frame or the Node.js trailer', get('selftest-crash').state === 'crashed' && /\n\s+at /.test(get('selftest-crash').err) && get('selftest-crash').err.includes('Node.js v') && /unit "selftest-crash" crashed \(exit 1\): Error: boom: the fake worker died$/.test(verdict(['selftest-crash']).lines[0]))
+  check('runner self-test: the cause of a crash without an error line is the last line that is not a stack frame or the trailer', causeOf('x\n}\n    at foo (bar:1:1)\n\nNode.js v22.0.0') === '}')
+  check('runner self-test: --units with no value, an empty value or a value starting with -- is a usage error (exit 2)', ['--units', '--units=', '--units=--serial'].every((arg) => spawnSync(process.execPath, [SELF, arg], { encoding: 'utf8' }).status === 2) && spawnSync(process.execPath, [SELF, '--units', ''], { encoding: 'utf8' }).status === 2)
   check('runner self-test: a unit that prints no check — state empty, named in the problem line', get('selftest-empty').state === 'empty' && /unit "selftest-empty" printed no check/.test(verdict(['selftest-empty']).lines[0]))
   check('runner self-test: the reporting loop of the default run — each of fail / crash / empty gives exit 1, a clean unit exit 0 and no problem line', ['selftest-fail', 'selftest-crash', 'selftest-empty'].every((id) => verdict([id]).exit === 1 && verdict([id]).lines.length === 1) && verdict(['selftest-ok']).exit === 0 && verdict(['selftest-ok']).lines.length === 0)
   check('runner self-test: a serial unit starts only after every parallel unit has ended', fakes.filter((u) => !u.serial).every(({ id }) => get('selftest-serial').startedAt >= get(id).endedAt))
@@ -298,6 +311,7 @@ if (MODE === 'self-test') {
     return spans.every((a) => spans.filter((b) => b.startedAt <= a.startedAt && a.startedAt < b.endedAt).length <= 3)
   })())
   rmSync(root, { recursive: true, force: true })
+  await drained()
   process.exit(failed ? 1 : 0)
 }
 
@@ -328,7 +342,8 @@ if (MODE === 'run') {
   passed += printed - printedBefore - (failed - failedBefore)
   rmSync(dataRoot, { recursive: true, force: true })
   console.log(`hooks-test: ${passed} ✔ in ${UNITS.length} units, ${failed} ✘${problems ? `, ${problems} unit problem${problems === 1 ? '' : 's'}` : ''}${lateFailed ? ` (${lateFailed} late)` : ''} — ${((Date.now() - startedAt) / 1000).toFixed(1)} s`)
-  process.exit(failed || problems ? 1 : 0)
+  await drained()
+  process.exit(totals.exit || lateFailed ? 1 : 0)
 }
 
 // ── helpers the sections share (they stay at the top, every worker has them) ──────────────
@@ -9146,4 +9161,5 @@ if (unseen.length) {
   console.error(`hooks-test: no block for unit ${unseen.join(', ')} — check the UNITS table and --units`)
   process.exit(2)
 }
+await drained()
 process.exit(failed ? 1 : 0)
