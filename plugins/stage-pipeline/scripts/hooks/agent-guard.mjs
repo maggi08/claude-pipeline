@@ -11,7 +11,7 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, review
  *
  * - the security review and ds-parity run as their own agents, pinned to sonnet. A general-purpose
  *   agent inherits the session's model: of 173 general-purpose calls in the transcripts of
- *   2026-10-01…11-09, 50 were security reviews and 40 ds-parity passes, almost all on opus, a median
+ *   2026-10-01…11-09, 52 were security reviews and 40 ds-parity passes, almost all on opus, a median
  *   of 9 min each, and the final rounds ran them again.
  * - whole-branch pro-review runs on `review_model` (stage-check, Step 3.3). The model is passed
  *   as a parameter on the call, and of 13 live whole-branch reviews 5 went to sonnet from the
@@ -35,8 +35,9 @@ const DELTA_MODE = new RegExp(`--delta\\b|\\bdelta[-\\s](?:mode|review)\\b|(?:${
 const GENERIC_AGENTS = new Set(['', 'general-purpose', 'claude'])
 // Told by the call's description or, for ds-parity, by a prompt that points at its skill. In the transcripts since 2026-10-01 most calls named the check in the
 // description; a combined sweep ("Delta sweep final 9": dead-code, i18n, security and ds-parity in one call) is caught by the ds-parity skill path only, so the message
-// sends every other check of the prompt to its own agent. "security" alone is not enough: an interview probe of "the account security page" is not a review.
-const SECURITY_JOB = /\bsecurity\b[^\n]*\b(?:review|re-review|audit|check|pass|sweep)|\b(?:review|audit|check|pass|sweep)\b[^\n]*\bsecurity\b|(?:ревью|провер\S*|аудит)\s+безопасност|безопасност\S*\s+(?:ревью|провер|аудит)/i
+// sends every other check of the prompt to its own agent. "security" alone is not enough: an interview probe of "the account security page" is not a review; it counts
+// next to a review word (whole words: "password" is not "pass") or next to another checker's name ("ds-parity security i18n final 7").
+const SECURITY_JOB = /\bsecurity\b[^\n]*\b(?:review|re-review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b|\b(?:review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b[^\n]*\bsecurity\b|\bsecurity\b[^\n]*\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b|\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b[^\n]*\bsecurity\b|(?:ревью|провер\S*|аудит)\s+безопасност|безопасност\S*\s+(?:ревью|провер|аудит)/i
 const CHECKER_JOBS = [
   { agent: 'security-review', job: 'the security review', matches: (description) => SECURITY_JOB.test(description) },
   {
@@ -69,7 +70,7 @@ if (generic) {
     deny(
       'agent-guard/checker-agent',
       `stage-pipeline: ${jobs.map((job) => job.job).join(' and ')} ${jobs.length > 1 ? 'have their own agents' : 'has its own agent'} on sonnet; a general-purpose agent ${runsOn}. ${how} ` +
-        'If the prompt also asks for other checks (dead-code, i18n-sweep, deps-audit…), give each its own agent. ' +
+        'If the prompt also asks for other checks, give each its own agent: the security review stage-pipeline:security-review, dead-code, i18n-sweep, deps-audit their own. ' +
         `To keep opus on purpose, pass model: "opus" on the stage-pipeline:${jobs[0].agent} call. ` +
         'If this call is not that check, word its description without it ("security" with review/audit/check/pass, "ds-parity") and call again.',
     )

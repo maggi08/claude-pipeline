@@ -17,12 +17,12 @@
       "why": "a hand-rolled modal where the kit's Dialog (tone danger) is a drop-in: no portal, focus trap, Escape or aria-modal, light-only colors"
     },
     {
-      "severity": "any",
+      "severity": "critical|major|minor",
       "file": "MaintenanceStatus[^\\n]*Badge|Badge[^\\n]*MaintenanceStatus",
       "why": "a hand-rolled status pill where the kit's Badge has the same tones with dark values"
     },
     {
-      "severity": "any",
+      "severity": "critical|major|minor",
       "file": "LoadingDots[^\\n]*Spinner|Spinner[^\\n]*LoadingDots",
       "why": "outside the diff: LoadingDots duplicates the kit's Spinner (the breadth sweep of the tree)"
     }

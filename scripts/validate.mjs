@@ -865,6 +865,9 @@ async function validateEvalSelfTests(names) {
   expectMatches('a finding under a ru H1 title with «Отклонение»', portal, '# Figma compare: Stage 09 «Отклонение продажи» ↔ реализация\n\n| 1 | **major** | `DeleteGuestModal.tsx:12` | x |', 1)
   expectMatches('a finding under «Отклонения от макета»', portal, '## Отклонения от макета\n\n- major: src/DeleteGuestModal.tsx:12 — x', 1)
   expectMatches('a finding under «Отклонено» is dropped', portal, '## Отклонено\n\n- major: src/DeleteGuestModal.tsx:12 — x', 0)
+  // The security review leads its findings with an `S-<n>` id (agents/security-review.md), as a plain line or as a heading.
+  expectMatches('a security finding led by an S id', { severity: 'critical', file: 'invoices\\.js' }, 'S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
+  expectMatches('a security finding as an S-id heading', { severity: 'critical', file: 'invoices\\.js' }, '### S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
   // Trace graders: a denied call does not count; every screenshot must be opened.
