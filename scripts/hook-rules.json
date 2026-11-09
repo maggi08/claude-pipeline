@@ -23,9 +23,10 @@
       ],
       "legitimate": [
         "the security-review agent itself — passes",
-        "a general-purpose probe that names no check — passes"
+        "a general-purpose probe that names no check — passes",
+        "a general-purpose probe of the account security page — passes"
       ],
-      "head": "a general-purpose agent inherits the session's model"
+      "head": "If the prompt also asks for other checks"
     },
     "agent-guard/no-confirmed": {
       "incident": [

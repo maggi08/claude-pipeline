@@ -767,6 +767,12 @@ const dsBySkill = genericHook('Branch check', `Language: en. Follow ${join(PLUGI
 check('general-purpose agent following the ds-parity skill — denied, the ds-parity agent named', dsBySkill.decision === 'deny' && dsBySkill.text.includes('subagent_type: "stage-pipeline:ds-parity"'), dsBySkill.text)
 const both = genericHook('ds-parity and security review final', 'Run both final checks on the branch.')
 check('one general-purpose call for both checks — denied, split into two agents', both.decision === 'deny' && /Split the call/.test(both.text) && both.text.includes('stage-pipeline:security-review') && both.text.includes('stage-pipeline:ds-parity'), both.text)
+check('the denial sends the other checks of a combined sweep to their own agents and names the way out for a call that is not the check', /other checks \(dead-code/.test(dsBySkill.text) && /word its description without it/.test(dsBySkill.text), dsBySkill.text)
+const withModel = genericHook('Security review of the branch', 'Review the branch.')
+const withModelText = runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose', description: 'Security review of the branch', prompt: 'Review the branch.', model: 'sonnet' } }).text
+check('a general-purpose security review with model sonnet — denied, the message says it runs without the method', withModel.decision === 'deny' && /runs on sonnet without the check's method/.test(withModelText), withModelText)
+check('the Russian description of a security review — denied', genericHook('Ревью безопасности ветки', 'Только чтение.').decision === 'deny')
+check('a general-purpose probe of the account security page — passes', genericHook('Probe premises for the account security page', 'Read-only: does /account/security open without a redirect?').decision === 'allow')
 check('a security review with no subagent_type at all — denied as well', genericHook('Security re-review VT-5 branch', 'Re-check the fixed findings.', null).decision === 'deny')
 check('the Russian description of a design-system duplicate pass — denied', genericHook('Дубли с дизайн-системой по ветке', 'Сверь компоненты ветки с китом.').decision === 'deny')
 check('the security-review agent itself — passes', agentHook('stage-pipeline:security-review', 'Ticket T-7, the whole branch against origin/main, report checks/security-review-branch.md.') === 'allow')

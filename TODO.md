@@ -18,7 +18,7 @@ Several stage-pipeline sessions run at once in different repos, and the machine 
 VT-8 only lowers the priority of its own test workers and sizes them by the load average at start. The rest is a separate task. What VT-8 measured: on a quiet machine (load average 2–5) hooks-test takes 78–81 s; next to other sessions (load 5–12) its workers give way and it takes 123–216 s.
 
 ## Evals
-- The two cases of 0.25.0, `security-review-branch` and `ds-parity-hand-rolled-dialog`, wait in `evals/pending/` for a failing run on the ablated agent (`--ablate agent:<name> --record-failing`); then they move to `evals/cases/`. In their one sonnet run the security review rated an access hole major where its own scale says critical: watch the severity on real branches.
+- The two cases of 0.25.0, `security-review-branch` and `ds-parity-hand-rolled-dialog`, wait in `evals/pending/` for a failing run on the ablated agent. `--record-failing` refuses `--pending` and writes into `evals/cases/`, so: move a case to `evals/cases/`, run `node scripts/eval.mjs --ablate agent:<name> --record-failing <case>`, and commit the case with its `provenFailing`. The security review's scale was tightened after a sonnet run rated a cross-account IDOR major; watch its severity on real branches.
 - The eval follow-up PR of VT-1: M-1 and S-1 of the hill-climb driver, harder `pro-review` cases, an eval case for the delta mode, the eval cases of 0.20.0–0.22.0, the first paid climb. Paid; needs a budget.
 
 ## Next-version minors

@@ -10,9 +10,9 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, review
  * on a long run:
  *
  * - the security review and ds-parity run as their own agents, pinned to sonnet. A general-purpose
- *   agent inherits the session's model: in the transcripts of 2026-10-01…11-09, 59 security reviews
- *   and 54 ds-parity passes went to general-purpose agents on opus, a median of 9 min each, and the
- *   final rounds ran them again.
+ *   agent inherits the session's model: of 173 general-purpose calls in the transcripts of
+ *   2026-10-01…11-09, 50 were security reviews and 40 ds-parity passes, almost all on opus, a median
+ *   of 9 min each, and the final rounds ran them again.
  * - whole-branch pro-review runs on `review_model` (stage-check, Step 3.3). The model is passed
  *   as a parameter on the call, and of 13 live whole-branch reviews 5 went to sonnet from the
  *   agent's frontmatter: the first review of a run ran on opus, the second one, on a neighbouring
@@ -33,10 +33,12 @@ const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(
 const DELTA_MODE = new RegExp(`--delta\\b|\\bdelta[-\\s](?:mode|review)\\b|(?:${MODE_WORD})\\s*(?::\\s*)?\\**delta\\b|дельта[-\\s]?(?:режим|ревью)|(?:${MODE_WORD})\\s*:?\\s*\\**дельта|-branch-delta-`, 'i')
 // No subagent_type is a general-purpose agent too; `claude` is the catch-all type of some hosts.
 const GENERIC_AGENTS = new Set(['', 'general-purpose', 'claude'])
-// Told by the call's description (the transcripts named every one of them there; of 195 general-purpose calls, every description with "security" was a security review)
-// or, for ds-parity, by a prompt that points at its skill. Two checks in one call ("ds-parity and security review final") match both and are split.
+// Told by the call's description or, for ds-parity, by a prompt that points at its skill. In the transcripts since 2026-10-01 most calls named the check in the
+// description; a combined sweep ("Delta sweep final 9": dead-code, i18n, security and ds-parity in one call) is caught by the ds-parity skill path only, so the message
+// sends every other check of the prompt to its own agent. "security" alone is not enough: an interview probe of "the account security page" is not a review.
+const SECURITY_JOB = /\bsecurity\b[^\n]*\b(?:review|re-review|audit|check|pass|sweep)|\b(?:review|audit|check|pass|sweep)\b[^\n]*\bsecurity\b|(?:ревью|провер\S*|аудит)\s+безопасност|безопасност\S*\s+(?:ревью|провер|аудит)/i
 const CHECKER_JOBS = [
-  { agent: 'security-review', job: 'the security review', matches: (description) => /\bsecurity\b|безопасност/i.test(description) },
+  { agent: 'security-review', job: 'the security review', matches: (description) => SECURITY_JOB.test(description) },
   {
     agent: 'ds-parity',
     job: 'the ds-parity pass',
@@ -63,10 +65,13 @@ if (generic) {
       jobs.length === 1
         ? `Repeat the call with subagent_type: "stage-pipeline:${jobs[0].agent}" and the same prompt.`
         : `Split the call: one agent each, ${jobs.map((job) => `subagent_type: "stage-pipeline:${job.agent}"`).join(' and ')}, each with its own report.`
+    const runsOn = toolInput.model ? `runs on ${toolInput.model} without the check's method` : "inherits the session's model (opus)"
     deny(
       'agent-guard/checker-agent',
-      `stage-pipeline: ${jobs.map((job) => job.job).join(' and ')} — a general-purpose agent inherits the session's model (opus), and this check has its own agent on sonnet. ${how} ` +
-        'To keep opus on purpose, pass model: "opus" on that call.',
+      `stage-pipeline: ${jobs.map((job) => job.job).join(' and ')} ${jobs.length > 1 ? 'have their own agents' : 'has its own agent'} on sonnet; a general-purpose agent ${runsOn}. ${how} ` +
+        'If the prompt also asks for other checks (dead-code, i18n-sweep, deps-audit…), give each its own agent. ' +
+        `To keep opus on purpose, pass model: "opus" on the stage-pipeline:${jobs[0].agent} call. ` +
+        'If this call is not that check, word its description without it ("security" with review/audit/check/pass, "ds-parity") and call again.',
     )
   }
   process.exit(0)

@@ -222,7 +222,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
-      "line": "^\\s*(?:\\{ agent: 'security-review'|matches: \\(description, prompt\\) =>)",
+      "line": "^\\s*(?:const SECURITY_JOB = |matches: \\(description, prompt\\) =>)",
       "reason": "RU forms of the security review and the design-system duplicate pass in a general-purpose call's description (a Russian-language task)"
     }
   ]

@@ -1,6 +1,6 @@
 {
   "agent": "ds-parity",
-  "why": "ds-parity recall and precision: the removal confirmation is a hand-rolled modal (no portal, focus trap, Escape, aria-modal; hardcoded light colors) while the kit's Dialog with tone danger is a drop-in; the maintenance status is a hand-rolled pill with its own colors while the kit's Badge has the same tones with dark values; ToolbarButton is a thin wrapper over the kit's Button and is not a duplicate. PENDING: compares sonnet with opus for the agent's model; move to evals/cases/ with a provenFailing record once a run that fails on an ablation exists.",
+  "why": "ds-parity recall and precision: the removal confirmation is a hand-rolled modal (no portal, focus trap, Escape, aria-modal; hardcoded light colors) while the kit's Dialog with tone danger is a drop-in; the maintenance status is a hand-rolled pill with its own colors while the kit's Badge has the same tones with dark values; ToolbarButton is a thin wrapper over the kit's Button and is not a duplicate; outside the diff, the fleet page's LoadingDots is a hand-rolled loader (no status role, motion that ignores reduced-motion, a hardcoded color) where the kit has Spinner, found only by the breadth sweep of the tree. PENDING: compares sonnet with opus for the agent's model; move to evals/cases/ with a provenFailing record once a run that fails on an ablation exists.",
   "identity": {
     "repo": "fleet-console",
     "ticket": "FLT-52",
@@ -20,6 +20,11 @@
       "severity": "any",
       "file": "MaintenanceStatus[^\\n]*Badge|Badge[^\\n]*MaintenanceStatus",
       "why": "a hand-rolled status pill where the kit's Badge has the same tones with dark values"
+    },
+    {
+      "severity": "any",
+      "file": "LoadingDots[^\\n]*Spinner|Spinner[^\\n]*LoadingDots",
+      "why": "outside the diff: LoadingDots duplicates the kit's Spinner (the breadth sweep of the tree)"
     }
   ],
   "findingsForbid": [

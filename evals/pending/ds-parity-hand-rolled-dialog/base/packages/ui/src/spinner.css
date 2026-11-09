@@ -1,0 +1,6 @@
+.fui-spinner { display: inline-block; border-radius: 50%; border: 2px solid var(--fui-accent-weak); border-top-color: var(--fui-accent); animation: fui-spin 0.8s linear infinite; }
+.fui-spinner--sm { width: 16px; height: 16px; }
+.fui-spinner--md { width: 24px; height: 24px; }
+.fui-spinner--lg { width: 40px; height: 40px; }
+@media (prefers-reduced-motion: reduce) { .fui-spinner { animation: none; } }
+@keyframes fui-spin { to { transform: rotate(360deg); } }

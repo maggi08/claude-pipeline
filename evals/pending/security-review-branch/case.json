@@ -12,7 +12,7 @@
   "timeoutSec": 900,
   "findings": [
     {
-      "severity": "critical|major",
+      "severity": "critical",
       "file": "invoices\\.js[^\\n]*(compan|owner|IDOR|another|other|any invoice|access|authori)|(IDOR|owner|compan|access control|authori)[^\\n]*invoices\\.js",
       "why": "GET /api/invoices/:id returns any company's invoice: no companyId check, sequential ids"
     },
