@@ -109,14 +109,49 @@ const skipOf = (text) => {
 
 const dedupe = (gates) => gates.filter((gate, index) => gates.findIndex((other) => other.command === gate.command) === index)
 
-/** The HEAD tree and whether tracked files are clean: untracked ones (the task directory, frames) do not get in the way of a run. */
+/** The HEAD tree and whether tracked files are clean: untracked ones (the task directory, frames) do not get in the way of a run. `dirty`: the tracked paths that differ from HEAD. */
 export function treeState(cwd) {
   try {
     const run = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-    return { tree: run('rev-parse', 'HEAD^{tree}'), clean: run('status', '--porcelain', '--untracked-files=no') === '' }
+    // Untrimmed: a porcelain line starts with its two status columns, and the first one may be a space (` M TODO.md`).
+    const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const dirty = status.split('\n').filter(Boolean).map((line) => line.slice(3))
+    return { tree: run('rev-parse', 'HEAD^{tree}'), clean: dirty.length === 0, dirty }
   } catch {
-    return { tree: null, clean: false }
+    return { tree: null, clean: false, dirty: [] }
   }
+}
+
+/** Up to three dirty paths for a message, and how many more. */
+export const dirtyList = (dirty) => `${dirty.slice(0, 3).map((path) => `\`${path}\``).join(', ')}${dirty.length > 3 ? ` and ${dirty.length - 3} more` : ''}`
+
+/**
+ * The worktree whose gates close a task: the one where the task's branch is checked out. The journal of a task run in a linked worktree lives in the
+ * main tree, so its close was judged on the main tree's HEAD: VT-8 bounced 10 closes on "ran on another tree" while its gates were green in its own worktree.
+ * The branch is the `Branch:` header's (`task.branches`), else the branch or path of a worktree that STAGES.md names in backticks. No match — the caller's worktree.
+ */
+export function taskWorktree(worktree, task) {
+  if (!task || task.current) return worktree
+  let listing
+  try {
+    listing = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return worktree
+  }
+  const real = (path) => {
+    try {
+      return realpathSync(path)
+    } catch {
+      return path
+    }
+  }
+  const trees = listing
+    .split('\n\n')
+    .map((block) => ({ path: block.match(/^worktree (.+)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.+)$/m)?.[1] }))
+    .filter((tree) => tree.path && tree.branch && real(tree.path) !== real(worktree))
+  const text = task.stages ?? ''
+  const hit = trees.find((tree) => (task.branches ?? []).includes(tree.branch)) ?? trees.find((tree) => text.includes(`\`${tree.branch}\``) || text.includes(`\`${tree.path}\``))
+  return hit?.path ?? worktree
 }
 
 /** The records file name relative to a data directory (not a slice of the full path: `CLAUDE_PLUGIN_DATA` may end with a slash). */
@@ -209,7 +244,7 @@ export const gateAccepted = (gate) => gate.status === 'green' || gate.status ===
  * "completed with blockers" — each non-green one is named in an open blocker (cannot run locally: needs
  * staging, no browser). Only for a closing written after the task snapshot.
  */
-export function gateCloseViolations(dataDir, worktree, config, taskDir) {
+export function gateCloseViolations(dataDir, worktree, config, taskDir, { caller = worktree } = {}) {
   const stages = readTaskFile(taskDir, 'STAGES.md')
   if (stages === null) return []
   const block = lastForceBlock(stages)
@@ -220,6 +255,12 @@ export function gateCloseViolations(dataDir, worktree, config, taskDir) {
   if (!failing.length) return []
   const withBlockers = WITH_BLOCKERS.test(block.heading)
   const blockers = openBlockers(block, blockerGate(dataDir, taskDir)).join('\n').toLowerCase()
+  // Where the gates were judged, when that is not the caller's worktree; why a run there may not have counted.
+  const where = worktree === caller ? 'on the current HEAD' : `on the HEAD of the task's worktree \`${worktree}\``
+  const { dirty } = treeState(worktree)
+  const unrecorded = dirty.length
+    ? ` Tracked files there differ from HEAD (${dirtyList(dirty)}): run-check records a gate run only on a clean tree, so commit or stash them first.`
+    : ''
   return failing
     .filter((gate) => !withBlockers || !(blockers.includes(gate.name.toLowerCase()) || blockers.includes(gate.command.toLowerCase())))
     .map((gate) => ({
@@ -227,10 +268,10 @@ export function gateCloseViolations(dataDir, worktree, config, taskDir) {
       id: gate.name,
       message:
         gate.status === 'red'
-          ? `CI gate ${describe(gate)} on the current HEAD. A red gate is a fix-loop finding: fix it and run it again (\`node ${RUN_CHECK} -- ${gate.command}\`). ` +
+          ? `CI gate ${describe(gate)} ${where}. A red gate is a fix-loop finding: fix it and run it again (\`node ${RUN_CHECK} -- ${gate.command}\`). ` +
             `${mentioned(skips, gate) ? 'The `skip:` line of the Force block does not cover it: a skip stands only for a gate that cannot run here, not for one that ran red. ' : ''}` +
             'If the fix-loop cannot make it green — a blocker B<n> that names the gate, and closing as "completed with blockers".'
-          : `CI gate ${describe(gate)} on the current HEAD. Run it before closing: \`node ${RUN_CHECK} -- ${gate.command}\` (or \`node ${fileURLToPath(import.meta.url)} --run\`). ` +
+          : `CI gate ${describe(gate)} ${where}.${unrecorded} Run it before closing: \`node ${RUN_CHECK} -- ${gate.command}\` (or \`node ${fileURLToPath(import.meta.url)} --run\`). ` +
             'If it cannot run here — `skip: <gate> — <reason> <date>` in the Force block, or a blocker B<n> with the reason and closing as "completed with blockers".',
     }))
 }
@@ -256,6 +297,8 @@ function main(args) {
     gates = gateStatus(pluginDataDir(), state.worktree, state.config, skips)
   }
   for (const gate of gates) console.log(`- ${gate.status === 'green' ? '✅' : gate.status === 'skipped' ? '⏭' : '✗'} ${describe(gate)}`)
+  const { dirty } = treeState(state.worktree)
+  if (dirty.length && !gates.every(gateAccepted)) console.log(`Tracked files differ from HEAD (${dirtyList(dirty)}): run-check records a gate run only on a clean tree. Commit or stash them, then run again.`)
   process.exit(gates.every(gateAccepted) ? 0 : 1)
 }
 

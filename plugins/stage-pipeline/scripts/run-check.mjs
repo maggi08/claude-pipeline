@@ -25,7 +25,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
-import { recordGate, treeState } from './ci-gates.mjs'
+import { dirtyList, recordGate, treeState } from './ci-gates.mjs'
 import { pluginDataDir, readConfig } from './hooks/pipeline-state.mjs'
 import { alive } from './processes.mjs'
 
@@ -94,6 +94,9 @@ child.on('exit', (code, signal) => {
   if (before?.clean && before.tree) {
     const after = treeState(root)
     if (after.clean && after.tree === before.tree) recordGate(pluginDataDir(), root, command, code ?? 1, before.tree)
+    else console.log('run-check: not recorded for the CI gates — tracked files changed during the run')
+  } else if (before?.dirty?.length) {
+    console.log(`run-check: not recorded for the CI gates — tracked files differ from HEAD (${dirtyList(before.dirty)}); a gate counts only on a clean tree`)
   }
   process.exit(code ?? 1)
 })

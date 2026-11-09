@@ -49,7 +49,7 @@ import {
 } from './journal-check.mjs'
 import { hasReceipts, readFloorOk, stagesWithoutRuntime, uiFiles } from './receipts.mjs'
 import { makerItems } from './maker.mjs'
-import { describe, forceSkips, gateAccepted, gateStatus } from './ci-gates.mjs'
+import { describe, forceSkips, gateAccepted, gateStatus, taskWorktree } from './ci-gates.mjs'
 import { AWAITING_SECTION, UNVERIFIED_HEADING, forceBlockBody, forceBlockDate, forceHeadings, forceKey, headingDate } from './markers.mjs'
 import { TASK_FILE_MAX, pluginDataDir, readDataFiles, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
 import { baselineName } from './baseline-file.mjs'
@@ -397,7 +397,9 @@ const realTaskDir = (taskDir) => {
 /** The state of the repo of THIS task, for its CI gates: the caller's state if it owns the task, else the repo the task directory lies in; no repo — no gates (never the gates of whichever repo the script was started from). */
 export function taskRepo(taskDir, state) {
   const dir = realTaskDir(taskDir)
-  if (state?.tasks?.some((task) => !task.foreign && realTaskDir(task.dir) === dir)) return state
+  const own = state?.tasks?.find((task) => !task.foreign && realTaskDir(task.dir) === dir)
+  // The gates of a task whose branch is checked out in another worktree are that worktree's (`taskWorktree`).
+  if (own) return { ...state, worktree: taskWorktree(state.worktree, own) }
   return readPipelineState(dirname(dirname(dirname(dir))))
 }
 

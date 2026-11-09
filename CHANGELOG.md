@@ -5,6 +5,15 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.25.1 — 2026-11-10
+
+### A run closed from the main tree is judged on its own worktree's CI gates, and a gate run that did not count says why
+
+What changes against 0.25.0: two cases where the hook said a CI gate "ran on another tree" although it had run.
+
+- **A task in a linked worktree.** The journal of such a task lives in the main tree, so closing its force run there judged the gates on the main tree's HEAD. VT-8 bounced 10 closes this way while its gates were green in its own worktree. The close, and the run digest, now judge the gates on the worktree where the task's branch is checked out: the branch of the `Branch:` header, or else a worktree whose branch or path STAGES.md names in backticks. With no such worktree they stay on the caller's, as before.
+- **A run with uncommitted tracked files.** `run-check` records a whole-repo gate run only on a clean tree, by design: the gates stand for HEAD. It used to say nothing when it skipped the record, and the close then reported "ran on another tree". Now `run-check` prints `not recorded for the CI gates — tracked files differ from HEAD (…)`, and the close message and `ci-gates.mjs` name those files and say to commit or stash them first. The rule itself does not change.
+
 ## 0.25.0 — 2026-11-09
 
 ### The security review and ds-parity run on sonnet as their own agents

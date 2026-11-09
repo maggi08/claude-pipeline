@@ -1354,6 +1354,33 @@ write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, headin
 check('"с блокерами": a non-green gate named as a blocker is not a violation', gates.gateCloseViolations(DATA, kApp, kConfig, kTask).length === 0)
 spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'node -e "process.exit(0)"'], { cwd: kApp, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
 check('run-check: a run on a clean tree is recorded — the gate is green', gates.gateStatus(DATA, kApp, kConfig)[0]?.status === 'green', JSON.stringify(gates.gateStatus(DATA, kApp, kConfig)))
+// 2026-11-10, the "ran on another tree" false alarm: VT-8's journal lived in the main tree and its branch in a linked worktree, so its close was judged
+// on the main tree's HEAD (10 bounced closes while the worktree's gates were green). The close is judged on the worktree of the task's branch.
+{
+  const GATE = 'node -e "process.exit(0)"'
+  const linked = join(kRoot, 'app-linked')
+  git(kApp, 'worktree', 'add', '-q', '-b', 'T-12/feat/linked', linked)
+  const linkedReal = realpathSync(linked)
+  gates.recordGate(DATA, kApp, GATE, 1, 'deadbeef')
+  gates.recordGate(DATA, linked, GATE, 0, git(linked, 'rev-parse', 'HEAD^{tree}').trim())
+  write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
+  const byBranch = { current: false, branches: ['T-12/feat/linked'], stages: '' }
+  check('taskWorktree: a task whose Branch: header is checked out in a linked worktree — that worktree', realpathSync(gates.taskWorktree(kApp, byBranch)) === linkedReal, gates.taskWorktree(kApp, byBranch))
+  check('taskWorktree: no header, but STAGES.md names the worktree path in backticks — that worktree', realpathSync(gates.taskWorktree(kApp, { current: false, branches: [], stages: `the run is in the worktree \`${linkedReal}\`` })) === linkedReal)
+  check('taskWorktree legit: a current task, or one naming no worktree — the caller\'s', gates.taskWorktree(kApp, { ...byBranch, current: true }) === kApp && gates.taskWorktree(kApp, { current: false, branches: ['T-12/feat/other'], stages: '' }) === kApp)
+  const judgedThere = gates.gateCloseViolations(DATA, gates.taskWorktree(kApp, byBranch), kConfig, kTask, { caller: kApp })
+  check('close of a task from the main tree: its gates are green in its own worktree — no violation', judgedThere.length === 0, JSON.stringify(judgedThere))
+  check('close incident: judged on the caller\'s worktree, the same gates are "ran on another tree"', gates.gateCloseViolations(DATA, kApp, kConfig, kTask).length === 1)
+  gates.recordGate(DATA, linked, GATE, 1, 'deadbeef')
+  write(linked, { 'src/a.ts': 'export const a = 2\n' })
+  const there = gates.gateCloseViolations(DATA, linked, kConfig, kTask, { caller: kApp })
+  check('close message: a gate stale in the task\'s worktree names that worktree, and its dirty tracked files as the reason a run did not count', there.length === 1 && there[0].message.includes(`on the HEAD of the task's worktree \`${linked}\``) && /Tracked files there differ from HEAD \(`src\/a\.ts`\)/.test(there[0].message), there[0]?.message)
+  const unrecorded = spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', GATE], { cwd: linked, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
+  check('run-check: a whole run on a tree with a dirty tracked file says why it was not recorded', /not recorded for the CI gates — tracked files differ from HEAD \(`src\/a\.ts`\)/.test(unrecorded.stdout) && gates.gateStatus(DATA, linked, kConfig)[0]?.status !== 'green', unrecorded.stdout)
+  git(kApp, 'worktree', 'remove', '--force', linked)
+  git(kApp, 'branch', '-D', 'T-12/feat/linked')
+  gates.recordGate(DATA, kApp, GATE, 0, git(kApp, 'rev-parse', 'HEAD^{tree}').trim()) // green on HEAD again, as the run above left it
+}
 write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
 const greenGate = kGate()
 check('the gate is green on HEAD — closing passes, gates in the summary', greenGate.decision === 'message' && /Гейты CI на HEAD \(1 из 1/.test(greenGate.text), `${greenGate.decision}: ${greenGate.text.slice(0, 300)}`)

@@ -248,7 +248,7 @@ const tasks = state.tasks
 if (!tasks.length) process.exit(0)
 
 const { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, readTaskFile, reportViolations } = await import('../journal-check.mjs')
-const { gateCloseViolations } = await import('../ci-gates.mjs')
+const { gateCloseViolations, taskWorktree } = await import('../ci-gates.mjs')
 const { finalReviewViolations } = await import('../receipts.mjs')
 const { CLOSED_WORD, forceHeadings, forceKey } = await import('../markers.mjs')
 const { mapReadme, mapRoots } = await import('../verify-map.mjs')
@@ -280,7 +280,7 @@ for (const task of tasks) {
     const after020 = !runtimeOld.has(basename(path))
     return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme(rootsOnce(), state.config)), v020: after020 })
   })
-  const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), state.worktree, state.config, task.dir), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
+  const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), taskWorktree(state.worktree, task), state.config, task.dir, { caller: state.worktree }), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   // One firing per kind of violation the block carries (the violations' own rule names go along as `kinds`: names only, no message text).
   for (const [rule, found] of [['journal-gate/journal', journal], ['journal-gate/report', reports], ['journal-gate/close', closing]]) {
