@@ -219,6 +219,11 @@
       "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
       "line": "^const DELTA_MODE = new RegExp\\(",
       "reason": "RU forms of the delta mode of pro-review (a prompt of a Russian-language task)"
+    },
+    {
+      "glob": "plugins/stage-pipeline/scripts/hooks/agent-guard.mjs",
+      "line": "^\\s*(?:\\{ agent: 'security-review'|matches: \\(description, prompt\\) =>)",
+      "reason": "RU forms of the security review and the design-system duplicate pass in a general-purpose call's description (a Russian-language task)"
     }
   ]
 }

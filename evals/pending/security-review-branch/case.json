@@ -1,0 +1,43 @@
+{
+  "agent": "security-review",
+  "why": "recall and precision of the security review: an invoice read by id with no company check (sequential ids, IBANs of other companies), a sign-in return path whose same-site check `startsWith('/')` lets `//other.example` through, comments of other members rendered as raw HTML; the footer renders a constant line of the app's own locale file as HTML, which is not a finding. PENDING: compares sonnet with opus for the agent's model; move to evals/cases/ with a provenFailing record once a run that fails on an ablation exists.",
+  "identity": {
+    "repo": "billing-portal",
+    "ticket": "BILL-31",
+    "user": "Noor Haddad",
+    "email": "noor.haddad@billing-portal.dev"
+  },
+  "prompt": "Ticket BILL-31, final checks before the PR. Language: en. Comparison base: uncommitted changes (git diff HEAD + git status) — the whole task. Report: tasks/BILL-31/checks/security-review-branch.md.",
+  "budgetUsd": 2,
+  "timeoutSec": 900,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "invoices\\.js[^\\n]*(compan|owner|IDOR|another|other|any invoice|access|authori)|(IDOR|owner|compan|access control|authori)[^\\n]*invoices\\.js",
+      "why": "GET /api/invoices/:id returns any company's invoice: no companyId check, sequential ids"
+    },
+    {
+      "severity": "critical|major",
+      "file": "(url\\.ts|SignIn\\.tsx)[^\\n]*(redirect|//|protocol)|(redirect|protocol-relative)[^\\n]*(url\\.ts|SignIn\\.tsx)",
+      "why": "safeReturnPath lets `//other.example` through startsWith('/'): an open redirect after sign-in"
+    },
+    {
+      "severity": "critical|major",
+      "file": "InvoiceComments\\.tsx",
+      "why": "comments of other members are rendered with dangerouslySetInnerHTML: stored XSS"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "critical|major",
+      "file": "Footer\\.tsx|footer\\.legal",
+      "why": "the legal line is a constant of the app's own locale file, not input of an attacker"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Approve\\*{0,2}\\s*$",
+      "why": "a plain Approve on a branch that leaks other companies' invoices"
+    }
+  ]
+}

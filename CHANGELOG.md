@@ -5,6 +5,32 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.25.0 — 2026-11-09
+
+### The security review and ds-parity run on sonnet as their own agents
+
+What changes against 0.24.0: the two final checkers that had no agent of their own, the security review and `ds-parity`, now have one each, pinned to sonnet. Until now the orchestrator started them as general-purpose agents, which inherit the session's model, so both ran on opus.
+
+- **`security-review` (agent, new).** The security review of the branch, or of a stage with auth, payment or user-content code. It holds the method that each orchestrator used to write into the prompt by hand. It reads the changed files in full, follows untrusted input to its sinks and opens the helpers on a sensitive path. It keeps only findings with an attack scenario: the attacker, the entry `file:line`, the path, the harm. Severity is critical, major or minor under the common report contract. The default report is `checks/security-review-branch.md`. It makes no live requests and never pastes a secret into the report.
+- **`ds-parity` (agent, new).** The methodology stays in `skills/ds-parity`. A subagent cannot start subagents, so the agent runs the skill's three passes itself, one after another.
+- **agent-guard.** A general-purpose agent started for either check is rejected, and the message names the agent to use instead. The hook recognises the check by the call's description or, for `ds-parity`, by a prompt that points at its skill. A call that does both checks is told to split into two agents. To keep opus on purpose, pass `model: "opus"` on the agent's call. The rule is `agent-guard/checker-agent`. Of the 195 general-purpose calls in the transcripts since 2026-10-01, the patterns match 59 security reviews and 54 ds-parity passes, and no other call.
+- **`/stage-check` and `/stage-plan`.** The checker table and the "Final checks" template name the two agents. The rule → enforcer table maps the `ds-parity` row of `/stage-check` to the new hook rule, and the prose baseline goes from 220 to 219.
+
+**The measured basis.** The transcripts since 2026-10-01 hold 59 general-purpose security reviews and 54 general-purpose `ds-parity` passes. Almost all ran with no `model`, so they inherited the session's opus. The speed audit of 2026-10-28 measured these two at a median of 9 min and 45 turns a run.
+
+**What was compared.** Two new cases, `security-review-branch` and `ds-parity-hand-rolled-dialog`, ran once on sonnet and once on opus (`--model <agent>=opus`), on the plugin at `3571858` with Claude Code 2.1.314:
+
+| Case | sonnet | opus |
+|---|---|---|
+| `security-review-branch`: an invoice read with no company check, an open redirect through `startsWith('/')`, stored XSS in comments; a constant locale line rendered as HTML is not a finding | pass, 43 s, $0.17 | pass, 67 s, $0.46 |
+| `ds-parity-hand-rolled-dialog`: a hand-rolled modal where the kit's `Dialog` is a drop-in, a hand-rolled status pill where the kit's `Badge` has the same tones; a thin wrapper over the kit's `Button` is not a duplicate | pass, 41 s, $0.16 | pass, 97 s, $0.48 |
+
+Both models found the same issues and raised nothing they should not have. One difference: opus rated the invoice access hole critical, which is what the agent's own scale says. Sonnet rated it major. A force run fixes critical and major in the same round, so the fix is the same; a reader who sorts by severity sees it one step lower. The invocations are 20261109T133517-ju0d (sonnet) and 20261109T133517-z4ie (opus), $1.27 in all.
+
+**What this does not show.** It is one run per model on two small cases, so it sets no pass rate. A real branch is larger: the 9-minute median was measured on real branches, and the gain there is not measured yet. The two cases wait in `evals/pending/`: they have no failing run on an ablated agent yet, which a case in `evals/cases/` needs.
+
+eval: skipped ds-parity, security-review — new agents; their cases are in evals/pending/ (no provenFailing yet) and ran once on sonnet and once on opus, as above
+
 ## 0.24.0 — 2026-11-03
 
 ### A delta review replaces the second whole-branch review of a force run (VT-7)

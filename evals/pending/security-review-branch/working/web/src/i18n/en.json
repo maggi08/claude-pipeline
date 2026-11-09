@@ -1,0 +1,9 @@
+{
+  "signin.title": "Sign in",
+  "signin.submit": "Continue",
+  "signin.error": "Wrong email or password",
+  "invoice.comments": "Comments",
+  "invoice.send": "Send",
+  "footer.legal": "Payments are processed under our <a href=\"/terms\">terms of service</a>.",
+  "footer.copyright": "© Billing Portal"
+}

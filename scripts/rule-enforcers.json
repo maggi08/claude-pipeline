@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 220,
+  "proseBaseline": 219,
   "rules": {
     "dead-code#d0f5092819": {
       "to": "prose",
@@ -745,10 +745,9 @@
       "text": "the methodology is already in the agent/skill — do not duplicate it in the prompt.",
       "baseline": true
     },
-    "stage-check#22458628cb": {
-      "to": "prose",
-      "text": "| ds-parity | duplicates with the design system: replace with a kit component / move into the kit | active — s",
-      "baseline": true
+    "stage-check#b2728a744d": {
+      "to": "hook:agent-guard/checker-agent",
+      "text": "| ds-parity | duplicates with the design system: replace with a kit component / move into the kit | active — a"
     },
     "stage-check#ac31133797": {
       "to": "prose",

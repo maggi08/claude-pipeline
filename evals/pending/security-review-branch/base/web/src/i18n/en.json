@@ -1,0 +1,8 @@
+{
+  "signin.title": "Sign in",
+  "signin.submit": "Continue",
+  "signin.error": "Wrong email or password",
+  "invoice.comments": "Comments",
+  "invoice.send": "Send",
+  "footer.copyright": "© Billing Portal"
+}

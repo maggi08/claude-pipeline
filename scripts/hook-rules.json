@@ -15,6 +15,18 @@
       ],
       "head": "whole-branch pro-review runs on review_model"
     },
+    "agent-guard/checker-agent": {
+      "incident": [
+        "general-purpose security review — denied, the security-review agent named",
+        "general-purpose agent following the ds-parity skill — denied, the ds-parity agent named",
+        "one general-purpose call for both checks — denied, split into two agents"
+      ],
+      "legitimate": [
+        "the security-review agent itself — passes",
+        "a general-purpose probe that names no check — passes"
+      ],
+      "head": "a general-purpose agent inherits the session's model"
+    },
     "agent-guard/no-confirmed": {
       "incident": [
         "EN stage-implement: new Force block without \"Confirmed:\" — denied"

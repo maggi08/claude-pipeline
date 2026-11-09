@@ -1,0 +1,4 @@
+.fui-backdrop { position: fixed; inset: 0; background: var(--fui-overlay); display: grid; place-items: center; z-index: var(--fui-z-modal); }
+.fui-dialog { background: var(--fui-surface); color: var(--fui-fg); border-radius: var(--fui-radius-lg); box-shadow: var(--fui-shadow-lg); padding: 24px; width: min(480px, calc(100vw - 32px)); }
+.fui-dialog--danger .fui-dialog__title { color: var(--fui-danger-fg); }
+.fui-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
