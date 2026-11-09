@@ -19,6 +19,7 @@ Answer in the user's language. Code, identifiers, file names and git commands st
 - `--staged` → review only what is staged.
 - `--stage` → **stage mode** (run from /stage-check): review only the diff of the current stage, see "Stage mode" below.
 - An explicit base (`/pro-review origin/some-branch`) → the merge-base with it.
+- `--delta <full report>` → **delta mode**, see "Delta mode" below: a review of the change since a full whole-branch review.
 - The user may add a focus in words (e.g. "look at security" / "only this file") — narrow the scope accordingly.
 
 ## Stage mode (run from /stage-check)
@@ -28,6 +29,15 @@ When the review is called as a stage checker (the `pro-review` subagent in the p
 - the stage is already partly committed → `git diff <prev-stage-commit>...HEAD` (the commit of the previous stage comes in the prompt / is taken from STAGES.md).
 
 Whole-branch (no argument) stays the default of a manual `/pro-review` **and of the mandatory final run at the end of the task** — a full picture of the whole branch before the merge.
+
+## Delta mode (`--delta <full report>`)
+
+The review of a fix round: what changed since a full whole-branch review, not the whole branch again. It counts only on top of a full report that records its commit.
+- The manual use: after fixing the findings of a whole-branch `/pro-review`, re-review with `/pro-review --delta <the saved full report>` instead of a second whole-branch run.
+- The full report is `checks/pro-review-branch*.md` of this task. Its `head: <full sha>` line is the base. No `head:` line (a report from before the anchor) → there is no delta: say so and run the whole-branch review.
+- The scope is `git diff <head>...HEAD` plus the uncommitted. The lenses are the whole-branch ones, not the stage ones, and the radius is part of the scope: open the callers and the consumers of every changed symbol outside the diff.
+- Findings of the full report that the round fixed are checked by `file:line` in the new code; the rest of the full report is not re-reviewed.
+- The report is `checks/pro-review-branch-delta-<k>.md` (`k` = 1, 2, …). Its header carries `delta: <full report file name> <base sha>..<new head sha>` and its own `head: <full sha>` (the new head), each on a line of its own before the first `## ` heading. The hook counts a delta only while the base is an ancestor of HEAD and the change since it stays within 400 lines; over that, run the whole-branch review.
 
 ## Step 1. Define the review scope
 
@@ -43,6 +53,8 @@ git status --short
 ```
 
 If the branch is already merged or the base is not available locally — say so and suggest `git fetch` or a review in `--diff` mode.
+
+**Whole-branch: record the reviewed commit.** Run `git rev-parse HEAD` once the scope is fixed and write `head: <full 40-hex sha>` on a line of its own in the report header, after the `Findings:` line and before the first `## ` heading. A delta review is anchored on it (see "Delta mode"); a whole-branch report without it can be reviewed again only in full.
 
 **Whole-branch: the committed HEAD must compile.** The working tree and HEAD are different things: uncommitted fixes mask broken commits. In a whole-branch review run `type_check` from the config on the state of HEAD itself (the tree is clean — just run it; dirty — `git stash` for the duration of the run, or a separate worktree) and compare with the baseline. When the diff changes build config, env files, CI files or manifests, run `build` from the config on HEAD the same way: a type check does not see a broken bundle.
 

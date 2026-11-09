@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 219,
+  "proseBaseline": 220,
   "rules": {
     "dead-code#d0f5092819": {
       "to": "prose",
@@ -932,14 +932,9 @@
       "text": "one maker at a time. never run two stage-implement at once in one worktree in a force run: makers in parallel ",
       "baseline": true
     },
-    "stage-force#8b27bb2916": {
+    "stage-force#f868caaa33": {
       "to": "hook:git-guard/findings-no-outcome",
-      "text": "findings do not go into \"awaiting user confirmation\" or \"leaving as is\": request changes \"accepted as a compro"
-    },
-    "stage-force#310d5ec9aa": {
-      "to": "prose",
-      "text": "the cost is needed not for reporting but for the order of review: by the end of an autonomous run there are a ",
-      "baseline": true
+      "text": "findings do not go into \"awaiting user confirmation\" or \"leaving as is\"."
     },
     "stage-force#1d805e96f0": {
       "to": "prose",
@@ -960,7 +955,7 @@
       "text": "skip the wrapup line in the \"final checks\" of old stages.md — do not mark it or run it by the path to the skil",
       "baseline": true
     },
-    "stage-force#dcdc704a5b": {
+    "stage-force#27a7af5300": {
       "to": "hook:journal-gate/close",
       "text": "task-converge is mandatory in a force run and is started before the summary (after the last fix commit: a repo"
     },
@@ -969,22 +964,32 @@
       "text": "it will see the [blocked: b<n>] criteria as missing: do not start a catch-up for them, they are already in the",
       "baseline": true
     },
+    "stage-force#5d3c20f2e4": {
+      "to": "prose",
+      "text": "do not rerun the other final checkers: recheck their fixed findings by file:line, a runtime one by the short r",
+      "baseline": true
+    },
+    "stage-force#8c599661db": {
+      "to": "prose",
+      "text": "a critical or major of the delta gets one more fix round and a second delta, counted from the same full report",
+      "baseline": true
+    },
     "stage-force#b9c9c8b2c0": {
       "to": "hook:journal-gate/close",
       "text": "the hook reads only the marker: a blocker that names the checker in prose (\"pro-review found a critical; the r"
     },
-    "stage-force#853b25463f": {
+    "stage-force#edfbbc0266": {
       "to": "prose",
-      "text": "the summary is plain markdown, never inside a code block: the short view carries ### headings, and in a fence ",
+      "text": "the summary is plain markdown, never inside a code block: the ### headings of the short view must render.",
       "baseline": true
     },
     "stage-force#b93383fa43": {
       "to": "script:plugins/stage-pipeline/scripts/run-digest.mjs",
       "text": "the run-digest short view is pasted as is, the rules do not touch it."
     },
-    "stage-force#60be6cf4cf": {
+    "stage-force#3e45dd64e1": {
       "to": "script:plugins/stage-pipeline/scripts/run-digest.mjs",
-      "text": "the script, not you, picks what the short view shows, and every category is in it with a number, so paste it w"
+      "text": "paste the short view whole, without retelling or selecting — do not shorten it further and do not add a \"check"
     },
     "stage-force#968d0ba08b": {
       "to": "prose",

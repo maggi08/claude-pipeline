@@ -13,7 +13,10 @@ import { reviewModel } from '../plugins/stage-pipeline/scripts/hooks/pipeline-st
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const CASES = join(ROOT, 'evals/cases')
 export const SOURCE_PLUGIN = join(ROOT, 'plugins/stage-pipeline')
-export const LEDGER = join(ROOT, 'evals/ledger.tsv')
+// A run started from ANOTHER checkout (hillclimb's temp worktree) appends to and budgets from the starting checkout's ledger and keeps its results there:
+// EVAL_LEDGER / EVAL_RESULTS (absolute paths) point at them. Unset, both live in this checkout's evals/.
+export const LEDGER = process.env.EVAL_LEDGER ? resolve(process.env.EVAL_LEDGER) : join(ROOT, 'evals/ledger.tsv')
+export const RESULTS_DIR = process.env.EVAL_RESULTS ? resolve(process.env.EVAL_RESULTS) : join(ROOT, 'evals/.results')
 
 export const readCase = (caseDir) => JSON.parse(readFileSync(join(caseDir, 'case.json'), 'utf8'))
 export const git = (cwd, ...cmd) => execFileSync('git', cmd, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
@@ -334,6 +337,33 @@ export function applyVariantEdits(dir, edits, label) {
   }
 }
 
+// ── plugin copies ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/** True for a value an `effort:` frontmatter line takes: a level, or an integer (Claude Code: `effort: <level> | <integer>`). */
+export const validEffort = (level) => EFFORT_LEVELS.includes(level) || /^\d+$/.test(level)
+
+/**
+ * The text of an agent file with its `effort:` frontmatter line set to `level` (replaced, or inserted after `model:`, or after the last frontmatter line), or removed for
+ * `none`. Only the frontmatter is touched. Throws when the file has no frontmatter.
+ */
+export function withEffort(text, level) {
+  const match = /^---\n([\s\S]*?)\n---(\n|$)/.exec(text)
+  if (!match) throw new Error('the agent file has no frontmatter')
+  const lines = match[1].split('\n')
+  const at = lines.findIndex((line) => /^effort:/.test(line))
+  if (level === 'none') {
+    if (at >= 0) lines.splice(at, 1)
+  } else if (at >= 0) {
+    lines[at] = `effort: ${level}`
+  } else {
+    const model = lines.findIndex((line) => /^model:/.test(line))
+    lines.splice(model >= 0 ? model + 1 : lines.length, 0, `effort: ${level}`)
+  }
+  return `---\n${lines.join('\n')}\n---${match[2]}${text.slice(match[0].length)}`
+}
+
 // ── the stream ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export function parseStream(stdout) {
@@ -387,6 +417,20 @@ export function subagentRun(events, agent) {
     .replace(/^agentId:.*$/gm, '')
     .trim()
   return { launch, calls: calls.filter((call) => call.parent === launch.id), summary }
+}
+
+/**
+ * The model(s) the agent ITSELF ran on, from its own assistant events (`launchId`: the Agent call of a subagent, null for a main-thread agent), not from the aggregate
+ * `modelUsage`, which also holds the thin haiku parent. Empty when the stream has no such event.
+ */
+export function agentModelsOf(events, launchId = null) {
+  const seen = []
+  for (const event of events) {
+    if (event.type !== 'assistant' || (event.parent_tool_use_id ?? null) !== launchId) continue
+    const model = event.message?.model
+    if (model && model !== '<synthetic>' && !seen.includes(model)) seen.push(model)
+  }
+  return seen
 }
 
 /** Names of the hooks that started in the session (`SessionStart:startup`, `PreToolUse:Agent`, `SubagentStop:devtools-verify`), one per run of a hook. */
@@ -759,6 +803,7 @@ export function appendLedger(row, path = LEDGER) {
 export function readLedger(path = LEDGER) {
   if (!existsSync(path)) return []
   const [header, ...lines] = readFileSync(path, 'utf8').split('\n').filter(Boolean)
+  if (!header) return []
   const columns = header.split('\t')
   return lines.map((line) => Object.fromEntries(line.split('\t').map((value, i) => [columns[i], value])))
 }
@@ -771,4 +816,20 @@ export function spentSince(rows, since = '') {
 export function meanCost(rows, name) {
   const past = rows.filter((row) => row.case === name && Number(row.cost_usd) > 0)
   return past.length ? past.reduce((sum, row) => sum + Number(row.cost_usd), 0) / past.length : null
+}
+
+// ── invocation ids and the agent session's environment ──────────────────────────────────────────────────────────────
+
+/** An eval invocation id: `<yyyymmddThhmmss>-<base36>`. It names a directory under the results dir, so it is checked by this format before any path join. */
+export const INVOCATION_RE = /^\d{8}T\d{6}-[a-z0-9]+$/
+export const newInvocationId = () => `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}-${Math.random().toString(36).slice(2, 6).padEnd(4, '0')}`
+
+/**
+ * The environment of an agent's `claude -p` session: the caller's, plus the data dir, minus what points at the harness. CLAUDE_PLUGIN_DATA is Claude Code's own variable; EVAL_LEDGER
+ * and EVAL_RESULTS (a hill-climb's absolute paths to the starting checkout) would tell the agent under test, and the Bash tool it runs, where the graders and earlier reports are.
+ */
+export function sessionEnv(base, dataDir) {
+  const env = { ...base, STAGE_PIPELINE_DATA_DIR: dataDir, MCP_CONNECTION_NONBLOCKING: 'false' }
+  for (const key of ['CLAUDE_PLUGIN_DATA', 'EVAL_LEDGER', 'EVAL_RESULTS']) delete env[key]
+  return env
 }

@@ -8,17 +8,50 @@
  *
  * Russian inputs (STAGES.md text, reports, commit messages) are kept on purpose: they are the fixtures of the second
  * supported task language (Russian). The English twins next to them must give the same results.
+ *
+ * Running it. The sections are grouped into units (the UNITS table below); a unit is a block `if (unit('id')) { … }` below, and the units share nothing
+ * but the helpers at the top.
+ *   node scripts/hooks-test.mjs                  every unit, in parallel worker processes (one `--units <id>` child per unit), the output in source order
+ *   node scripts/hooks-test.mjs --serial         one process, source order — the reference run, for debugging
+ *   node scripts/hooks-test.mjs --units a,b      only the named units (what a worker runs; the firings late checks need the whole suite and are skipped)
+ *   node scripts/hooks-test.mjs --self-test      the runner's own failure cases (a failing check, a crashing worker, a unit with no check, the serial tail)
+ *   HOOKS_TEST_JOBS=N                            the number of workers; without it: min(cores - 2, cores - load average), at least 1. Pool workers run at nice 10.
+ * Units marked `serial` hold tight timing assertions and run one at a time after the parallel ones have finished, at the normal priority:
+ * one process, as the whole suite ran before the pool, so the sessions next to it at nice 0 do not starve their timings.
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { availableParallelism, getPriority, homedir, loadavg, setPriority, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const PLUGIN = join(dirname(fileURLToPath(import.meta.url)), '../plugins/stage-pipeline/scripts')
+const SELF = fileURLToPath(import.meta.url)
+// process.exit right after a large write drops what a pipe has not taken yet — wait until both streams have flushed.
+const drained = () => Promise.all([process.stdout, process.stderr].map((stream) => new Promise((done) => stream.write('', done))))
+const PLUGIN = join(dirname(SELF), '../plugins/stage-pipeline/scripts')
+const ARGV = process.argv.slice(2)
+const unitsArg = ARGV.find((arg) => arg.startsWith('--units='))?.slice(8) ?? (ARGV.includes('--units') ? ARGV[ARGV.indexOf('--units') + 1] : undefined)
+const MODE = ARGV.includes('--self-test') ? 'self-test' : ARGV.includes('--serial') ? 'serial' : unitsArg !== undefined ? 'worker' : 'run'
+const unitsMissing = (ARGV.includes('--units') || ARGV.some((arg) => arg.startsWith('--units='))) && (!unitsArg || unitsArg.startsWith('--'))
+if (unitsMissing || ARGV.some((arg) => !['--serial', '--self-test', '--units'].includes(arg) && !arg.startsWith('--units=') && arg !== unitsArg)) {
+  console.error('usage: hooks-test.mjs [--serial | --self-test | --units <id,id>]')
+  process.exit(2)
+}
+if (MODE === 'worker') {
+  // The fake units of the runner's self-test (--self-test) do not touch the suite.
+  const fake = unitsArg.split(',').find((id) => id.startsWith('selftest-'))
+  if (fake) {
+    if (fake === 'selftest-fail') console.log('✔ fake check that passes\n✘ fake check that fails — detail of the failure')
+    else if (fake === 'selftest-crash') { throw new Error('boom: the fake worker died') }
+    else if (fake === 'selftest-slow') { await new Promise((done) => setTimeout(done, 400)); console.log('✔ slow fake check') }
+    else if (fake !== 'selftest-empty') console.log(`✔ fake check at priority ${getPriority()}`)
+    process.exit(fake === 'selftest-fail' ? 1 : 0)
+  }
+}
 // The task directory registry and the journal snapshots are written by the hooks into the plugin data directory — a temporary one in the test.
-const DATA = mkdtempSync(join(tmpdir(), 'hooks-test-data-'))
+const DATA = (MODE === 'worker' && process.env.HOOKS_TEST_UNIT_DATA) || mkdtempSync(join(tmpdir(), 'hooks-test-data-'))
+delete process.env.HOOKS_TEST_UNIT_DATA
 process.env.CLAUDE_PLUGIN_DATA = DATA
 // A force close in journal-gate closes the MCP browser of the Claude Code session above it — run inside a session, the close fixtures would close that
 // session's real browser. Only the stage 5b fixtures turn it on, under a throwaway `claude` process of their own.
@@ -34,14 +67,358 @@ const markers = await import(join(PLUGIN, 'markers.mjs'))
 const { acViolation, skipViolation, barePasses } = await import(join(PLUGIN, 'journal-check.mjs'))
 
 let failed = 0
+let printed = 0
 const lateChecks = [] // checks that need every fixture of the suite to have run (K11c.1)
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? '✔' : '✘'} ${name}${ok ? '' : ` — ${detail}`}`)
+  printed++
   if (!ok) failed++
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
+// The process table of the browser-cleanup survey checks: pure data, built fresh per caller so no unit shares a Map.
+const browserTable = () => {
+  const UID = process.getuid()
+  const row = (pid, ppid, args, age = 600, uid = UID) => [pid, { pid, ppid, uid, age, args }]
+  const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --allow-pre-commit-input --disable-background-networking'
+  const T = realpathSync(tmpdir())
+  const table = new Map([
+    row(1, 0, '/sbin/launchd'),
+    row(50, 1, '/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)'),
+    row(100, 50, '/Users/u/.vscode/extensions/anthropic.claude-code-2.1.304-darwin-arm64/resources/native-binary/claude --output-format stream-json'),
+    row(101, 100, '/bin/zsh -c cd /tmp/claude && node /p/scripts/browser-cleanup.mjs --session'),
+    row(102, 101, 'node /p/scripts/browser-cleanup.mjs --session'),
+    row(110, 100, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'),
+    row(111, 110, 'chrome-devtools-mcp'),
+    row(112, 111, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-AbC --remote-debugging-pipe`, 82_800),
+    row(113, 112, `/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (Renderer) --type=renderer --user-data-dir=${T}/puppeteer_dev_chrome_profile-AbC`),
+    row(114, 111, '/usr/local/bin/node /usr/local/lib/node_modules/chrome-devtools-mcp/build/src/telemetry/watchdog/main.js --parent-pid=111 --app-version=1.6.0'),
+    row(120, 100, 'npm exec chrome-devtools-mcp@1.6.0 --userDataDir /Users/u/.cache/stage-pipeline/chrome/app'),
+    row(121, 120, 'chrome-devtools-mcp'),
+    row(122, 121, `${CHROME} --user-data-dir=/Users/u/.cache/stage-pipeline/chrome/app --remote-debugging-pipe`),
+    row(130, 100, 'npm exec chrome-devtools-mcp@latest'),
+    row(131, 130, 'chrome-devtools-mcp'),
+    row(132, 131, `${CHROME} --user-data-dir=/Users/u/.cache/chrome-devtools-mcp/chrome-profile --remote-debugging-pipe`),
+    row(200, 50, 'node /Users/u/.nvm/versions/node/v22.11.0/bin/claude'),
+    row(210, 200, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'),
+    row(211, 210, 'chrome-devtools-mcp'),
+    row(212, 211, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Other --remote-debugging-pipe`, 85_000),
+    row(300, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Lost --remote-debugging-pipe`),
+    row(310, 101, 'node /scratch/journey.mjs'),
+    row(311, 310, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Run --remote-debugging-pipe`),
+    row(320, 1, `${CHROME} --user-data-dir=/Users/u/.cache/stage-pipeline/chrome/old --remote-debugging-pipe`),
+    // S-4: a daemonized shell or script that names a puppeteer profile, a browser on such a profile outside the OS temp dir, another user's browser — none is an orphan
+    row(330, 1, `/bin/sh -c sleep 120; : --user-data-dir=${T}/puppeteer_dev_chrome_profile-tmux`),
+    row(331, 1, `node /scratch/e2e.js --user-data-dir=${T}/puppeteer_dev_chrome_profile-e2e --remote-debugging-pipe`),
+    row(332, 1, `${CHROME} --user-data-dir=/Users/u/puppeteer_dev_chrome_profile-home --remote-debugging-pipe`),
+    row(333, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-root --remote-debugging-pipe`, 600, UID + 1),
+    // a profile path with a space is read whole
+    row(334, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Sp ace --remote-debugging-pipe`),
+  ])
+  return { row, table }
+}
+
+// ── units, the runner ────────────────────────────────────────────────────────
+// weight: seconds of one run on 2026-11-09 (10 cores) — only the order the pool starts them in (longest first). serial: an in-process timing threshold ≤ 500 ms (a guard that fails under load moves to the tail); runs alone after the pool. The second-scale hook-timeout guards (≥ 1 s) stay in the pool: hang guards with a wide margin.
+const UNITS = [
+  { id: 'parse', weight: 1 }, // command parsing + what goes into a commit
+  { id: 'config', weight: 1 }, // config and the STAGES.md header
+  { id: 'twins', weight: 1 }, // English twins of the markers: the same result as in Russian
+  { id: 'criteria', weight: 1 }, // criterion closing rules
+  { id: 'gitguard', weight: 4 }, // git-guard and session-start on a live repo
+  { id: 'gates', weight: 5 }, // 0.12 gates: the journal, subagent launches, signatures, a task over two repos
+  { id: 'force013', weight: 3 }, // 0.13: force does not wait for confirmations
+  { id: 'v014', weight: 4 }, // 0.14: findings outcome, unverified, frames
+  { id: 'v015', weight: 17 }, // 0.15: criteria in the plan, the kit view, CI gates, work after "done" + English twin of t…
+  { id: 'v016', weight: 6, serial: true }, // 0.16: English phrase heuristics and the report language
+  { id: 'heavy', weight: 2 }, // heavy checks: scope by the diff and the machine queue
+  { id: 'archive', weight: 3 }, // STAGES.md archiving + 0.16 (AC-3.3): texts that scripts write into task files — in the ta…
+  { id: 'showcase', weight: 2 }, // validate.mjs: the "N skills / N agents" count in a showcase, Russian and English forms (A…
+  { id: 'xref', weight: 2 }, // validate.mjs: cross-references and Cyrillic outside the allowlist (AC-15.4)
+  { id: 'retro', weight: 3 }, // retro
+  { id: 'catchup016', weight: 6, serial: true }, // 0.16 catch-up: English gate forms close only what they should (final reviews of the branc…
+  { id: 'receipts', weight: 58 }, // stage receipts (VT-1 stage 3): the force commit needs the stage’s checkers, the close nee…
+  { id: 'receiptstime', weight: 1, serial: true }, // receipts 5d fresh m-2: the 300 KB "— logic-only," heading under 100 ms, apart from the pool
+  { id: 'vt1s4', weight: 6 }, // Stage 4 of VT-1: honest live form, verify-doctor, frames-guard before the first navigation
+  { id: 'vt1s5', weight: 5 }, // VT-1 stage 5: dismissal trail and evidence for decisions taken alone
+  { id: 'vt1s5c', weight: 3 }, // VT-1 stage 5c: the digest’s "Not ready for PR" reads a ledger the way journal-gate does
+  { id: 'vt1s5a', weight: 6, serial: true }, // VT-1 stage 5a: final-check catch-up — old reports stay editable, one per-task date gate, …
+  { id: 'vt1s5cfix', weight: 6, serial: true }, // VT-1 stage 5c fix round 1: task files read bounded and fail closed, linear counts and ran…
+  { id: 'vt1s5b', weight: 18 }, // VT-1 stage 5b (0.18.1): devtools-verify closes the pages and browsers it opened; browser-…
+  { id: 'vt1s5btime', weight: 1, serial: true }, // VT-1 stage 5b S-3: a 1 MB whitespace run in one process's --user-data-dir= under 100 ms, apart from the pool
+  { id: 'vt1s5e', weight: 6, serial: true }, // VT-1 stage 5e (0.18.2): the run summary is plain markdown; a blocker is lifted only by a …
+  { id: 'vt3s6', weight: 1 }, // VT-3 stage 6: the eval harness isolates the plugin data dir
+  { id: 'vt3s7a', weight: 4 }, // VT-3 stage 7a: hook firings log (AC-7.2)
+  { id: 'vt3final', weight: 3 }, // VT-3 final checks: retro’s «Hook firings» is scoped to the retro targets and counts block…
+  { id: 'vt3m4', weight: 2 }, // VT-3 branch review m-4: the real journal-gate hook stamps the rows of one block with one …
+  { id: 'vt3m6', weight: 2 }, // VT-3 branch review m-6: rows a linked worktree of the retro target wrote are the target’s…
+  { id: 'vt4s8', weight: 5 }, // stage 8 (VT-4): the verify map — verify-map.mjs and the `map:` report rule
+  { id: 'vt4s9', weight: 5 }, // stage 9 (VT-4): proof of effects, re-observation, live radius — the three 0.20 report rul…
+  { id: 'vt4s9a', weight: 7 }, // stage 9a (VT-4): the final-check catch-up — route groups, one radius and one map-root rea…
+  { id: 'vt4s9b', weight: 3 }, // stage 9b (VT-4): the radius note, real FEATURE-MAP rows, more [effect] PASS shapes, own-s…
+  { id: 'vt4s9c', weight: 3 }, // stage 9c (VT-4): B3 Nuxt component names, B4 non-component chains, workspace imports
+  { id: 'vt5s10', weight: 3 }, // VT-5 stage 10: plan-check and the stage-implement spawn
+  { id: 'vt5s10f1', weight: 6 }, // VT-5 stage 10, fix round 1: D7 incident + legitimate pairs for the plan-check rules
+  { id: 'vt5s10f2', weight: 3 }, // VT-5 stage 10, fix round 2 (O-1): the plan snapshot is taken by journal-gate before the e…
+  { id: 'makerreceipts', weight: 33 }, // VT-5 stage 11 (VT-1 stage 11): maker receipts — the hand-back contract at SubagentStop, t…
+  { id: 'vt5s11b', weight: 12 }, // VT-5 stage 11 part B (K11.7, AC-11.4): the resume point after /compact in an open force r…
+  { id: 'vt5s11a', weight: 39 }, // VT-5 stage 11a, round A (K11a.1-K11a.6): the security review of 0.21.0 — the orchestrator…
+  { id: 'vt5s11atime', weight: 1, serial: true }, // VT-5 stage 11a K11a.6: parseHandback on three 3200-character runs (< 100 ms) and the stage-id parser on 100 KB (< 500 ms), apart from the pool
+  { id: 'vt6s12', weight: 3 }, // Stage 12 of VT-6 (P1, decision 12c): a repo-local team review skill named in the config i…
+  { id: 'vt6s12r1', weight: 3 }, // Stage 12 of VT-6, round 1: the findings ledger on the team review report and its re-runs
+  { id: 'vt6s13', weight: 3 }, // Stage 13 of VT-6: the project’s `## Repo rules` on a force commit
+  { id: 'vt6findings', weight: 2 }, // Stage 13 of VT-6: `retro.mjs --findings`, the input of /promote
+  { id: 'vt6kit', weight: 3 }, // Stage 13 of VT-6: kit-overrides false-positive patterns (`skills/stage-check/references/k…
+  { id: 'vt6promote', weight: 4 }, // /promote proof runner (stage 13): a fake project ESLint, no real one needed
+  { id: 'vt6s13f1', weight: 4 }, // Stage 13 of VT-6, fix round 1: pro-review findings M-2 (a backtracking row), M-3 (moved-l…
+  { id: 'vt6retro', weight: 2 }, // Stage 13 of VT-6, fix round 1: `retro --findings` (m-1 author date, m-4 registry tasks, f…
+  { id: 'vt6s13a', weight: 5 }, // Stage 13a of VT-6, fix round 1: pro-review M-1 (post-done base), security 1, 3, 4, 6, 7
+  { id: 'vt6s13b', weight: 7 }, // Stage 13b of VT-6 (part A): B1 team_review config in a linked worktree, B3 M-1..M-4, B4 o…
+  { id: 'vt6s13c', weight: 2 }, // Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit…
+]
+const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
+const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
+const seen = new Set()
+const unit = (id) => {
+  if (!UNIT_IDS.has(id)) throw new Error(`unit "${id}" is not in the UNITS table`)
+  seen.add(id)
+  return wanted.has(id)
+}
+
+const rowsIn = (dir, name = 'firings.jsonl') => {
+  try {
+    return readFileSync(join(dir, name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+  } catch {
+    return []
+  }
+}
+
+// The rows of the whole suite for the late checks: the rotated log first, then the current one.
+const suiteRows = (suiteData) => {
+  const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : suiteData
+  return [...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)]
+}
+
+// Stage 13b of VT-6 (AC-13b.5), legitimate side: no row of the whole suite carries a rule ID of that lane that hook-rules.json does not know (late: the rows of every unit, in both modes).
+lateChecks.push((suiteData) => {
+  const rows = suiteRows(suiteData)
+  check('firing log (13b) legitimate: no row carries a rule ID of this lane that hook-rules.json does not know', rows.every((row) => !/^(?:git-guard|journal-gate)\/(?:repo-rule|team-review)/.test(row.rule)), 'a lane-invented ID')
+})
+
+// every rule ID of the hooks wrote a row somewhere in this suite (the fixtures above and all the earlier ones ran against the one data directory) (K11c.1: run at the end — the fixtures of VT-5 come after this point)
+lateChecks.push((suiteData) => {
+  const rows = suiteRows(suiteData)
+  const written = new Set(rows.map((row) => row.rule))
+  const ids = new Set()
+  for (const hookName of ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard', 'maker-guard']) {
+    for (const m of readFileSync(join(PLUGIN, 'hooks', `${hookName}.mjs`), 'utf8').matchAll(new RegExp(`'(${hookName}/[a-z0-9-]+)'`, 'g'))) ids.add(m[1])
+  }
+  for (const id of [...ids].sort()) check(`firings AC-7.2: ${id} wrote a row in this suite`, written.has(id))
+  check('firings: the suite found the rule IDs it should (21 at this stage, never fewer)', ids.size >= 21, `${ids.size}`)
+  check('firings: every row of the suite has the fields retro needs', rows.every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
+})
+
+// What a finished worker was, from what it printed and how it ended.
+const classify = (out, err, code, signal) => {
+  const printed = out.split('\n')
+  const passed = printed.filter((line) => line.startsWith('✔ ')).length
+  const failedChecks = printed.filter((line) => line.startsWith('✘ ')).length
+  const state = signal || (code !== 0 && code !== 1) || (code === 1 && !failedChecks) ? 'crashed' : failedChecks || code === 1 ? 'failed' : passed ? 'ok' : 'empty'
+  return { passed, failedChecks, state, code, signal, err }
+}
+// The line a unit that did not pass adds to the output, naming the unit; a crash carries the error line of its stderr (`Error: …`, `TypeError: …`), else the last line that is neither node's `Node.js vXX` trailer nor a stack frame (the whole of it is printed above).
+const causeOf = (err) => {
+  const lines = err.split('\n').map((line) => line.trim()).filter((line) => line && !/^Node\.js v\d/.test(line))
+  return lines.find((line) => /^(?:[A-Z]\w*)?Error\b/.test(line)) ?? lines.filter((line) => !/^at\s/.test(line)).at(-1)
+}
+const problemOf = (id, { state, code, signal, err, failedChecks }) =>
+  state === 'crashed' ? `✘ unit "${id}" crashed (${signal ? `signal ${signal}` : `exit ${code}`})${causeOf(err) ? `: ${causeOf(err)}` : ''}`
+    : state === 'failed' ? `✘ unit "${id}" failed ${failedChecks} check${failedChecks === 1 ? '' : 's'}`
+      : state === 'empty' ? `✘ unit "${id}" printed no check`
+        : null
+
+// Runs the units: the parallel ones in a pool of `jobs`, longest first; the serial ones one at a time after the pool has drained. Resolves to one result per unit.
+// Prints what the units wrote, in table order (stdout as it is, every stderr line prefixed with `[unit id]`), then the problem line of each unit that did not pass. The default mode and `--self-test` both end here.
+// Resolves to the totals, the problem lines and the exit status: 1 for a failed check or a unit problem (failed, crashed, empty), else 0. `quiet`: prints nothing (the self-test).
+const report = (units, results, { quiet = false } = {}) => {
+  const lines = []
+  let problems = 0
+  let passed = 0
+  let failedChecks = 0
+  for (const { id } of units) {
+    const result = results.get(id)
+    if (!quiet) process.stdout.write(result.out.endsWith('\n') || !result.out ? result.out : `${result.out}\n`)
+    if (result.err && !quiet) process.stderr.write(result.err.split('\n').filter((line, i, all) => line || i < all.length - 1).map((line) => `[${id}] ${line}\n`).join(''))
+    const problem = problemOf(id, result)
+    if (problem) { if (!quiet) console.log(problem); lines.push(problem); problems++ }
+    passed += result.passed
+    failedChecks += result.failedChecks
+  }
+  return { lines, problems, passed, failedChecks, exit: failedChecks || problems ? 1 : 0 }
+}
+
+const runUnits = async (units, jobs, dataRoot, spawnArgs = (id) => [SELF, '--units', id]) => {
+  const results = new Map()
+  const runOne = (u) =>
+    new Promise((done) => {
+      const dataDir = join(dataRoot, u.id)
+      mkdirSync(dataDir, { recursive: true })
+      const startedAt = Date.now()
+      let out = ''
+      let err = ''
+      const finish = (code, signal) => {
+        const result = { ...classify(out, err, code, signal), out, startedAt, endedAt: Date.now(), dataDir }
+        results.set(u.id, result)
+        process.stderr.write(`· ${u.id} ${((result.endedAt - startedAt) / 1000).toFixed(1)} s${result.state === 'ok' ? '' : ` ${result.state}`}\n`)
+        done()
+      }
+      const child = spawn(process.execPath, spawnArgs(u.id), { env: { ...process.env, HOOKS_TEST_UNIT_DATA: dataDir }, stdio: ['ignore', 'pipe', 'pipe'] })
+      // A pool worker is one of several processes of a run: lowered priority keeps the machine usable next to other sessions. Set here, before node has
+      // loaded the suite, so every fixture process it spawns inherits it. A serial unit keeps the runner's priority (the file header says why).
+      if (!u.serial && child.pid && getPriority() < 10) {
+        try {
+          setPriority(child.pid, 10)
+        } catch (error) {
+          err += `hooks-test: the priority was not lowered (${error.message})\n`
+        }
+      }
+      child.stdout.on('data', (chunk) => { out += chunk })
+      child.stderr.on('data', (chunk) => { err += chunk })
+      child.on('error', (error) => { err += String(error); finish(null, null) })
+      child.on('close', finish)
+    })
+  const parallel = units.filter((u) => !u.serial).sort((a, b) => b.weight - a.weight)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(jobs, parallel.length) }, async () => {
+    while (next < parallel.length) await runOne(parallel[next++])
+  }))
+  for (const u of units.filter((x) => x.serial)) await runOne(u)
+  return results
+}
+
+if (MODE === 'self-test') {
+  // The failure cases of the runner: each must end the run with exit 1 and name the unit. Not part of the default run, so the set of checks stays as it was.
+  const fakes = [{ id: 'selftest-ok', weight: 1 }, { id: 'selftest-fail', weight: 2 }, { id: 'selftest-crash', weight: 3 }, { id: 'selftest-empty', weight: 4 }, { id: 'selftest-slow', weight: 5 }, { id: 'selftest-serial', weight: 1, serial: true }]
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-selftest-'))
+  const results = await runUnits(fakes, 3, root)
+  const get = (id) => results.get(id)
+  const verdict = (ids) => report(fakes.filter(({ id }) => ids.includes(id)), results, { quiet: true })
+  check('runner self-test: a unit whose check fails — state failed, one failed check, named in the problem line', get('selftest-fail').state === 'failed' && get('selftest-fail').failedChecks === 1 && /unit "selftest-fail" failed 1 check/.test(verdict(['selftest-fail']).lines[0]))
+  check('runner self-test: a worker that crashes — state crashed, its stderr kept, the problem line quotes the error line, not a stack frame or the Node.js trailer', get('selftest-crash').state === 'crashed' && /\n\s+at /.test(get('selftest-crash').err) && get('selftest-crash').err.includes('Node.js v') && /unit "selftest-crash" crashed \(exit 1\): Error: boom: the fake worker died$/.test(verdict(['selftest-crash']).lines[0]))
+  check('runner self-test: the cause of a crash without an error line is the last line that is not a stack frame or the trailer', causeOf('x\n}\n    at foo (bar:1:1)\n\nNode.js v22.0.0') === '}')
+  check('runner self-test: --units with no value, an empty value or a value starting with -- is a usage error (exit 2)', ['--units', '--units=', '--units=--serial'].every((arg) => spawnSync(process.execPath, [SELF, arg], { encoding: 'utf8' }).status === 2) && spawnSync(process.execPath, [SELF, '--units', ''], { encoding: 'utf8' }).status === 2)
+  check('runner self-test: a unit that prints no check — state empty, named in the problem line', get('selftest-empty').state === 'empty' && /unit "selftest-empty" printed no check/.test(verdict(['selftest-empty']).lines[0]))
+  check('runner self-test: the reporting loop of the default run — each of fail / crash / empty gives exit 1, a clean unit exit 0 and no problem line', ['selftest-fail', 'selftest-crash', 'selftest-empty'].every((id) => verdict([id]).exit === 1 && verdict([id]).lines.length === 1) && verdict(['selftest-ok']).exit === 0 && verdict(['selftest-ok']).lines.length === 0)
+  check('runner self-test: a serial unit starts only after every parallel unit has ended', fakes.filter((u) => !u.serial).every(({ id }) => get('selftest-serial').startedAt >= get(id).endedAt))
+  check('runner self-test: a pool worker runs at nice 10, a serial unit at the runner\'s own priority', get('selftest-ok').out.includes(`at priority ${Math.max(10, getPriority())}`) && get('selftest-serial').out.includes(`at priority ${getPriority()}`), `${get('selftest-ok').out.trim()} / ${get('selftest-serial').out.trim()}`)
+  check('runner self-test: the pool never ran more workers at once than it was given', (() => {
+    const spans = fakes.filter((u) => !u.serial).map(({ id }) => get(id))
+    return spans.every((a) => spans.filter((b) => b.startedAt <= a.startedAt && a.startedAt < b.endedAt).length <= 3)
+  })())
+  rmSync(root, { recursive: true, force: true })
+  await drained()
+  process.exit(failed ? 1 : 0)
+}
+
+if (MODE === 'run') {
+  const cores = availableParallelism()
+  const load = loadavg()[0]
+  const fromEnv = Number.parseInt(process.env.HOOKS_TEST_JOBS ?? '', 10)
+  const jobs = fromEnv > 0 ? fromEnv : Math.max(1, Math.min(cores - 2, cores - Math.round(load)))
+  console.log(`hooks-test: ${jobs} worker${jobs === 1 ? '' : 's'} at nice 10, then the serial units one at a time at the normal priority — ${fromEnv > 0 ? `HOOKS_TEST_JOBS=${fromEnv}` : `${cores} cores, load average ${load.toFixed(2)}: min(${cores} - 2, ${cores} - ${Math.round(load)})`}`)
+  const startedAt = Date.now()
+  const dataRoot = mkdtempSync(join(tmpdir(), 'hooks-test-units-'))
+  const results = await runUnits(UNITS, jobs, dataRoot)
+  const totals = report(UNITS, results)
+  const { problems } = totals
+  let passed = totals.passed
+  failed += totals.failedChecks
+  // The late checks read what the hooks logged across the whole suite: the firings of every unit, put together.
+  const merged = join(dataRoot, 'all')
+  mkdirSync(merged)
+  for (const name of ['firings.jsonl', 'firings.jsonl.1']) {
+    const parts = UNITS.map(({ id }) => join(results.get(id).dataDir, name)).filter((file) => existsSync(file)).map((file) => readFileSync(file, 'utf8'))
+    if (parts.length) writeFileSync(join(merged, name), parts.map((text) => (text.endsWith('\n') ? text : `${text}\n`)).join(''))
+  }
+  const failedBefore = failed
+  const printedBefore = printed
+  for (const late of lateChecks) late(merged)
+  const lateFailed = failed - failedBefore
+  passed += printed - printedBefore - (failed - failedBefore)
+  rmSync(dataRoot, { recursive: true, force: true })
+  console.log(`hooks-test: ${passed} ✔ in ${UNITS.length} units, ${failed} ✘${problems ? `, ${problems} unit problem${problems === 1 ? '' : 's'}` : ''}${lateFailed ? ` (${lateFailed} late)` : ''} — ${((Date.now() - startedAt) / 1000).toFixed(1)} s`)
+  await drained()
+  process.exit(totals.exit || lateFailed ? 1 : 0)
+}
+
+// ── helpers the sections share (they stay at the top, every worker has them) ──────────────
+const REPORTS = ['devtools-verify-2.md', 'pro-review-2.md']
+const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+const write = (root, files) => {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true })
+    writeFileSync(join(root, path), content)
+  }
+}
+const stages = (ticket, branch, { status = 'in-progress', force = '' } = {}) =>
+  `# ${ticket}: задача\nВетка: \`${branch}\`\n\n## Статус: этап 1 — в работе\n\n${force}## Этапы\n\n### Этап 1: первый  [status: ${status}]\n`
+const hook = (name, cwd, command) => {
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], {
+    input: JSON.stringify({ cwd, tool_input: { command } }),
+    encoding: 'utf8',
+  })
+  if (name === 'session-start.mjs') return run.stdout
+  if (!run.stdout) return 'allow'
+  return JSON.parse(run.stdout).hookSpecificOutput?.permissionDecision ?? 'message'
+}
+const runHook = (name, input) => {
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8' })
+  if (!run.stdout.trim()) return { decision: 'allow', text: run.stderr }
+  if (name === 'session-start.mjs') return { decision: 'message', text: run.stdout }
+  const out = JSON.parse(run.stdout)
+  return {
+    decision: out.hookSpecificOutput?.permissionDecision ?? out.decision ?? 'message',
+    text: out.hookSpecificOutput?.permissionDecisionReason ?? out.reason ?? out.systemMessage ?? out.hookSpecificOutput?.additionalContext ?? '',
+  }
+}
+let bashCalls = 0
+const bashGate = (cwd, command, effect = () => {}) => {
+  const base = { cwd, tool_name: 'Bash', tool_use_id: `toolu_test_${bashCalls++}`, tool_input: { command } }
+  runHook('journal-gate.mjs', { ...base, hook_event_name: 'PreToolUse' })
+  effect()
+  return runHook('journal-gate.mjs', { ...base, hook_event_name: 'PostToolUse' })
+}
+const repoAt = (path, branch) => {
+  mkdirSync(path, { recursive: true })
+  git(path, 'init', '-q', '-b', branch)
+  git(path, 'config', 'user.email', 'test@example.com')
+  git(path, 'config', 'user.name', 'test')
+  write(path, { 'src/a.ts': 'export const a = 1\n', '.gitignore': '.claude/\nmsg.txt\n' })
+  git(path, 'add', '-A')
+  git(path, 'commit', '-qm', 'base')
+}
+const OLD = '- `AC-1.1` WHEN старое THEN старое — [verify: devtools-verify] ✅ pro-review по коду'
+const journal = (extra = '', force = '') =>
+  `# T-7: задача\nВетка: \`T-7/feat/g\`\n\n## Статус: этап 2\n\n${force}## Этапы\n\n### Этап 1: первый  [status: done]\n${OLD}\n${extra}`
+const BAD_LINE = '- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ✅ pro-review по коду\n'
+const jc = await import(join(PLUGIN, 'journal-check.mjs'))
+const snapshotFile = (dataDir, taskDir) => join(dataDir, 'journal-baseline', `${createHash('sha1').update(realpathSync(taskDir)).digest('hex').slice(0, 16)}.json`)
+const setGate = (taskDir, since, seen = [], dataDir = DATA) => {
+  jc.baselineInfo(dataDir, taskDir)
+  const file = snapshotFile(dataDir, taskDir)
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since018: since, forceSeen: seen }))
+}
+const REVIEW_EN = '# pro-review, stage 1\nFindings: critical 0 · major 2 · minor 0\n\n### 🟠 M-1 a.ts:1 — duplicate\n### 🟠 M-2 b.ts:2 — race\n'
+const gates = await import(join(PLUGIN, 'ci-gates.mjs'))
+const kits = await import(join(PLUGIN, 'kit-override-scan.mjs'))
+const { runDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
+const { describe: describeGate } = await import(join(PLUGIN, 'ci-gates.mjs'))
+const lines = (text, count) => Array.from({ length: count }, () => text).join('\n')
+const RU_PROSE = 'Проверил карточку этапа: компонент рендерится без ошибок, отступы совпадают с макетом, а пустое состояние списка показывает заглушку.'
+const RU_REPORT = `# pro-review, этап 3\nНаходки: critical 0 · major 1 · minor 0\n\n${lines(RU_PROSE, 5)}\n`
+
 // ── command parsing ──────────────────────────────────────────────────────────
+if (unit('parse')) {
 const CWD = '/repo'
 const COMMANDS = [
   ['git add -A', ['add']],
@@ -85,9 +462,11 @@ for (const [command, want] of SCOPES) {
   check(`scope ${JSON.stringify(command).slice(0, 60)}`, same(got, want), `got ${JSON.stringify(got)}`)
 }
 check('scope: a path — with the directory of the call', commitScope(gitInvocations('cd src && git add a.ts', CWD)).specs[0]?.dir === '/repo/src')
+}
 
 // ── config and the STAGES.md header ──────────────────────────────────────────
 // The header, status and Force block fixtures below are Russian on purpose (the second supported task language).
+if (unit('config')) {
 const TASK_PATHS = [
   ['- task_path: `.claude/tasks/` — один каталог на монорепо', '/r/.claude/tasks'],
   ['- task_path: ~/.claude/team-tasks/   # вне репо', join(homedir(), '.claude/team-tasks')],
@@ -133,8 +512,10 @@ check('open Force block: date from the heading, text up to the next section', ((
   return block?.date === '2026-10-05' && block.body.includes('Ответы интервью') && !block.body.includes('Этапы')
 })())
 check('review_model: from the config, opus by default', reviewModel('- review_model: sonnet   # дешевле') === 'sonnet' && reviewModel('- main_branch: dev') === 'opus')
+}
 
 // ── English twins of the markers: the same result as in Russian ──────────────
+if (unit('twins')) {
 const EN_HEADERS = [
   ['Branch: `T-4/feat/app` · App: `apps/expert` · Contexts: desktop', ['T-4/feat/app']],
   ['Branch: redesign-2.0  Contexts: mobile + desktop', ['redesign-2.0']],
@@ -190,10 +571,11 @@ check('markers: Parity — prose is not a table', ['the prototype parity pass', 
 check('markers: Parity — field, heading, table cell', ['Parity: moved', '- **Parity:** moved', '### Parity', '| Parity | x |'].every((line) => markers.PARITY_TABLE.test(line)))
 check('markers: stage mention needs a word boundary', !markers.STAGE_MENTION.test('backstage 2 of the show') && markers.STAGE_MENTION.test('Stage 2 done') && markers.STAGE_MENTION.test('этап 2'))
 check('markers: Parity table — the word, not the ds-parity skill name', markers.PARITY_TABLE.test('| Parity | was `Old` |') && markers.PARITY_TABLE.test('| Паритет | было |') && !markers.PARITY_TABLE.test('- [x] ds-parity (checks/ds-parity-1.md)'))
+}
 
 // ── criterion closing rules ──────────────────────────────────────────────────
 // Russian fixtures of the second supported task language. The lines are live forms from STAGES.md: the outcome before the wording and after, a deferred check, smoke, a user decision.
-const REPORTS = ['devtools-verify-2.md', 'pro-review-2.md']
+if (unit('criteria')) {
 const AC_LINES = [
   ['- `AC-4.5` WHEN обязательное поле пустое THEN «Сохранить» неактивна — [verify: devtools-verify] ✅ pro-review по коду · ⏳ user-review', 'ac-checker'],
   ['- `AC-4.6` WHEN сохранено THEN тост — [verify: devtools-verify] ✅ pro-review по коду, стенд: лиды 76 и 80', 'ac-checker'],
@@ -237,28 +619,12 @@ for (const [text, want] of PASSES) {
   const got = barePasses(text)
   check(`bare PASS ${JSON.stringify(text).slice(0, 50)} → [${want}]`, same(got, want), `got ${JSON.stringify(got)}`)
 }
+}
 
 // ── git-guard and session-start on a live repo ──────────────────────────────
 // The STAGES.md fixtures here are Russian (the second supported task language).
-const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
-const write = (root, files) => {
-  for (const [path, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(root, path)), { recursive: true })
-    writeFileSync(join(root, path), content)
-  }
-}
-const stages = (ticket, branch, { status = 'in-progress', force = '' } = {}) =>
-  `# ${ticket}: задача\nВетка: \`${branch}\`\n\n## Статус: этап 1 — в работе\n\n${force}## Этапы\n\n### Этап 1: первый  [status: ${status}]\n`
-const hook = (name, cwd, command) => {
-  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], {
-    input: JSON.stringify({ cwd, tool_input: { command } }),
-    encoding: 'utf8',
-  })
-  if (name === 'session-start.mjs') return run.stdout
-  if (!run.stdout) return 'allow'
-  return JSON.parse(run.stdout).hookSpecificOutput?.permissionDecision ?? 'message'
-}
 
+if (unit('gitguard')) {
 const root = mkdtempSync(join(tmpdir(), 'hooks-test-'))
 const repo = join(root, 'app')
 mkdirSync(repo)
@@ -333,42 +699,15 @@ git(plain, 'init', '-q')
 check('repo without the pipeline: the hooks are silent', hook('git-guard.mjs', plain, 'git add -A') === 'allow' && hook('session-start.mjs', plain) === '')
 check('repo without the pipeline: a signature in the commit is none of our business', hook('git-guard.mjs', plain, 'git commit -m "x\n\nCo-Authored-By: X <x@y.z>"') === 'allow')
 rmSync(root, { recursive: true, force: true })
+}
 
 // ── 0.12 gates: the journal, subagent launches, signatures, a task over two repos ──────
 // Russian fixtures (the second supported task language).
-const runHook = (name, input) => {
-  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', name)], { input: JSON.stringify(input), encoding: 'utf8' })
-  if (!run.stdout.trim()) return { decision: 'allow', text: run.stderr }
-  if (name === 'session-start.mjs') return { decision: 'message', text: run.stdout }
-  const out = JSON.parse(run.stdout)
-  return {
-    decision: out.hookSpecificOutput?.permissionDecision ?? out.decision ?? 'message',
-    text: out.hookSpecificOutput?.permissionDecisionReason ?? out.reason ?? out.systemMessage ?? out.hookSpecificOutput?.additionalContext ?? '',
-  }
-}
 // A Bash call as the hooks see it: the PreToolUse run stamps the journal files, `effect` is what the command does, the PostToolUse run judges.
-let bashCalls = 0
-const bashGate = (cwd, command, effect = () => {}) => {
-  const base = { cwd, tool_name: 'Bash', tool_use_id: `toolu_test_${bashCalls++}`, tool_input: { command } }
-  runHook('journal-gate.mjs', { ...base, hook_event_name: 'PreToolUse' })
-  effect()
-  return runHook('journal-gate.mjs', { ...base, hook_event_name: 'PostToolUse' })
-}
-const repoAt = (path, branch) => {
-  mkdirSync(path, { recursive: true })
-  git(path, 'init', '-q', '-b', branch)
-  git(path, 'config', 'user.email', 'test@example.com')
-  git(path, 'config', 'user.name', 'test')
-  write(path, { 'src/a.ts': 'export const a = 1\n', '.gitignore': '.claude/\nmsg.txt\n' })
-  git(path, 'add', '-A')
-  git(path, 'commit', '-qm', 'base')
-}
+if (unit('gates')) {
 const gRoot = mkdtempSync(join(tmpdir(), 'gates-test-'))
 const app = join(gRoot, 'app')
 repoAt(app, 'main')
-const OLD = '- `AC-1.1` WHEN старое THEN старое — [verify: devtools-verify] ✅ pro-review по коду'
-const journal = (extra = '', force = '') =>
-  `# T-7: задача\nВетка: \`T-7/feat/g\`\n\n## Статус: этап 2\n\n${force}## Этапы\n\n### Этап 1: первый  [status: done]\n${OLD}\n${extra}`
 const stagesPath = join(app, '.claude/tasks/T-7/STAGES.md')
 write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': journal() })
 git(app, 'checkout', '-qb', 'T-7/feat/g')
@@ -380,7 +719,6 @@ write(app, { '.claude/tasks/T-7/STAGES.md': journal('- `AC-2.1` WHEN новое 
 const caught = gate('Edit', { file_path: stagesPath })
 check('journal: a new "✅ pro-review по коду" on a devtools criterion — returned to the agent', caught.decision === 'block' && /AC-2\.1/.test(caught.text) && !/AC-1\.1/.test(caught.text), caught.text)
 // AC-2.1: a Bash call is judged by what it changed in the journal, not by what its text names. The violation is already in STAGES.md here.
-const BAD_LINE = '- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ✅ pro-review по коду\n'
 const readsOnly = ['cat', 'ls', 'grep -n AC', 'sed -n 1,20p', 'head -5']
 for (const reader of readsOnly) {
   check(`journal: a read-only \`${reader}\` of STAGES.md with the violation in it — silent`, bashGate(app, `${reader} ${stagesPath}`).decision === 'allow')
@@ -420,6 +758,15 @@ check('stage-implement: confirmation is there — passes', agentHook('stage-pipe
 withForce('## Force-прогон 2026-09-24', 'Режим: автономный.')
 check('stage-implement: a block opened before 0.12 is left alone', agentHook('stage-pipeline:stage-implement', 'Тикет T-7, этап 2') === 'allow')
 check('other agents — silent', agentHook('stage-pipeline:devtools-verify', 'whole-branch mode') === 'allow')
+check('delta pro-review (--delta) without model — denied, as a whole-branch one', agentHook('stage-pipeline:pro-review', 'Ticket T-7, pro-review --delta checks/pro-review-branch.md. Base 3f2a9c1.') === 'deny')
+check('delta mode pro-review without model — denied (the prose form)', agentHook('stage-pipeline:pro-review', 'Ticket T-7, delta mode on checks/pro-review-branch.md.') === 'deny')
+check('delta pro-review on opus — passes', agentHook('stage-pipeline:pro-review', 'Ticket T-7, pro-review --delta checks/pro-review-branch.md.', 'opus') === 'allow')
+check('stage pro-review that only mentions the delta of the stage — no model required', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 2. Look at the delta of the fix round.') === 'allow')
+check('delta mode pro-review: `Mode: delta` — denied', agentHook('stage-pipeline:pro-review', 'Ticket T-7. Mode: delta, base 3f2a9c1.') === 'deny')
+check('delta mode pro-review: `delta review` — denied', agentHook('stage-pipeline:pro-review', 'Ticket T-7, a delta review of the fix round.') === 'deny')
+check('delta mode pro-review: Russian mode-delta form — denied', agentHook('stage-pipeline:pro-review', 'Тикет T-7. Режим: дельта, база 3f2a9c1.') === 'deny')
+check('delta mode pro-review: Russian delta-review form — denied', agentHook('stage-pipeline:pro-review', 'Тикет T-7, дельта-ревью раунда фиксов.') === 'deny')
+check('delta mode pro-review: a prompt naming a `-branch-delta-` report — denied', agentHook('stage-pipeline:pro-review', 'Ticket T-7, report checks/pro-review-branch-delta-1.md.') === 'deny')
 withForce('## Force run 2026-10-05', 'Mode: autonomous.\nInterview answers: branch — from dev')
 check('EN stage-implement: new Force block without "Confirmed:" — denied', agentHook('stage-pipeline:stage-implement', 'Ticket T-7, stage 2, implement mode') === 'deny')
 withForce('## Force run 2026-10-05', 'Mode: autonomous.\nInterview answers: branch — from dev\nConfirmed: 2026-10-05 — "yes, go"')
@@ -488,9 +835,11 @@ git(app, 'commit', '-qm', 'T-8: своя правка мимо журнала')
 const nearest = runHook('session-start.mjs', { cwd: app }).text
 check('session-start: base — the nearest integration branch, another PR does not count', /commits on the task's branches that are in neither STAGES\.md nor PR\.md \(1\)/.test(nearest) && !/чужая фича/.test(nearest), nearest)
 rmSync(gRoot, { recursive: true, force: true })
+}
 
 // ── 0.13: force does not wait for confirmations ──────────────────────────────
 // Russian fixtures (the second supported task language).
+if (unit('force013')) {
 const { askMatch, bashRulePattern, nameKill } = await import(join(PLUGIN, 'hooks/permission-rules.mjs'))
 const KILLS = [
   ['pkill -f "http.server 3199"; cd /repo; node floor-guard.mjs', 'pkill -f http.server 3199'],
@@ -566,18 +915,13 @@ write(fApp, { '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force
 git(fApp, 'checkout', '-q', 'T-9/feat/f')
 check('force "завершён с блокерами" — closed, the hook is silent', force(fApp, 'pkill -f x').decision === 'allow')
 rmSync(fRoot, { recursive: true, force: true })
+}
 
 // ── 0.14: findings outcome, unverified, frames ───────────────────────────────
 // Russian fixtures (the second supported task language).
-const jc = await import(join(PLUGIN, 'journal-check.mjs'))
 // The 0.18 rules keyed on a Force block apply from the day the task snapshot recorded at the migration (`releaseGate`, VT-1 5a m-2), not from a fixed date:
 // a fixture that needs them on a dated block records that day by hand (and which Force headings were already there), so it does not depend on today's date.
-const snapshotFile = (dataDir, taskDir) => join(dataDir, 'journal-baseline', `${createHash('sha1').update(realpathSync(taskDir)).digest('hex').slice(0, 16)}.json`)
-const setGate = (taskDir, since, seen = [], dataDir = DATA) => {
-  jc.baselineInfo(dataDir, taskDir)
-  const file = snapshotFile(dataDir, taskDir)
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since018: since, forceSeen: seen }))
-}
+if (unit('v014')) {
 const COUNTS = [
   ['# pro-review\nНаходки: critical 1 · major 2 · minor 3\n', 'pro-review-1.md', [1, 2, 3]],
   ['# figma\nВердикт: 3 расхождения (0 critical / 2 major / 1 minor-spec-note).\n', 'figma-compare-2.md', [0, 2, 1]],
@@ -627,7 +971,6 @@ check(
 check('devtools skip — geometry not required', jc.runtimeViolations('# devtools-verify\nskip: MCP недоступен\n', 'devtools-verify-2.md').length === 0)
 check('a checker report without a summary — report-summary', jc.summaryViolation('# i18n\nВердикт: 3 дефекта\n', 'i18n-sweep-2.md')?.rule === 'report-summary')
 check('not a checker report (a stand probe) — no summary needed', jc.summaryViolation('# probe\n', 'stand-probe-2026-10-03.md') === null)
-const REVIEW_EN = '# pro-review, stage 1\nFindings: critical 0 · major 2 · minor 0\n\n### 🟠 M-1 a.ts:1 — duplicate\n### 🟠 M-2 b.ts:2 — race\n'
 const missingEn = jc.ledgerViolations(REVIEW_EN, 'pro-review-1.md', { complete: true })
 check('EN findings outcome: two major without lines — ledger-missing', missingEn.length === 1 && missingEn[0].rule === 'ledger-missing', JSON.stringify(missingEn))
 check('EN findings outcome: one line for two major — still incomplete', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — fixed: a.ts:3\n`, 'pro-review-1.md', { complete: true }).length === 1)
@@ -773,9 +1116,11 @@ check('frames-guard: one frame not opened — the agent continues', unseen.decis
 check('frames-guard: all frames opened — the agent finishes', frames('stage-pipeline:devtools-verify', [a, b]).decision === 'allow')
 check('frames-guard: other agents are left alone', frames('stage-pipeline:pro-review', []).decision === 'allow')
 rmSync(lRoot, { recursive: true, force: true })
+}
 
 // ── 0.15: criteria in the plan, the kit view, CI gates, work after "done" ──────
 // Russian fixtures (the second supported task language).
+if (unit('v015')) {
 const LIKES = [
   ['- `AC-5.3` WHEN сохранить THEN как у эксперта — [verify: devtools-verify]', 'AC-5.3'],
   ['- D11: «Сохранить» — как у эксперта (expert-lead-card-sheet.tsx:227)', null],
@@ -786,7 +1131,6 @@ const LIKES = [
 ]
 for (const [line, want] of LIKES) check(`"как у X" ${line.slice(2, 46)} → ${want}`, (jc.likeViolation(line)?.id ?? null) === want, JSON.stringify(jc.likeViolation(line)))
 
-const gates = await import(join(PLUGIN, 'ci-gates.mjs'))
 const GATES_TABLE =
   '## Commands\n- test: `pnpm test`\n\n## Гейты CI (ронять нельзя)\n\n| Проверка | Команда | Что ловит |\n| --- | --- | --- |\n| Юниты | `pnpm test` | словари |\n' +
   '| **Смоук** | `pnpm --filter smoke exec playwright test` | маршруты |\n\n## Архитектура\n| слой | `не гейт` |\n'
@@ -808,7 +1152,6 @@ repoAt(kApp, 'main')
 write(kApp, { 'src/ui/button.tsx': 'export const B = 1\n', 'src/Old.tsx': 'export const Old = () => null\n', 'src/Other.tsx': 'export const o = "font-bold"\n' })
 git(kApp, 'add', '-A')
 git(kApp, 'commit', '-qm', 'base 2')
-const kits = await import(join(PLUGIN, 'kit-override-scan.mjs'))
 const KIT_CONFIG = '- ui_lib: shadcn/ui → `src/ui/`\n'
 write(kApp, {
   'src/Card.tsx': [
@@ -1163,10 +1506,12 @@ check('EN gate is green on HEAD — closing passes, gates are in the summary', g
 const eRebuilt = runHook('session-start.mjs', { cwd: eApp }).text
 check('EN session-start: the state line carries the force mark and the task', /T-13/.test(eRebuilt) || eRebuilt === '', eRebuilt)
 rmSync(eRoot, { recursive: true, force: true })
+}
 
 // ── 0.16: English phrase heuristics and the report language ───────────
 // For each heuristic there is a positive English fixture with the same result as its Russian twin above,
 // and a negative one: a legitimate English line without a hit. The Russian fixtures above were not changed.
+if (unit('v016')) {
 const EN_CAVEATS = [
   ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify (dark theme not verified)', true],
   ['- `AC-2.7` WHEN theme THEN ok — [verify: devtools-verify] ✅ devtools-verify, only from code', true],
@@ -1293,8 +1638,6 @@ check('EN outcome "pre-existing" without proof — ledger-unproven', jc.ledgerVi
 check('EN outcome "user decision" without a date or quote — ledger-unknown', jc.ledgerViolations(`${REVIEW_EN}\n## Findings outcome\n- M-1 — user decision\n`, 'pro-review-1.md')[0]?.rule === 'ledger-unknown')
 
 // "Could not verify": an empty list in English does not get into the run summary.
-const { runDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
-const { describe: describeGate } = await import(join(PLUGIN, 'ci-gates.mjs'))
 const digestFor = (items) => {
   const dir = mkdtempSync(join(tmpdir(), 'digest-en-'))
   mkdirSync(join(dir, 'T-30/checks'), { recursive: true })
@@ -1608,10 +1951,7 @@ for (const item of ['none of the states could be opened', 'AC-3.2 — no data on
 }
 
 // Report language: prose in the task language; code, paths, ids, UI quotes and short reports do not count.
-const lines = (text, count) => Array.from({ length: count }, () => text).join('\n')
-const RU_PROSE = 'Проверил карточку этапа: компонент рендерится без ошибок, отступы совпадают с макетом, а пустое состояние списка показывает заглушку.'
 const EN_PROSE = 'Checked the stage card: the component renders without errors, the gaps match the mockup and the empty list state shows a placeholder.'
-const RU_REPORT = `# pro-review, этап 3\nНаходки: critical 0 · major 1 · minor 0\n\n${lines(RU_PROSE, 5)}\n`
 const EN_REPORT = `# pro-review, stage 3\nFindings: critical 0 · major 1 · minor 0\n\n${lines(EN_PROSE, 5)}\n`
 const RU_TECH =
   '# devtools-verify, этап 3\nНаходки: critical 0 · major 0 · minor 0\n\n' +
@@ -1706,8 +2046,10 @@ const lgMig = jc.baselineInfo(DATA, join(lgApp, '.claude/tasks/T-32'))
 const lgMigData = JSON.parse(readFileSync(lgSnapFile, 'utf8'))
 check('journal-baseline: v2 snapshot without names — migration records current reports as old, other fields intact', lgMig.reports.has('pro-review-0.md') && lgMig.reports.has('pro-review-1.md') && same(lgMigData.reports.sort(), ['pro-review-0.md', 'pro-review-1.md']) && lgMigData.ledgerSince === lgSnapData.ledgerSince && same(lgMigData.lines, lgSnapData.lines))
 rmSync(lgRoot, { recursive: true, force: true })
+}
 
 // ── heavy checks: scope by the diff and the machine queue ─────────────────────
+if (unit('heavy')) {
 const RUN_CHECK = join(PLUGIN, 'run-check.mjs')
 const rcRoot = mkdtempSync(join(tmpdir(), 'run-check-test-'))
 const rcRepo = join(rcRoot, 'repo')
@@ -1744,9 +2086,11 @@ writeFileSync(join(locks, 'heavy.lock', 'owner.json'), JSON.stringify({ pid: 999
 const stale = rc(['--', 'echo ok'], { STAGE_PIPELINE_RESOURCES: 'low' })
 check('run-check: the lock of a dead process is taken over', stale.status === 0 && /ok/.test(stale.stdout) && !/жду/.test(stale.stdout), stale.stdout)
 rmSync(rcRoot, { recursive: true, force: true })
+}
 
 // ── STAGES.md archiving ──────────────────────────────────────────────────────
 // The source is a Russian STAGES.md (the second supported task language); the English twin is below.
+if (unit('archive')) {
 const entries = Array.from({ length: 10 }, (_, i) => `- **${String(22 - i).padStart(2, '0')}.08.2026** — запись ${22 - i}\n  подробности ${22 - i}`)
 const source = [
   '# T: задача',
@@ -1884,11 +2228,12 @@ for (const [lang, text, head, moved, journal, entryWord] of [
   check('digest: a task without a language — Russian, as before', /^### Блокеры — нужен твой ответ \(0\)$/m.test(bare), bare)
   check('describe: the gate text is English by default, Russian for a ru task', describeGate({ name: 'smoke', command: 'yarn smoke', status: 'red', code: 1 }) === '"smoke" (`yarn smoke`) — red, code 1' && describeGate({ name: 'smoke', command: 'yarn smoke', status: 'red', code: 1 }, 'ru') === '«smoke» (`yarn smoke`) — красный, код 1')
 }
+}
 
 // ── validate.mjs: the "N skills / N agents" count in a showcase, Russian and English forms (AC-4.2) ──
 // A temporary repo with one skill and one agent; validate.mjs is copied into it and run without the CI flag (the repo is not a git checkout).
 // English forms plus a permanent Russian regression case (these are validate fixtures, not hook fixtures).
-{
+if (unit('showcase')) {
   const vRoot = mkdtempSync(join(tmpdir(), 'validate-test-'))
   write(vRoot, {
     'scripts/validate.mjs': readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'validate.mjs'), 'utf8'),
@@ -1924,7 +2269,7 @@ for (const [lang, text, head, moved, journal, entryWord] of [
 
 // ── validate.mjs: cross-references and Cyrillic outside the allowlist (AC-15.4) ──
 // A temporary git repo with one skill; validate.mjs and the real allowlist are copied into it and run as in CI.
-{
+if (unit('xref')) {
   const here = dirname(fileURLToPath(import.meta.url))
   const xRoot = mkdtempSync(join(tmpdir(), 'validate-xref-test-'))
   write(xRoot, {
@@ -1982,6 +2327,7 @@ for (const [lang, text, head, moved, journal, entryWord] of [
 
 // ── retro ────────────────────────────────────────────────────────────────────
 // The STAGES.md fixture is Russian (the second supported task language).
+if (unit('retro')) {
 const retroRoot = mkdtempSync(join(tmpdir(), 'retro-test-'))
 write(retroRoot, {
   'T/STAGES.md': [
@@ -2019,9 +2365,10 @@ check('retro: --all before --firings <file> reads the same file', /agent-guard\/
 const retroBare = spawnSync(process.execPath, [join(PLUGIN, 'retro.mjs'), retroRoot, '--all', '--firings'], { encoding: 'utf8' })
 check('retro: a valueless --firings exits 2 with a message', retroBare.status === 2 && /--firings needs a file/.test(retroBare.stderr), `${retroBare.status} ${retroBare.stderr.trim()}`)
 rmSync(retroRoot, { recursive: true, force: true })
+}
 
 // ── 0.16 catch-up: English gate forms close only what they should (final reviews of the branch) ──
-{
+if (unit('catchup016')) {
   const status = (line) => `## Status: ${line}\n\n## Force run 2026-10-17\n`
   // 1. Closing a force run in the status line: "force run" + an optional date + "completed", not any "completed" nearby.
   for (const line of ['stage 4 of 6 — force run 2026-10-17, stage 3 completed', 'force run 2026-10-17 running, stages 1–3 completed', 'force run in progress; stage 2 completed'])
@@ -2340,7 +2687,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 // ── stage receipts (VT-1 stage 3): the force commit needs the stage's checkers, the close needs fresh final reviews ──
 // Each rule: the live incident form that must be denied and the live legitimate form that must pass. The task snapshot records the 0.18 migration on
 // 2026-10-20 with no Force run seen then (`setGate`), and the Force blocks are dated after it; report times and receipt times are set by hand.
-{
+if (unit('receipts')) {
   const rc = await import(join(PLUGIN, 'receipts.mjs'))
   const rRoot = mkdtempSync(join(tmpdir(), 'receipts-test-'))
   const T0 = Date.now() // the run scope drops reports older than the snapshot taken now; events sit at T0 + hours, so none is before it
@@ -2578,6 +2925,104 @@ rmSync(retroRoot, { recursive: true, force: true })
   const docs = frGate()
   check('receipts m-3: a docs-only commit after the reports still counts as a change — rejected', docs.decision === 'block' && /no whole-task report/.test(docs.text), docs.text)
 
+  // VT-7 stage 1: a delta review counts only on top of a full whole-branch review that records its commit (`head:`), within DELTA_MAX_LINES since it.
+  // Tree timeline: full review of the anchor commit at +4h, the fix commit (the tree HEAD has now) at +6h, the delta report at +8h; each rule has its incident and its legitimate form.
+  {
+    const deltaFx = (name, { lines = 5, fullHeader = (anchor) => `head: ${anchor}\n`, fullFile = 'pro-review-branch.md', deltaFile = 'pro-review-branch-delta-1.md', deltaHeader, deltaHours = 8, rewrite = false, skipDelta = false } = {}) => {
+      const fx = fixture(name, { stages: '' })
+      fx.report('pro-review-1.md', 'pro-review', 2)
+      fx.commit({ 'src/a.ts': 'export const a = 2\n' }, 3)
+      const anchor = git(fx.dir, 'rev-parse', 'HEAD').trim()
+      const put = (file, header, hours) => {
+        write(fx.dir, { [`.claude/tasks/${fx.ticket}/checks/${file}`]: `# pro-review\nFindings: critical 0 · major 1 · minor 0\n${header}### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n` })
+        utimesSync(join(fx.tdir, 'checks', file), at(hours), at(hours))
+      }
+      put(fullFile, fullHeader(anchor), 4)
+      if (rewrite) git(fx.dir, 'reset', '-q', '--hard', 'main')
+      write(fx.dir, { 'src/a.ts': Array.from({ length: lines }, (_, i) => `export const v${i} = ${i}`).join('\n') + '\n' })
+      git(fx.dir, 'add', '-A')
+      gitAt(fx.dir, 6, 'commit', '-qm', 'fix round')
+      const newHead = git(fx.dir, 'rev-parse', 'HEAD').trim()
+      if (!skipDelta) put(deltaFile, (deltaHeader ?? ((a, n, f) => `head: ${n}\ndelta: ${f} ${a}..${n}\n`))(anchor, newHead, fullFile), deltaHours)
+      fx.report('task-converge.md', 'task-converge', 8)
+      const closedText = `# ${fx.ticket}: task\nBranch: \`${fx.ticket}/feat/r\`\n\n## Status: done\n\n## Force run 2026-10-22 — completed\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`
+      fx.journal(closedText)
+      return { fx, anchor, newHead, close: () => runHook('journal-gate.mjs', { cwd: fx.dir, tool_name: 'Write', tool_input: { file_path: join(fx.tdir, 'STAGES.md') } }) }
+    }
+    const verdict = (result) => result.decision === 'block'
+    const proReviewOnly = (result) => /pro-review: no whole-task report/.test(result.text) && !/task-converge: no whole-task/.test(result.text)
+
+    const within = deltaFx('delta-within')
+    const withinResult = within.close()
+    check('delta AC-1.1: a full report older than the tree and a delta anchored on it, newer than the tree and within the bound — the close is accepted', !verdict(withinResult), withinResult.text)
+    check('delta AC-1.1: the full report alone (older than the tree, no delta) is still stale — the close is denied', verdict(deltaFx('delta-none', { skipDelta: true }).close()))
+    const atBound = deltaFx('delta-at-bound', { lines: rc.DELTA_MAX_LINES - 1 }) // +1 line of the one-line a.ts of the anchor commit replaced: 399 added, 1 deleted = 400
+    check('delta AC-1.2 legit: exactly DELTA_MAX_LINES changed lines since the base — accepted', !verdict(atBound.close()), atBound.close().text)
+    const over = deltaFx('delta-over', { lines: rc.DELTA_MAX_LINES + 100 }).close()
+    check('delta AC-1.2: over the bound — denied, the message names the count and the bound and asks for a full review', verdict(over) && proReviewOnly(over) && /over the bound of 400/.test(over.text) && /full review/.test(over.text), over.text)
+    const rebased = deltaFx('delta-rebased', { rewrite: true }).close()
+    check('delta AC-1.2: the base is not an ancestor of HEAD (a rebase) — denied, named, a full review asked', verdict(rebased) && proReviewOnly(rebased) && /not an ancestor of HEAD/.test(rebased.text) && /full review/.test(rebased.text), rebased.text)
+    const noHead = deltaFx('delta-full-no-head', { fullHeader: () => '' }).close()
+    check('delta AC-1.2: the full report has no `head:` line — denied, named', verdict(noHead) && proReviewOnly(noHead) && /no `head: <sha>` line/.test(noHead.text), noHead.text)
+    const missingFull = deltaFx('delta-missing-full', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch-0.md ${a}..${n}\n` }).close()
+    check('delta AC-1.2: the delta names a report that is not in checks/ — denied, named', verdict(missingFull) && proReviewOnly(missingFull) && /`pro-review-branch-0\.md`, which is not in this task's checks/.test(missingFull.text), missingFull.text)
+    const wrongBase = deltaFx('delta-wrong-base', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch.md ${n}..${n}\n` }).close()
+    check('delta AC-1.2: the delta base is not the `head:` of the report it names — denied, named', verdict(wrongBase) && /is not the `head:` of/.test(wrongBase.text), wrongBase.text)
+    const oldDelta = deltaFx('delta-older', { deltaHours: 5 }).close()
+    check('delta AC-1.2: the delta is older than HEAD\'s tree — denied, a re-run of the delta asked', verdict(oldDelta) && proReviewOnly(oldDelta) && /older than HEAD's tree/.test(oldDelta.text) && /re-run the delta review/.test(oldDelta.text), oldDelta.text)
+    const malformed = deltaFx('delta-malformed', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch.md ${a}\n` }).close()
+    check('delta AC-1.2: a `delta:` line that is not `<file> <base>..<head>` — denied, never read as a full report', verdict(malformed) && /does not count: its `delta:` line is not/.test(malformed.text), malformed.text)
+    const namedFull = deltaFx('delta-named-full', { deltaFile: 'pro-review-branch.md', fullFile: 'pro-review-branch-2.md', deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch-2.md ${a}..${n}\n`, lines: rc.DELTA_MAX_LINES + 100 }).close()
+    check('delta D3: a report with a `delta:` line is not a full one even under a whole-branch name that is fresh — over the bound it is denied', verdict(namedFull) && /does not count/.test(namedFull.text), namedFull.text)
+
+    // A full re-run `-branch-2.md` stays a full report: no delta line, today's rule alone, whatever the size since the first review.
+    const rerun = deltaFx('delta-full-rerun', { deltaFile: 'pro-review-branch-2.md', deltaHeader: (a, n) => `head: ${n}\n`, lines: rc.DELTA_MAX_LINES + 100 })
+    const rerunResult = rerun.close()
+    check('delta AC-1.2 legit: a full re-run `pro-review-branch-2.md` with `head:` and no `delta:` line, newer than the tree — accepted, whatever the size since the first review', !verdict(rerunResult), rerunResult.text)
+    const rerunOld = deltaFx('delta-full-rerun-old', { deltaFile: 'pro-review-branch-2.md', deltaHeader: (a, n) => `head: ${n}\n`, deltaHours: 5 }).close()
+    check('delta AC-1.2: the same full re-run older than the tree — denied by today\'s rule, no delta message', verdict(rerunOld) && proReviewOnly(rerunOld) && !/delta report/.test(rerunOld.text), rerunOld.text)
+    // AC-1.3: a task whose reports have no `head:` / `delta:` keeps today's verdict.
+    const legacy = deltaFx('delta-legacy', { fullHeader: () => '', deltaFile: 'pro-review-branch-2.md', deltaHeader: () => '' }).close()
+    check('delta AC-1.3: reports with neither line — a fresh whole-branch report counts as before', !verdict(legacy), legacy.text)
+    // The header only: a `delta:` line quoted in a finding below the first heading is no delta.
+    const quoted = deltaFx('delta-quoted', { deltaFile: 'pro-review-branch-2.md', deltaHeader: () => '' })
+    write(quoted.fx.dir, { [`.claude/tasks/${quoted.fx.ticket}/checks/pro-review-branch-2.md`]: '# pro-review\nFindings: critical 0 · major 0 · minor 0\n## Notes\ndelta: nothing.md aaaaaaa..bbbbbbb\n## Could not verify\neverything verified\n' })
+    utimesSync(join(quoted.fx.tdir, 'checks/pro-review-branch-2.md'), at(8), at(8))
+    check('delta: a `delta:` line below the first `## ` heading is not read — the report stays a full one, accepted', !verdict(quoted.close()), quoted.close().text)
+    // VT-7 stage 3 (S3-D1..S3-D4): a delta in any spelling is a delta; it counts only for the same checker's whole-branch anchor, never for task-converge, and only at HEAD's tree.
+    const big = rc.DELTA_MAX_LINES + 100
+    for (const [label, line] of [['capitalised', (a, n, f) => `Delta: ${f} ${a}..${n}`], ['bold', (a, n, f) => `**delta:** ${f} ${a}..${n}`], ['backticked', (a, n, f) => `\`delta:\` ${f} ${a}..${n}`], ['quoted', (a, n, f) => `> delta: ${f} ${a}..${n}`], ['dquoted', (a, n, f) => `\"delta\": ${f} ${a}..${n}`], ['squoted', (a, n, f) => `'delta': ${f} ${a}..${n}`], ['numbered', (a, n, f) => `1. delta: ${f} ${a}..${n}`], ['paren-numbered', (a, n, f) => `1) delta: ${f} ${a}..${n}`], ['bullet', (a, n, f) => `• delta: ${f} ${a}..${n}`], ['heading', (a, n, f) => `# Delta: ${f} ${a}..${n}`], ['table', (a, n, f) => `| delta: ${f} ${a}..${n} |`], ['table-cell', (a, n, f) => `| **delta** | ${f} ${a}..${n} |`], ['curly-quoted', (a, n, f) => `“delta: ${f} ${a}..${n}”`]]) {
+      const r = deltaFx(`delta-markup-${label}`, { lines: big, deltaFile: 'pro-review-branch-2.md', deltaHeader: (a, n, f) => `head: ${n}\n${line(a, n, f)}\n` }).close()
+      check(`delta S3-D1: a ${label} delta line over the bound is still a delta — denied, never a fresh full report`, verdict(r) && /does not count/.test(r.text), r.text)
+    }
+    const noLine = deltaFx('delta-name-only', { lines: big, deltaFile: 'pro-review-branch-delta-1.md', deltaHeader: (a, n) => `head: ${n}\n` }).close()
+    check('delta S3-D1: `-branch-delta-1.md` with no delta line — denied as a delta, the exact form is given', verdict(noLine) && /its `delta:` line is not `delta: <full report file>/.test(noLine.text), noLine.text)
+    const upperHead = deltaFx('delta-head-upper', { fullHeader: (a) => `Head: ${a}\n` }).close()
+    check('delta S3-D1 legit: `Head:` in any case anchors the full report — accepted', !verdict(upperHead), upperHead.text)
+    const otherChecker = deltaFx('delta-other-checker', { fullFile: 'security-review-branch.md', deltaHeader: (a, n) => `head: ${n}\ndelta: security-review-branch.md ${a}..${n}\n` }).close()
+    check('delta S3-D3: the anchor is another checker\'s report — denied', verdict(otherChecker) && /not a whole-branch report of pro-review/.test(otherChecker.text), otherChecker.text)
+    const stageAnchor = deltaFx('delta-stage-anchor', { fullFile: 'pro-review-3.md', deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-3.md ${a}..${n}\n` }).close()
+    check('delta S3-D3: the anchor is a stage report, not a whole-branch one — denied', verdict(stageAnchor) && /not a whole-branch report of pro-review/.test(stageAnchor.text), stageAnchor.text)
+    const notes = deltaFx('delta-notes-anchor', { fullFile: 'notes.md', deltaHeader: (a, n) => `head: ${n}\ndelta: notes.md ${a}..${n}\n` }).close()
+    check('delta S3-D3: the anchor is notes.md — denied', verdict(notes) && /not a whole-branch report of pro-review/.test(notes.text), notes.text)
+    // S3-D2: a delta for task-converge reaches the guard (its anchor is a valid `head:` full report, fresh, in bound, range end = HEAD's tree) and is denied with its own reason.
+    const tcDelta = deltaFx('delta-task-converge', { fullFile: 'task-converge.md', deltaFile: 'task-converge-branch-delta-1.md', deltaHeader: (a, n, f) => `head: ${n}\ndelta: ${f} ${a}..${n}\n` })
+    write(tcDelta.fx.dir, { [`.claude/tasks/${tcDelta.fx.ticket}/checks/task-converge.md`]: `# task-converge\nhead: ${tcDelta.anchor}\n## Findings\n` })
+    utimesSync(join(tcDelta.fx.tdir, 'checks/task-converge.md'), at(4), at(4))
+    const tcClose = tcDelta.close()
+    check('delta S3-D2: a task-converge delta with a valid anchor never counts — denied, the reason and the delta file named', verdict(tcClose) && /task-converge: no whole-task/.test(tcClose.text) && /task-converge-branch-delta-1\.md/.test(tcClose.text) && /task-converge has no delta mode/.test(tcClose.text), tcClose.text)
+    const plainDelta = deltaFx('delta-plain-capital', { deltaHeader: (a, n, f) => `head: ${n}\nDelta: ${f} ${a}..${n}\n` }).close()
+    check('delta S3-D1 legit: a plain `Delta:` line within the bound — accepted', !verdict(plainDelta), plainDelta.text)
+    const boldIn = deltaFx('delta-bold-in-bound', { deltaHeader: (a, n, f) => `head: ${n}\n**delta:** ${f} ${a}..${n}\n` }).close()
+    check('delta S3-D1: a `**delta:**` line within the bound — denied with the rewrite remedy, not a full review', verdict(boldIn) && /rewrite the line as plain/.test(boldIn.text) && !/full review/.test(boldIn.text), boldIn.text)
+    const wrongEnd = deltaFx('delta-wrong-end', { deltaHeader: (a) => `head: ${a}\ndelta: pro-review-branch.md ${a}..${a}\n` }).close()
+    check('delta S3-D4: the range end is not HEAD\'s tree — denied, "not HEAD"', verdict(wrongEnd) && /not HEAD/.test(wrongEnd.text), wrongEnd.text)
+    const longName = deltaFx('delta-long-name', { deltaHeader: (a, n) => `head: ${n}\ndelta: ${'x'.repeat(5000)}.md ${a}..${n}\n` }).close()
+    check('delta S3-D6: a very long file name in the delta line is capped in the message', verdict(longName) && longName.text.length < 4000, String(longName.text.length))
+    // A team review of the branch: the same rule through reportChecker.
+    check('delta S1-D6: reportChecker reads `<skill>-branch-delta-<k>.md` as that skill\'s report', jc.reportChecker('cleanup-review-branch-delta-1.md') === 'cleanup-review' && jc.reportChecker('pro-review-branch-delta-2.md') === 'pro-review')
+  }
+
   // m-4, then 5d AC-5d.1 (B1): a missing final report is named by its marker `[final: <report> — not run | stale]`, never by prose.
   const bl = fixture('blocker-words', { stages: '' })
   bl.report('pro-review-1.md', 'pro-review', 2)
@@ -2729,12 +3174,6 @@ rmSync(retroRoot, { recursive: true, force: true })
   ]
   const misread = [...LOGIC_ONLY_LIVE.filter((heading) => !markers.logicOnlyTag(heading)), ...LOGIC_ONLY_PROSE.filter((heading) => markers.logicOnlyTag(heading))]
   check('receipts 5d AC-5d.4: every live form of the tag is read, before the status bracket too; title words and "not logic-only" are not', misread.length === 0, misread.join(' | '))
-  // pro-review 5d fresh m-2: the tail check is bounded by the span up to the status bracket, so a long dash-led heading does not go quadratic.
-  const adversarial = `### Stage 1: ${'a — logic-only, '.repeat(20000)}x  [status: todo]`
-  const t0 = performance.now()
-  markers.logicOnlyTag(adversarial)
-  const spent = performance.now() - t0
-  check('receipts 5d fresh m-2: a 300 KB heading of repeated "— logic-only," is read in under 100 ms', spent < 100, `${Math.round(spent)} ms`)
   const lb = fixture('logic-before-bracket')
   lb.journal(`# ${lb.ticket}: task\nBranch: \`${lb.ticket}/feat/r\`\n\n## Status: stage 1\n\n## Force run 2026-10-22\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: layer skeleton  [logic-only]  [status: in-progress]\n- [x] devtools-verify (skip: logic-only)\n`)
   lb.report('pro-review-1.md', 'pro-review', 2)
@@ -2831,8 +3270,18 @@ rmSync(retroRoot, { recursive: true, force: true })
   check('receipts 5d AC-5d.3: a staged rename outside the task dir is named by its new path', /uncommitted edits \(src\/moved\.ts\)/.test(tt.gate().text), tt.gate().text)
 }
 
+// ── receipts 5d fresh m-2: the one in-process timing threshold of the stage receipts section, apart from the parallel pool ──
+if (unit('receiptstime')) {
+  // pro-review 5d fresh m-2: the tail check is bounded by the span up to the status bracket, so a long dash-led heading does not go quadratic.
+  const adversarial = `### Stage 1: ${'a — logic-only, '.repeat(20000)}x  [status: todo]`
+  const t0 = performance.now()
+  markers.logicOnlyTag(adversarial)
+  const spent = performance.now() - t0
+  check('receipts 5d fresh m-2: a 300 KB heading of repeated "— logic-only," is read in under 100 ms', spent < 100, `${Math.round(spent)} ms`)
+}
+
 // ── Stage 4 of VT-1: honest live form, verify-doctor, frames-guard before the first navigation ──────────────
-{
+if (unit('vt1s4')) {
   // AC-4.1: a bare `[live: user-side]` on a new line fails, the honest form passes, an older line raises nothing.
   const BARE = '- `AC-4.5` ⏳ — [verify: devtools-verify] [live: user-side]'
   const HONEST = '- `AC-4.5` ⏳ — [verify: devtools-verify] [live: user-side — the profile is not logged in; /orders → redirected to /login]'
@@ -3062,7 +3511,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-1 stage 5: dismissal trail and evidence for decisions taken alone ──────
-{
+if (unit('vt1s5')) {
   const jcs = await import(join(PLUGIN, 'journal-check.mjs'))
   const { decisionViolations } = await import(join(PLUGIN, 'decisions.mjs'))
   const { weakForm, entrySeverity } = await import(join(PLUGIN, 'dismissals.mjs'))
@@ -3294,7 +3743,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-1 stage 5c: the digest's "Not ready for PR" reads a ledger the way journal-gate does ──
-{
+if (unit('vt1s5c')) {
   const jcs = await import(join(PLUGIN, 'journal-check.mjs'))
   const { collectDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
   const body = '# pro-review\nFindings: critical 1 · major 0 · minor 0\n\n- C-1 critical: the token leaks\n\n## Findings outcome\n- C-1 — false: impossible, the fix is impossible\n'
@@ -3366,7 +3815,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-1 stage 5a: final-check catch-up — old reports stay editable, one per-task date gate, linear time on long tokens, safe reads ──
-{
+if (unit('vt1s5a')) {
   const { decisionViolations } = await import(join(PLUGIN, 'decisions.mjs'))
   const { weakForm } = await import(join(PLUGIN, 'dismissals.mjs'))
   const ps = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
@@ -3655,7 +4104,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 
 // ── VT-1 stage 5c fix round 1: task files read bounded and fail closed, linear counts and ranking, the data dir on an old registry ──
 // Each rule: the incident form (fails before the fix) and the legitimate form (passes), D7.
-{
+if (unit('vt1s5cfix')) {
   const ps = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
   const { collectDigest, publishDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
   const { bulletTexts, rollbackRank } = await import(join(PLUGIN, 'decisions.mjs'))
@@ -3952,7 +4401,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     check(
       'S-4: session-start with a 600 MB STAGES-ARCHIVE.md ends in < 3 s with the task line and names the commit the rest of the journal does not know',
       started.status === 0 && started.ms < 3000 && /T-88/.test(started.stdout) && /after the close/.test(started.stdout) && walk.value.some(({ subject }) => subject === 'after the close') && walk.ms < 1000,
-      `${started.status} ${started.ms.toFixed(0)} ms ${started.stdout.slice(0, 200)} ${started.stderr.split('\n')[0]}`,
+      `${started.status} ${started.ms.toFixed(0)} ms, walk ${walk.ms.toFixed(0)} ms ${started.stdout.slice(0, 200)} ${started.stderr.split('\n')[0]}`,
     )
     rmSync(r, { recursive: true, force: true })
   }
@@ -3996,7 +4445,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 // a node process started with argv0 `claude` for a session. Real browsers on the machine are never touched: the kill paths run under a fake `claude` and with
 // `--under <this block's directory>`, the hook path only after the fake session was proven to be the one the script sees. Each throwaway process exits by itself
 // after two minutes, and the block kills what is left by PID, only processes whose command line holds its directory.
-{
+if (unit('vt1s5b')) {
   const bc = await import(join(PLUGIN, 'browser-cleanup.mjs'))
   const proc = await import(join(PLUGIN, 'processes.mjs'))
   const bRoot = realpathSync(mkdtempSync(join(tmpdir(), 'browsers-test-')))
@@ -4119,43 +4568,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     ]
     const wrongServer = SERVERS.filter(([args, want]) => bc.isMcpServer(args) !== want)
     check('browser-cleanup: an MCP server is the npm exec and its node process — not the watchdog, not a Chrome on the MCP profile, not a claude that names the server', !wrongServer.length, JSON.stringify(wrongServer))
-    const UID = process.getuid()
-    const row = (pid, ppid, args, age = 600, uid = UID) => [pid, { pid, ppid, uid, age, args }]
-    const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --allow-pre-commit-input --disable-background-networking'
-    const T = realpathSync(tmpdir())
-    const table = new Map([
-      row(1, 0, '/sbin/launchd'),
-      row(50, 1, '/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)'),
-      row(100, 50, '/Users/u/.vscode/extensions/anthropic.claude-code-2.1.304-darwin-arm64/resources/native-binary/claude --output-format stream-json'),
-      row(101, 100, '/bin/zsh -c cd /tmp/claude && node /p/scripts/browser-cleanup.mjs --session'),
-      row(102, 101, 'node /p/scripts/browser-cleanup.mjs --session'),
-      row(110, 100, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'),
-      row(111, 110, 'chrome-devtools-mcp'),
-      row(112, 111, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-AbC --remote-debugging-pipe`, 82_800),
-      row(113, 112, `/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (Renderer) --type=renderer --user-data-dir=${T}/puppeteer_dev_chrome_profile-AbC`),
-      row(114, 111, '/usr/local/bin/node /usr/local/lib/node_modules/chrome-devtools-mcp/build/src/telemetry/watchdog/main.js --parent-pid=111 --app-version=1.6.0'),
-      row(120, 100, 'npm exec chrome-devtools-mcp@1.6.0 --userDataDir /Users/u/.cache/stage-pipeline/chrome/app'),
-      row(121, 120, 'chrome-devtools-mcp'),
-      row(122, 121, `${CHROME} --user-data-dir=/Users/u/.cache/stage-pipeline/chrome/app --remote-debugging-pipe`),
-      row(130, 100, 'npm exec chrome-devtools-mcp@latest'),
-      row(131, 130, 'chrome-devtools-mcp'),
-      row(132, 131, `${CHROME} --user-data-dir=/Users/u/.cache/chrome-devtools-mcp/chrome-profile --remote-debugging-pipe`),
-      row(200, 50, 'node /Users/u/.nvm/versions/node/v22.11.0/bin/claude'),
-      row(210, 200, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'),
-      row(211, 210, 'chrome-devtools-mcp'),
-      row(212, 211, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Other --remote-debugging-pipe`, 85_000),
-      row(300, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Lost --remote-debugging-pipe`),
-      row(310, 101, 'node /scratch/journey.mjs'),
-      row(311, 310, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Run --remote-debugging-pipe`),
-      row(320, 1, `${CHROME} --user-data-dir=/Users/u/.cache/stage-pipeline/chrome/old --remote-debugging-pipe`),
-      // S-4: a daemonized shell or script that names a puppeteer profile, a browser on such a profile outside the OS temp dir, another user's browser — none is an orphan
-      row(330, 1, `/bin/sh -c sleep 120; : --user-data-dir=${T}/puppeteer_dev_chrome_profile-tmux`),
-      row(331, 1, `node /scratch/e2e.js --user-data-dir=${T}/puppeteer_dev_chrome_profile-e2e --remote-debugging-pipe`),
-      row(332, 1, `${CHROME} --user-data-dir=/Users/u/puppeteer_dev_chrome_profile-home --remote-debugging-pipe`),
-      row(333, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-root --remote-debugging-pipe`, 600, UID + 1),
-      // a profile path with a space is read whole
-      row(334, 1, `${CHROME} --user-data-dir=${T}/puppeteer_dev_chrome_profile-Sp ace --remote-debugging-pipe`),
-    ])
+    const { row, table } = browserTable()
     const seen = bc.survey(table, { from: 102 })
     const pids = (list) => list.map(({ pid, kind }) => `${pid}:${kind}`)
     check('browser-cleanup AC-5b.3: the session is the nearest claude above the caller, its browsers are the Chrome mains below its MCP servers (child or grandchild), helpers and the watchdog are not browsers', seen.session?.pid === 100 && same(pids(seen.mine), ['112:temp', '122:persistent', '132:other']), JSON.stringify({ session: seen.session?.pid, mine: pids(seen.mine) }))
@@ -4163,12 +4576,6 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('browser-cleanup AC-5b.4: an orphan is a temp-profile browser whose parent is gone; one with a live parent or a persistent profile is not', same(seen.orphans.map(({ pid }) => pid), [300, 334]), JSON.stringify(seen.orphans.map(({ pid }) => pid)))
     check('browser-cleanup S-4: a shell or a script that names a puppeteer profile, a browser on one outside the OS temp dir, another user\'s browser — not orphans', !seen.orphans.some(({ pid }) => pid >= 330 && pid <= 333), JSON.stringify(seen.orphans.map(({ pid }) => pid)))
     check('browser-cleanup m-4: a stage-pipeline-chrome browser whose MCP server is gone is listed as holding the profile, nothing else is', same(seen.held.map(({ pid }) => pid), [320]), JSON.stringify(seen.held.map(({ pid }) => pid)))
-    // S-3: any process's `--user-data-dir=` is parsed in linear time — a 1 MB whitespace run took the old lazy regexp minutes and the force close past its 5 s
-    const spaced = new Map([...table, row(400, 1, `node x --user-data-dir=x${' '.repeat(1_000_000)}y`)])
-    const surveyStart = performance.now()
-    bc.survey(spaced, { from: 102 })
-    const surveyMs = performance.now() - surveyStart
-    check(`browser-cleanup S-3: a 1 MB whitespace run in one process's --user-data-dir= — survey ${surveyMs.toFixed(1)} ms (< 100 ms)`, surveyMs < 100, `${surveyMs} ms`)
     check('browser-cleanup: no claude above the caller — no session, every MCP browser is someone else\'s', bc.survey(table, { from: 50 }).session === null && bc.survey(table, { from: 50 }).mine.length === 0)
 
     // ── AC-5b.3 / AC-5b.4 on live throwaway processes: two fake sessions ──
@@ -4915,8 +5322,20 @@ rmSync(retroRoot, { recursive: true, force: true })
   }
 }
 
+// ── VT-1 stage 5b S-3: the one in-process timing threshold of the browser-cleanup section, apart from the pool ──
+if (unit('vt1s5btime')) {
+  const bc = await import(join(PLUGIN, 'browser-cleanup.mjs'))
+  const { row, table } = browserTable()
+  // S-3: any process's `--user-data-dir=` is parsed in linear time — a 1 MB whitespace run took the old lazy regexp minutes and the force close past its 5 s
+  const spaced = new Map([...table, row(400, 1, `node x --user-data-dir=x${' '.repeat(1_000_000)}y`)])
+  const surveyStart = performance.now()
+  bc.survey(spaced, { from: 102 })
+  const surveyMs = performance.now() - surveyStart
+  check(`browser-cleanup S-3: a 1 MB whitespace run in one process's --user-data-dir= — survey ${surveyMs.toFixed(1)} ms (< 100 ms)`, surveyMs < 100, `${surveyMs} ms`)
+}
+
 // ── VT-1 stage 5e (0.18.2): the run summary is plain markdown; a blocker is lifted only by a fixed field; a carried blocker keeps its run ──
-{
+if (unit('vt1s5e')) {
   const { collectDigest, runDigest } = await import(join(PLUGIN, 'run-digest.mjs'))
   // The three live lines of announcement-details, verbatim: run 9's B1 (STAGES.md:258), run 8's B1 carried in run 9's assumptions (:247), an interview answer of run 11 (:298).
   const LIVE_B1 = "- B1 — гидрация `/profile/my-publications` (AC-54.2, этап 54) — причина доказана: флаг `classified_create_enabled` (Unleash) на сервере не готов (`flagsReady` стартует в `onMounted` провайдера), а к гидрации страницы на клиенте уже готов, поэтому вкладки `pages/profile.vue` расходятся (`checks/devtools-verify-54.md`: до — 6 из 6, с закрытием флага на сервере — 0 из 10); закрытие флага на сервере убрало «Найдено N» из SSR `/cars` (CLS 0.094) и откатено — нужно: решение, делать ли подстановку флагов Unleash на SSR (запрос флагов на сервере и передача в клиент) — рекомендация: отдельной задачей, это уберёт такие расхождения на всех страницах с флагом — зависит: ничего"
@@ -5282,7 +5701,7 @@ rmSync(retroRoot, { recursive: true, force: true })
     // A11 (rewritten by 5h; its 5f form held a block that was already in the file, and under 5h every block present at the first look is held, so it no longer told a snapshot taken before the call from one taken after):
     // a Bash call that writes a whole closed block dated before the first-look day is read by the field, because the snapshot was taken before the call and the block was not in it.
     {
-      const bApp = join(gRoot, 'bash-first-look')
+      const bApp = join(mkdtempSync(join(tmpdir(), 'gates-test-')), 'bash-first-look')
       repoAt(bApp, 'main')
       const bTask = join(bApp, '.claude/tasks/T-9F')
       const empty = '# T-9F: task\nBranch: `T-9F/feat/g`\n\n## Stages\n\n### Stage 1: a  [status: done]\n'
@@ -5323,7 +5742,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-3 stage 6: the eval harness isolates the plugin data dir ──────────────
-{
+if (unit('vt3s6')) {
   // Claude Code overwrites CLAUDE_PLUGIN_DATA for hooks, so the harness needs a variable of its own that wins over it.
   const a = mkdtempSync(join(tmpdir(), 'pd-override-'))
   const b = mkdtempSync(join(tmpdir(), 'pd-claude-'))
@@ -5341,7 +5760,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 
 // ── VT-3 stage 7a: hook firings log (AC-7.2) ─────────────────────────────────
 // Every block or deny of the five hooks appends {rule, task, repo, ts, tool, read} to <plugin data>/firings.jsonl: IDs and paths only, rotated, and a failing write never changes the verdict.
-{
+if (unit('vt3s7a')) {
   const { isRead, readOnlyBash } = await import(join(PLUGIN, 'hooks/firing.mjs'))
   const iso = mkdtempSync(join(tmpdir(), 'firings-iso-'))
   const fx = mkdtempSync(join(tmpdir(), 'firings-fx-'))
@@ -5361,13 +5780,6 @@ rmSync(retroRoot, { recursive: true, force: true })
       encoding: 'utf8',
       env: { ...process.env, HOME: fxHome, CLAUDE_PROJECT_DIR: fxApp, STAGE_PIPELINE_DATA_DIR: iso, ...env },
     })
-  const rowsIn = (dir, name = 'firings.jsonl') => {
-    try {
-      return readFileSync(join(dir, name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
-    } catch {
-      return []
-    }
-  }
   const bash = (command) => ({ tool_name: 'Bash', hook_event_name: 'PreToolUse', tool_input: { command } })
   const agent = (subagent_type, prompt, model) => ({ tool_name: 'Agent', hook_event_name: 'PreToolUse', tool_input: { subagent_type, prompt, ...(model ? { model } : {}) } })
   const last = () => rowsIn(iso).at(-1)
@@ -5449,24 +5861,11 @@ rmSync(retroRoot, { recursive: true, force: true })
   check('firings: git branch, remote, config, worktree and stash are reads only in a listing form', ['git branch', 'git branch --list', 'git branch -a', 'git branch -vv', 'git stash list', 'git stash show -p', 'git config --get user.name', 'git config --list', 'git remote -v', 'git remote show origin', 'git worktree list', 'find . -name x', 'sort a'].every(readOnlyBash))
   check('firings legit: git branch NAME, branch -D, stash, stash pop, config KEY VALUE, remote add, worktree add, find -delete/-exec/-fprint and sort -o are not reads', ['git branch feature', 'git branch -D x', 'git stash', 'git stash push', 'git stash pop', 'git config user.name x', 'git remote add o u', 'git remote remove o', 'git worktree add ../x', 'git worktree remove x', 'find . -delete', 'find . -exec rm {} \\;', 'find . -name x -execdir ls \\;', 'find . -ok rm {} \\;', 'find . -fprint out', 'sort -o out a', 'sort a -o out', 'sort --output=out a'].every((command) => !readOnlyBash(command)))
 
-  // every rule ID of the hooks wrote a row somewhere in this suite (the fixtures above and all the earlier ones ran against the one data directory) (K11c.1: run at the end — the fixtures of VT-5 come after this point)
-  lateChecks.push(() => {
-    const suiteDir = process.env.STAGE_PIPELINE_DATA_DIR?.startsWith('/') ? process.env.STAGE_PIPELINE_DATA_DIR : DATA
-    const written = new Set([...rowsIn(suiteDir, 'firings.jsonl.1'), ...rowsIn(suiteDir)].map((row) => row.rule))
-    const ids = new Set()
-    for (const hookName of ['journal-gate', 'git-guard', 'agent-guard', 'force-guard', 'frames-guard', 'maker-guard']) {
-      for (const m of readFileSync(join(PLUGIN, 'hooks', `${hookName}.mjs`), 'utf8').matchAll(new RegExp(`'(${hookName}/[a-z0-9-]+)'`, 'g'))) ids.add(m[1])
-    }
-    for (const id of [...ids].sort()) check(`firings AC-7.2: ${id} wrote a row in this suite`, written.has(id))
-    check('firings: the suite found the rule IDs it should (21 at this stage, never fewer)', ids.size >= 21, `${ids.size}`)
-    check('firings: every row of the suite has the fields retro needs', [...rowsIn(suiteDir)].every((row) => typeof row.rule === 'string' && 'task' in row && typeof row.repo === 'string' && typeof row.ts === 'string' && typeof row.tool === 'string' && typeof row.read === 'boolean'))
-  })
-
   for (const dir of [iso, fx, small]) rmSync(dir, { recursive: true, force: true })
 }
 
 // ── VT-3 final checks: retro's «Hook firings» is scoped to the retro targets and counts blocks (appended: D3) ──────────────────────────────────
-{
+if (unit('vt3final')) {
   const scope = mkdtempSync(join(tmpdir(), 'retro-scope-'))
   const repoA = join(scope, 'repo-a')
   const repoB = join(scope, 'repo-b')
@@ -5501,7 +5900,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-3 branch review m-4: the real journal-gate hook stamps the rows of one block with one moment (appended: D3) ─────────────────────────────
-{
+if (unit('vt3m4')) {
   const dir = mkdtempSync(join(tmpdir(), 'jg-block-'))
   const jApp = join(dir, 'app')
   const dataDir = join(dir, 'data')
@@ -5522,7 +5921,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-3 branch review m-6: rows a linked worktree of the retro target wrote are the target's (appended: D3) ─────────────────────────────────────
-{
+if (unit('vt3m6')) {
   const dir = mkdtempSync(join(tmpdir(), 'retro-wt-'))
   const main = join(dir, 'repo')
   const lane = join(dir, 'repo-lane')
@@ -5546,7 +5945,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── stage 8 (VT-4): the verify map — verify-map.mjs and the `map:` report rule ───────────────────────────────────────────────
-{
+if (unit('vt4s8')) {
   const VM = join(PLUGIN, 'verify-map.mjs')
   const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
   const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' })
@@ -5713,7 +6112,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── stage 9 (VT-4): proof of effects, re-observation, live radius — the three 0.20 report rules behind `runtimeOld` ──────────────
-{
+if (unit('vt4s9')) {
   const dirs = []
   const put = (root, file, text) => {
     mkdirSync(dirname(join(root, file)), { recursive: true })
@@ -5873,7 +6272,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── stage 9a (VT-4): the final-check catch-up — route groups, one radius and one map-root reader, map as untrusted input, hardened rules ──
-{
+if (unit('vt4s9a')) {
   const VM = join(PLUGIN, 'verify-map.mjs')
   const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
   const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' })
@@ -6206,7 +6605,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── stage 9b (VT-4): the radius note, real FEATURE-MAP rows, more [effect] PASS shapes, own-stem re-run names, bounded map files ───────
-{
+if (unit('vt4s9b')) {
   const VM = join(PLUGIN, 'verify-map.mjs')
   const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
   const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' })
@@ -6320,7 +6719,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── stage 9c (VT-4): B3 Nuxt component names, B4 non-component chains, workspace imports ──
-{
+if (unit('vt4s9c')) {
   const VM = join(PLUGIN, 'verify-map.mjs')
   const vm = (cwd, ...args) => spawnSync(process.execPath, [VM, '--cwd', cwd, ...args], { encoding: 'utf8', timeout: 30_000 })
   const dirs = []
@@ -6398,7 +6797,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-5 stage 10: plan-check and the stage-implement spawn ──────────────────
-{
+if (unit('vt5s10')) {
   const { checkPlan, stageForSpawn } = await import(join(PLUGIN, 'plan-check.mjs'))
   const pcRoot = mkdtempSync(join(tmpdir(), 'plan-check-test-'))
   const pc = join(pcRoot, 'app')
@@ -6459,7 +6858,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-5 stage 10, fix round 1: D7 incident + legitimate pairs for the plan-check rules ──────────────────────────────────────────────────
-{
+if (unit('vt5s10f1')) {
   const { checkPlan, stageForSpawn, siblingRepos } = await import(join(PLUGIN, 'plan-check.mjs'))
   const fxRoot = mkdtempSync(join(tmpdir(), 'plan-check-fx-'))
   const fx = join(fxRoot, 'app')
@@ -6639,7 +7038,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 }
 
 // ── VT-5 stage 10, fix round 2 (O-1): the plan snapshot is taken by journal-gate before the edit lands, never at whichever call reaches plan-check first ──────────
-{
+if (unit('vt5s10f2')) {
   const root = mkdtempSync(join(tmpdir(), 'plan-check-o1-'))
   const app = join(root, 'app')
   repoAt(app, 'main')
@@ -6677,7 +7076,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 // ── VT-5 stage 11 (VT-1 stage 11): maker receipts — the hand-back contract at SubagentStop, the maker snapshot at the spawn, the force commit that carries code nobody made ──
 // Each rule: the live incident form that must fail and the live legitimate form that must pass. The hand-back below is the stage 10 implement hand-back of this very
 // task (trimmed); the over-length form adds the "Per finding" block of its fix round 1 (5381 characters live). The Force blocks are new by the first-sight gates (the plan snapshot was taken before the block was written) unless a fixture says `planSeen`.
-{
+if (unit('makerreceipts')) {
   const mk = await import(join(PLUGIN, 'maker.mjs'))
   process.env.STAGE_PIPELINE_MAKER_RECEIPTS = 'on'
   const mRoot = mkdtempSync(join(tmpdir(), 'maker-test-'))
@@ -7113,7 +7512,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 
 // ── VT-5 stage 11 part B (K11.7, AC-11.4): the resume point after /compact in an open force run ──
 // A fixture repo with an open force run; session-start with `source: compact` names the state on disk and ONE next action. `startup` and a closed run print what they always did.
-{
+if (unit('vt5s11b')) {
   const mk = await import(join(PLUGIN, 'maker.mjs'))
   const rRoot = mkdtempSync(join(tmpdir(), 'resume-test-'))
   const today = (() => {
@@ -7244,7 +7643,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 
 // ── VT-5 stage 11a, round A (K11a.1-K11a.6): the security review of 0.21.0 — the orchestrator's routes round the maker receipt, a slow hash, cubic and quadratic regexes ──
 // Each rule: the incident form that must fail and the legitimate form that must pass. No fixture above is adapted: the premises of VT-5 stage 11 hold.
-{
+if (unit('vt5s11a')) {
   const mk = await import(join(PLUGIN, 'maker.mjs'))
   const pa = await import(join(PLUGIN, 'plan-check.mjs'))
   const gcm = await import(join(PLUGIN, 'hooks/git-command.mjs'))
@@ -7494,9 +7893,6 @@ rmSync(retroRoot, { recursive: true, force: true })
     }
     check('maker K11a.6 S-3: the linear label parser agrees with the old regex on the live forms (bullets, markers, long labels, indents)', lines.every((line) => same2(idOf(line), oldOpened(line))), lines.filter((line) => !same2(idOf(line), oldOpened(line))).map((line) => `${JSON.stringify(line.slice(0, 40))}: ${JSON.stringify(idOf(line))} vs ${JSON.stringify(oldOpened(line))}`).join(' | '))
     const adversarial = ['_', '*', '`'].map((char) => char.repeat(3200)).join('\n')
-    const started = Date.now()
-    const parsed = mk.parseHandback(`Changed:\n- M src/a.ts\n${adversarial}\n${adversarial}\n`)
-    check('maker K11a.6 S-3 incident: three 3200-character runs of `_`, `*`, backticks (5.6 s per run before) — parsed in under 100 ms', Date.now() - started < 100 && 'changed' in parsed.sections, `${Date.now() - started} ms`)
     const f = fixture('a-s3')
     f.spawn()
     write(f.dir, { 'src/a.ts': 'export const a = 1\n' })
@@ -7529,11 +7925,6 @@ rmSync(retroRoot, { recursive: true, force: true })
     check('session-start K11a.6 S-4: the resume point of that plan — under 5 s (hook timeout 10 s)', resumed.ms < 5000, `${resumed.ms} ms`)
     const stopped = timed(() => f.stop(`${handback(['src/a.ts'])}${'. ,'.repeat(40_000)}x\n${' '.repeat(100_000)}x\n${'_'.repeat(3000)}\n`))
     check('maker-guard K11a.6 S-4: a 100 KB hand-back over that plan — judged in under 5 s (hook timeout 15 s)', stopped.ms < 5000, `${stopped.ms} ms ${stopped.decision}`)
-    check('plan-check K11a.6 S-4: the stage-id parser on `stage` + 100 KB of spaces', (() => {
-      const begun = Date.now()
-      pa.stageForSpawn(f.full, `stage${pad}x stage${pad}`)
-      return Date.now() - begun < 500
-    })())
   }
   // Round B (K11a.7, K11a.8; VT-5 stage 11a): refs resolve in the worktree, one stage parser, one stage-list reader, the give-up records only what `Changed:` names, the data dir under Edit/Write.
   {
@@ -7810,9 +8201,27 @@ rmSync(retroRoot, { recursive: true, force: true })
   rmSync(aRoot, { recursive: true, force: true })
 }
 
+// ── VT-5 stage 11a, K11a.6: the two in-process timing thresholds of round A, apart from the parallel pool (a threshold ≤ 500 ms is read on a quiet machine) ──
+if (unit('vt5s11atime')) {
+  const mk = await import(join(PLUGIN, 'maker.mjs'))
+  const pa = await import(join(PLUGIN, 'plan-check.mjs'))
+  const adversarial = ['_', '*', '`'].map((char) => char.repeat(3200)).join('\n')
+  const started = Date.now()
+  const parsed = mk.parseHandback(`Changed:\n- M src/a.ts\n${adversarial}\n${adversarial}\n`)
+  check('maker K11a.6 S-3 incident: three 3200-character runs of `_`, `*`, backticks (5.6 s per run before) — parsed in under 100 ms', Date.now() - started < 100 && 'changed' in parsed.sections, `${Date.now() - started} ms`)
+  // the stages text the fixture of round A writes (ticket MA-70, the date of that round)
+  const pad = ' '.repeat(100_000)
+  const full = '# MA-70: task\nLanguage: en\nBranch: `MA-70/feat/m`\n\n## Status: stage 1\n\n## Force run 2026-10-27\nConfirmed: 2026-10-27 — no questions\n\n## Stages\n\n### Stage 1: logic  [status: in-progress]  logic-only\n'
+  check('plan-check K11a.6 S-4: the stage-id parser on `stage` + 100 KB of spaces', (() => {
+    const begun = Date.now()
+    pa.stageForSpawn(full, `stage${pad}x stage${pad}`)
+    return Date.now() - begun < 500
+  })())
+}
+
 // ── Stage 12 of VT-6 (P1, decision 12c): a repo-local team review skill named in the config is a final checker the force close requires ──────
 // Incident: the config names `cleanup-review`, the run closes "completed" with pro-review and task-converge fresh and no cleanup-review report.
-{
+if (unit('vt6s12')) {
   const tRoot = mkdtempSync(join(tmpdir(), 'team-review-test-'))
   const T0 = Date.now()
   const at = (hours) => (T0 + hours * 3600_000) / 1000
@@ -7888,7 +8297,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 // ── Stage 12 of VT-6, round 1: the findings ledger on the team review report and its re-runs ────────────────────────────────────────────────────
 // Incident: `cleanup-review-branch.md` with a major and no "Findings outcome" must stop a force commit; the same report with the outcome passes.
 // The re-run `-branch-2.md` is the same checker (stage-check names re-runs that way), so it is judged the same.
-{
+if (unit('vt6s12r1')) {
   const rRoot = mkdtempSync(join(tmpdir(), 'team-ledger-test-'))
   const TEAM_REPORT = (outcome) => `# cleanup-review\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.ts:1 — x\n${outcome ? '## Findings outcome\n- M-1 — fixed: a.ts:2\n' : ''}`
   let calls = 0
@@ -7951,7 +8360,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 // ── Stage 13 of VT-6: the project's `## Repo rules` on a force commit ────────────────────────────────────────────────────────────────────────────
 // Incident: a force commit that adds a line matching a row is denied with the rule's id and message. Legitimate: the same line with `floor-ok: <reason>` passes and the run
 // digest lists it under the rule id; a config with no table, and the pattern on a line the commit did not touch, change nothing.
-{
+if (unit('vt6s13')) {
   const fRoot = mkdtempSync(join(tmpdir(), 'repo-rules-test-'))
   const RULES_CONFIG = '- task_path: .claude/tasks/\n- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n| no-legacy-fetch | `legacyFetch\\(` | `src/**/*.ts` | Call the typed client from api/client.ts instead of legacyFetch. | PR 4417 |\n'
   const FORCE = '## Force-прогон 2026-09-24\nРежим: автономный.\n\n'
@@ -8022,7 +8431,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 // ── Stage 13 of VT-6: `retro.mjs --findings`, the input of /promote ───────────────────────────────────────────────────────────────────────────────
 // Incident: the same kind of finding in two tasks is one recurring class with both outcomes counted, a commit after the task closed is counted, the corpus rows of the repo are added.
 // Legitimate: a class with one task is not recurrent; a task whose branch is gone is "not counted", not zero; without the flag the retro is what it was.
-{
+if (unit('vt6findings')) {
   const retroRoot = mkdtempSync(join(tmpdir(), 'retro-findings-test-'))
   const dir = join(retroRoot, 'shop')
   repoAt(dir, 'main')
@@ -8071,7 +8480,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 // ── Stage 13 of VT-6: kit-overrides false-positive patterns (`skills/stage-check/references/kit-overrides-false-positives.md`) ───────────────────────
 // Incident: a new override is still flagged, a line copied once more than it was removed is flagged, `!important` is never skipped, a variable the diff declares is not a kit token.
 // Legitimate: a moved or re-indented line and a `[--token]` shorthand are listed as skipped with the pattern id, not flagged and not dropped.
-{
+if (unit('vt6kit')) {
   const fp = mkdtempSync(join(tmpdir(), 'kit-fp-test-'))
   const app = join(fp, 'app')
   repoAt(app, 'main')
@@ -8147,7 +8556,7 @@ rmSync(retroRoot, { recursive: true, force: true })
 
 
 // ── /promote proof runner (stage 13): a fake project ESLint, no real one needed ───────────────────────────────────────────
-{
+if (unit('vt6promote')) {
   const proof = await import(join(PLUGIN, 'promote-proof.mjs'))
   const pp = realpathSync(mkdtempSync(join(tmpdir(), 'promote-proof-test-')))
   const repo = join(pp, 'app')
@@ -8255,7 +8664,7 @@ module.exports = { ESLint }
 // ── Stage 13 of VT-6, fix round 1: pro-review findings M-2 (a backtracking row), M-3 (moved-line), m-3 (waivers of a failed commit), m-8 (untracked files) ──────────────
 // Incident: a backtracking row is a named config problem and the built-in rules still run; a line fixed in one file and written again in another is a finding;
 // the waiver of a commit that did not happen is not listed; a big untracked file is not read. Legitimate: an ordinary row still applies; a true move is skipped.
-{
+if (unit('vt6s13f1')) {
   const fx = realpathSync(mkdtempSync(join(tmpdir(), 'stage13-fix1-')))
   const TOKEN = `const key = 'ghp_${'aB3dE5'.repeat(6)}'\n`
   const rowsConfig = (rows) => `- task_path: .claude/tasks/\n- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message | evidence |\n|---|---|---|---|---|\n${rows}\n`
@@ -8347,7 +8756,7 @@ module.exports = { ESLint }
 // ── Stage 13 of VT-6, fix round 1: `retro --findings` (m-1 author date, m-4 registry tasks, fix commits, dismissals) ─────────────────────────────────────────────────────
 // Incident: a commit rebased after the task closed (author date before, committer date after) is not counted as post-done; a task of the repo in a shared task directory is read.
 // Legitimate: a commit authored after the close is counted; the dismissals view lists the closed-as-false findings per checker; the examples name the commits that touched their file.
-{
+if (unit('vt6retro')) {
   const rf = realpathSync(mkdtempSync(join(tmpdir(), 'retro-fix1-')))
   const dir = join(rf, 'shop')
   repoAt(dir, 'main')
@@ -8391,7 +8800,7 @@ module.exports = { ESLint }
 // Incident: other people's commits and merges are not work after the task closed (a lagging local base, `main_branch` that is not the PR target);
 // a symlink to /dev/zero is not read by the kit scan; a rev that is an option reaches no git command; a registry STAGES.md that is a device does not hang the retro;
 // an ESLint above the repo is not the project's; a glob with many wildcards is a config problem. Legitimate: a plain commit after the close is counted; the rest keeps working.
-{
+if (unit('vt6s13a')) {
   const f13 = realpathSync(mkdtempSync(join(tmpdir(), 'stage13a-')))
   const retro = await import(join(PLUGIN, 'retro-findings.mjs'))
   const STAGES13 = (ticket) => `# ${ticket}: task\nBranch: \`${ticket}/feat/x\`\n\n## Status: done\n\n## Force run 2026-09-24 — completed\n\n## Stages\n\n### Stage 1: card  [status: done]\n`
@@ -8531,6 +8940,7 @@ module.exports = { ESLint }
 
 // ── Stage 13b of VT-6 (part A): B1 team_review config in a linked worktree, B3 M-1..M-4, B4 one glob and one pattern run per row ──────────────────
 // B1 incident: a linked worktree whose `.claude/` is excluded (the config lives only in the main tree) names no team_review skill to the close rule.
+if (unit('vt6s13b')) {
 {
   const wtRoot = realpathSync(mkdtempSync(join(tmpdir(), 'b1-wt-')))
   const T0 = Date.now()
@@ -8723,13 +9133,13 @@ module.exports = { ESLint }
     .map((line) => JSON.parse(line))
   check('firing log (13b) incident: the Repo rules deny of the B4 commit is logged as git-guard/floor-guard with its repo', rows.some((row) => row.rule === 'git-guard/floor-guard' && /b4-budget-/.test(row.repo ?? '')), JSON.stringify(rows.filter((row) => row.rule === 'git-guard/floor-guard').slice(-3)))
   check('firing log (13b) incident: the missing team review report of the B1 close is logged as journal-gate/close', rows.some((row) => row.rule === 'journal-gate/close' && /^T-8\d$/.test(row.task ?? '')), JSON.stringify(rows.filter((row) => row.rule === 'journal-gate/close').slice(-3)))
-  check('firing log (13b) legitimate: no row carries a rule ID of this lane that hook-rules.json does not know', rows.every((row) => !/^(?:git-guard|journal-gate)\/(?:repo-rule|team-review)/.test(row.rule)), 'a lane-invented ID')
+}
 }
 
 // ── Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit path ──────────────────────────────────────────────────
 // Incident: git-guard denies the matching added line under the multi-span row with [repo:<id>] (before the fix the row covered no file and the commit went through).
 // Legitimate: the single-span row denies the same line.
-{
+if (unit('vt6s13c')) {
   const c13 = realpathSync(mkdtempSync(join(tmpdir(), 'b5-spans-')))
   const rowOf = (cell) => `- task_path: .claude/tasks/\n- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n| no-resolve | \`resolveComponent\\(\` | ${cell} | import it statically |\n`
   repoAt(c13, 'main')
@@ -8749,5 +9159,12 @@ module.exports = { ESLint }
   rmSync(c13, { recursive: true, force: true })
 }
 
-for (const late of lateChecks) late()
+if (MODE === 'serial') for (const late of lateChecks) late(DATA)
+// a unit block that no longer matches the UNITS table would silently run nothing
+const unseen = [...(MODE === 'serial' ? UNIT_IDS : wanted)].filter((id) => !seen.has(id))
+if (unseen.length) {
+  console.error(`hooks-test: no block for unit ${unseen.join(', ')} — check the UNITS table and --units`)
+  process.exit(2)
+}
+await drained()
 process.exit(failed ? 1 : 0)

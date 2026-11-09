@@ -13,6 +13,12 @@
  *   node scripts/eval.mjs --variant no-devtools-verify stage-check-ui-stage         # the plugin with the edit list of evals/cases/<case>/variants/<name>.json applied (one case; `provenFailing.on` = `variant:<name>`)
  *   node scripts/eval.mjs --ref <tag> --record-failing <new-case>                   # writes `provenFailing` into the case
  *   node scripts/eval.mjs --budget-usd 20 --budget-since 2026-10-25T00:00:00Z       # skip runs that would pass the lane budget
+ *   node scripts/eval.mjs --effort pro-review=low --effort docs-lookup=none docs-lookup-not-installed   # `effort:` of that agent in the COPIED plugin set / replaced (`none` removes the line); the source is never touched
+ *   node scripts/eval.mjs --show-plugin --effort pro-review=low   # free: the label and the frontmatter of the overridden agents in the copy; nothing runs
+ *   node scripts/eval.mjs --pending <case>         # run a case from evals/pending/ by name (never selected otherwise)
+ *   node scripts/eval.mjs --record-release [case…]   # free: evals/releases.tsv (committed) gets, per agent case, the latest working-tree invocation at the current plugin.json version
+ *   node scripts/eval.mjs --seed-models              # free: evals/models.json (committed) regenerated from the ledger; --accept-models after a run writes the models that run resolved
+ *   EVAL_LEDGER=/path/ledger.tsv EVAL_RESULTS=/path/.results node scripts/eval.mjs …   # a run started from another checkout (hillclimb's temp worktree) appends to and budgets from THAT ledger
  *
  * A rule in a skill is worth nothing until it is verified that the agent with it catches its class of problems —
  * and that the next skill edit did not break that. A case is evals/cases/<name>/:
@@ -41,7 +47,9 @@
  * and the subagent's tool calls feed the trace graders. The plugin data directory is a fresh temp one per run (STAGE_PIPELINE_DATA_DIR: Claude Code overwrites
  * CLAUDE_PLUGIN_DATA for hooks, so that variable alone never reached them). The working tree, --ablate and --variant runs carry a pluginDataDir() that honours the override;
  * a `--ref` tag before 0.19.0 does not, so preparePlugin patches the archived scripts/hooks/pipeline-state.mjs (aborting when the function is not found exactly once);
- * with that, nothing of the live data directory is read or written. Cases under evals/pending/ (awaiting a discriminating proof) are skipped by --list, --lint, validate.mjs and every run.
+ * with that, nothing of the live data directory is read or written. Cases under evals/pending/ (awaiting a discriminating proof) are skipped by --list, --lint, --record-release, validate.mjs and every run, unless a run names them with --pending (`node scripts/eval.mjs --pending <case>`: a name that is not under evals/cases/ is looked up under evals/pending/; the other free modes refuse the flag).
+ * `--invocation <id>` names the invocation (`<yyyymmddThhmmss>-<4 chars>`): the hill-climb makes the id and reads the rows back by it, so no text the model wrote can pick the run that is scored.
+ * `--label <text>` adds <text> to the plugin_ref of the run's ledger rows (`working-tree+<text>`): the hill-climb labels its runs `hillclimb:<run>`, and a labelled run never stands for a release.
  *
  * Expectations in case.json (deterministic graders are the floor):
  *   expect / forbid       regexps over the report in checks/ (plus the final message for expect)
@@ -88,6 +96,9 @@
  * Results of one invocation go to evals/.results/<invocation>/ and are never overwritten. The total cost is printed. --budget-usd <x> sums the
  * ledger cost (since --budget-since <ts>, else the whole ledger) and skips a run when spent + the case's mean past cost (else its budgetUsd) would pass x;
  * the skipped runs are listed with their estimates and the exit code is 3.
+ * Effort runs carry `effort:<agent>=<level>` in plugin_ref (`model:` overrides carry `model:<agent>=<model>`, both `model:…+effort:…`, after a ref/variant/ablation `<that>+<override>`).
+ * Model drift: evals/models.json holds the last resolved model per agent; a run whose agent resolves to another one prints «model drift: agent X resolved to A, evals/models.json has B».
+ * The agent's own model comes from its own assistant events of the stream (the aggregate modelUsage also holds the thin haiku parent). Only --accept-models / --seed-models rewrite the file.
  *
  * Every run is a real model call (subscription limit or API-key money): not in CI (only --lint is), but before a release where agents changed.
  */
@@ -98,17 +109,24 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { wantedFor, loadProfile } from '../plugins/stage-pipeline/scripts/permission-profile.mjs'
 import {
-  CASES, ROOT, SOURCE_PLUGIN, STATIC_SERVER, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
-  spentSince, subagentRun, toolCalls, walk,
+  CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, STATIC_SERVER, agentModelsOf, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
+  INVOCATION_RE, newInvocationId, sessionEnv, spentSince, subagentRun, toolCalls, validEffort, walk, withEffort,
 } from './eval-lib.mjs'
+import { agentCases, agentTreeAt, buildReleaseRows, mergeReleases, modelDrift, ownModels, readModels, readReleases, releaseWarnings, seedModels, shaProblem, writeModels, writeReleases } from './release-lib.mjs'
 
-const RESULTS = join(ROOT, 'evals/.results')
+const RESULTS = RESULTS_DIR
+const MODELS_FILE = join(ROOT, 'evals/models.json')
+const RELEASES_FILE = join(ROOT, 'evals/releases.tsv')
 
 const opts = parseArgs(process.argv.slice(2))
 const all = readdirSync(CASES).filter((name) => existsSync(join(CASES, name, 'case.json')))
+const PENDING_DIR = join(ROOT, 'evals/pending')
+const pending = existsSync(PENDING_DIR) ? readdirSync(PENDING_DIR).filter((name) => existsSync(join(PENDING_DIR, name, 'case.json'))) : []
+/** Where a case lives: evals/cases/, or — only with --pending, and only for a name that is not under evals/cases/ — evals/pending/. */
+const caseDirOf = (name) => (opts.flags.has('--pending') && !all.includes(name) && pending.includes(name) ? join(PENDING_DIR, name) : join(CASES, name))
 
 function parseArgs(argv) {
-  const result = { names: [], runs: 3, overrides: {}, flags: new Set() }
+  const result = { names: [], runs: 3, overrides: {}, efforts: {}, flags: new Set() }
   const value = (flag) => argv[++i] ?? fail(`${flag} expects a value`)
   let i = 0
   for (; i < argv.length; i++) {
@@ -118,12 +136,21 @@ function parseArgs(argv) {
       const [agent, model] = value(arg).split('=')
       if (!agent || !model) fail('--model expects <agent>=<model>, e.g. i18n-sweep=haiku')
       result.overrides[agent] = model
+    } else if (arg === '--effort') {
+      const [agent, level] = value(arg).split('=')
+      if (!agent || !level || !(level === 'none' || validEffort(level))) fail('--effort expects <agent>=<low|medium|high|xhigh|max|integer|none>, e.g. pro-review=low (none removes the line)')
+      result.efforts[agent] = level
     } else if (arg === '--ref') result.ref = value(arg)
     else if (arg === '--ablate') result.ablate = value(arg)
     else if (arg === '--variant') result.variant = value(arg)
+    else if (arg === '--label') result.label = value(arg)
+    else if (arg === '--invocation') {
+      result.invocation = value(arg)
+      if (!INVOCATION_RE.test(result.invocation)) fail('--invocation expects an id like 20261030T102038-02dd')
+    }
     else if (arg === '--budget-usd') result.budget = Number(value(arg))
     else if (arg === '--budget-since') result.budgetSince = value(arg)
-    else if (['--list', '--lint', '--record-failing'].includes(arg)) result.flags.add(arg)
+    else if (['--list', '--lint', '--record-failing', '--record-release', '--seed-models', '--accept-models', '--show-plugin', '--pending'].includes(arg)) result.flags.add(arg)
     else if (arg.startsWith('--')) fail(`unknown flag ${arg}`)
     else result.names.push(arg)
   }
@@ -139,12 +166,15 @@ function fail(message) {
   process.exit(2)
 }
 
+const pendingOnly = ['--list', '--lint', '--record-release', '--seed-models', '--record-failing'].filter((flag) => opts.flags.has(flag))
+if (opts.flags.has('--pending') && pendingOnly.length) fail(`--pending only names cases of a run (or --show-plugin); ${pendingOnly.join(', ')} ignore evals/pending/`)
+if (opts.flags.has('--pending') && !opts.names.length) fail('--pending needs the names of the pending cases to run: with none, a run would take every regular case (3 paid runs each)')
 if (opts.flags.has('--list')) {
   for (const name of all) console.log(`${name} [${readCase(join(CASES, name)).agent ?? readCase(join(CASES, name)).kind}] — ${readCase(join(CASES, name)).why}`)
   process.exit(0)
 }
 const selected = opts.names.length ? opts.names : all
-const unknown = selected.filter((name) => !all.includes(name))
+const unknown = selected.filter((name) => !all.includes(name) && !(opts.flags.has('--pending') && pending.includes(name)))
 if (unknown.length) fail(`No such cases: ${unknown.join(', ')}. List: --list`)
 
 if (opts.flags.has('--lint')) {
@@ -180,7 +210,7 @@ function applyVariant(dir, caseName, variant) {
  * The plugin under test, copied to a neutral directory (`<tmp>/pl-XXXX/stage-pipeline`, so the path does not carry the repo name):
  * the working tree, a git tag (`git archive`, never a worktree of this checkout), or either without a skill/agent; `--model` rewrites `model:`.
  */
-function preparePlugin({ overrides, ref, ablate, variant }) {
+function preparePlugin({ overrides, efforts, ref, ablate, variant, label }) {
   const base = mkdtempSync(join(tmpdir(), 'pl-'))
   const dir = join(base, 'stage-pipeline')
   let sha
@@ -238,14 +268,55 @@ function preparePlugin({ overrides, ref, ablate, variant }) {
     if (!/^model: .*$/m.test(text)) fail(`agent ${agent} has no model field in its frontmatter`)
     writeFileSync(path, text.replace(/^model: .*$/m, `model: ${model}`))
   }
-  const refLabel = ref ? `ref:${ref}` : variant ? `variant:${variant}` : ablate ? `ablate:${ablate}` : Object.keys(overrides).length ? `model:${Object.entries(overrides).map(([a, m]) => `${a}=${m}`).join(',')}` : 'working-tree'
+  for (const [agent, level] of Object.entries(efforts)) {
+    const path = join(dir, 'agents', `${agent}.md`)
+    if (!existsSync(path)) fail(`no agent ${agent}`)
+    writeFileSync(path, withEffort(readFileSync(path, 'utf8'), level))
+  }
+  // The label tells runs of another plugin apart in the ledger: `model:a=b`, `effort:a=low` (`none` = the line removed), both joined with `+`, and after a ref / variant / ablation `<that>+<override>`.
+  const pairs = (map) => Object.entries(map).map(([a, v]) => `${a}=${v}`).join(',')
+  const labelBase = ref ? `ref:${ref}` : variant ? `variant:${variant}` : ablate ? `ablate:${ablate}` : null
+  const edits = [Object.keys(overrides).length ? `model:${pairs(overrides)}` : null, Object.keys(efforts).length ? `effort:${pairs(efforts)}` : null].filter(Boolean)
+  const refLabel = [labelBase ?? (label && !edits.length ? 'working-tree' : null), ...edits, label].filter(Boolean).join('+') || 'working-tree'
+  // `--label`: the run is still the working tree (or the ref/override), tagged: `working-tree+hillclimb:<run>`. buildReleaseRows takes only the exact `working-tree`.
   const version = JSON.parse(readFileSync(join(dir, '.claude-plugin/plugin.json'), 'utf8')).version
   return { dir, base, sha, version, refLabel }
 }
 
+// ── free modes: no model call, no plugin copy ───────────────────────────────────────────────────────────────────────
+
+if (opts.flags.has('--seed-models')) {
+  const models = seedModels(readLedger(), CASES)
+  writeModels(MODELS_FILE, models)
+  console.log(`✔ ${relative(ROOT, MODELS_FILE)} seeded from the ledger: ${Object.entries(models).map(([agent, model]) => `${agent}=${model}`).join(', ')}`)
+  process.exit(0)
+}
+
+if (opts.flags.has('--record-release')) {
+  const version = JSON.parse(readFileSync(join(SOURCE_PLUGIN, '.claude-plugin/plugin.json'), 'utf8')).version
+  const gitHere = (...args) => git(ROOT, ...args)
+  const skippedRuns = []
+  const rows = buildReleaseRows({ ledger: readLedger(), casesDir: CASES, version, only: opts.names.length ? opts.names : null, today: new Date().toISOString().slice(0, 10), rowProblem: (row) => shaProblem(row.plugin_sha, gitHere), skipped: skippedRuns, treeOf: (sha, agent) => agentTreeAt(gitHere, sha, agent) })
+  for (const line of skippedRuns) console.log(`⏭ ${line}`)
+  for (const row of rows) for (const warning of releaseWarnings(row, gitHere)) console.log(`⚠ ${warning}`)
+  const missing = Object.values(agentCases(CASES)).flat().filter((name) => (!opts.names.length || opts.names.includes(name)) && !rows.some((row) => row.case === name))
+  writeReleases(RELEASES_FILE, mergeReleases(readReleases(RELEASES_FILE), rows))
+  for (const row of rows) console.log(`  ${row.version} ${row.case} (${row.agent}) ${row.pass} $${row.cost_usd} ${row.invocation} ${row.plugin_sha.slice(0, 9)}`)
+  if (missing.length) console.log(`⚠ no working-tree run at ${version} in the ledger for: ${missing.join(', ')}`)
+  console.log(`✔ ${rows.length} row(s) of ${version} written to ${relative(ROOT, RELEASES_FILE)} (other versions kept)`)
+  process.exit(0)
+}
+
 const plugin = preparePlugin(opts)
+if (opts.flags.has('--show-plugin')) {
+  // Free: what the copied plugin looks like after the overrides (the tests read this); the copy is removed and the source was never touched.
+  console.log(`label: ${plugin.refLabel}`)
+  for (const agent of new Set([...Object.keys(opts.overrides), ...Object.keys(opts.efforts)])) console.log(`--- ${agent}\n${/^---\n([\s\S]*?)\n---/.exec(readFileSync(join(plugin.dir, 'agents', `${agent}.md`), 'utf8'))?.[1]}`)
+  rmSync(plugin.base, { recursive: true, force: true })
+  process.exit(0)
+}
 const claudeVersion = (spawnSync('claude', ['--version'], { encoding: 'utf8' }).stdout ?? '').trim().split('\n')[0] || '?'
-const invocation = `${new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}-${Math.random().toString(36).slice(2, 6)}`
+const invocation = opts.invocation ?? newInvocationId()
 const resultsDir = join(RESULTS, invocation)
 mkdirSync(resultsDir, { recursive: true })
 const labelSlug = plugin.refLabel.replace(/[^\w=,:-]/g, '_')
@@ -257,8 +328,7 @@ const wanted = wantedFor(plugin.dir, profile.defaultGroups, profile)
 const allowed = [...new Set([...wanted.allow, 'Agent', 'Task'])]
 
 function runClaude(args, cwd, seconds, dataDir) {
-  const env = { ...process.env, STAGE_PIPELINE_DATA_DIR: dataDir, MCP_CONNECTION_NONBLOCKING: 'false' }
-  delete env.CLAUDE_PLUGIN_DATA
+  const env = sessionEnv(process.env, dataDir)
   const started = Date.now()
   // In -p, servers from --mcp-config connect asynchronously: MCP_CONNECTION_NONBLOCKING=false makes the session wait for them.
   const result = spawnSync('claude', args, { cwd, encoding: 'utf8', timeout: seconds * 1000, env, maxBuffer: 1 << 28 })
@@ -434,6 +504,9 @@ function runAgent(name, attempt, spec, world, dataDir) {
   const hooks = hookEvents(events)
   const cost = final.total_cost_usd ?? 0
   const models = Object.keys(final.modelUsage ?? {})
+  // The agent's own model: its own assistant events, else the aggregate without the haiku parent. A `model` the parent put into the Agent call is a deliberate choice, not drift.
+  const own = agentModelsOf(events, main ? null : sub.launch?.id ?? undefined)
+  const agentModels = own.length ? own : ownModels(models)
 
   const failures = []
   let harness = false
@@ -470,11 +543,11 @@ function runAgent(name, attempt, spec, world, dataDir) {
     `## Failures\n\n${failures.map((f) => `- ${f}`).join('\n') || '—'}\n\n## Permission denials\n\n${denials.join('\n') || '—'}\n\n` +
     `## Hook events\n\n${hookCounts.join(', ') || '—'}\n\n## Subagent tool calls (${trace.length})\n\n${trace.join('\n') || '—'}\n\n` +
     `## Agent report\n\n${report || '(none)'}\n\n## Final message of the subagent\n\n${sub.summary}\n`
-  return { failures, marks, harness, seconds, cost, models, body, stdout: result.stdout }
+  return { failures, marks, harness, seconds, cost, models, agentModels, modelChosenByParent: Boolean(!main && sub.launch?.input?.model), body, stdout: result.stdout }
 }
 
 function runCase(name, attempt) {
-  const caseDir = join(CASES, name)
+  const caseDir = caseDirOf(name)
   const spec = readCase(caseDir)
   const world = buildWorld({ caseDir, name, spec, plugin: plugin.dir })
   const dataDir = mkdtempSync(join(tmpdir(), 'pd-'))
@@ -492,12 +565,15 @@ function runCase(name, attempt) {
   }
 }
 
+const knownModels = readModels(MODELS_FILE)
+const resolved = {}
+const drift = []
 const table = []
 const skipped = []
 const aborted = []
 let spendNow = 0
 for (const name of selected) {
-  const spec = readCase(join(CASES, name))
+  const spec = readCase(caseDirOf(name))
   const missing = missingServers(spec, plugin.dir)
   if (missing.length) {
     console.log(`⏭ ${name} — skipped: the plugin's .mcp.json has no ${missing.join(', ')}`)
@@ -533,6 +609,16 @@ for (const name of selected) {
     row.seconds += seconds
     row.failures.push(failures)
     for (const model of models) row.models.add(model)
+    // Model drift (AC-14.2): the agent's resolved model against evals/models.json. A harness failure, a `--model` override and a model the parent chose say nothing about the alias.
+    if (spec.agent && !harness && run.agentModels?.length && !run.modelChosenByParent && !opts.overrides[spec.agent] && !opts.ref) {
+      resolved[spec.agent] = run.agentModels[0]
+      const found = modelDrift(knownModels, spec.agent, run.agentModels)
+      if (found) {
+        const message = `model drift: ${found} (case ${name} #${attempt})`
+        drift.push(message)
+        console.log(`    ⚠ ${message}`)
+      }
+    }
     appendLedger({
       ts: new Date().toISOString(), invocation, case: name, attempt, plugin_ref: plugin.refLabel, plugin_version: plugin.version, plugin_sha: plugin.sha,
       claude_version: claudeVersion, models: models.join('+'), marks: marks.join(' '), pass: failures.length ? 0 : 1, cost_usd: cost.toFixed(4), seconds,
@@ -551,12 +637,20 @@ for (const row of table) {
   const n = Math.max(row.ran, 1)
   console.log(`| ${row.name} | ${row.passed}/${row.ran} | ${[...row.models].join(', ')} | ${(row.cost / n).toFixed(3)} | ${Math.round(row.seconds / n)} |`)
 }
-console.log(`\nTotal: ${table.reduce((s, r) => s + r.passed, 0)}/${table.reduce((s, r) => s + r.ran, 0)} runs passed, cost this invocation $${spendNow.toFixed(2)} (ledger: ${relative(ROOT, join(ROOT, 'evals/ledger.tsv'))})`)
+console.log(`\nTotal: ${table.reduce((s, r) => s + r.passed, 0)}/${table.reduce((s, r) => s + r.ran, 0)} runs passed, cost this invocation $${spendNow.toFixed(2)} (ledger: ${relative(ROOT, LEDGER)})`)
 if (skipped.length) {
   console.log(`\nSkipped by the budget (${skipped.length} runs, ~$${skipped.reduce((s, r) => s + r.estimate, 0).toFixed(2)}):`)
   for (const run of skipped) console.log(`  ${run.name} #${run.attempt} ~$${run.estimate.toFixed(2)}`)
 }
 
+if (drift.length) console.log(`\n⚠ Model drift (${drift.length}): ${[...new Set(drift.map((message) => /agent (\S+)/.exec(message)[1]))].join(', ')} no longer resolve to the model in ${relative(ROOT, MODELS_FILE)}. Check the cost and the pass rate, then accept with --accept-models (this never rewrites the file by itself).`)
+if (opts.flags.has('--accept-models')) {
+  if (!Object.keys(resolved).length) console.log('\n⚠ --accept-models: no agent run resolved a model (agent cases only, no --model / --ref): models.json unchanged')
+  else {
+    writeModels(MODELS_FILE, { ...knownModels, ...resolved })
+    console.log(`\n✔ ${relative(ROOT, MODELS_FILE)} updated: ${Object.entries(resolved).map(([agent, model]) => `${agent}=${model}`).join(', ')}`)
+  }
+}
 if (opts.flags.has('--record-failing')) recordFailing()
 rmSync(plugin.base, { recursive: true, force: true })
 if (aborted.length) process.exit(2)

@@ -1,0 +1,15 @@
+{
+  "dead-code": "claude-sonnet-5-5",
+  "deps-audit": "claude-haiku-5-5",
+  "devtools-verify": "claude-sonnet-5-5",
+  "docs-lookup": "claude-sonnet-5-5",
+  "figma-compare": "claude-sonnet-5-5",
+  "figma-spec": "claude-sonnet-5-5",
+  "human-text-check": "claude-sonnet-5-5",
+  "i18n-sweep": "claude-sonnet-5-5",
+  "pro-review": "claude-sonnet-5-5",
+  "proto-compare": "claude-sonnet-5-5",
+  "proto-spec": "claude-sonnet-5-5",
+  "stage-implement": "claude-sonnet-5-5",
+  "task-converge": "claude-sonnet-5-5"
+}

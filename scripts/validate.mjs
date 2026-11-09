@@ -1120,6 +1120,15 @@ if (!STANDALONE_COPY) {
   if (noFixtures) fail('scripts/validate.mjs', 'scripts/fixtures/run-audit is missing: the run-audit self-test needs it')
   if (!missing.some((name) => name !== 'run-audit.mjs')) await validateCorrectionLoop()
   if (!missing.includes('run-audit.mjs') && !noFixtures) await validateRunAudit()
+  // The tuning tooling's free tests: eval.mjs --effort / --record-release, model drift, the release-check eval gate on fixtures, and the hill-climb loop with a stub editor and a scripted evaluator.
+  for (const [script, args] of [['tuning-test.mjs', []], ['hillclimb.mjs', ['--self-test']]]) {
+    if (!existsSync(join(ROOT, 'scripts', script))) {
+      fail('scripts/validate.mjs', `scripts/${script} is missing: the tuning tooling is tested through it`)
+      continue
+    }
+    const ran = spawnSync(process.execPath, [join(ROOT, 'scripts', script), ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 24 })
+    if (ran.status !== 0) fail(`scripts/${script}${args.length ? ` ${args.join(' ')}` : ''}`, `failed:\n${(ran.stdout + ran.stderr).trim().split('\n').slice(0, 14).join('\n')}`)
+  }
 }
 
 await validateEvals()
