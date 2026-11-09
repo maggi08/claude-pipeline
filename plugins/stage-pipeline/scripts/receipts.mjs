@@ -27,7 +27,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, configRoot, patchIds, readConfig, readDataFiles, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
+import { OPEN_STATUS, configRoot, dirtyPaths, pathList, patchIds, readConfig, readDataFiles, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
@@ -330,15 +330,7 @@ function taskRelPath(worktree, taskDir) {
 /** Tracked files with uncommitted edits outside the task directory (the journal and the reports change all the time and are not the code). */
 function dirtyTracked(worktree, taskDir) {
   const taskRel = taskRelPath(worktree, taskDir)
-  // `-z`: `XY path`, NUL-terminated, unquoted; a rename or a copy is followed by its source path as a field of its own.
-  const fields = gitRaw(worktree, 'status', '--porcelain', '-z', '--untracked-files=no').split('\0')
-  const files = []
-  for (let index = 0; index < fields.length; index++) {
-    if (fields[index].length < 4) continue
-    files.push(fields[index].slice(3))
-    if (/[RC]/.test(fields[index].slice(0, 2))) index++
-  }
-  return files.filter((file) => !taskRel || !(file === taskRel || file.startsWith(`${taskRel}/`)))
+  return (dirtyPaths(worktree) ?? []).filter((file) => !taskRel || !(file === taskRel || file.startsWith(`${taskRel}/`)))
 }
 
 /** Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory (a move out of it counts by its destination); a binary file counts 0 (S1-D2); null when git fails. */
@@ -435,7 +427,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const language = taskLanguage(run.stages)
   const fixedBlock = withBlockers && blockerFieldApplies(bGate, run.block.heading, run.block.body)
   const reason = dirty.length
-    ? `tracked files have uncommitted edits (${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''})`
+    ? `tracked files have uncommitted edits (${pathList(dirty)})`
     : `newer than the code last changed (the tree of HEAD appeared ${new Date(since).toISOString()}; a rewrite that keeps the tree does not count)`
   return missing
     .filter((item) => !withBlockers || !blockers.some((line) => finalMarkerReports(line).has(item.checker)))

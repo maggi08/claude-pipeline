@@ -11,8 +11,14 @@ Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
 What changes against 0.25.0: two cases where the hook said a CI gate "ran on another tree" although it had run.
 
-- **A task in a linked worktree.** The journal of such a task lives in the main tree, so closing its force run there judged the gates on the main tree's HEAD. VT-8 bounced 10 closes this way while its gates were green in its own worktree. The close, and the run digest, now judge the gates on the worktree where the task's branch is checked out: the branch of the `Branch:` header, or else a worktree whose branch or path STAGES.md names in backticks. With no such worktree they stay on the caller's, as before.
-- **A run with uncommitted tracked files.** `run-check` records a whole-repo gate run only on a clean tree, by design: the gates stand for HEAD. It used to say nothing when it skipped the record, and the close then reported "ran on another tree". Now `run-check` prints `not recorded for the CI gates — tracked files differ from HEAD (…)`, and the close message and `ci-gates.mjs` name those files and say to commit or stash them first. The rule itself does not change.
+- **A task in a linked worktree.** The journal of such a task lives in the main tree, so closing its force run there judged the gates on the main tree's HEAD. VT-8 bounced 12 closes this way while its gates were green in its own worktree. The close, its final whole-branch review check and the run digest now use the worktree where the task's branch is checked out. They find it in this order, and the first level with a match decides:
+  1. the branch of the `Branch:` header; a header branch checked out nowhere keeps the caller's worktree;
+  2. without a header, a worktree whose path STAGES.md names in backticks;
+  3. without a header, a worktree whose branch carries the ticket.
+
+  A branch name in the prose, such as `dev` or `main`, never picks a worktree, because a base branch's green gates must not close a task. Two matches at one level keep the caller's worktree, and a worktree whose directory is gone is skipped. The message's commands start with `cd '<that worktree>'`, so a rerun records for the right tree.
+- **A gate run with uncommitted tracked files.** `run-check` records a whole-repo gate run only on a clean tree, by design: the gates stand for HEAD. It used to say nothing when it skipped the record, and the close then reported "ran on another tree". Now `run-check` prints `not recorded for the CI gates — tracked files differ from HEAD (…)` for a gate command; the close message and `ci-gates.mjs` name those files and say to commit or stash them first. The rule itself does not change.
+- One parser of dirty tracked paths (`dirtyPaths`, `-z`: a path with a space or a non-ASCII name comes as it is, a rename as its destination) and one `realOr`, shared through `pipeline-state.mjs`.
 
 ## 0.25.0 — 2026-11-09
 

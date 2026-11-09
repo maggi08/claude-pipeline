@@ -883,3 +883,36 @@ function statOf(path) {
 }
 
 export { readHookInput } from './hook-input.mjs'
+
+/** The real path (symlinks resolved: `/var` → `/private/var`, `/tmp` → `/private/tmp`), the path itself when it does not exist. */
+export const realOr = (path) => {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
+/**
+ * Tracked paths with uncommitted edits, relative to the repo root. `-z` porcelain: a path comes unquoted (a space, a non-ASCII letter), and a rename or a copy
+ * comes as its destination, its source following as a field of its own that is skipped. null when git fails.
+ */
+export function dirtyPaths(worktree) {
+  let out
+  try {
+    out = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=no'], { cwd: worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return null
+  }
+  const fields = out.split('\0')
+  const files = []
+  for (let index = 0; index < fields.length; index++) {
+    if (fields[index].length < 4) continue
+    files.push(fields[index].slice(3))
+    if (/[RC]/.test(fields[index].slice(0, 2))) index++
+  }
+  return files
+}
+
+/** Up to `limit` paths in backticks for a message, and how many more. */
+export const pathList = (paths, limit = 3) => `${paths.slice(0, limit).map((path) => `\`${path}\``).join(', ')}${paths.length > limit ? ` and ${paths.length - limit} more` : ''}`

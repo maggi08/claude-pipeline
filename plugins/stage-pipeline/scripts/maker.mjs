@@ -21,9 +21,9 @@
  */
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, isAbsolute, resolve, sep } from 'node:path'
-import { readDataFiles, readDataJsonl } from './hooks/pipeline-state.mjs'
+import { readDataFiles, readDataJsonl, realOr } from './hooks/pipeline-state.mjs'
 import { forceKey } from './markers.mjs'
 import { siblingRepos, takePlanSnapshot } from './plan-check.mjs'
 import { receiptRun } from './receipts.mjs'
@@ -59,13 +59,7 @@ function git(cwd, args, { input, timeout = 3000, deadline = null } = {}) {
 }
 
 /** The real path (symlinks resolved: `/var` → `/private/var`), the path itself when it does not exist. Shared with the resume point. */
-export const real = (path) => {
-  try {
-    return realpathSync(path)
-  } catch {
-    return path
-  }
-}
+export const real = realOr
 
 /** Blob hashes of paths at a revision in one git call: `Map<path, blob | null>` (null — the path is not there, or is no blob). */
 function revBlobs(root, rev, paths) {

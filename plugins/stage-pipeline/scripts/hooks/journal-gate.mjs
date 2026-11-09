@@ -280,7 +280,9 @@ for (const task of tasks) {
     const after020 = !runtimeOld.has(basename(path))
     return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme(rootsOnce(), state.config)), v020: after020 })
   })
-  const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), taskWorktree(state.worktree, task), state.config, task.dir, { caller: state.worktree }), ...(task.current ? finalReviewViolations(pluginDataDir(), state.worktree, task.dir) : [])]
+  // The gates and the final reviews of a task whose branch is checked out in another worktree are that worktree's (`taskWorktree`).
+  const taskTree = taskWorktree(state.worktree, task)
+  const closing = [...forceCloseViolations(pluginDataDir(), task.dir), ...gateCloseViolations(pluginDataDir(), taskTree, state.config, task.dir, { caller: state.worktree }), ...(task.current || taskTree !== state.worktree ? finalReviewViolations(pluginDataDir(), taskTree, task.dir) : [])]
   for (const violation of [...journal, ...reports, ...closing]) messages.push(`- ${task.ticket}: ${violation.message}`)
   // One firing per kind of violation the block carries (the violations' own rule names go along as `kinds`: names only, no message text).
   for (const [rule, found] of [['journal-gate/journal', journal], ['journal-gate/report', reports], ['journal-gate/close', closing]]) {
