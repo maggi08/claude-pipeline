@@ -6,9 +6,13 @@ import { denyTool } from './firing.mjs'
 import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
 
 /**
- * Two rules for launching subagents that the orchestrator keeps only in memory — and loses
+ * Three rules for launching subagents that the orchestrator keeps only in memory — and loses
  * on a long run:
  *
+ * - the security review and ds-parity run as their own agents, pinned to sonnet. A general-purpose
+ *   agent inherits the session's model: of 173 general-purpose calls in the transcripts of
+ *   2026-10-01…11-09, 52 were security reviews and 40 ds-parity passes, almost all on opus, a median
+ *   of 9 min each, and the final rounds ran them again.
  * - whole-branch pro-review runs on `review_model` (stage-check, Step 3.3). The model is passed
  *   as a parameter on the call, and of 13 live whole-branch reviews 5 went to sonnet from the
  *   agent's frontmatter: the first review of a run ran on opus, the second one, on a neighbouring
@@ -27,6 +31,21 @@ const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(
 // The delta mode of pro-review (`--delta <full report>`, VT-7) reviews the whole-branch lenses over a fix round: held to review_model too.
 // Also `Mode: delta`, `delta review`, the Russian forms, and a prompt naming a `-branch-delta-` report; a stage prompt that only mentions "the delta of the round" stays allowed.
 const DELTA_MODE = new RegExp(`--delta\\b|\\bdelta[-\\s](?:mode|review)\\b|(?:${MODE_WORD})\\s*(?::\\s*)?\\**delta\\b|дельта[-\\s]?(?:режим|ревью)|(?:${MODE_WORD})\\s*:?\\s*\\**дельта|-branch-delta-`, 'i')
+// No subagent_type is a general-purpose agent too; `claude` is the catch-all type of some hosts.
+const GENERIC_AGENTS = new Set(['', 'general-purpose', 'claude'])
+// Told by the call's description or, for ds-parity, by a prompt that points at its skill. In the transcripts since 2026-10-01 most calls named the check in the
+// description; a combined sweep ("Delta sweep final 9": dead-code, i18n, security and ds-parity in one call) is caught by the ds-parity skill path only, so the message
+// sends every other check of the prompt to its own agent. "security" alone is not enough: an interview probe of "the account security page" is not a review; it counts
+// next to a review word (whole words: "password" is not "pass") or next to another checker's name ("ds-parity security i18n final 7").
+const SECURITY_JOB = /\bsecurity\b[^\n]*\b(?:review|re-review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b|\b(?:review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b[^\n]*\bsecurity\b|\bsecurity\b[^\n]*\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b|\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b[^\n]*\bsecurity\b|(?:ревью|провер\S*|аудит)\s+безопасност|безопасност\S*\s+(?:ревью|провер|аудит)/i
+const CHECKER_JOBS = [
+  { agent: 'security-review', job: 'the security review', matches: (description) => SECURITY_JOB.test(description) },
+  {
+    agent: 'ds-parity',
+    job: 'the ds-parity pass',
+    matches: (description, prompt) => /\bds[-\s]?parity\b|design[-\s]system parity|дубл\S* с дизайн-систем/i.test(description) || /skills\/ds-parity\b/.test(prompt),
+  },
+]
 
 // the spawn the pending line was written for (K11b.1); a deny closes it with a `denied` line
 let spawned = null
@@ -34,10 +53,30 @@ const input = await readHookInput()
 const toolInput = input.tool_input ?? {}
 const type = String(toolInput.subagent_type ?? '')
 const agent = type.split(':').at(-1)
-if (agent !== 'pro-review' && agent !== 'stage-implement') process.exit(0)
+const generic = GENERIC_AGENTS.has(agent)
+if (!generic && agent !== 'pro-review' && agent !== 'stage-implement') process.exit(0)
 
 const state = readPipelineState(input.cwd ?? process.cwd())
 if (!state) process.exit(0)
+
+if (generic) {
+  const jobs = CHECKER_JOBS.filter((job) => job.matches(String(toolInput.description ?? ''), String(toolInput.prompt ?? '')))
+  if (jobs.length) {
+    const how =
+      jobs.length === 1
+        ? `Repeat the call with subagent_type: "stage-pipeline:${jobs[0].agent}" and the same prompt.`
+        : `Split the call: one agent each, ${jobs.map((job) => `subagent_type: "stage-pipeline:${job.agent}"`).join(' and ')}, each with its own report.`
+    const runsOn = toolInput.model ? `runs on ${toolInput.model} without the check's method` : "inherits the session's model (opus)"
+    deny(
+      'agent-guard/checker-agent',
+      `stage-pipeline: ${jobs.map((job) => job.job).join(' and ')} ${jobs.length > 1 ? 'have their own agents' : 'has its own agent'} on sonnet; a general-purpose agent ${runsOn}. ${how} ` +
+        'If the prompt also asks for other checks, give each its own agent: the security review stage-pipeline:security-review, dead-code, i18n-sweep, deps-audit their own. ' +
+        `To keep opus on purpose, pass model: "opus" on the stage-pipeline:${jobs[0].agent} call. ` +
+        'If this call is not that check, word its description without it ("security" with review/audit/check/pass, "ds-parity") and call again.',
+    )
+  }
+  process.exit(0)
+}
 
 if (agent === 'pro-review' && (WHOLE_BRANCH.test(toolInput.prompt ?? '') || DELTA_MODE.test(toolInput.prompt ?? ''))) {
   const want = reviewModel(state.config)

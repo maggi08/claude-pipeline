@@ -440,8 +440,8 @@
       <span class="pill">3 projects</span>
       <span class="pill">16 tasks</span>
       <span class="pill">161 checker reports</span>
-      <span class="pill">21 skills · 13 agents</span>
-      <span class="pill">v0.24.0</span>
+      <span class="pill">21 skills · 15 agents</span>
+      <span class="pill">v0.25.0</span>
     </div>
     <div class="sig">Magzhan Mussaiyn · 21 Jul → 21 Aug 2026 · plugin <b>stage-pipeline@magzhan</b></div>
   </section>
@@ -723,7 +723,7 @@
 <span class="cm"># installed once, works in every repo</span>
 <b>stage-pipeline@magzhan</b>
 ├── skills/     21 skills
-├── agents/     13 agents
+├── agents/     15 agents
 └── .mcp.json    figma · chrome-devtools
 
 <span class="cm"># in the project, created by /pipeline-init</span>
@@ -826,7 +826,7 @@
 
   <!-- 8 -->
   <section class="slide" aria-label="Agents catalog">
-    <div class="eyebrow"><span class="num">08</span><span>Catalog</span><span class="spacer"></span><span>13 agents · 1 of 2</span></div>
+    <div class="eyebrow"><span class="num">08</span><span>Catalog</span><span class="spacer"></span><span>15 agents · 1 of 2</span></div>
     <h2>Agents: subagents launched by the orchestrator and by skills</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -841,6 +841,7 @@
             <tr><td class="name">proto-compare</td><td>the same against a prototype, plus behavior per SPEC.md (transitions, CTAs, guards)</td><td class="when">after code</td></tr>
             <tr><td class="name">devtools-verify</td><td>runtime: console and hydration, light/dark, widths 1440/1280/1024, live state</td><td class="when">after code</td></tr>
             <tr><td class="name">pro-review</td><td>correctness, security, repo conventions, duplicates, naming — with an adversarial re-check of every finding</td><td class="when">always</td></tr>
+            <tr><td class="name">security-review</td><td>the branch traced from untrusted input to its sinks: access, secrets, redirects, payment state; each finding with an attack scenario</td><td class="when">before PR</td></tr>
           </tbody>
         </table>
       </div>
@@ -853,7 +854,7 @@
 
   <!-- 8b -->
   <section class="slide" aria-label="Agents catalog">
-    <div class="eyebrow"><span class="num">09</span><span>Catalog</span><span class="spacer"></span><span>13 agents · 2 of 2</span></div>
+    <div class="eyebrow"><span class="num">09</span><span>Catalog</span><span class="spacer"></span><span>15 agents · 2 of 2</span></div>
     <h2>Agents: subagents launched by the orchestrator and by skills</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -863,6 +864,7 @@
             <tr><td class="name">dead-code</td><td>what was orphaned <b>by this diff</b>: symbols, files, locale keys, assets</td><td class="when">something was deleted</td></tr>
             <tr><td class="name">i18n-sweep</td><td>hardcoded user text, incomplete locales, concatenated keys, number and date format without a locale</td><td class="when">text appeared</td></tr>
             <tr><td class="name">deps-audit</td><td>new dependencies and assets: justification, an equivalent in the repo, manifest section, weight</td><td class="when">manifest touched</td></tr>
+            <tr><td class="name">ds-parity</td><td>hand-rolled UI the kit already has; local components that belong in the kit</td><td class="when">new UI</td></tr>
             <tr><td class="name">task-converge</td><td>the only one that doesn't look at the diff: compares the code state with the criteria of all stages — <code>missing</code> / <code>partial</code> / <code>contradicts</code> / <code>unrequested</code></td><td class="when">before PR</td></tr>
             <tr><td class="name">human-text-check</td><td>checks a draft of a text for people against 14 closed questions in a clean context; only the violations come back</td><td class="when">text for people</td></tr>
           </tbody>

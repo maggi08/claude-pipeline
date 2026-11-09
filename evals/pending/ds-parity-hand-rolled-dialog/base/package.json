@@ -1,0 +1,8 @@
+{
+  "name": "fleet-console",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

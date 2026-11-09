@@ -1,0 +1,9 @@
+{
+  "name": "console",
+  "private": true,
+  "dependencies": {
+    "@fleet/ui": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

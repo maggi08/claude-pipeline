@@ -46,7 +46,7 @@ Available checkers:
 | proto-compare | design vs HTML prototype + SPEC.md, if the task's source is a prototype | active — agent `proto-compare`, static |
 | devtools-verify | runtime: console/screenshots/live state | active — agent `devtools-verify` (the orchestrator holds the dev server) |
 | pro-review | code quality: correctness/conventions/duplicates/naming/comments/patterns | active — agent `pro-review` (stage diff, `--stage`) |
-| ds-parity | duplicates with the design system: replace with a kit component / move INTO the kit | active — skill `${CLAUDE_PLUGIN_ROOT}/skills/ds-parity`; run on stages with new UI and always before the PR (on a redesign this is the main source of repeated edits at manual review) |
+| ds-parity | duplicates with the design system: replace with a kit component / move INTO the kit | active — agent `ds-parity` (sonnet; never a general-purpose agent, agent-guard denies it); run on stages with new UI and always before the PR (on a redesign this is the main source of repeated edits at manual review) |
 | dead-code | what became orphaned BECAUSE of this diff: symbols, files, locale keys, assets | active — agent `dead-code`; run from stage 2 (nothing to orphan on the first) and before the PR |
 | i18n-sweep | hardcoded copy, incomplete locales, dynamic keys, formatting without a locale | active — agent `i18n-sweep`; only in projects with an `i18n` field in the config, on stages with new user-facing text |
 | deps-audit | new dependencies and assets: justification, equivalent in the repo, manifest section, weight | active — agent `deps-audit`; only when the diff has a manifest or new binary files |

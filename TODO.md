@@ -3,9 +3,8 @@
 The backlog of plugin work that is agreed but not started. A task moves out of here when it gets its own `.claude/tasks/<ID>/STAGES.md`; its PR removes the line.
 
 ## Speed (measured 2026-11-09 over 47 force runs; plan of 2026-11-09)
-Item 1, `scripts/hooks-test.mjs` in parallel, is done by VT-8.
+Item 1, `scripts/hooks-test.mjs` in parallel, is done by VT-8. Item 2, cheaper checkers, is done by 0.25.0: the security review and `ds-parity` are agents on sonnet. Measure the time of both on the next real force run (the 9-minute median was on opus general-purpose agents).
 
-2. Cheaper checkers: `ds-parity` and the security review run as general-purpose agents and inherit opus (median 9 min a run). Pin them to sonnet and compare on paid evals before and after (budget to agree, about $5–10).
 3. Narrower runtime rechecks: after a fix, `devtools-verify` rechecks only the fixed findings (87 rechecks took 628 min in the 2026-10-28 audit).
 4. Close a stage in one script call: journal metrics, archive, gates and commit, instead of dozens of orchestrator calls (the orchestrator alone is 11–22% of a headless run).
 5. Parallel tracks inside one task, when a real task needs them: stages in another repo (ui-lib next to core) or in another package of a monorepo, with a maker lock per repo instead of per task.
@@ -19,6 +18,7 @@ Several stage-pipeline sessions run at once in different repos, and the machine 
 VT-8 only lowers the priority of its own test workers and sizes them by the load average at start. The rest is a separate task. What VT-8 measured: on a quiet machine (load average 2–5) hooks-test takes 78–81 s; next to other sessions (load 5–12) its workers give way and it takes 123–216 s.
 
 ## Evals
+- The two cases of 0.25.0, `security-review-branch` and `ds-parity-hand-rolled-dialog`, wait in `evals/pending/` for a failing run on the ablated agent. `--record-failing` refuses `--pending` and writes into `evals/cases/`, so: move a case to `evals/cases/`, run `node scripts/eval.mjs --ablate agent:<name> --record-failing <case>`, and commit the case with its `provenFailing`. The security review's scale was tightened after a sonnet run rated a cross-account IDOR major; watch its severity on real branches.
 - The eval follow-up PR of VT-1: M-1 and S-1 of the hill-climb driver, harder `pro-review` cases, an eval case for the delta mode, the eval cases of 0.20.0–0.22.0, the first paid climb. Paid; needs a budget.
 
 ## Next-version minors
@@ -33,5 +33,5 @@ VT-8 only lowers the priority of its own test workers and sizes them by the load
   - `--units ,` runs nothing and exits 0;
   - in `vt3s7a`, `statSync` is not imported, so `size()` returns 0 and the size-cap half of the rotation check passes on any file (the same on `abb6d18`);
   - a crash of `vt1s5b` before its cleanup leaves its fake `claude` and MCP processes holding the worker's stderr, and the run waits about 2 minutes for them;
-  - the second-scale hang guards run in the pool; the 4-vCPU CI runner gets 2 workers, so watch the first CI runs after VT-8;
+  - the second-scale hang guards run in the pool; the 4-vCPU CI runner gets 2 workers, so watch the first CI runs after VT-8. On 2026-11-09 one local run failed `force K11b.2: a 100 KB command is parsed in linear time (under a second)` at 1033 ms with the load average rising from 4 to 15; the unit alone passed at load 15. Move it to the serial tail, or give the pool timing checks more headroom;
   - the S-4 walk over a 600 MB archive is held to < 1 s and takes 0.6–0.8 s at the normal priority under load 8: a slow machine is close to the line.

@@ -1,0 +1,6 @@
+.fui-badge { display: inline-flex; gap: 4px; align-items: center; padding: 2px 8px; border-radius: var(--fui-radius-pill); font: var(--fui-font-label); }
+.fui-badge--neutral { background: var(--fui-neutral-bg); color: var(--fui-neutral-fg); }
+.fui-badge--success { background: var(--fui-success-bg); color: var(--fui-success-fg); }
+.fui-badge--warning { background: var(--fui-warning-bg); color: var(--fui-warning-fg); }
+.fui-badge--danger { background: var(--fui-danger-bg); color: var(--fui-danger-fg); }
+.fui-badge--info { background: var(--fui-info-bg); color: var(--fui-info-fg); }
