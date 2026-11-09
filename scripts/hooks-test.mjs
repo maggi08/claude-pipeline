@@ -15,13 +15,14 @@
  *   node scripts/hooks-test.mjs --serial         one process, source order — the reference run, for debugging
  *   node scripts/hooks-test.mjs --units a,b      only the named units (what a worker runs; the firings late checks need the whole suite and are skipped)
  *   node scripts/hooks-test.mjs --self-test      the runner's own failure cases (a failing check, a crashing worker, a unit with no check, the serial tail)
- *   HOOKS_TEST_JOBS=N                            the number of workers; without it: min(cores - 2, cores - load average), at least 1. Workers run at nice 10.
- * Units marked `serial` hold tight timing assertions and run one at a time after the parallel ones have finished.
+ *   HOOKS_TEST_JOBS=N                            the number of workers; without it: min(cores - 2, cores - load average), at least 1. Pool workers run at nice 10.
+ * Units marked `serial` hold tight timing assertions and run one at a time after the parallel ones have finished, at the normal priority:
+ * one process, as the whole suite ran before the pool, so the sessions next to it at nice 0 do not starve their timings.
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
-import { availableParallelism, homedir, loadavg, setPriority, tmpdir } from 'node:os'
+import { availableParallelism, getPriority, homedir, loadavg, setPriority, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,19 +39,13 @@ if (unitsMissing || ARGV.some((arg) => !['--serial', '--self-test', '--units'].i
   process.exit(2)
 }
 if (MODE === 'worker') {
-  // A worker is one of the few processes of a run: lowered priority keeps the machine usable next to other sessions (children of the fixtures inherit it).
-  try {
-    setPriority(10)
-  } catch (error) {
-    console.error(`hooks-test: the priority was not lowered (${error.message})`)
-  }
   // The fake units of the runner's self-test (--self-test) do not touch the suite.
   const fake = unitsArg.split(',').find((id) => id.startsWith('selftest-'))
   if (fake) {
     if (fake === 'selftest-fail') console.log('✔ fake check that passes\n✘ fake check that fails — detail of the failure')
     else if (fake === 'selftest-crash') { throw new Error('boom: the fake worker died') }
     else if (fake === 'selftest-slow') { await new Promise((done) => setTimeout(done, 400)); console.log('✔ slow fake check') }
-    else if (fake !== 'selftest-empty') console.log('✔ fake check')
+    else if (fake !== 'selftest-empty') console.log(`✔ fake check at priority ${getPriority()}`)
     process.exit(fake === 'selftest-fail' ? 1 : 0)
   }
 }
@@ -278,6 +273,15 @@ const runUnits = async (units, jobs, dataRoot, spawnArgs = (id) => [SELF, '--uni
         done()
       }
       const child = spawn(process.execPath, spawnArgs(u.id), { env: { ...process.env, HOOKS_TEST_UNIT_DATA: dataDir }, stdio: ['ignore', 'pipe', 'pipe'] })
+      // A pool worker is one of several processes of a run: lowered priority keeps the machine usable next to other sessions. Set here, before node has
+      // loaded the suite, so every fixture process it spawns inherits it. A serial unit keeps the runner's priority (the file header says why).
+      if (!u.serial && child.pid && getPriority() < 10) {
+        try {
+          setPriority(child.pid, 10)
+        } catch (error) {
+          err += `hooks-test: the priority was not lowered (${error.message})\n`
+        }
+      }
       child.stdout.on('data', (chunk) => { out += chunk })
       child.stderr.on('data', (chunk) => { err += chunk })
       child.on('error', (error) => { err += String(error); finish(null, null) })
@@ -306,6 +310,7 @@ if (MODE === 'self-test') {
   check('runner self-test: a unit that prints no check — state empty, named in the problem line', get('selftest-empty').state === 'empty' && /unit "selftest-empty" printed no check/.test(verdict(['selftest-empty']).lines[0]))
   check('runner self-test: the reporting loop of the default run — each of fail / crash / empty gives exit 1, a clean unit exit 0 and no problem line', ['selftest-fail', 'selftest-crash', 'selftest-empty'].every((id) => verdict([id]).exit === 1 && verdict([id]).lines.length === 1) && verdict(['selftest-ok']).exit === 0 && verdict(['selftest-ok']).lines.length === 0)
   check('runner self-test: a serial unit starts only after every parallel unit has ended', fakes.filter((u) => !u.serial).every(({ id }) => get('selftest-serial').startedAt >= get(id).endedAt))
+  check('runner self-test: a pool worker runs at nice 10, a serial unit at the runner\'s own priority', get('selftest-ok').out.includes(`at priority ${Math.max(10, getPriority())}`) && get('selftest-serial').out.includes(`at priority ${getPriority()}`), `${get('selftest-ok').out.trim()} / ${get('selftest-serial').out.trim()}`)
   check('runner self-test: the pool never ran more workers at once than it was given', (() => {
     const spans = fakes.filter((u) => !u.serial).map(({ id }) => get(id))
     return spans.every((a) => spans.filter((b) => b.startedAt <= a.startedAt && a.startedAt < b.endedAt).length <= 3)
@@ -320,7 +325,7 @@ if (MODE === 'run') {
   const load = loadavg()[0]
   const fromEnv = Number.parseInt(process.env.HOOKS_TEST_JOBS ?? '', 10)
   const jobs = fromEnv > 0 ? fromEnv : Math.max(1, Math.min(cores - 2, cores - Math.round(load)))
-  console.log(`hooks-test: ${jobs} worker${jobs === 1 ? '' : 's'} at nice 10 — ${fromEnv > 0 ? `HOOKS_TEST_JOBS=${fromEnv}` : `${cores} cores, load average ${load.toFixed(2)}: min(${cores} - 2, ${cores} - ${Math.round(load)})`}`)
+  console.log(`hooks-test: ${jobs} worker${jobs === 1 ? '' : 's'} at nice 10, then the serial units one at a time at the normal priority — ${fromEnv > 0 ? `HOOKS_TEST_JOBS=${fromEnv}` : `${cores} cores, load average ${load.toFixed(2)}: min(${cores} - 2, ${cores} - ${Math.round(load)})`}`)
   const startedAt = Date.now()
   const dataRoot = mkdtempSync(join(tmpdir(), 'hooks-test-units-'))
   const results = await runUnits(UNITS, jobs, dataRoot)
@@ -4396,7 +4401,7 @@ if (unit('vt1s5cfix')) {
     check(
       'S-4: session-start with a 600 MB STAGES-ARCHIVE.md ends in < 3 s with the task line and names the commit the rest of the journal does not know',
       started.status === 0 && started.ms < 3000 && /T-88/.test(started.stdout) && /after the close/.test(started.stdout) && walk.value.some(({ subject }) => subject === 'after the close') && walk.ms < 1000,
-      `${started.status} ${started.ms.toFixed(0)} ms ${started.stdout.slice(0, 200)} ${started.stderr.split('\n')[0]}`,
+      `${started.status} ${started.ms.toFixed(0)} ms, walk ${walk.ms.toFixed(0)} ms ${started.stdout.slice(0, 200)} ${started.stderr.split('\n')[0]}`,
     )
     rmSync(r, { recursive: true, force: true })
   }
