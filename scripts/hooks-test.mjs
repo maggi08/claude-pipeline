@@ -1354,6 +1354,88 @@ write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, headin
 check('"с блокерами": a non-green gate named as a blocker is not a violation', gates.gateCloseViolations(DATA, kApp, kConfig, kTask).length === 0)
 spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'node -e "process.exit(0)"'], { cwd: kApp, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
 check('run-check: a run on a clean tree is recorded — the gate is green', gates.gateStatus(DATA, kApp, kConfig)[0]?.status === 'green', JSON.stringify(gates.gateStatus(DATA, kApp, kConfig)))
+// 2026-11-10, the "ran on another tree" false alarm: VT-8's journal lived in the main tree and its branch in a linked worktree, so its close was judged
+// on the main tree's HEAD (10 bounced closes while the worktree's gates were green). The close is judged on the worktree of the task's branch.
+{
+  const GATE = 'node -e "process.exit(0)"'
+  const linked = join(kRoot, 'app-linked')
+  git(kApp, 'worktree', 'add', '-q', '-b', 'T-12/feat/linked', linked)
+  const linkedReal = realpathSync(linked)
+  gates.recordGate(DATA, kApp, GATE, 1, 'deadbeef')
+  gates.recordGate(DATA, linked, GATE, 0, git(linked, 'rev-parse', 'HEAD^{tree}').trim())
+  write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
+  const byBranch = { current: false, branches: ['T-12/feat/linked'], stages: '' }
+  check('taskWorktree: a task whose Branch: header is checked out in a linked worktree — that worktree', realpathSync(gates.taskWorktree(kApp, byBranch)) === linkedReal, gates.taskWorktree(kApp, byBranch))
+  check('taskWorktree: no header, but STAGES.md names the worktree path in backticks — that worktree', realpathSync(gates.taskWorktree(kApp, { current: false, branches: [], stages: `the run is in the worktree \`${linkedReal}\`` })) === linkedReal)
+  check('taskWorktree legit: a current task, or one naming no worktree — the caller\'s', gates.taskWorktree(kApp, { ...byBranch, current: true }) === kApp && gates.taskWorktree(kApp, { current: false, branches: ['T-12/feat/other'], stages: '' }) === kApp)
+  const judgedThere = gates.gateCloseViolations(DATA, gates.taskWorktree(kApp, byBranch), kConfig, kTask, { caller: kApp })
+  check('close of a task from the main tree: its gates are green in its own worktree — no violation', judgedThere.length === 0, JSON.stringify(judgedThere))
+  check('close incident: judged on the caller\'s worktree, the same gates are "ran on another tree"', gates.gateCloseViolations(DATA, kApp, kConfig, kTask).length === 1)
+  gates.recordGate(DATA, linked, GATE, 1, 'deadbeef')
+  write(linked, { 'src/a.ts': 'export const a = 2\n' })
+  const there = gates.gateCloseViolations(DATA, linked, kConfig, kTask, { caller: kApp })
+  check('close message: a gate stale in the task\'s worktree names that worktree, and its dirty tracked files as the reason a run did not count', there.length === 1 && there[0].message.includes(`on the HEAD of the task's worktree \`${linked}\``) && /Tracked files there differ from HEAD \(`src\/a\.ts`\)/.test(there[0].message), there[0]?.message)
+  check('close message: the commands it gives run in the task\'s worktree, where a run records for that tree', there[0]?.message.includes(`\`cd '${linked}' && node `), there[0]?.message)
+  const runCheck = (cwd, command) => spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', command], { cwd, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } }).stdout
+  const unrecorded = runCheck(linked, GATE)
+  check('run-check: a whole run of a gate on a tree with a dirty tracked file says why it was not recorded', /not recorded for the CI gates — tracked files differ from HEAD \(`src\/a\.ts`\)/.test(unrecorded) && gates.gateStatus(DATA, linked, kConfig)[0]?.status !== 'green', unrecorded)
+  check('run-check legit: a whole run of a command that is not a gate (a type_check of an uncommitted stage) says nothing about the gates', !/not recorded/.test(runCheck(linked, 'node -e "1"')))
+  // M-1 of the 0.25.1 review: a wrong pick passes a close on another branch's green gates. A bare base-branch name in the prose never picks.
+  const devTree = join(kRoot, 'app-dev')
+  git(kApp, 'worktree', 'add', '-q', '-b', 'dev', devTree)
+  check('taskWorktree incident: no header, `dev` named in the prose and checked out in a worktree — the caller\'s, not dev\'s', gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: [], stages: 'branched off `dev`, PR into `dev`' }) === kApp)
+  check('taskWorktree: a header branch checked out nowhere keeps the caller\'s, with no fallback to the prose', gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: ['T-77/feat/nowhere'], stages: `the worktree \`${linkedReal}\`` }) === kApp)
+  check('taskWorktree: called from the task\'s own worktree, which the journal names — stays there', gates.taskWorktree(linked, { current: false, ticket: 'T-77', branches: [], stages: `in the worktree \`${linkedReal}\`` }) === linked)
+  check('taskWorktree incident (dm-3): called from the task\'s own worktree, the journal names only the main tree\'s path — stays there, not the main tree', gates.taskWorktree(linked, { current: false, ticket: 'T-77', branches: [], stages: `the repo \`${kApp}\`, the root \`${realpathSync(kApp)}\`` }) === linked)
+  check('taskWorktree: two worktrees named at one level — the caller\'s', gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: [], stages: `\`${linkedReal}\` and \`${realpathSync(devTree)}\`` }) === kApp)
+  check('taskWorktree: no header, two worktrees whose branches carry the ticket (T-12/feat/k, T-12/feat/linked) — the caller\'s', gates.taskWorktree(kApp, { current: false, ticket: 'T-12', branches: [], stages: '' }) === kApp)
+  git(kApp, 'worktree', 'remove', '--force', devTree)
+  git(kApp, 'branch', '-D', 'dev')
+  const gone = join(kRoot, 'app-gone')
+  git(kApp, 'worktree', 'add', '-q', '--detach', gone)
+  check('taskWorktree: a detached worktree the journal names by path — that worktree', realpathSync(gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: [], stages: `\`${realpathSync(gone)}\`` })) === realpathSync(gone))
+  const goneReal = realpathSync(gone)
+  rmSync(gone, { recursive: true, force: true })
+  check('taskWorktree: a prunable worktree (its directory gone) is never picked', gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: [], stages: `\`${goneReal}\`` }) === kApp)
+  git(kApp, 'worktree', 'prune')
+  git(kApp, 'worktree', 'remove', '--force', linked)
+  git(kApp, 'branch', '-D', 'T-12/feat/linked')
+  // The hook itself (m-5): a task of another branch, its journal edited in the main tree, its branch in a linked worktree.
+  {
+    const t30 = join(kApp, '.claude/tasks/T-30')
+    const linked30 = join(kRoot, 'app-linked-30')
+    git(kApp, 'worktree', 'add', '-q', '-b', 'T-30/feat/linked', linked30)
+    const t30Stages = (heading) => kStages({ extra: JOURNALED, heading }).replace('# T-12: задача\nВетка: `T-12/feat/k`', '# T-30: задача\nВетка: `T-30/feat/linked`')
+    write(kApp, { '.claude/tasks/T-30/STAGES.md': t30Stages(`## Force-прогон ${today}`) })
+    jc.baselineInfo(DATA, t30)
+    write(kApp, { '.claude/tasks/T-30/STAGES.md': t30Stages(`## Force-прогон ${today} — завершён ${today}`) })
+    const edit30 = () => runHook('journal-gate.mjs', { cwd: kApp, tool_name: 'Edit', tool_input: { file_path: join(t30, 'STAGES.md') } })
+    gates.recordGate(DATA, linked30, GATE, 1, 'deadbeef')
+    const stale30 = edit30()
+    check('journal-gate: closing a task of a linked worktree from the main tree judges the gates there and says so', stale30.decision === 'block' && stale30.text.includes(`on the HEAD of the task's worktree \`${realpathSync(linked30)}\``), stale30.text.slice(0, 400))
+    check('taskWorktree: no header, one worktree whose branch carries the ticket — that worktree', realpathSync(gates.taskWorktree(kApp, { current: false, ticket: 'T-30', branches: [], stages: '' })) === realpathSync(linked30))
+    gates.recordGate(DATA, linked30, GATE, 0, git(linked30, 'rev-parse', 'HEAD^{tree}').trim())
+    check('journal-gate: green gates in the task\'s worktree — no gate demand in the close', !/Смоук/.test(edit30().text))
+    const repo30 = (await import(join(PLUGIN, 'run-digest.mjs'))).taskRepo(t30, (await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))).readPipelineState(kApp))
+    check('run digest: the gates of that task are read in its worktree', realpathSync(repo30.worktree) === realpathSync(linked30), repo30?.worktree)
+    rmSync(t30, { recursive: true, force: true })
+    git(kApp, 'worktree', 'remove', '--force', linked30)
+    git(kApp, 'branch', '-D', 'T-30/feat/linked')
+  }
+  // M-2: one parser of dirty tracked paths — a space, a non-ASCII name and a rename come as the paths themselves.
+  {
+    const dirtyRepo = join(kRoot, 'dirty-paths')
+    repoAt(dirtyRepo, 'main')
+    write(dirtyRepo, { 'a b.ts': 'x\n', 'Тест.ts': 'x\n', 'old.ts': 'x\n' })
+    git(dirtyRepo, 'add', '-A')
+    git(dirtyRepo, 'commit', '-qm', 'files')
+    write(dirtyRepo, { 'a b.ts': 'y\n', 'Тест.ts': 'y\n' })
+    git(dirtyRepo, 'mv', 'old.ts', 'new.ts')
+    const paths = (await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))).dirtyPaths(dirtyRepo)
+    check('dirtyPaths: a space, a non-ASCII name and a rename — unquoted paths, the rename by its destination', JSON.stringify([...paths].sort()) === JSON.stringify(['a b.ts', 'new.ts', 'Тест.ts'].sort()), JSON.stringify(paths))
+  }
+  gates.recordGate(DATA, kApp, GATE, 0, git(kApp, 'rev-parse', 'HEAD^{tree}').trim()) // green on HEAD again, as the run above left it
+}
 write(kApp, { '.claude/tasks/T-12/STAGES.md': kStages({ extra: JOURNALED, heading: `## Force-прогон ${today} — завершён ${today}` }) })
 const greenGate = kGate()
 check('the gate is green on HEAD — closing passes, gates in the summary', greenGate.decision === 'message' && /Гейты CI на HEAD \(1 из 1/.test(greenGate.text), `${greenGate.decision}: ${greenGate.text.slice(0, 300)}`)
@@ -2867,6 +2949,10 @@ if (unit('receipts')) {
   close.journal(closed())
   const noFinal = closeGate()
   check('receipts AC-3.3: completed with no whole-branch pro-review and no task-converge — rejected, both named', noFinal.decision === 'block' && /pro-review: no whole-task report/.test(noFinal.text) && /task-converge: no whole-task report/.test(noFinal.text), noFinal.text)
+  // dm-2 of the 0.25.1 delta: judged on the task's worktree from another one, the message names the worktree it judged; judged where the hook runs, it does not.
+  const elsewhere = rc.finalReviewViolations(DATA, close.dir, close.tdir, { caller: join(close.dir, 'elsewhere') })
+  check('receipts: a close judged on the task\'s worktree from another one names that worktree in each message', elsewhere.length === 2 && elsewhere.every((item) => item.message.includes(`in the task's worktree \`${close.dir}\``)), elsewhere.map((item) => item.message.slice(0, 200)).join(' | '))
+  check('receipts legit: judged where the hook runs — no worktree named', rc.finalReviewViolations(DATA, close.dir, close.tdir).every((item) => !item.message.includes("the task's worktree")))
   close.report('pro-review-branch.md', 'pro-review', 8)
   close.report('task-converge.md', 'task-converge', 8)
   utimesSync(join(close.tdir, 'checks/task-converge.md'), REAL_STALE, REAL_STALE)
@@ -3292,7 +3378,7 @@ if (unit('receipts')) {
   git(tt.dir, 'mv', `.claude/tasks/${tt.ticket}/notes.md`, `.claude/tasks/${tt.ticket}/notes-old.md`)
   check('receipts 5d AC-5d.3: a staged rename inside the task dir is not a code edit (the source path of a rename is skipped)', tt.gate().decision !== 'block', tt.gate().text)
   git(tt.dir, 'mv', 'src/m.ts', 'src/moved.ts')
-  check('receipts 5d AC-5d.3: a staged rename outside the task dir is named by its new path', /uncommitted edits \(src\/moved\.ts\)/.test(tt.gate().text), tt.gate().text)
+  check('receipts 5d AC-5d.3: a staged rename outside the task dir is named by its new path', /uncommitted edits \(`src\/moved\.ts`\)/.test(tt.gate().text), tt.gate().text)
 }
 
 // ── receipts 5d fresh m-2: the one in-process timing threshold of the stage receipts section, apart from the parallel pool ──

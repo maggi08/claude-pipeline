@@ -25,8 +25,8 @@ import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
-import { recordGate, treeState } from './ci-gates.mjs'
-import { pluginDataDir, readConfig } from './hooks/pipeline-state.mjs'
+import { UNRECORDED, isGateCommand, recordGate, shellQuote, treeState } from './ci-gates.mjs'
+import { configRoot, pathList, pluginDataDir, readConfig } from './hooks/pipeline-state.mjs'
 import { alive } from './processes.mjs'
 
 const args = process.argv.slice(2)
@@ -87,6 +87,8 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     process.exit(130)
   })
 }
+// A linked worktree whose `.claude/` is excluded reads the main tree's config, the way the hooks find it.
+const isGate = () => isGateCommand(readConfig(configRoot(root, root) ?? root), command)
 child.on('exit', (code, signal) => {
   release()
   const seconds = ((Date.now() - started) / 1000).toFixed(0)
@@ -94,6 +96,10 @@ child.on('exit', (code, signal) => {
   if (before?.clean && before.tree) {
     const after = treeState(root)
     if (after.clean && after.tree === before.tree) recordGate(pluginDataDir(), root, command, code ?? 1, before.tree)
+    else if (isGate()) console.log('run-check: not recorded for the CI gates — tracked files or HEAD changed during the run')
+  } else if (before?.dirty?.length && isGate()) {
+    // Said only for a gate: a whole type_check of an uncommitted stage is not one, and the line would be noise there.
+    console.log(`run-check: not recorded for the CI gates — tracked files differ from HEAD (${pathList(before.dirty)}); ${UNRECORDED}`)
   }
   process.exit(code ?? 1)
 })
@@ -178,10 +184,6 @@ function isFile(path) {
   } catch {
     return false
   }
-}
-
-function shellQuote(text) {
-  return `'${text.replaceAll("'", `'\\''`)}'`
 }
 
 function fail(message) {

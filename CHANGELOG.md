@@ -5,6 +5,21 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.25.1 — 2026-11-10
+
+### A run closed from the main tree is judged on its own worktree's CI gates, and a gate run that did not count says why
+
+What changes against 0.25.0: two cases where the hook said a CI gate "ran on another tree" although it had run.
+
+- **A task in a linked worktree.** The journal of such a task lives in the main tree, so closing its force run there judged the gates on the main tree's HEAD. VT-8 bounced 12 closes this way while its gates were green in its own worktree. The close, its final whole-branch review check and the run digest now use the worktree where the task's branch is checked out, and the close messages name that worktree. They find it in this order, and the first level with a match decides:
+  1. the branch of the `Branch:` header; a header branch checked out nowhere keeps the caller's worktree;
+  2. without a header, a linked worktree whose path STAGES.md names in backticks (the main tree is not picked by its path);
+  3. without a header, a worktree whose branch carries the ticket.
+
+  A branch name in the prose, such as `dev` or `main`, never picks a worktree, because a base branch's green gates must not close a task. Two matches at one level keep the caller's worktree, and a worktree whose directory is gone is skipped. The message's commands start with `cd '<that worktree>'`, so a rerun records for the right tree.
+- **A gate run with uncommitted tracked files.** `run-check` records a whole-repo gate run only on a clean tree, by design: the gates stand for HEAD. It used to say nothing when it skipped the record, and the close then reported "ran on another tree". Now `run-check` prints `not recorded for the CI gates — tracked files differ from HEAD (…)` for a gate command; the close message and `ci-gates.mjs` name those files and say to commit or stash them first. The rule itself does not change.
+- One parser of dirty tracked paths (`dirtyPaths`, `-z`: a path with a space or a non-ASCII name comes as it is, a rename as its destination), one `realOr` in place of four copies, and one rule for what counts as a run of a gate (`run-check`'s note and the close read it alike), shared through `pipeline-state.mjs` and `ci-gates.mjs`.
+
 ## 0.25.0 — 2026-11-09
 
 ### The security review and ds-parity run on sonnet as their own agents
