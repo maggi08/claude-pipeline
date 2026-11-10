@@ -179,6 +179,7 @@ const UNITS = [
   { id: 'vt6s13b', weight: 7 }, // Stage 13b of VT-6 (part A): B1 team_review config in a linked worktree, B3 M-1..M-4, B4 o…
   { id: 'vt6s13c', weight: 2 }, // Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit…
   { id: 'vt12s1', weight: 4 }, // VT-12 stage 1: force-run.mjs — one headless run with a fake `claude`: readiness, worktree, rate-limit record, the four outcomes, caffeinate
+  { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
 const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
@@ -9382,7 +9383,7 @@ if (scenario === 'completed' || scenario === 'stopped') {
   let n = 0
   const launch = (scenario, { path = `${bin}:${dirname(node)}:/usr/bin:/bin` } = {}) => {
     const dataDir = join(root, `data-${n++}`)
-    const run = spawnSync(node, [FORCE_RUN, repo, 'VT-12'], { encoding: 'utf8', env: { PATH: path, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SCENARIO: scenario } })
+    const run = spawnSync(node, [FORCE_RUN, repo, 'VT-12', '--once'], { encoding: 'utf8', env: { PATH: path, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SCENARIO: scenario } })
     const recordPath = join(dataDir, 'force-runs/VT-12.jsonl')
     const records = existsSync(recordPath) ? readFileSync(recordPath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
     return { ...run, dataDir, records, outcomes: records.filter((record) => record.type === 'outcome'), rates: records.filter((record) => record.type === 'rate_limit') }
@@ -9448,6 +9449,233 @@ if (scenario === 'completed' || scenario === 'stopped') {
   }
   const noClaude = launch('completed', { path: `${dirname(node)}:/usr/bin:/bin` })
   check('A10: no claude on the PATH — exit 2 and the missing binary is named', noClaude.status === 2 && /`claude` is not on the PATH/.test(noClaude.stdout) && noClaude.records.length === 0, `${noClaude.status} ${noClaude.stdout}`)
+
+  rmSync(root, { recursive: true, force: true })
+}
+
+// VT-12 stage 2: the loop of one task in force-run.mjs — a fake `claude` that answers per call from a sequence (FAKE_SEQ), the wait shrunk by FORCE_RUN_WAIT_SCALE.
+if (unit('vt12s2')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt12s2-')))
+  const FORCE_RUN = join(PLUGIN, 'force-run.mjs')
+  const bin = join(root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  const node = process.execPath
+  const fake = `#!/usr/bin/env node
+const fs = require('fs')
+const path = require('path')
+const callsFile = path.join(__dirname, 'calls.jsonl')
+const seq = (process.env.FAKE_SEQ || 'completed').split(',')
+const before = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').split('\\n').filter(Boolean).length : 0
+const scenario = seq[Math.min(before, seq.length - 1)]
+fs.appendFileSync(callsFile, JSON.stringify({ argv: process.argv.slice(2), cwd: fs.realpathSync(process.cwd()), pid: process.pid, scenario }) + '\\n')
+const out = (event) => console.log(JSON.stringify(event))
+const now = Math.floor(Date.now() / 1000)
+const limit = (type, resetsAt, text, reason) => {
+  out({ type: 'assistant', message: { content: [{ type: 'text', text }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt, rateLimitType: type, ...(reason ? { overageDisabledReason: reason } : {}) } } })
+  out({ type: 'result', subtype: 'success', is_error: true, result: text })
+  process.exit(1)
+}
+const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
+const edit = (from, to) => fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(from, to))
+out({ type: 'system', subtype: 'init' })
+if (scenario === 'completed') {
+  edit('## Force run 2026-11-10', '## Force run 2026-11-10 — completed')
+  out({ type: 'result', subtype: 'success', is_error: false, result: 'done' })
+} else if (scenario === 'limit5') limit('five_hour', now - 1000, "You've hit your session limit · resets 11:30am", null)
+else if (scenario === 'limit5credits') limit('five_hour', now + 3600, "You've hit your session limit · resets 11:30am", 'out_of_credits')
+else if (scenario === 'limit5hold') limit('five_hour', now + 3600, "You've hit your session limit · resets 11:30am", null)
+else if (scenario === 'progress') { edit('[status: in-progress]', '[status: done]'); limit('five_hour', now - 1000, "You've hit your session limit", null) }
+else if (scenario === 'spend') limit('five_hour', now + 20 * 86400, "You've hit your org's monthly spend limit · run /usage-credits", 'org_level_disabled_until')
+else if (scenario === 'weekly') limit('seven_day', now + 3 * 86400, "You've hit your weekly limit · resets Fri 9:00am", null)
+else if (scenario === 'sleep') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'The computer went to sleep' }] }, apiError: 'computer_slept' }); process.exit(1) }
+else if (scenario === 'conn') { out({ type: 'result', subtype: 'error', is_error: true, result: 'API Error: connection_failed after 3 retries' }); process.exit(1) }
+else if (scenario === 'conn500') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'blip' }] }, apiError: 'connection_failed' }); out({ type: 'assistant', message: { content: [{ type: 'text', text: 'carrying on' }] } }); out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); process.exit(1) }
+else if (scenario === 'limitclosed') { edit('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'); out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your session limit" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: now + 3600, rateLimitType: 'five_hour' } } }); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }) }
+else if (scenario === 'hangdeaf') { process.on('SIGTERM', () => {}); process.on('SIGINT', () => {}); fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid)); setInterval(() => {}, 1000) }
+else if (scenario === 'logfail') {
+  fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid))
+  const log = path.join(path.dirname(file), 'force-run-' + process.argv[process.argv.indexOf('--session-id') + 1] + '.log')
+  setTimeout(() => { fs.rmSync(log, { force: true }); fs.mkdirSync(log); out({ type: 'system', subtype: 'again' }) }, 300)
+  setInterval(() => {}, 1000)
+} else if (scenario === 'error') { out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); process.exit(1) }
+else if (scenario === 'utf8') {
+  const line = Buffer.from(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Ошибка сервера: сбой' }) + '\\n')
+  const cut = line.indexOf(Buffer.from('О')) + 1
+  process.stdout.write(line.subarray(0, cut))
+  setTimeout(() => { process.stdout.write(line.subarray(cut)); process.exit(1) }, 150)
+} else if (scenario === 'hang') { fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid)); setInterval(() => {}, 1000) }
+`
+  writeFileSync(join(bin, 'claude'), fake)
+  // caffeinate: logs its arguments; with CAFF_HOLD it records its pid and stays alive until killed (like the real one while the watched pid lives).
+  writeFileSync(join(bin, 'caffeinate'), `#!/bin/sh\necho "$@" >> "${bin}/caffeinate.log"\nif [ -n "$CAFF_HOLD" ]; then echo $$ >> "${bin}/caffeinate.pids"; exec sleep 60; fi\n`)
+  execFileSync('chmod', ['+x', join(bin, 'claude'), join(bin, 'caffeinate')])
+
+  const repo = join(root, 'q2-repo')
+  repoAt(repo, 'main')
+  git(repo, 'branch', 'VT-12/feat/q')
+  const stagesFile = join(repo, '.claude/tasks/VT-12/STAGES.md')
+  const OPEN = '## Force run 2026-11-10\nMode: autonomous.\nConfirmed: 2026-11-10 — interview answers\n\n'
+  const fresh = () => writeFileSync(stagesFile, `# VT-12: queue\nBranch: \`VT-12/feat/q\`\n\n## Status: stage 1\n\n${OPEN}## Stages\n\n### Stage 1: a  [status: in-progress]\n\n### Stage 2: b  [status: todo]\n`)
+  write(repo, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/VT-12/STAGES.md': 'x' })
+  fresh()
+  const calls = () => (existsSync(join(bin, 'calls.jsonl')) ? readFileSync(join(bin, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+  const home = join(root, 'home')
+  mkdirSync(home, { recursive: true })
+  let n = 0
+  const recordsOf = (dataDir) => {
+    const file = join(dataDir, 'force-runs/VT-12.jsonl')
+    return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
+  }
+  const envFor = (dataDir, seq, extra = {}) => ({ PATH: `${bin}:${dirname(node)}:/usr/bin:/bin`, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SEQ: seq, FORCE_RUN_WAIT_SCALE: '0', ...extra })
+  // One loop run to its end, from a clean call log and a fresh journal.
+  const loop = (seq, flags = [], extra = {}) => {
+    rmSync(join(bin, 'calls.jsonl'), { force: true })
+    fresh()
+    const dataDir = join(root, `data-${n++}`)
+    const run = spawnSync(node, [FORCE_RUN, repo, 'VT-12', ...flags], { encoding: 'utf8', env: envFor(dataDir, seq, extra) })
+    const records = recordsOf(dataDir)
+    return { ...run, records, outcomes: records.filter((r) => r.type === 'outcome'), statuses: records.filter((r) => r.type === 'status'), last: records.filter((r) => r.type === 'status').at(-1) }
+  }
+  const noResume = () => calls().every((c) => !c.argv.some((a) => /resume|^-c$|--continue/.test(a)))
+  const sameTree = () => new Set(calls().map((c) => c.cwd)).size === 1
+
+  // AC-2.1: five-hour limit → wait → a NEW session of the same task in the same worktree, which completes.
+  const five = loop('limit5,completed')
+  check('AC-2.1 incident: five_hour limit, then a second session that completes — two sessions, exit 0, a `waiting` status before the second', five.status === 0 && calls().length === 2 && five.outcomes.map((o) => o.outcome).join() === 'limit,completed' && five.statuses.map((s) => s.status).join() === 'waiting,continuing,completed', `${five.status} ${five.stdout} ${five.stderr} ${JSON.stringify(five.statuses)}`)
+  check('AC-2.1: the second session is a fresh one for the same task in the same worktree — a new --session-id, the same prompt, no --resume in any command', new Set(calls().map((c) => c.argv[c.argv.indexOf('--session-id') + 1])).size === 2 && calls()[0].argv[1] === calls()[1].argv[1] && /stage-force VT-12\b/.test(calls()[1].argv[1]) && sameTree() && noResume(), JSON.stringify(calls()))
+  const waiting = five.statuses.find((s) => s.status === 'waiting')
+  check('AC-2.5: the run record says "waiting until <time>" and the output says it too', /^waiting until \d{4}-/.test(waiting?.text ?? '') && /waiting until \d{4}-/.test(five.stdout), `${JSON.stringify(waiting)} ${five.stdout}`)
+  // the margin: the target is resetsAt + margin; a reset an hour ahead and a scale of 0.001 makes it checkable without waiting
+  const held = loop('limit5hold,completed', ['--margin-min', '7'], { FORCE_RUN_WAIT_SCALE: '0.001' })
+  const heldWait = held.statuses.find((s) => s.status === 'waiting')
+  const expectMs = (held.outcomes[0].resetsAt * 1000 + 7 * 60000 - Date.parse(heldWait.ts)) * 0.001
+  check('AC-2.1: the wait is resetsAt plus the margin (the flag --margin-min 7), shrunk by FORCE_RUN_WAIT_SCALE only in tests', Math.abs(Date.parse(heldWait.until) - Date.parse(heldWait.ts) - expectMs) < 2000 && held.status === 0, `${heldWait?.until} ${heldWait?.ts} ${expectMs}`)
+  const credits = loop('limit5credits,completed')
+  check('D10: a real five-hour limit that carries overageDisabledReason "out_of_credits" within five hours is still a five-hour wait, then a second session', credits.status === 0 && calls().length === 2 && credits.outcomes[0].kind === 'five_hour' && credits.outcomes[0].reason === 'out_of_credits', `${credits.status} ${JSON.stringify(credits.outcomes)}`)
+
+  // AC-2.2: weekly — no wait, its own exit code and the reset time.
+  const weekly = loop('weekly,completed')
+  check('AC-2.2 incident: weekly limit — one session, no wait, exit 5, status weekly_limit with the reset time', weekly.status === 5 && calls().length === 1 && weekly.last?.status === 'weekly_limit' && /resets \d{4}-/.test(weekly.last.text) && !weekly.statuses.some((s) => s.status === 'waiting'), `${weekly.status} ${weekly.stdout} ${JSON.stringify(weekly.statuses)}`)
+  // D10: monthly spend limit (resetsAt days away, five_hour label, org reason, spend text) — stop, not a wait.
+  const spend = loop('spend,completed')
+  check('D10 incident: org monthly spend limit labelled five_hour with resetsAt days away — stopped (exit 6, spend_limit), not waited', spend.status === 6 && calls().length === 1 && spend.last?.status === 'spend_limit' && spend.outcomes[0].kind === 'spend' && spend.outcomes[0].reason === 'org_level_disabled_until' && !spend.statuses.some((s) => s.status === 'waiting'), `${spend.status} ${spend.stdout} ${JSON.stringify(spend.outcomes)}`)
+
+  // AC-2.4: a short failure → exactly one new session; a second one in a row → stop; any other error → stop with its text.
+  const sleep = loop('sleep,completed')
+  check('AC-2.4 legitimate: computer_slept (apiError of an assistant message) once, then a session that completes — two sessions, exit 0, no wait', sleep.status === 0 && calls().length === 2 && sleep.outcomes[0].transient === 'computer_slept' && sleep.outcomes[0].transientSource === 'apiError' && !sleep.statuses.some((s) => s.status === 'waiting'), `${sleep.status} ${sleep.stdout} ${JSON.stringify(sleep.outcomes)}`)
+  const conn = loop('conn,completed')
+  check('AC-2.4 legitimate: connection_failed named in an error result — recorded as source `result`, one new session, completes', conn.status === 0 && calls().length === 2 && conn.outcomes[0].transient === 'connection_failed' && conn.outcomes[0].transientSource === 'result', `${conn.status} ${JSON.stringify(conn.outcomes)}`)
+  const conn500 = loop('conn500,completed')
+  check('AC-2.4: a session that survived connection_failed (a later clean assistant message) and then died of API Error 500 is an error, not a transient retry — one session, exit 1', conn500.status === 1 && calls().length === 1 && conn500.outcomes[0].outcome === 'error' && !conn500.outcomes[0].transient && /500/.test(conn500.outcomes[0].text), `${conn500.status} ${JSON.stringify(conn500.outcomes)}`)
+  const limitClosed = loop('limitclosed,completed')
+  check('AC-1.4/AC-2.1: a limit event in the stream, but the Force block was closed and the session exited 0 — completed, one session, no wait', limitClosed.status === 0 && calls().length === 1 && limitClosed.outcomes[0].outcome === 'completed' && !limitClosed.statuses.some((s) => s.status === 'waiting'), `${limitClosed.status} ${JSON.stringify(limitClosed.outcomes)} ${JSON.stringify(limitClosed.statuses)}`)
+  const sleepTwice = loop('sleep,conn,completed')
+  check('AC-2.4 incident: a second short failure in a row — the task stops with the error, exit 1, only two sessions', sleepTwice.status === 1 && calls().length === 2 && sleepTwice.last?.status === 'error' && /connection_failed/.test(sleepTwice.last.text), `${sleepTwice.status} ${sleepTwice.stdout}`)
+  const retries2 = loop('sleep,conn,completed', ['--retries', '2'])
+  check('AC-2.4: --retries 2 lets two short failures in a row pass — three sessions', retries2.status === 0 && calls().length === 3, `${retries2.status} ${calls().length}`)
+  const other = loop('error,completed')
+  check('AC-2.4 incident: any other error stops the task with the error text — one session, exit 1', other.status === 1 && calls().length === 1 && other.last?.status === 'error' && /API Error: 500/.test(other.last.text), `${other.status} ${other.stdout}`)
+
+  // AC-2.3: N new sessions in a row without a newly closed stage.
+  const capped = loop('limit5')
+  check('AC-2.3 incident: limit again and again with no closed stage — stops after 3 new sessions (4 in all), exit 7, status gave_up with the reason', capped.status === 7 && calls().length === 4 && capped.last?.status === 'gave_up' && /3 new sessions/.test(capped.last.text) && noResume(), `${capped.status} ${calls().length} ${capped.stdout}`)
+  const cap1 = loop('limit5', ['--max-sessions', '1'])
+  check('AC-2.3: --max-sessions 1 — two sessions in all', cap1.status === 7 && calls().length === 2, `${cap1.status} ${calls().length}`)
+  const progress = loop('limit5,limit5,progress,limit5,limit5,completed', ['--max-sessions', '3'])
+  check('AC-2.3 legitimate: a newly closed stage resets the count — six sessions go on past the cap of 3 and complete', progress.status === 0 && calls().length === 6, `${progress.status} ${calls().length} ${progress.stdout}`)
+
+  // #3: a multi-byte letter cut between two chunks stays whole in the raw log and in the error text.
+  const split = loop('utf8')
+  const rawLog = split.outcomes[0] ? readFileSync(split.outcomes[0].log) : Buffer.alloc(0)
+  check('stage-1 minor #3: a Cyrillic letter split between two chunks — the raw log holds the bytes as they came and the error text is whole', split.status === 1 && split.outcomes[0].text === 'Ошибка сервера: сбой' && rawLog.includes(Buffer.from('Ошибка сервера: сбой')) && !rawLog.toString('utf8').includes('�'), `${split.status} ${JSON.stringify(split.outcomes)}`)
+
+  // #4: a launcher file error (the record directory is a file) — no claude is started, the launcher says why instead of a stack.
+  rmSync(join(bin, 'calls.jsonl'), { force: true })
+  fresh()
+  const blocked = join(root, 'data-blocked')
+  writeFileSync(blocked, 'a file, not a directory')
+  const bad = spawnSync(node, [FORCE_RUN, repo, 'VT-12'], { encoding: 'utf8', env: envFor(blocked, 'completed') })
+  check('stage-1 minor #4: the record directory cannot be written — no claude is started, the launcher says why and exits 1 without a stack', bad.status === 1 && calls().length === 0 && /launcher could not write its files|failed:/.test(bad.stdout) && !/\n\s+at /.test(bad.stderr), `${bad.status} ${bad.stdout} ${bad.stderr}`)
+
+  // AC-2.5 / D11: Ctrl-C or SIGTERM during the wait and during a session — no live claude, no live caffeinate, `stopped` + interrupted, no new session.
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const sleepMs = (ms) => new Promise((done) => setTimeout(done, ms))
+  const until = async (fn, ms = 8000) => {
+    for (let t = 0; t < ms && !fn(); t += 50) await sleepMs(50)
+    return fn()
+  }
+  const caffPids = () => (existsSync(join(bin, 'caffeinate.pids')) ? readFileSync(join(bin, 'caffeinate.pids'), 'utf8').split('\n').filter(Boolean).map(Number) : [])
+  const caffLog = () => (existsSync(join(bin, 'caffeinate.log')) ? readFileSync(join(bin, 'caffeinate.log'), 'utf8').split('\n').filter(Boolean) : [])
+  const startLoop = (seq, extra) => {
+    for (const f of ['calls.jsonl', 'caffeinate.log', 'caffeinate.pids', 'hang.pid']) rmSync(join(bin, f), { force: true })
+    fresh()
+    const dataDir = join(root, `data-${n++}`)
+    const child = spawn(node, [FORCE_RUN, repo, 'VT-12'], { env: envFor(dataDir, seq, extra), stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    const exited = new Promise((done) => child.on('close', (code) => done(code)))
+    return { child, dataDir, exited, stdout: () => stdout }
+  }
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    const w = startLoop('limit5hold,completed', { FORCE_RUN_WAIT_SCALE: '1', CAFF_HOLD: '1' })
+    // the session's own caffeinate ends with the session; the wait's one is the one watching the launcher
+    const waitingNow = await until(() => /waiting until/.test(w.stdout()) && (process.platform !== 'darwin' || caffLog().some((l) => l === `-i -w ${w.child.pid}`)))
+    const waitCaff = caffPids().at(-1)
+    if (process.platform === 'darwin') check(`AC-2.5 (${signal}): during the wait \`caffeinate -i -w <launcher pid>\` is held and alive`, waitingNow && waitCaff && alive(waitCaff), `${w.stdout()} ${caffLog()}`)
+    const claudePid = calls()[0]?.pid
+    w.child.kill(signal)
+    const code = await Promise.race([w.exited, sleepMs(8000).then(() => 'timeout')])
+    await sleepMs(300)
+    const recs = recordsOf(w.dataDir)
+    check(`AC-2.5/D11 (${signal} during the wait): the launcher ends with exit 4, status stopped + interrupted, no second session, no live claude, no live caffeinate`, code === 4 && calls().length === 1 && !alive(claudePid) && (process.platform !== 'darwin' || !alive(waitCaff)) && recs.at(-1)?.status === 'stopped' && recs.at(-1)?.interrupted === true, `${code} ${w.stdout()} ${JSON.stringify(recs.at(-1))}`)
+    if (code === 'timeout') w.child.kill('SIGKILL')
+
+    const s = startLoop('hang,completed', { CAFF_HOLD: '1' })
+    await until(() => existsSync(join(bin, 'hang.pid')))
+    const hangPid = Number(readFileSync(join(bin, 'hang.pid'), 'utf8'))
+    await until(() => process.platform !== 'darwin' || caffPids().length > 0)
+    const sessionCaff = caffPids().at(-1)
+    s.child.kill(signal)
+    const sCode = await Promise.race([s.exited, sleepMs(8000).then(() => 'timeout')])
+    await sleepMs(300)
+    const sRecs = recordsOf(s.dataDir)
+    const sOut = sRecs.find((r) => r.type === 'outcome')
+    check(`AC-2.5/D11 (${signal} during a session): claude is killed, caffeinate is gone, the outcome is stopped with interrupted: true and the loop does not start a new session`, sCode === 4 && calls().length === 1 && !alive(hangPid) && (process.platform !== 'darwin' || !alive(sessionCaff)) && sOut?.outcome === 'stopped' && sOut.interrupted === true && sRecs.at(-1)?.status === 'stopped', `${sCode} ${JSON.stringify(sRecs.slice(-2))}`)
+    if (sCode === 'timeout') s.child.kill('SIGKILL')
+  }
+
+  // AC-2.5: a second signal inside the grace window must not leave claude alive (it ignores SIGTERM here).
+  {
+    const d = startLoop('hangdeaf,completed', {})
+    await until(() => existsSync(join(bin, 'hang.pid')))
+    const deafPid = Number(readFileSync(join(bin, 'hang.pid'), 'utf8'))
+    d.child.kill('SIGTERM')
+    await sleepMs(300)
+    d.child.kill('SIGTERM')
+    const dCode = await Promise.race([d.exited, sleepMs(8000).then(() => 'timeout')])
+    await sleepMs(300)
+    check('AC-2.5: two signals in a row while claude ignores SIGTERM — claude is dead (SIGKILL at the second), the launcher exits 4', dCode === 4 && !alive(deafPid), `${dCode} alive=${alive(deafPid)}`)
+    if (alive(deafPid)) process.kill(deafPid, 'SIGKILL')
+    if (dCode === 'timeout') d.child.kill('SIGKILL')
+  }
+  // a file error after the start (the log path stops being writable): claude is killed, the outcome is a launcher file error
+  {
+    const f = startLoop('logfail,completed', {})
+    const fCode = await Promise.race([f.exited, sleepMs(10000).then(() => 'timeout')])
+    await sleepMs(300)
+    const fPid = Number(existsSync(join(bin, 'hang.pid')) ? readFileSync(join(bin, 'hang.pid'), 'utf8') : 0)
+    const fOut = recordsOf(f.dataDir).find((r) => r.type === 'outcome')
+    check('guarded: a file error after the start kills claude and gives an error outcome naming the launcher file error', fCode === 1 && fOut?.outcome === 'error' && /launcher file error/.test(fOut.text ?? '') && fPid > 0 && !alive(fPid), `${fCode} ${JSON.stringify(fOut)}`)
+    if (fPid > 0 && alive(fPid)) process.kill(fPid, 'SIGKILL')
+    if (fCode === 'timeout') f.child.kill('SIGKILL')
+  }
 
   rmSync(root, { recursive: true, force: true })
 }
