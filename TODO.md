@@ -17,6 +17,10 @@ Several stage-pipeline sessions run at once in different repos, and the machine 
 
 VT-8 only lowers the priority of its own test workers and sizes them by the load average at start. The rest is a separate task. What VT-8 measured: on a quiet machine (load average 2–5) hooks-test takes 78–81 s; next to other sessions (load 5–12) its workers give way and it takes 123–216 s.
 
+## Unattended force runs (asked 2026-11-09)
+- Usage limits during a force run: track how much limit is left while the run goes. If the limit runs out before the run is done, schedule a job for the reset time that resumes only that force run, nothing else.
+- A night queue: plan several tasks (say three) with `/stage-plan` as usual, then queue them so they run one after another in force mode, for example overnight on a second, weaker machine. A queued task that hits the limit waits for the reset like above, and the next task starts after it.
+
 ## Evals
 - The two cases of 0.25.0, `security-review-branch` and `ds-parity-hand-rolled-dialog`, wait in `evals/pending/` for a failing run on the ablated agent. `--record-failing` refuses `--pending` and writes into `evals/cases/`, so: move a case to `evals/cases/`, run `node scripts/eval.mjs --ablate agent:<name> --record-failing <case>`, and commit the case with its `provenFailing`. The security review's scale was tightened after a sonnet run rated a cross-account IDOR major; watch its severity on real branches.
 - The eval follow-up PR of VT-1: M-1 and S-1 of the hill-climb driver, harder `pro-review` cases, an eval case for the delta mode, the eval cases of 0.20.0–0.22.0, the first paid climb. Paid; needs a budget.
