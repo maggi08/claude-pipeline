@@ -21,12 +21,12 @@
  *
  *   node force-run.mjs <repo> <TICKET> [--once] [--margin-min 5] [--max-sessions 3] [--retries 1]
  *
- * Tests shrink the wait with the env `FORCE_RUN_WAIT_SCALE` (a multiplier of the wait; 0 skips it). The queue of tasks is not here: it imports `prepareRun`, `runLoop`, `recordRun`.
+ * Tests shrink the wait with the env `FORCE_RUN_WAIT_SCALE` (a multiplier of the wait; 0 skips it). The queue of tasks is not here: it imports `prepareRun`, `runLoop`, `taskReadiness`, `acquirePidLock`, `waitUntil` and the helpers `TICKET`, `gitOk`, `numberFlag`.
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, statSync } from 'node:fs'
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { lastForceBlock } from './journal-check.mjs'
@@ -37,7 +37,7 @@ import { pluginDataDir, readPipelineState, readTaskFile, realOr } from './hooks/
 export const EXIT = { completed: 0, error: 1, notReady: 2, limit: 3, stopped: 4, weekly: 5, spend: 6, gaveUp: 7 }
 const FIVE_HOURS_S = 5 * 3600
 const WINDOWS = ['five_hour', 'seven_day']
-const TICKET = /^[\w.-]+$/
+export const TICKET = /^[\w.-]+$/
 
 const say = (text) => console.log(`force-run: ${text}`)
 
@@ -104,7 +104,7 @@ export function limitInfo(event) {
  * A real five-hour limit can carry `overageDisabledReason: "out_of_credits"` too, so the reason alone is not a sign: the text, an `org_level_disabled…` reason, or a `resetsAt`
  * further than the five hours (and a quarter hour) from `nowS` decide.
  */
-export function limitKind({ window, resetsAt, reason, spend }, nowS = Date.now() / 1000) {
+function limitKind({ window, resetsAt, reason, spend }, nowS = Date.now() / 1000) {
   if (spend || /^org_level_disabled/.test(reason ?? '')) return 'spend'
   if (window === 'five_hour' && resetsAt !== null && resetsAt - nowS > FIVE_HOURS_S + 900) return 'spend'
   return window ?? 'unknown'
@@ -128,10 +128,10 @@ export function transientInfo(event) {
 
 // ── the record ───────────────────────────────────────────────────────────────
 
-export const recordFile = (ticket, dataDir = pluginDataDir()) => join(dataDir, 'force-runs', `${ticket}.jsonl`)
+const recordFile = (ticket, dataDir = pluginDataDir()) => join(dataDir, 'force-runs', `${ticket}.jsonl`)
 
 /** One line of the run record `force-runs/<TICKET>.jsonl`: `{ ts, ticket, session, type, … }` — types `start`, `rate_limit`, `outcome`. */
-export function recordRun(ticket, entry, dataDir = pluginDataDir()) {
+function recordRun(ticket, entry, dataDir = pluginDataDir()) {
   if (!TICKET.test(ticket)) throw new Error(`not a ticket: ${ticket}`)
   const file = recordFile(ticket, dataDir)
   mkdirSync(dirname(file), { recursive: true })
@@ -157,7 +157,7 @@ export function findOnPath(name, pathEnv = process.env.PATH ?? '') {
 }
 
 const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-const gitOk = (cwd, ...args) => {
+export const gitOk = (cwd, ...args) => {
   try {
     return gitIn(cwd, ...args)
   } catch {
@@ -191,11 +191,8 @@ export function ensureWorktree(repo, task) {
   return { problem: `branch ${branches.join(' / ')} of ${task.ticket} exists neither locally nor on origin — nothing to make a worktree from` }
 }
 
-/**
- * Everything before the session: the task is found, its Force block is open and confirmed, `claude` and `node` are on the PATH, the worktree is there.
- * `{ ok: true, ticket, repo, task, worktree, created, claude, node, prompt, env }` or `{ ok: false, code, message }` (code 2: the person has something to do first).
- */
-export function prepareRun(repo, ticket, { pathEnv = process.env.PATH ?? '' } = {}) {
+/** The part of `prepareRun` that touches nothing: the task exists and has an open, confirmed Force block. `{ ok: true, state, task }` or `{ ok: false, code, message }`. */
+export function taskReadiness(repo, ticket) {
   const fail = (message) => ({ ok: false, code: EXIT.notReady, message })
   if (!TICKET.test(ticket ?? '')) return fail(`not a ticket: ${ticket}`)
   const state = readPipelineState(resolve(repo))
@@ -207,6 +204,75 @@ export function prepareRun(repo, ticket, { pathEnv = process.env.PATH ?? '' } = 
   if (!block || CLOSED_WORD.test(block.heading) || !CONFIRMED_LINE.test(block.body)) {
     return fail(`${ticket} has no open Force block with a "Confirmed:" line — nothing was started. Ask the questions first: /stage-force ${ticket} --interview-only`)
   }
+  return { ok: true, state, task }
+}
+
+/**
+ * A lock by PID in a file made atomically (`wx`): `{ ok: true, release }`, or `{ ok: false, owner }` while the PID in it is alive. A file of a dead PID is taken over.
+ * The file also goes when this process exits (`process.exit` included).
+ */
+export function acquirePidLock(file, label = '') {
+  mkdirSync(dirname(file), { recursive: true })
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      writeFileSync(file, JSON.stringify({ pid: process.pid, label, started: new Date().toISOString() }), { flag: 'wx' })
+      const release = () => {
+        process.removeListener('exit', release)
+        try {
+          if (JSON.parse(readFileSync(file, 'utf8')).pid === process.pid) rmSync(file, { force: true })
+        } catch {
+          // already gone
+        }
+      }
+      process.on('exit', release)
+      return { ok: true, release }
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+    }
+    let owner = null
+    try {
+      owner = JSON.parse(readFileSync(file, 'utf8'))
+    } catch {
+      // being written by its owner right now, or garbage
+    }
+    if (owner && pidAlive(owner.pid)) return { ok: false, owner }
+    if (!owner) {
+      try {
+        if (Date.now() - statSync(file).mtimeMs < 2000) return { ok: false, owner: { pid: null, label: 'being created' } }
+      } catch {
+        continue
+      }
+    }
+    // re-read right before removing: only the file of the same dead PID goes (a fresh file of a racing taker stays), and the `wx` create decides
+    try {
+      const again = JSON.parse(readFileSync(file, 'utf8'))
+      if (owner && again.pid !== owner.pid) continue
+    } catch {
+      if (owner) continue
+    }
+    rmSync(file, { force: true })
+  }
+  return { ok: false, owner: { pid: null, label: 'could not take the lock' } }
+}
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
+}
+export const ticketLockFile = (ticket, dataDir = pluginDataDir()) => join(dataDir, 'locks', `ticket-${ticket}.lock`)
+
+/**
+ * Everything before the session: the task is found, its Force block is open and confirmed, `claude` and `node` are on the PATH, the worktree is there.
+ * `{ ok: true, ticket, repo, task, worktree, created, claude, node, prompt, env }` or `{ ok: false, code, message }` (code 2: the person has something to do first).
+ */
+export function prepareRun(repo, ticket, { pathEnv = process.env.PATH ?? '' } = {}) {
+  const ready = taskReadiness(repo, ticket)
+  if (!ready.ok) return ready
+  const { state, task } = ready
+  const fail = (message) => ({ ok: false, code: EXIT.notReady, message })
   const claude = findOnPath('claude', pathEnv)
   if (!claude) return fail('`claude` is not on the PATH — nothing was started')
   const node = findOnPath('node', pathEnv) ?? process.execPath
@@ -225,7 +291,7 @@ const closedNow = (task) => {
   return Boolean(block && CLOSED_WORD.test(block.heading))
 }
 /** How many stage headings of STAGES.md are `done` (archive-stages keeps the heading line of a closed stage). */
-export const closedStages = (task) => (stagesOf(task).match(/^#{2,4} .*\[status:\s*done\b/gim) ?? []).length
+const closedStages = (task) => (stagesOf(task).match(/^#{2,4} .*\[status:\s*done\b/gim) ?? []).length
 
 /**
  * One fresh session: spawns `claude -p`, logs the raw stream, records the rate-limit events, and records and returns exactly one outcome.
@@ -505,7 +571,7 @@ export async function runLoop(repo, ticket, options = {}) {
   }
 }
 
-const numberFlag = (argv, name, fallback) => {
+export const numberFlag = (argv, name, fallback) => {
   const at = argv.indexOf(name)
   if (at < 0) return fallback
   const value = Number(argv[at + 1])
@@ -531,6 +597,11 @@ async function main(argv) {
   const rest = args.filter((arg) => arg !== '--once')
   if (rest.length !== 2 || rest.some((arg) => arg.startsWith('-'))) return usage()
   try {
+    const lock = acquirePidLock(ticketLockFile(rest[1]), 'force-run')
+    if (!lock.ok) {
+      say(`${rest[1]} is already being run (pid ${lock.owner.pid}, ${lock.owner.label}) — a second session in the same worktree is refused`)
+      process.exit(EXIT.notReady)
+    }
     if (!once) {
       const loop = await runLoop(rest[0], rest[1], options)
       if (!loop.ok) {

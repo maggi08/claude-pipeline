@@ -180,6 +180,7 @@ const UNITS = [
   { id: 'vt6s13c', weight: 2 }, // Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit…
   { id: 'vt12s1', weight: 4 }, // VT-12 stage 1: force-run.mjs — one headless run with a fake `claude`: readiness, worktree, rate-limit record, the four outcomes, caffeinate
   { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
+  { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
 const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
@@ -9676,6 +9677,219 @@ else if (scenario === 'utf8') {
     if (fPid > 0 && alive(fPid)) process.kill(fPid, 'SIGKILL')
     if (fCode === 'timeout') f.child.kill('SIGKILL')
   }
+
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('vt12s3')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt12s3-')))
+  const QUEUE = join(PLUGIN, 'force-queue.mjs')
+  const FORCE_RUN = join(PLUGIN, 'force-run.mjs')
+  const bin = join(root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  const node = process.execPath
+  const fake = `#!/usr/bin/env node
+const fs = require('fs')
+const path = require('path')
+const { execFileSync } = require('child_process')
+const ticket = /stage-force (\\S+)/.exec(process.argv[3])[1]
+const scenario = JSON.parse(process.env.FAKE_PLAN || '{}')[ticket] || 'completed'
+const log = (ev) => fs.appendFileSync(path.join(__dirname, 'calls.jsonl'), JSON.stringify({ ticket, ev, scenario, t: Date.now(), cwd: fs.realpathSync(process.cwd()) }) + '\\n')
+log('start')
+const out = (event) => console.log(JSON.stringify(event))
+const now = Math.floor(Date.now() / 1000)
+const rate = (five, seven, sevenStatus) => out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: five, resetsAt: now + 3600, status: 'allowed' }, seven_day: { utilization: seven, resetsAt: now + 86400, status: sevenStatus || 'allowed' } } } })
+const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
+const close = () => {
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'))
+  execFileSync('git', ['commit', '--allow-empty', '-qm', 'work of ' + ticket])
+}
+const end = (code) => { log('end'); process.exit(code) }
+out({ type: 'system', subtype: 'init' })
+setTimeout(() => {
+  if (scenario === 'completed') { rate(0.2, 0.1); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'hot') { rate(0.95, 0.1); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'weekrejected') { rate(0.2, 0.99, 'rejected'); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'weekly') {
+    out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your weekly limit" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: now + 3 * 86400, rateLimitType: 'seven_day' } } })
+    out({ type: 'result', subtype: 'success', is_error: true, result: "You've hit your weekly limit" }); end(1)
+  } else if (scenario === 'error') { out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); end(1) }
+  else if (scenario === 'limit5') {
+    out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your session limit" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: now + 3600, rateLimitType: 'five_hour' } } })
+    out({ type: 'result', subtype: 'success', is_error: true, result: "You've hit your session limit" }); end(1)
+  } else if (scenario === 'slow') { setTimeout(() => { close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }, 2500) }
+}, 300)
+`
+  writeFileSync(join(bin, 'claude'), fake)
+  writeFileSync(join(bin, 'caffeinate'), '#!/bin/sh\nexit 0\n')
+  execFileSync('chmod', ['+x', join(bin, 'claude'), join(bin, 'caffeinate')])
+  const bare = join(root, 'bare')
+  mkdirSync(bare, { recursive: true })
+  symlinkSync(node, join(bare, 'node'))
+  symlinkSync(execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim(), join(bare, 'git'))
+  const home = join(root, 'home')
+  mkdirSync(home, { recursive: true })
+  const OPEN = '## Force run 2026-11-10\nMode: autonomous.\nConfirmed: 2026-11-10 — interview answers\n\n'
+  const repos = {}
+  const journalPath = (t) => join(repos[t], `.claude/tasks/${t}/STAGES.md`)
+  const journal = (t, force = OPEN) => `# ${t}: queue\nBranch: \`${t}/feat/q\`\n\n## Status: stage 1\n\n${force}## Stages\n\n### Stage 1: a  [status: in-progress]\n`
+  const mkTask = (t, force = OPEN) => {
+    repos[t] = join(root, `repo-${t}`)
+    repoAt(repos[t], 'main')
+    git(repos[t], 'branch', `${t}/feat/q`)
+    write(repos[t], { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', [`.claude/tasks/${t}/STAGES.md`]: journal(t, force) })
+  }
+  const reopen = (...ts) => ts.forEach((t) => writeFileSync(journalPath(t), journal(t)))
+  for (const t of ['VT-A', 'VT-B', 'VT-C']) mkTask(t)
+  const calls = () => (existsSync(join(bin, 'calls.jsonl')) ? readFileSync(join(bin, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+  const resetCalls = () => rmSync(join(bin, 'calls.jsonl'), { force: true })
+  let n = 0
+  const sandbox = () => join(root, `data-${n++}`)
+  const envFor = (dataDir, plan = {}, extra = {}) => ({ PATH: `${bin}:${dirname(node)}:/usr/bin:/bin`, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_PLAN: JSON.stringify(plan), FORCE_RUN_WAIT_SCALE: '0', ...extra })
+  const q = (dataDir, args, plan, extra) => spawnSync(node, [QUEUE, ...args], { encoding: 'utf8', env: envFor(dataDir, plan, extra) })
+  const queueOf = (dataDir) => (existsSync(join(dataDir, 'force-queue.json')) ? JSON.parse(readFileSync(join(dataDir, 'force-queue.json'), 'utf8')).tasks : [])
+  const statusOf = (dataDir, t) => queueOf(dataDir).find((task) => task.ticket === t)?.status
+  const fill = (dataDir, ts) => ts.forEach((t) => assertAdd(q(dataDir, ['add', repos[t], t])))
+  const assertAdd = (r) => { if (r.status !== 0) throw new Error(`add failed: ${r.stdout} ${r.stderr}`) }
+  const starts = () => calls().filter((c) => c.ev === 'start').map((c) => c.ticket)
+
+  // AC-3.1: add refuses an unconfirmed task and names the reason; list and remove.
+  mkTask('VT-U', '## Force run 2026-11-10\nMode: autonomous.\n\n')
+  const d1 = sandbox()
+  const refused = q(d1, ['add', repos['VT-U'], 'VT-U'])
+  check('AC-3.1 incident: add of a task without a confirmed interview — exit 2, not queued, the output names "Confirmed" and the interview command', refused.status === 2 && /Confirmed/.test(refused.stdout) && /--interview-only/.test(refused.stdout) && queueOf(d1).length === 0, `${refused.status} ${refused.stdout} ${refused.stderr}`)
+  fill(d1, ['VT-A', 'VT-B'])
+  const listed = q(d1, ['list'])
+  check('AC-3.1: list shows the queue in insertion order with statuses', listed.status === 0 && /1\. VT-A\s+queued/.test(listed.stdout) && /2\. VT-B\s+queued/.test(listed.stdout), listed.stdout)
+  const dup = q(d1, ['add', repos['VT-A'], 'VT-A'])
+  check('AC-3.1: a task already queued is not added twice', dup.status === 2 && /already in the queue/.test(dup.stdout) && queueOf(d1).length === 2, dup.stdout)
+  const rem = q(d1, ['remove', 'VT-B'])
+  check('AC-3.1: remove takes a not-started task out', rem.status === 0 && queueOf(d1).map((t) => t.ticket).join() === 'VT-A', `${rem.stdout}`)
+  check('AC-3.1: remove of a task that is not there says so, exit 1', q(d1, ['remove', 'VT-Z']).status === 1)
+
+  // AC-3.2: one by one in order, the next after the outcome of the previous.
+  const d2 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d2, ['VT-A', 'VT-B'])
+  const ordered = q(d2, ['run'], { 'VT-A': 'completed', 'VT-B': 'completed' })
+  const cs = calls()
+  const order = cs.map((c) => `${c.ticket}:${c.ev}`).join()
+  check('AC-3.2 incident: two tasks run in the order added, the second starts only after the first ended', ordered.status === 0 && order === 'VT-A:start,VT-A:end,VT-B:start,VT-B:end', `${ordered.status} ${order} ${ordered.stdout} ${ordered.stderr}`)
+  check('AC-3.2: each task ran in its own worktree and both ended `completed` in the queue', cs[0].cwd !== cs[2].cwd && statusOf(d2, 'VT-A') === 'completed' && statusOf(d2, 'VT-B') === 'completed', JSON.stringify(queueOf(d2)))
+  // AC-3.4: the summary
+  const summary = readFileSync(join(d2, 'force-queue-summary.md'), 'utf8')
+  const lineA = summary.split('\n').find((l) => l.startsWith('VT-A:')) ?? ''
+  check('AC-3.4 incident: the summary file and stdout carry a line per task — outcome, commit count of the run, blockers, path to RUN-DIGEST.md', /VT-A: completed/.test(lineA) && /— 1 commit\(s\)/.test(lineA) && /no open blockers/.test(lineA) && lineA.includes(join(repos['VT-A'], '.claude/tasks/VT-A/RUN-DIGEST.md')) && ordered.stdout.includes(lineA) && /VT-B: completed/.test(summary), `${summary}`)
+
+  // AC-3.2: the lock of the machine; a stale one is taken over; the lock of the ticket.
+  const d3 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d3, ['VT-A', 'VT-B'])
+  const first = spawn(node, [QUEUE, 'run'], { env: envFor(d3, { 'VT-A': 'slow', 'VT-B': 'completed' }), stdio: ['ignore', 'pipe', 'pipe'] })
+  let firstOut = ''
+  first.stdout.on('data', (c) => (firstOut += c))
+  const firstDone = new Promise((done) => first.on('close', (code) => done(code)))
+  for (let t = 0; t < 8000 && !starts().includes('VT-A'); t += 50) await new Promise((r) => setTimeout(r, 50))
+  const second = q(d3, ['run'])
+  check('AC-3.2 incident: a second `run` while the first is alive is refused at once — exit 2, the first one\'s pid named, nothing of it started', second.status === 2 && /another queue run is alive \(pid \d+/.test(second.stdout) && starts().length === 1, `${second.status} ${second.stdout}`)
+  const manual = spawnSync(node, [FORCE_RUN, repos['VT-A'], 'VT-A', '--once'], { encoding: 'utf8', env: envFor(d3) })
+  check('D16: a manual force-run of the ticket the queue is running is refused (exit 2, "already being run"), no second claude', manual.status === 2 && /already being run/.test(manual.stdout) && starts().length === 1, `${manual.status} ${manual.stdout}`)
+  const firstCode = await firstDone
+  check('AC-3.2: the first run goes on undisturbed and ends both tasks; after it the locks are gone', firstCode === 0 && starts().join() === 'VT-A,VT-B' && !existsSync(join(d3, 'locks/queue.lock')) && !existsSync(join(d3, 'locks/ticket-VT-A.lock')), `${firstCode} ${firstOut}`)
+  const manualAfter = spawnSync(node, [FORCE_RUN, repos['VT-A'], 'VT-A', '--once'], { encoding: 'utf8', env: envFor(d3, { 'VT-A': 'error' }) })
+  check('D16: after the queue the ticket lock is free — a manual run starts again (a closed Force block here: not ready, but not "already being run")', !/already being run/.test(manualAfter.stdout), manualAfter.stdout)
+  const d4 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d4, ['VT-A'])
+  mkdirSync(join(d4, 'locks'), { recursive: true })
+  writeFileSync(join(d4, 'locks/queue.lock'), JSON.stringify({ pid: 2147483646, label: 'dead', started: '2026-01-01T00:00:00.000Z' }))
+  const stale = q(d4, ['run'], { 'VT-A': 'completed' })
+  check('AC-3.2: a lock left by a dead pid is taken over — the queue runs', stale.status === 0 && starts().join() === 'VT-A', `${stale.status} ${stale.stdout}`)
+
+  // AC-3.3: the threshold wait before the next task.
+  const d5 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d5, ['VT-A', 'VT-B'])
+  const hot = q(d5, ['run'], { 'VT-A': 'hot', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '0.0006' })
+  const hc = calls()
+  const gap = hc.find((c) => c.ticket === 'VT-B' && c.ev === 'start')?.t - hc.find((c) => c.ticket === 'VT-A' && c.ev === 'end')?.t
+  check('AC-3.3 incident: five_hour at 95% in the latest event (threshold 90) — the queue says it waits for the reset and VT-B starts only after the wait', hot.status === 0 && /VT-B: five_hour is at 95%.*waiting until/.test(hot.stdout) && gap >= 1500, `${hot.status} gap=${gap} ${hot.stdout}`)
+  const d6 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d6, ['VT-A', 'VT-B'])
+  const cool = q(d6, ['run', '--threshold', '99'], { 'VT-A': 'hot', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '1' })
+  check('AC-3.3 legitimate: the same 95% under a threshold of 99 — no wait, both ran', cool.status === 0 && !/waiting until/.test(cool.stdout) && starts().join() === 'VT-A,VT-B', `${cool.status} ${cool.stdout}`)
+  // seven_day rejected stops the queue, the rest stays.
+  const d7 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B', 'VT-C')
+  fill(d7, ['VT-A', 'VT-B', 'VT-C'])
+  const week = q(d7, ['run'], { 'VT-A': 'weekrejected', 'VT-B': 'completed' })
+  check('AC-3.3 incident: seven_day `rejected` in the latest event — the queue stops after VT-A, exit 5, VT-B and VT-C stay queued and never start', week.status === 5 && starts().join() === 'VT-A' && statusOf(d7, 'VT-B') === 'queued' && statusOf(d7, 'VT-C') === 'queued' && /Queue stopped: the weekly window is rejected, resets \d{4}-/.test(week.stdout) && /Not started \(still queued\): VT-B, VT-C/.test(week.stdout), `${week.status} ${week.stdout}`)
+  // the weekly limit inside a task
+  const d8 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d8, ['VT-A', 'VT-B'])
+  const weekly = q(d8, ['run'], { 'VT-A': 'weekly', 'VT-B': 'completed' })
+  const lineW = readFileSync(join(d8, 'force-queue-summary.md'), 'utf8')
+  check('D15/AC-3.4 incident: a weekly limit inside VT-A stops the queue (exit 5), VT-B is not started and stays queued; the summary has the reset time and the not-started task', weekly.status === 5 && starts().join() === 'VT-A' && statusOf(d8, 'VT-B') === 'queued' && /VT-A: weekly_limit/.test(lineW) && /resets \d{4}-/.test(lineW) && /Not started \(still queued\): VT-B/.test(lineW), `${weekly.status} ${lineW}`)
+  check('AC-3.1: VT-A hit the limit and is still queued but started — it cannot be removed, VT-B (not started) can', q(d8, ['remove', 'VT-A']).status === 1 && /was started/.test(q(d8, ['remove', 'VT-A']).stdout) && q(d8, ['remove', 'VT-B']).status === 0)
+  // D15: an error of the first task does not stop the queue.
+  const d9 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d9, ['VT-A', 'VT-B'])
+  const failFirst = q(d9, ['run'], { 'VT-A': 'error', 'VT-B': 'completed' })
+  check('D15 incident: VT-A ends in an error — VT-B still runs and completes; exit 1; the queue holds both outcomes', failFirst.status === 1 && starts().join() === 'VT-A,VT-B' && statusOf(d9, 'VT-A') === 'error' && statusOf(d9, 'VT-B') === 'completed' && /VT-A: error/.test(failFirst.stdout) && /VT-B: completed/.test(failFirst.stdout), `${failFirst.status} ${failFirst.stdout}`)
+  // AC-3.4: open blockers of the Force block reach the line
+  const d10 = sandbox()
+  resetCalls()
+  reopen('VT-A')
+  writeFileSync(journalPath('VT-A'), journal('VT-A', `${OPEN.trimEnd()}\nBlockers: B1 — the payment sandbox has no key.\n\n`))
+  fill(d10, ['VT-A'])
+  q(d10, ['run'], { 'VT-A': 'completed' })
+  const lineB = (readFileSync(join(d10, 'force-queue-summary.md'), 'utf8').split('\n').find((l) => l.startsWith('VT-A:')) ?? '')
+  check('AC-3.4: an open blocker of the Force block is in the line of its task', /1 open blocker\(s\): .*payment sandbox has no key/.test(lineB), lineB)
+
+  // D15: an interrupt during the five-hour wait INSIDE a task stops the queue and leaves the task queued; the next task never starts.
+  const d12 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d12, ['VT-A', 'VT-B'])
+  const waitQ = spawn(node, [QUEUE, 'run'], { env: envFor(d12, { 'VT-A': 'limit5', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '1' }), stdio: ['ignore', 'pipe', 'pipe'] })
+  let waitOut = ''
+  waitQ.stdout.on('data', (c) => (waitOut += c))
+  const waitDone = new Promise((done) => waitQ.on('close', (code) => done(code)))
+  for (let t = 0; t < 8000 && !/waiting until/.test(waitOut); t += 50) await new Promise((r) => setTimeout(r, 50))
+  waitQ.kill('SIGTERM')
+  const waitCode = await Promise.race([waitDone, new Promise((r) => setTimeout(() => r('timeout'), 8000))])
+  if (waitCode === 'timeout') waitQ.kill('SIGKILL')
+  await new Promise((r) => setTimeout(r, 300))
+  check('D15/AC-3.3 incident: an interrupt during the five-hour wait inside VT-A stops the queue (exit 4), VT-B never starts, VT-A stays queued, no claude left', waitCode === 4 && starts().join() === 'VT-A' && statusOf(d12, 'VT-A') === 'queued' && statusOf(d12, 'VT-B') === 'queued' && calls().filter((c) => c.ev === 'start').length === calls().filter((c) => c.ev === 'end').length, `${waitCode} ${waitOut} ${JSON.stringify(queueOf(d12))}`)
+
+  // AC-3.5: check names every "no" with its task.
+  const d11 = sandbox()
+  reopen('VT-A')
+  fill(d11, ['VT-A'])
+  const okCheck = q(d11, ['check'])
+  check('AC-3.5 legitimate: a ready queue — exit 0', okCheck.status === 0 && /ready: 1 task/.test(okCheck.stdout), okCheck.stdout)
+  mkTask('VT-N')
+  git(repos['VT-N'], 'branch', '-D', 'VT-N/feat/q')
+  mkTask('VT-I')
+  const queue = queueOf(d11)
+  const base = { status: 'queued', started: false, addedAt: 'x' }
+  writeFileSync(join(d11, 'force-queue.json'), JSON.stringify({ tasks: [...queue, { ...base, ticket: 'VT-G', repo: join(root, 'gone') }, { ...base, ticket: 'VT-N', repo: repos['VT-N'] }, { ...base, ticket: 'VT-I', repo: repos['VT-I'] }, { ...base, ticket: 'VT-NOFOLDER', repo: repos['VT-A'] }] }))
+  writeFileSync(journalPath('VT-I'), journal('VT-I', '## Force run 2026-11-10\nMode: autonomous.\n\n'))
+  const bad = q(d11, ['check'])
+  check('AC-3.5 incident: check names each failing task — repo missing, branch missing, interview unconfirmed, no task folder — exit 1; the ready VT-A is not named', bad.status === 1 && /VT-G: repo .*gone does not exist/.test(bad.stdout) && /VT-N: branch VT-N\/feat\/q exists neither locally nor on origin/.test(bad.stdout) && /VT-I: interview not confirmed/.test(bad.stdout) && /VT-NOFOLDER: task folder: no task VT-NOFOLDER/.test(bad.stdout) && !/NO — VT-A:/.test(bad.stdout), `${bad.status} ${bad.stdout}`)
+  const noClaude = spawnSync(node, [QUEUE, 'check'], { encoding: 'utf8', env: { PATH: bare, HOME: home, STAGE_PIPELINE_DATA_DIR: d11 } })
+  check('AC-3.5: claude missing from the PATH is named, exit 1', noClaude.status === 1 && /NO — `claude` is not on the PATH/.test(noClaude.stdout), noClaude.stdout)
 
   rmSync(root, { recursive: true, force: true })
 }
