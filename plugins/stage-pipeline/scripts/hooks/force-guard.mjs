@@ -1,5 +1,5 @@
 import { denyTool } from './firing.mjs'
-import { askMatch, askRules, nameKill } from './permission-rules.mjs'
+import { askMatch, askRules, forceNever, nameKill } from './permission-rules.mjs'
 import { dataDirReason, pluginDataDir, readHookInput, readPipelineState, writesDataDir } from './pipeline-state.mjs'
 
 /**
@@ -14,6 +14,10 @@ import { dataDirReason, pluginDataDir, readHookInput, readPipelineState, writesD
  *   process is stopped by PID;
  * - a subcommand under `ask` in the user's or project's settings (`git push`, `reset --hard`, `gh`…) — force
  *   either does not do it at all (stage-force, Step 3), or the user does it: the command goes into the run's blockers.
+ * - a push, or a `gh` / `glab` call that is not a read (0.27.0) — always, whatever the settings allow. Until 0.27.0 this ban
+ *   rested on `Bash(git push *)` and `Bash(gh *)` in ask; the profile now lets gh reads through for everyone, and its
+ *   optional `pr` group lets the user's own sessions push a branch and open a PR, so force keeps the ban by itself.
+ *   It holds for a run already going too: with the old profile the same calls were denied as ask rules.
  * - a command that WRITES into the plugin's data directory (K11a.1, VT-5 S-1a; narrowed to write forms in K11b.2): the maker records, the plan snapshots and the receipts under it are
  *   written by the hooks only, and a record the orchestrator appends there is a proof of its own code. A redirect, `tee`, `cp`/`mv`/`rsync`/`install`/`ln` into it, `rm`/`truncate`/`sed -i`/`dd of=`
  *   on a path in it and an inline `node -e` / `python -c` that names it are denied; the bare word, reads, a copy out and a scan with `CLAUDE_PLUGIN_DATA=<temp dir>` pass. Only in a run
@@ -31,8 +35,9 @@ if (!command) process.exit(0)
 const cwd = input.cwd ?? process.cwd()
 const killer = nameKill(command)
 const asked = killer ? null : askMatch(command, askRules(process.env.CLAUDE_PROJECT_DIR ?? cwd))
-const dataDir = !killer && !asked && writesDataDir(command)
-if (!killer && !asked && !dataDir) process.exit(0)
+const published = killer || asked ? null : forceNever(command)
+const dataDir = !killer && !asked && !published && writesDataDir(command)
+if (!killer && !asked && !published && !dataDir) process.exit(0)
 
 const state = readPipelineState(cwd)
 const task = state?.tasks.find((candidate) => candidate.current)
@@ -40,6 +45,18 @@ if (!task?.forceActive) process.exit(0)
 
 // K11b.2: only a run that is new by the first look is denied — a run already going when this version came keeps the rules it started with (D7), as the maker rules do
 if (dataDir && (await runIsNew(task))) deny('force-guard/data-dir-write', dataDirReason(task.ticket, dataDir))
+const blockerHint =
+  'record it as a blocker: the orchestrator as a line in `Blockers:` of the Force run block, a subagent in the `Not done / blocker:` line of its summary (the command and why), ' +
+  'and carry on with what does not depend on it (/stage-force, Step 2).'
+if (published) {
+  deny(
+    'force-guard/never-in-force',
+    `stage-pipeline: force run ${task.ticket} — \`${published}\` publishes outside the repo (a push, a PR or MR, a GitHub / GitLab write): ` +
+      "force never does that, whatever the permissions allow — push and PR are the user's (/stage-force, Step 3). Reads (`gh pr view`, `gh pr checks`, `gh run view`, a GET `gh api`) pass. " +
+      'Do not look for a way around it by doing the same action with another command. If a criterion cannot be closed without it — ' +
+      blockerHint,
+  )
+}
 if (!killer && !asked) process.exit(0)
 if (killer) {
   deny(
@@ -55,8 +72,7 @@ deny(
   `stage-pipeline: force run ${task.ticket} — \`${asked.command}\` falls under the ask rule \`${asked.rule}\` (${asked.source}): ` +
     'the call would wait for confirmation, and in force the user is not at the screen. Do not look for a way around it by doing the same action with another command. ' +
     'Skip an action that force does not do (push, PR, reset --hard, clean — /stage-force, Step 3). If a criterion cannot be closed without it — ' +
-    'record it as a blocker: the orchestrator as a line in `Blockers:` of the Force run block, a subagent in the `Not done / blocker:` line of its summary (the command and why), ' +
-    'and carry on with what does not depend on it (/stage-force, Step 2).',
+    blockerHint,
 )
 
 /** The first-look gate of the maker rules (maker.mjs, `makerRun`): the Force block is new, not one the plan snapshot saw at the first look. An error is "old" — no deny. */

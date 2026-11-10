@@ -822,7 +822,7 @@
       "baseline": true
     },
     "stage-check#bcc0e63ff5": {
-      "to": "hook:force-guard/ask-rule",
+      "to": "hook:force-guard/never-in-force",
       "text": "push and pr stay forbidden always."
     },
     "stage-check#95cb2dac47": {
@@ -1213,7 +1213,7 @@
       "baseline": true
     },
     "task-wrapup#d12a372d4f": {
-      "to": "hook:force-guard/ask-rule",
+      "to": "hook:force-guard/never-in-force",
       "text": "do not run git push, gh pr create, glab mr create and do not comment on existing prs — even as \"preparation\"."
     }
   }

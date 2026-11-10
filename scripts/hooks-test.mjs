@@ -131,6 +131,7 @@ const UNITS = [
   { id: 'gitguard', weight: 4 }, // git-guard and session-start on a live repo
   { id: 'gates', weight: 5 }, // 0.12 gates: the journal, subagent launches, signatures, a task over two repos
   { id: 'force013', weight: 3 }, // 0.13: force does not wait for confirmations
+  { id: 'perm027', weight: 2 }, // 0.27.0: gh reads in the profile, the optional pr group, a force run never pushes or writes through gh / glab
   { id: 'v014', weight: 4 }, // 0.14: findings outcome, unverified, frames
   { id: 'v015', weight: 17 }, // 0.15: criteria in the plan, the kit view, CI gates, work after "done" + English twin of t…
   { id: 'v016', weight: 6, serial: true }, // 0.16: English phrase heuristics and the report language
@@ -974,6 +975,137 @@ check('branch without a task: the hook is silent', force(fApp, 'git push').decis
 write(fApp, { '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force: '## Force-прогон 2026-10-03 — завершён с блокерами 2026-10-03\n\n' }) })
 git(fApp, 'checkout', '-q', 'T-9/feat/f')
 check('force "завершён с блокерами" — closed, the hook is silent', force(fApp, 'pkill -f x').decision === 'allow')
+rmSync(fRoot, { recursive: true, force: true })
+}
+
+// ── 0.27.0: gh reads in the profile, the optional pr group, force never publishes ──
+// 240 confirmed gh / git push prompts in a month of transcripts, 195 of them reads. The ban on push and PR in force rested on
+// `Bash(git push *)` and `Bash(gh *)` in ask; with reads allowed and the pr group narrowing the push, force-guard keeps it by itself.
+if (unit('perm027')) {
+const { bashRulePattern, forceNever } = await import(join(PLUGIN, 'hooks/permission-rules.mjs'))
+const { loadProfile, overriddenBy, wantedFor } = await import(join(PLUGIN, 'permission-profile.mjs'))
+
+const NEVER = [
+  ['git push -u origin T-9/feat/f', 'git push -u origin T-9/feat/f'],
+  ['cd app && git -C ../app push origin HEAD', 'git -C ../app push origin HEAD'],
+  ['git -c core.x=1 push', 'git -c core.x=1 push'],
+  ['gh pr create --fill --base main', 'gh pr create --fill --base main'],
+  ['gh pr view 12 --json state && gh pr merge 12 --squash', 'gh pr merge 12 --squash'],
+  ['/opt/homebrew/bin/gh pr edit 3 --body-file PR.md', '/opt/homebrew/bin/gh pr edit 3 --body-file PR.md'],
+  ['gh pr comment 3 --body ok', 'gh pr comment 3 --body ok'],
+  ['gh run rerun 41 --failed', 'gh run rerun 41 --failed'],
+  ['gh issue create --title x', 'gh issue create --title x'],
+  ['gh api repos/o/r/pulls -f title=x -f head=b', 'gh api repos/o/r/pulls -f title=x -f head=b'],
+  ['gh api --method PATCH repos/o/r/pulls/3', 'gh api --method PATCH repos/o/r/pulls/3'],
+  ['gh api -XPOST repos/o/r/issues', 'gh api -XPOST repos/o/r/issues'],
+  ['gh api repos/o/r/issues --input body.json', 'gh api repos/o/r/issues --input body.json'],
+  ['glab mr create --fill', 'glab mr create --fill'],
+  ['gh pr view 12 --json state,mergeable', null],
+  ['gh pr checks', null],
+  ['gh run view 41 --log-failed | tail -50', null],
+  ['gh api repos/o/r/pulls/3/comments --paginate --jq .[].body', null],
+  ['gh api -X GET search/code -f q=repo:o/r', null],
+  ['gh search code foo --repo o/r', null],
+  ['glab mr list --state opened', null],
+  ['git status && git log --oneline -3', null],
+  ['git commit -m "then git push"', null],
+  ['echo "gh pr create later"', null],
+  ['grep -rn "git push" plugins/', null],
+  ['ghost pr create', null],
+]
+for (const [command, want] of NEVER) check(`force never ${JSON.stringify(command).slice(0, 60)} → ${want}`, forceNever(command) === want, `got ${forceNever(command)}`)
+
+check('overriddenBy: a wide ask beats a narrower allow', overriddenBy('Bash(gh pr view *)', { ask: ['Bash(gh *)'] })?.rule === 'Bash(gh *)')
+check('overriddenBy: an ask on the bare command does not beat its forms with arguments', overriddenBy('Bash(git push -u origin *)', { ask: ['Bash(git push -u origin)'] }) === null)
+check('overriddenBy: deny comes first, a Read entry compares exactly', overriddenBy('Bash(gh api *)', { deny: ['Bash(gh *)'], ask: ['Bash(gh api *)'] })?.key === 'deny' && overriddenBy('Read(**)', { ask: ['Read(**/.env)'] }) === null)
+
+const ROOT_OF_PLUGIN = join(PLUGIN, '..')
+const profile = loadProfile(ROOT_OF_PLUGIN)
+const defaults = wantedFor(ROOT_OF_PLUGIN, profile.defaultGroups, profile)
+const withPr = wantedFor(ROOT_OF_PLUGIN, [...profile.defaultGroups, 'pr'], profile)
+check('profile: github-read is a default group, pr is not', profile.defaultGroups.includes('github-read') && !profile.defaultGroups.includes('pr'))
+check('profile: the default ask keeps every push and the PR writes, and has no wide gh', defaults.ask.includes('Bash(git push *)') && defaults.ask.includes('Bash(gh pr create *)') && !defaults.ask.includes('Bash(gh *)'))
+check('profile: the pr group takes git push * and gh pr create / edit out of ask; the profile itself is not changed', !withPr.ask.includes('Bash(git push *)') && !withPr.ask.includes('Bash(gh pr edit *)') && profile.ask.includes('Bash(git push *)'))
+// Claude Code's order: deny, then ask, then allow; the patterns as permission-rules reads them
+const decide = (command, lists) => ['deny', 'ask', 'allow'].find((key) => lists[key].some((rule) => bashRulePattern(rule)?.test(command))) ?? 'none'
+const DECISIONS = [
+  ['git push -u origin feat/pr-permissions', 'ask', 'allow'],
+  ['git push origin fix/gates-other-tree', 'ask', 'allow'],
+  ['git push', 'ask', 'ask'],
+  ['git push -u origin', 'ask', 'ask'],
+  ['git push -q origin main', 'ask', 'ask'],
+  ['git push origin HEAD', 'ask', 'ask'],
+  ['git push origin dev', 'ask', 'ask'],
+  ['git push origin v0.27.0', 'ask', 'ask'],
+  ['git push origin --tags', 'ask', 'ask'],
+  ['git push origin feat/x --force-with-lease', 'ask', 'ask'],
+  ['git push origin +feat/x', 'ask', 'ask'],
+  // a rule cannot end in `:*` — that is the old prefix form — so a deletion by `:<branch>` is asked only for a protected name
+  ['git push origin :main', 'ask', 'ask'],
+  ['git push origin --delete feat/x', 'ask', 'ask'],
+  ['git push --force origin feat/x', 'deny', 'deny'],
+  ['gh pr create --fill --base main', 'ask', 'allow'],
+  ['gh pr edit 26 --body-file PR.md', 'ask', 'allow'],
+  ['gh pr merge 26 --squash', 'ask', 'ask'],
+  ['gh pr view 26 --json state', 'allow', 'allow'],
+  ['gh pr checks', 'allow', 'allow'],
+  ['gh run view 41 --log-failed', 'allow', 'allow'],
+  ['gh api repos/o/r/pulls/3', 'allow', 'allow'],
+  ['gh api repos/o/r/pulls -f title=x', 'ask', 'ask'],
+  ['gh api -X PATCH repos/o/r/pulls/3', 'ask', 'ask'],
+  ['gh auth status', 'allow', 'allow'],
+  ['gh auth status --show-token', 'ask', 'ask'],
+]
+for (const [command, plain, pr] of DECISIONS) {
+  const got = [decide(command, defaults), decide(command, withPr)]
+  check(`profile decides ${JSON.stringify(command)}: default ${plain}, with pr ${pr}`, same(got, [plain, pr]), `got ${got.join(' / ')}`)
+}
+
+const pRoot = mkdtempSync(join(tmpdir(), 'perm027-'))
+const oldHome = join(pRoot, 'old')
+const newHome = join(pRoot, 'new')
+write(oldHome, { '.claude/settings.json': JSON.stringify({ permissions: { allow: ['Bash(git *)'], ask: ['Bash(git push *)', 'Bash(gh *)'] } }) })
+mkdirSync(newHome, { recursive: true })
+const perms = (home, ...args) => spawnSync(process.execPath, [join(PLUGIN, 'permissions.mjs'), ...args], { encoding: 'utf8', cwd: home, env: { ...process.env, HOME: home } })
+const old = perms(oldHome, '--check')
+check('permissions --check: the old Bash(gh *) in ask beats the gh reads and is named obsolete — not green', old.status === 1 && /ask "Bash\(gh \*\)" beats \d+ profile entries/.test(old.stdout) && /obsolete entry "Bash\(gh \*\)" in ask/.test(old.stdout), old.stdout)
+const oldPr = perms(oldHome, '--groups', 'github-read,pr')
+check('permissions: with the pr group the wide Bash(git push *) in ask is named for removal', /ask has "Bash\(git push \*\)" — the chosen groups put \d+ narrower entries in its place/.test(oldPr.stdout) && /ask "Bash\(git push \*\)" beats 2 profile entries/.test(oldPr.stdout), oldPr.stdout)
+perms(newHome, '--groups', 'vcs,github-read,pr', '--apply')
+const again = perms(newHome, '--groups', 'vcs,github-read,pr', '--check')
+const written = JSON.parse(readFileSync(join(newHome, '.claude/settings.json'), 'utf8')).permissions
+check('permissions --apply with the pr group, then --check: green; ask holds the protected pushes, not the wide one', again.status === 0 && written.ask.includes('Bash(git push *main*)') && !written.ask.includes('Bash(git push *)') && written.allow.includes('Bash(gh pr create *)'), again.stdout)
+rmSync(pRoot, { recursive: true, force: true })
+
+const fRoot = mkdtempSync(join(tmpdir(), 'perm027-force-'))
+const fApp = join(fRoot, 'app')
+const fHome = join(fRoot, 'home')
+repoAt(fApp, 'main')
+write(fHome, { '.claude/settings.json': JSON.stringify({ permissions: { allow: ['Bash(git push -u origin *)', 'Bash(gh pr create *)', 'Bash(gh pr view *)', 'Bash(gh api *)'], ask: ['Bash(git push *main*)'] } }) })
+write(fApp, {
+  '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n',
+  '.claude/tasks/T-9/STAGES.md': stages('T-9', 'T-9/feat/f', { force: '## Force-прогон 2026-10-03\nПодтверждено: 03.10.2026 — да\n\n' }),
+  '.claude/tasks/T-10/STAGES.md': stages('T-10', 'T-10/feat/n'),
+})
+const force = (command) => {
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks/force-guard.mjs')], {
+    input: JSON.stringify({ cwd: fApp, tool_input: { command } }),
+    encoding: 'utf8',
+    env: { ...process.env, HOME: fHome, CLAUDE_PROJECT_DIR: fApp },
+  })
+  if (!run.stdout.trim()) return { decision: 'allow', text: run.stderr }
+  const out = JSON.parse(run.stdout).hookSpecificOutput
+  return { decision: out.permissionDecision, text: out.permissionDecisionReason }
+}
+git(fApp, 'checkout', '-qb', 'T-9/feat/f')
+const pushed = force('git push -u origin T-9/feat/f')
+check('force 0.27.0: git push allowed by the settings is still denied, as a blocker', pushed.decision === 'deny' && /publishes outside the repo/.test(pushed.text) && /Blockers:/.test(pushed.text), pushed.text)
+check('force 0.27.0: gh pr create allowed by the settings is denied', force('gh pr create --fill').decision === 'deny')
+check('force 0.27.0: gh api with a body is denied', force('gh api repos/o/r/pulls -f title=x').decision === 'deny')
+check('force 0.27.0: gh pr view, gh pr checks and a GET gh api pass in force', ['gh pr view 3 --json state', 'gh pr checks', 'gh api repos/o/r/pulls/3'].every((command) => force(command).decision === 'allow'))
+check('force 0.27.0: a push under the user\'s ask still names the ask rule', /falls under the ask rule `Bash\(git push \*main\*\)`/.test(force('git push origin main').text))
+git(fApp, 'checkout', '-qb', 'T-10/feat/n')
+check('normal mode 0.27.0: git push -u origin is left alone — the user is nearby', force('git push -u origin T-10/feat/n').decision === 'allow')
 rmSync(fRoot, { recursive: true, force: true })
 }
 
