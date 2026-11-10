@@ -22,7 +22,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EXIT, TICKET, acquirePidLock, findOnPath, gitOk, numberFlag, prepareRun, prepareWorktree, runLoop, taskReadiness, ticketLockFile, waitUntil } from './force-run.mjs'
 import { blockerGate, lastForceBlock, openBlockers } from './journal-check.mjs'
-import { pluginDataDir, readPipelineState } from './hooks/pipeline-state.mjs'
+import { digestFilePath } from './run-digest.mjs'
+import { pluginDataDir, readDataJsonl, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const say = (text) => console.log(`force-queue: ${text}`)
 const queueFile = (dataDir = pluginDataDir()) => join(dataDir, 'force-queue.json')
@@ -65,7 +66,8 @@ function writeQueue(queue, dataDir = pluginDataDir()) {
 
 /** Queued and not yet started, or started and waiting for another session (a limit stopped it): the tasks `run` takes. */
 const runnable = (task) => task.status === 'queued'
-const notStarted = (task) => task.status === 'queued' && !task.started
+/** No session of it ever ran: queued and never started, or refused before its first session (`not_ready`). */
+const notStarted = (task) => !task.started && task.status !== 'running'
 
 // ── add / list / remove ──────────────────────────────────────────────────────
 
@@ -94,7 +96,7 @@ function removeTask(ticket, dataDir = pluginDataDir()) {
     const queue = readQueue(dataDir)
     const task = queue.tasks.find((item) => item.ticket === ticket)
     if (!task) return { ok: false, message: `${ticket} is not in the queue` }
-    if (!notStarted(task)) return { ok: false, message: `${ticket} was started (${task.status}) — only a task that was not started can be removed` }
+    if (!notStarted(task)) return { ok: false, message: `${ticket} ${task.status === 'running' ? 'is marked running (a live `run` has it; after a crash the next `run` takes it again)' : `was started (${task.status})`} — only a task that was not started can be removed` }
     queue.tasks = queue.tasks.filter((item) => item !== task)
     writeQueue(queue, dataDir)
     return { ok: true }
@@ -137,7 +139,7 @@ function checkQueue(dataDir = pluginDataDir(), pathEnv = process.env.PATH ?? '')
     }
     const ready = taskReadiness(task.repo, task.ticket)
     if (!ready.ok) {
-      no(/Confirmed:/.test(ready.message) ? `interview not confirmed — ${ready.message}` : `task folder: ${ready.message}`)
+      no(/Confirmed:/.test(ready.message) ? `interview not confirmed — ${ready.message}` : /^no task /.test(ready.message) ? `task folder: ${ready.message}` : ready.message)
       continue
     }
     const branches = ready.task.branches ?? []
@@ -159,30 +161,15 @@ function checkQueue(dataDir = pluginDataDir(), pathEnv = process.env.PATH ?? '')
 
 /** The latest `rate_limit_event` over every run record of the data directory: `{ ts, five_hour, seven_day }` or null. */
 function latestRateLimit(dataDir = pluginDataDir()) {
-  const dir = join(dataDir, 'force-runs')
-  let latest = null
   let names = []
   try {
-    names = readdirSync(dir).filter((name) => name.endsWith('.jsonl'))
+    names = readdirSync(join(dataDir, 'force-runs')).filter((name) => name.endsWith('.jsonl'))
   } catch {
     return null
   }
-  for (const name of names) {
-    let text = ''
-    try {
-      text = readFileSync(join(dir, name), 'utf8')
-    } catch {
-      continue
-    }
-    for (const line of text.split('\n')) {
-      if (!line.includes('rate_limit')) continue
-      try {
-        const record = JSON.parse(line)
-        if (record.type === 'rate_limit' && (!latest || Date.parse(record.ts) >= Date.parse(latest.ts))) latest = record
-      } catch {
-        // a torn line
-      }
-    }
+  let latest = null
+  for (const record of names.flatMap((name) => readDataJsonl(dataDir, 'force-runs', name))) {
+    if (record.type === 'rate_limit' && (!latest || Date.parse(record.ts) >= Date.parse(latest.ts))) latest = record
   }
   return latest
 }
@@ -355,7 +342,7 @@ async function runQueue(options = {}) {
 const SCRIPTS = dirname(fileURLToPath(import.meta.url))
 /** The path of RUN-DIGEST.md when this run wrote it (its mtime is not before the start of the task), else the command that writes it. */
 function digestOf(taskDir, startedMs) {
-  const file = join(taskDir, 'RUN-DIGEST.md')
+  const file = digestFilePath(taskDir)
   try {
     if (statSync(file).mtimeMs >= startedMs - 1000) return file
   } catch {

@@ -21,7 +21,7 @@
  *
  *   node force-run.mjs <repo> <TICKET> [--once] [--margin-min 5] [--max-sessions 3] [--retries 1]
  *
- * Tests shrink the wait with the env `FORCE_RUN_WAIT_SCALE` (a multiplier of the wait; 0 skips it). The queue of tasks is not here: it imports `prepareRun`, `prepareWorktree`, `runLoop`, `taskReadiness`, `acquirePidLock`, `waitUntil` and the helpers `TICKET`, `gitOk`, `numberFlag`.
+ * Tests shrink the wait with the env `FORCE_RUN_WAIT_SCALE` (a multiplier of the wait; 0 skips it). The queue of tasks is not here: it imports `prepareRun`, `prepareWorktree`, `runLoop`, `taskReadiness`, `acquirePidLock`, `ticketLockFile`, `waitUntil` and the helpers `EXIT`, `TICKET`, `findOnPath`, `gitOk`, `numberFlag`.
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -33,7 +33,7 @@ import { lastForceBlock } from './journal-check.mjs'
 import { taskWorktree } from './ci-gates.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE } from './markers.mjs'
 import { alive } from './processes.mjs'
-import { stageList } from './resume-point.mjs'
+import { resumePoint, stageList } from './resume-point.mjs'
 import { mainRoot, pluginDataDir, readPipelineState, readTaskFile, realOr } from './hooks/pipeline-state.mjs'
 
 export const EXIT = { completed: 0, error: 1, notReady: 2, limit: 3, stopped: 4, weekly: 5, spend: 6, gaveUp: 7 }
@@ -229,9 +229,10 @@ function fetchBranches(repo, branches, ticket) {
   }
   let failure = null
   let worked = false
-  // a night fetch never waits on a prompt: no terminal prompt, no SSH password question (unless the person set their own GIT_SSH_COMMAND)
+  // A night fetch never waits on a prompt: no terminal prompt, no SSH password question. The person's own GIT_SSH_COMMAND or GIT_SSH stands as it is. The env variable overrides the
+  // repo's `core.sshCommand` (a key of a second account, say), so that command is the base of ours.
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
-  if (!process.env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
+  if (!process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) env.GIT_SSH_COMMAND = `${gitOk(repo, 'config', '--get', 'core.sshCommand') || 'ssh'} -o BatchMode=yes`
   for (const branch of branches) {
     try {
       // an explicit refspec: in a --single-branch or shallow clone a bare `git fetch origin <b>` writes only FETCH_HEAD, and origin/<b> would stay old
@@ -275,13 +276,11 @@ function hiddenFromHooks(worktree, task, taskDir) {
   } catch {
     // unreadable: treated as not seen
   }
-  if (seen?.current && seen.forceActive && realOr(seen.dir) === realOr(task.dir)) return null
-  if (seen?.current && !seen.forceActive) {
-    return `the hooks of a session in ${worktree} read ${seen.stagesPath} and find the Force run closed (its "## Status:" line says the run is completed), so the commit and journal guards would be silent all night. Update the status line there (and commit it) to say the run is in progress`
-  }
+  // The copy comes first: for the task's own folder an open run is already checked by `taskReadiness`, so a closed one seen here is a stale copy's.
   if (seen?.current && realOr(seen.dir) !== realOr(task.dir)) {
     return `${worktree} has its own copy of the task folder (${seen.dir}) and the hooks of a session there would read that stale copy, not ${task.dir}. Remove the copy or point the worktree at ${taskDir} with a line in ${join(worktree, '.claude/pipeline.config.local.md')}:\n- task_path: ${taskDir}`
   }
+  if (seen?.current && seen.forceActive) return null
   return `the hooks of a session in ${worktree} do not see ${task.ticket} as the current task with an open Force block (the worktree reads its own task folder), so the commit and journal guards would be silent all night. Create ${join(worktree, '.claude/pipeline.config.local.md')} with the line:\n- task_path: ${taskDir}`
 }
 
@@ -372,6 +371,32 @@ export function acquirePidLock(file, label = '') {
 export const ticketLockFile = (ticket, dataDir = pluginDataDir()) => join(dataDir, 'locks', `ticket-${ticket}.lock`)
 
 /**
+ * The rule of a print-mode session (B1): `claude -p` stops background agents about 10 minutes after the last turn, so a checker started in the background is lost
+ * and the session ends `stopped`. stage-force says it too (Step 1); the prompt carries it so that the night does not hang on one line of a long skill.
+ */
+const HEADLESS =
+  'This is a headless session (claude -p), nobody is at the screen: start every subagent with run_in_background: false (several in one message are fine) and end a turn only after they have returned — print mode stops background agents about 10 minutes after the last turn.'
+const RESUME_MAX = 4000
+
+/**
+ * The prompt of one session (B2): the base prompt, how the previous session of this run ended, and the resume point of the state on disk. A new `claude -p` starts as
+ * `startup`, and session-start prints the resume point only after a compact or a resume, so a session after a limit, a short failure or last night's stop would start
+ * a half-done stage again over a dirty tree. No resume point (nothing to say, an unreadable journal) — the base prompt alone.
+ */
+function sessionPrompt(ctx, { dataDir = pluginDataDir(), previous = null } = {}) {
+  let resume = null
+  try {
+    const state = readPipelineState(ctx.worktree)
+    const task = state?.tasks.find((item) => item.ticket === ctx.ticket && !item.unreadable)
+    resume = task ? resumePoint({ dataDir, state, task, budget: RESUME_MAX }) : null
+  } catch {
+    // no resume point: the base prompt stands
+  }
+  const ended = previous ? `The previous session of this run ended: ${previous.outcome}${previous.text ? ` (${previous.text})` : ''}.` : null
+  return [ctx.prompt, ended, resume].filter(Boolean).join('\n\n')
+}
+
+/**
  * Everything before the session: the task is found, its Force block is open and confirmed, `claude` and `node` are on the PATH, the worktree is there.
  * `{ ok: true, ticket, repo, task, worktree, created, claude, node, prompt, env }` or `{ ok: false, code, message }` (code 2: the person has something to do first).
  */
@@ -386,7 +411,7 @@ export function prepareRun(repo, ticket, { pathEnv = process.env.PATH ?? '', fet
   const tree = prepareWorktree(state.root, task, state.taskDir, { fetch })
   if (tree.problem) return fail(tree.problem)
   // A session of a worktree of the product repo may not find the journal of the main copy: the prompt carries its absolute path (A1).
-  const prompt = `/stage-pipeline:stage-force ${ticket} — the journal of the task is ${task.stagesPath}; the Force block there is already confirmed, continue the run without asking questions`
+  const prompt = `/stage-pipeline:stage-force ${ticket} — the journal of the task is ${task.stagesPath}; the Force block there is already confirmed, continue the run without asking questions. ${HEADLESS}`
   const dirs = [dirname(node), dirname(claude), process.env.HOME ? join(process.env.HOME, '.local/bin') : null].filter(Boolean)
   const env = { ...process.env, PATH: [...new Set([...dirs, ...pathEnv.split(delimiter).filter(Boolean)])].join(delimiter) }
   return { ok: true, ticket, repo: state.root, task, worktree: tree.path, created: tree.created, claude, node, prompt, env }
@@ -401,12 +426,14 @@ const closedNow = (task) => {
 const closedStages = (task) => stageList(stagesOf(task)).filter((stage) => stage.done).length
 
 /**
- * One fresh session: spawns `claude -p`, logs the raw stream, records the rate-limit events, and records and returns exactly one outcome.
+ * One fresh session: spawns `claude -p` with `sessionPrompt` (`previous`: the outcome of the session before it in this run), logs the raw stream, records the rate-limit events,
+ * and records and returns exactly one outcome.
  * `{ outcome, session, log, code, window?, resetsAt?, kind?, reason?, transient?, interrupted?, text?, windows }` — `windows` is the last `rate_limit_event` read; `kind` is `limitKind` of a `limit`.
  * A file error of the launcher (the log, the record) kills the child and ends as `error` with its text.
  */
-function runSession(ctx, { dataDir = pluginDataDir(), onEvent = null } = {}) {
-  const { ticket, task, worktree, claude, prompt, env } = ctx
+function runSession(ctx, { dataDir = pluginDataDir(), previous = null } = {}) {
+  const { ticket, task, worktree, claude, env } = ctx
+  const prompt = sessionPrompt(ctx, { dataDir, previous })
   const session = randomUUID()
   const log = join(task.dir, `force-run-${session}.log`)
   const note = (text) => {
@@ -494,7 +521,6 @@ function runSession(ctx, { dataDir = pluginDataDir(), onEvent = null } = {}) {
       // A later clean assistant message: the session survived the short failure, so it is no longer the cause of the end.
       else if (!short && transient && event.type === 'assistant' && !(event.apiError ?? event.message?.apiError)) transient = null
       if (event.type === 'result') result = event
-      onEvent?.(event)
     }
     const out8 = new StringDecoder('utf8')
     const err8 = new StringDecoder('utf8')
@@ -618,6 +644,7 @@ export async function runLoop(repo, ticket, options = {}) {
   let fresh = 0 // new sessions in a row without a newly closed stage
   let shortFails = 0
   let closed = closedStages(ctx.task)
+  let previous = null
   const status = (value, text, extra = {}) => {
     try {
       recordRun(ticket, { type: 'status', status: value, text, ...extra }, dataDir)
@@ -631,7 +658,8 @@ export async function runLoop(repo, ticket, options = {}) {
     return { ok: true, status: value, text, exit, sessions, last, ...extra }
   }
   for (;;) {
-    const out = await runSession(ctx, { ...options, dataDir })
+    const out = await runSession(ctx, { ...options, dataDir, previous })
+    previous = out
     sessions += 1
     const nowClosed = closedStages(ctx.task)
     if (nowClosed > closed) fresh = 0
@@ -692,6 +720,10 @@ async function main(argv) {
   const once = args.includes('--once')
   const rest = args.filter((arg) => arg !== '--once')
   if (rest.length !== 2 || rest.some((arg) => arg.startsWith('-'))) return usage()
+  if (!TICKET.test(rest[1])) {
+    say(`not a ticket: ${rest[1]}`)
+    process.exit(EXIT.notReady)
+  }
   try {
     const lock = acquirePidLock(ticketLockFile(rest[1]), 'force-run')
     if (!lock.ok) {

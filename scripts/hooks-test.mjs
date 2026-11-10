@@ -9418,6 +9418,8 @@ if (scenario === 'completed' || scenario === 'stopped') {
   check('AC-1.2: HEAD, branch and `git status` of the main copy are the same before and after', mainState() === before, `${before} → ${mainState()}`)
   const sessionId = call?.argv[call.argv.indexOf('--session-id') + 1] ?? ''
   check('AC-1.2/A1: argv has -p with the stage-force prompt carrying the absolute STAGES.md path, a fresh --session-id, --permission-mode auto, stream-json and --verbose', call?.argv[0] === '-p' && /^\/stage-pipeline:stage-force VT-12\b/.test(call.argv[1]) && call.argv[1].includes(stagesFile) && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(sessionId) && call.argv.join(' ').includes('--permission-mode auto --output-format stream-json --verbose'), JSON.stringify(call))
+  check('catch-up B1: the prompt carries the headless rule — every subagent with run_in_background: false, the turn ends only after they return', /run_in_background: false/.test(call?.argv[1] ?? '') && /end a turn only after they have returned/.test(call?.argv[1] ?? ''), call?.argv[1])
+  check('catch-up #25: the first session of a run gets the resume point too (the task may go on from last night) and no "previous session" line', /Resume point \(force run, VT-12\)/.test(call?.argv[1] ?? '') && !/The previous session/.test(call?.argv[1] ?? ''), call?.argv[1])
   reopen()
   const second = launch('completed')
   check('AC-1.2 legitimate: a worktree that is already there is reused — claude runs in it, nothing new is made', second.status === 0 && calls()[1]?.cwd === sibling && !/made worktree/.test(second.stdout) && git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length === 2 && mainState() === before, `${second.stdout} ${second.stderr}`)
@@ -9439,7 +9441,24 @@ if (scenario === 'completed' || scenario === 'stopped') {
   writeFileSync(join(sibling, '.claude/tasks/VT-12/STAGES.md'), stagesText(OPEN))
   const staleCopy = launch('completed')
   check('final #14 incident: a copy of the task folder in the worktree — exit 2, the stale copy is named, no claude', staleCopy.status === 2 && calls().length === callsBefore + 1 && /own copy of the task folder/.test(staleCopy.stdout + staleCopy.stderr), `${staleCopy.status} ${staleCopy.stdout}${staleCopy.stderr}`)
+  writeFileSync(join(sibling, '.claude/tasks/VT-12/STAGES.md'), stagesText('## Force run 2026-11-09 — completed with blockers\nConfirmed: 2026-11-09\n\n').replace('## Status: stage 1', '## Status: force run 2026-11-09 completed (with blockers)'))
+  const closedCopy = launch('completed')
+  const closedCopyOut = closedCopy.stdout + closedCopy.stderr
+  check('catch-up #19 incident: a stale copy whose run is closed — the copy is named, not the status-line advice, no claude', closedCopy.status === 2 && calls().length === callsBefore + 1 && /own copy of the task folder/.test(closedCopyOut) && !/Update the status line/.test(closedCopyOut), closedCopyOut)
   rmSync(join(sibling, '.claude'), { recursive: true, force: true })
+
+  // catch-up #20: the repo's core.sshCommand (a key of a second account) is the base of the night fetch, not replaced by a bare ssh.
+  const sshLog = join(root, 'ssh-command.log')
+  writeFileSync(join(bin, 'ssh-own'), `#!/bin/sh\necho "$@" >> "${sshLog}"\nexit 1\n`)
+  execFileSync('chmod', ['+x', join(bin, 'ssh-own')])
+  git(repo, 'config', 'core.sshCommand', join(bin, 'ssh-own'))
+  git(repo, 'remote', 'add', 'origin', 'ssh://example.invalid/q-repo.git')
+  const ownSsh = launch('completed')
+  const sshArgs = existsSync(sshLog) ? readFileSync(sshLog, 'utf8') : ''
+  check('catch-up #20 incident: core.sshCommand of the repo runs the fetch, with BatchMode added; the failed fetch is one line and the run goes on', /BatchMode=yes/.test(sshArgs) && /example\.invalid/.test(sshArgs) && /fetch .* failed/.test(ownSsh.stdout) && ownSsh.status === 0, `${sshArgs} | ${ownSsh.status} ${ownSsh.stdout}`)
+  git(repo, 'remote', 'remove', 'origin')
+  git(repo, 'config', '--unset', 'core.sshCommand')
+  reopen()
 
   // AC-1.3 + completed: the raw stream in the task's log, each rate_limit_event in the record.
   const done = launch('completed')
@@ -9624,7 +9643,9 @@ else if (scenario === 'utf8') {
   // AC-2.1: five-hour limit → wait → a NEW session of the same task in the same worktree, which completes.
   const five = loop('limit5,completed')
   check('AC-2.1 incident: five_hour limit, then a second session that completes — two sessions, exit 0, a `waiting` status before the second', five.status === 0 && calls().length === 2 && five.outcomes.map((o) => o.outcome).join() === 'limit,completed' && five.statuses.map((s) => s.status).join() === 'waiting,continuing,completed', `${five.status} ${five.stdout} ${five.stderr} ${JSON.stringify(five.statuses)}`)
-  check('AC-2.1: the second session is a fresh one for the same task in the same worktree — a new --session-id, the same prompt, no --resume in any command', new Set(calls().map((c) => c.argv[c.argv.indexOf('--session-id') + 1])).size === 2 && calls()[0].argv[1] === calls()[1].argv[1] && /stage-force VT-12\b/.test(calls()[1].argv[1]) && sameTree() && noResume(), JSON.stringify(calls()))
+  check('AC-2.1: the second session is a fresh one for the same task in the same worktree — a new --session-id, the same prompt, no --resume in any command', new Set(calls().map((c) => c.argv[c.argv.indexOf('--session-id') + 1])).size === 2 && calls()[0].argv[1].split('\n\n')[0] === calls()[1].argv[1].split('\n\n')[0] && /stage-force VT-12\b/.test(calls()[1].argv[1]) && sameTree() && noResume(), JSON.stringify(calls()))
+  const secondPrompt = calls()[1]?.argv[1] ?? ''
+  check('catch-up B2 incident: the session after the limit is told how the first one ended and gets the resume point of the state on disk (stage in progress, next action)', /The previous session of this run ended: limit/.test(secondPrompt) && /Resume point \(force run, VT-12\)/.test(secondPrompt) && /Stage in progress: Stage 1: a/.test(secondPrompt) && /Next action: /.test(secondPrompt), secondPrompt)
   const waiting = five.statuses.find((s) => s.status === 'waiting')
   check('AC-2.5: the run record says "waiting until <time>" and the output says it too', /^waiting until \d{4}-/.test(waiting?.text ?? '') && /waiting until \d{4}-/.test(five.stdout), `${JSON.stringify(waiting)} ${five.stdout}`)
   // the margin: the target is resetsAt + margin; a reset an hour ahead and a scale of 0.001 makes it checkable without waiting
@@ -9847,6 +9868,13 @@ setTimeout(() => {
   const rem = q(d1, ['remove', 'VT-B'])
   check('AC-3.1: remove takes a not-started task out', rem.status === 0 && queueOf(d1).map((t) => t.ticket).join() === 'VT-A', `${rem.stdout}`)
   check('AC-3.1: remove of a task that is not there says so, exit 1', q(d1, ['remove', 'VT-Z']).status === 1)
+  const dNr = sandbox()
+  mkdirSync(dNr, { recursive: true })
+  writeFileSync(join(dNr, 'force-queue.json'), JSON.stringify({ tasks: [{ ticket: 'VT-R', repo: repos['VT-A'], status: 'not_ready', started: false, addedAt: 'x' }, { ticket: 'VT-W', repo: repos['VT-B'], status: 'running', started: true, addedAt: 'x' }] }))
+  const remNr = q(dNr, ['remove', 'VT-R'])
+  check('catch-up #21 incident: a task refused before its first session (not_ready, never started) can be removed', remNr.status === 0 && queueOf(dNr).map((t) => t.ticket).join() === 'VT-W', `${remNr.status} ${remNr.stdout}`)
+  const remRun = q(dNr, ['remove', 'VT-W'])
+  check('catch-up #21: a running task is not removed and the refusal says it is running', remRun.status === 1 && /VT-W is marked running/.test(remRun.stdout) && queueOf(dNr).length === 1, remRun.stdout)
 
   // AC-3.2: one by one in order, the next after the outcome of the previous.
   const d2 = sandbox()

@@ -106,6 +106,8 @@ For each stage in order:
 
 **One maker at a time.** Never run two `stage-implement` at once in one worktree in a force run: makers in parallel in one tree cannot be told apart by a tree snapshot.
 
+**Headless.** In a `claude -p` session (the night run of `force-run.mjs`, any print-mode launch) each subagent runs in the foreground (`run_in_background: false`; several in one message are fine), and the turn ends only after they have returned: print mode stops background agents about 10 minutes after the last turn.
+
 Between stages keep in the context only STAGES.md (the current stage) and the subagent summaries; after a compaction the continuation starts with reading STAGES.md.
 
 ## Step 2. Mid-run — no questions

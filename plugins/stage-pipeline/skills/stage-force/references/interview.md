@@ -49,6 +49,8 @@ Assumptions:
 
 `add` takes only a task whose Force block is open and confirmed; the queue then runs it headless (`force-queue.mjs run`, README "Night queue").
 
+**A task whose earlier force run is closed.** When the `## Status:` line says an earlier force run is completed (`force run <date> completed (with blockers)`, or the same in the task language), rewrite it to the open form together with the new block: `force run <date> not completed` in the task language (the forms the hooks read are `STATUS_FORCE_CLOSED` and `NOT_CLOSED` in `scripts/markers.mjs`). The hooks read a closed status line as a closed run whatever the new block says, and `add` refuses the task until the line is open. The same holds for a plain second `/stage-force` run of the task.
+
 **What the probe and the checks mean for a night run.** The night session runs on the machine that runs the queue, not where the interview was held:
 
 - The auth probe of Step 0 counts as a pass only through the `stage-pipeline-chrome` persistent profile on the machine that runs the night. A login in an `--isolated` browser dies with the session, and a login on another machine does not carry over. Without a pass in that profile, write the auth-gated criteria as an assumption that defers them as `[live: user-side — …]` (the "login not now" form of "5.").
