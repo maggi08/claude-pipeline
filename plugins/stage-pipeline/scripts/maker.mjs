@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, isAbsolute, resolve, sep } from 'node:path'
-import { readDataFiles, readDataJsonl, realOr } from './hooks/pipeline-state.mjs'
+import { inTaskDir, readDataFiles, readDataJsonl, realOr, taskRelTo } from './hooks/pipeline-state.mjs'
 import { forceKey } from './markers.mjs'
 import { siblingRepos, takePlanSnapshot } from './plan-check.mjs'
 import { receiptRun } from './receipts.mjs'
@@ -184,11 +184,7 @@ export function takeSnapshot(dataDir, { session, cwd, ticket = null, stage = nul
       return { root: repoRoot, head, branch, blobs: blobs ? Object.fromEntries(blobs) : null, at }
     }
     const [primary, ...others] = roots.map(one)
-    let taskRel = null
-    if (taskDir) {
-      const rel = relative(root, real(taskDir)).split(sep).join('/')
-      taskRel = rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : null
-    }
+    const taskRel = taskDir ? taskRelTo(root, taskDir) : null
     const snapshot = { session, at, root, head: primary.head, branch: primary.branch, ticket, stage, taskRel, taskDir: taskDir ? real(taskDir) : null, typeCheck, blobs: primary.blobs, others }
     mkdirSync(join(dataDir, 'maker', 'spawn'), { recursive: true })
     writeFileSync(spawnPath(dataDir, session), JSON.stringify(snapshot))
@@ -266,7 +262,7 @@ function readSpawns(dataDir, ticket, sinceMs = 0) {
   return readDataJsonl(dataDir, spawnsName(ticket)).filter((spawn) => (Date.parse(spawn.at) || 0) >= sinceMs && Array.isArray(spawn.roots))
 }
 
-const inTask = (snapshot, path) => Boolean(snapshot.taskRel) && (path === snapshot.taskRel || path.startsWith(`${snapshot.taskRel}/`))
+const inTask = (snapshot, path) => inTaskDir(snapshot.taskRel, path)
 
 /**
  * K11.3: the paths whose blob differs between the spawn snapshot and now: `Map<path, blob after | null>` (null — deleted). A path of the cwd repo is repo-relative, a path
@@ -440,7 +436,7 @@ export function handbackProblems(text, snapshot, changes) {
   if ('changed' in sections && changes) {
     const named = namedPaths(sections.changed, snapshot.root, (snapshot.others ?? []).map((repo) => repo.root))
     const actual = new Set(changes.keys())
-    const notChanged = [...named].filter((path) => !actual.has(path) && !(snapshot.taskRel && (path === snapshot.taskRel || path.startsWith(`${snapshot.taskRel}/`))))
+    const notChanged = [...named].filter((path) => !actual.has(path) && !inTask(snapshot, path))
     const disowned = notMinePaths(sections.notdone, snapshot.root, (snapshot.others ?? []).map((repo) => repo.root))
     const unnamed = [...actual].filter((path) => !named.has(path) && !disowned.has(path))
     const shown = (list) => `${list.slice(0, 8).join(', ')}${list.length > 8 ? ` and ${list.length - 8} more` : ''}`
@@ -641,13 +637,8 @@ export function commitMakerVerdict({ dataDir, taskDir, ticket, worktree, changed
   const gate = makerGate({ dataDir, taskDir, ticket, worktree })
   if (!gate) return null
   const { run, root } = gate
-  let taskRel = null
-  try {
-    taskRel = relative(root, real(taskDir)).split(sep).join('/')
-  } catch {
-    // no task directory in the repo
-  }
-  const named = changed.filter((path) => isCodeFile(path) && !(taskRel && !taskRel.startsWith('..') && (path === taskRel || path.startsWith(`${taskRel}/`))))
+  const taskRel = taskRelTo(root, taskDir)
+  const named = changed.filter((path) => isCodeFile(path) && !inTaskDir(taskRel, path))
   if (!named.length) return []
   const index = indexBlobs(root, named)
   if (index === null) return null

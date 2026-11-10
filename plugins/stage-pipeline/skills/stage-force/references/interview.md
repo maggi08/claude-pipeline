@@ -29,3 +29,14 @@ Each question of the batch ends with: `if you don't answer: <X>, because <Y>`. X
 - `Stage dependencies:` — which stage waits for which (a shared component, a backend field, a decision), or `none`. A hook (`plan-check`, at the `stage-implement` spawn) denies a new Force block without it.
 - `Taxonomy:` — all 12 categories of Step 0, each with its status. Without all 12 the same hook denies.
 - Nothing is asked after `Confirmed:`.
+
+## 5. The auth probe lines
+
+The three forms of the auth probe result (Step 0), each a full assumption with `Rollback:` and `Basis:`:
+
+```markdown
+Assumptions:
+- auth probe: `/orders` opened without a redirect in the stage-pipeline-chrome browser (the opt-in profile) — Rollback: none needed, the probe changes nothing — Basis: http://localhost:3000/orders
+- auth probe skipped: no Chrome DevTools MCP server of the plugin is available in this session, devtools-verify probes by itself — Rollback: none needed — Basis: guess
+- login "not now" (interview answer): the auth-gated criteria `AC-…` are deferred in the honest form at check time — Rollback: cheap, log in and rerun devtools-verify on them — Basis: interview answer
+```

@@ -14,14 +14,15 @@
  *   node scripts/hooks-test.mjs                  every unit, in parallel worker processes (one `--units <id>` child per unit), the output in source order
  *   node scripts/hooks-test.mjs --serial         one process, source order — the reference run, for debugging
  *   node scripts/hooks-test.mjs --units a,b      only the named units (what a worker runs; the firings late checks need the whole suite and are skipped)
- *   node scripts/hooks-test.mjs --self-test      the runner's own failure cases (a failing check, a crashing worker, a unit with no check, the serial tail)
+ *   node scripts/hooks-test.mjs --self-test      the runner's own failure cases (a failing check, a crashing worker, an exit code other than 0 or 1, a unit with no check,
+ *                                                a child that holds a worker's output after it exits, the serial tail)
  *   HOOKS_TEST_JOBS=N                            the number of workers; without it: min(cores - 2, cores - load average), at least 1. Pool workers run at nice 10.
  * Units marked `serial` hold tight timing assertions and run one at a time after the parallel ones have finished, at the normal priority:
  * one process, as the whole suite ran before the pool, so the sessions next to it at nice 0 do not starve their timings.
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { availableParallelism, getPriority, homedir, loadavg, setPriority, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,7 +34,8 @@ const PLUGIN = join(dirname(SELF), '../plugins/stage-pipeline/scripts')
 const ARGV = process.argv.slice(2)
 const unitsArg = ARGV.find((arg) => arg.startsWith('--units='))?.slice(8) ?? (ARGV.includes('--units') ? ARGV[ARGV.indexOf('--units') + 1] : undefined)
 const MODE = ARGV.includes('--self-test') ? 'self-test' : ARGV.includes('--serial') ? 'serial' : unitsArg !== undefined ? 'worker' : 'run'
-const unitsMissing = (ARGV.includes('--units') || ARGV.some((arg) => arg.startsWith('--units='))) && (!unitsArg || unitsArg.startsWith('--'))
+// `--units ,` names no unit: a usage error, not a run of nothing that exits 0.
+const unitsMissing = (ARGV.includes('--units') || ARGV.some((arg) => arg.startsWith('--units='))) && (!unitsArg || unitsArg.startsWith('--') || !unitsArg.split(',').some(Boolean))
 if (unitsMissing || ARGV.some((arg) => !['--serial', '--self-test', '--units'].includes(arg) && !arg.startsWith('--units=') && arg !== unitsArg)) {
   console.error('usage: hooks-test.mjs [--serial | --self-test | --units <id,id>]')
   process.exit(2)
@@ -45,8 +47,9 @@ if (MODE === 'worker') {
     if (fake === 'selftest-fail') console.log('✔ fake check that passes\n✘ fake check that fails — detail of the failure')
     else if (fake === 'selftest-crash') { throw new Error('boom: the fake worker died') }
     else if (fake === 'selftest-slow') { await new Promise((done) => setTimeout(done, 400)); console.log('✔ slow fake check') }
+    else if (fake === 'selftest-holder') { spawn(process.execPath, ['-e', 'setTimeout(() => {}, 6000)'], { stdio: ['ignore', 'ignore', 'inherit'] }).unref(); console.log('✔ fake check whose child outlives it') }
     else if (fake !== 'selftest-empty') console.log(`✔ fake check at priority ${getPriority()}`)
-    process.exit(fake === 'selftest-fail' ? 1 : 0)
+    process.exit(fake === 'selftest-fail' ? 1 : fake === 'selftest-exit2' ? 2 : 0)
   }
 }
 // The task directory registry and the journal snapshots are written by the hooks into the plugin data directory — a temporary one in the test.
@@ -163,7 +166,7 @@ const UNITS = [
   { id: 'makerreceipts', weight: 33 }, // VT-5 stage 11 (VT-1 stage 11): maker receipts — the hand-back contract at SubagentStop, t…
   { id: 'vt5s11b', weight: 12 }, // VT-5 stage 11 part B (K11.7, AC-11.4): the resume point after /compact in an open force r…
   { id: 'vt5s11a', weight: 39 }, // VT-5 stage 11a, round A (K11a.1-K11a.6): the security review of 0.21.0 — the orchestrator…
-  { id: 'vt5s11atime', weight: 1, serial: true }, // VT-5 stage 11a K11a.6: parseHandback on three 3200-character runs (< 100 ms) and the stage-id parser on 100 KB (< 500 ms), apart from the pool
+  { id: 'vt5s11atime', weight: 1, serial: true }, // VT-5 stage 11a K11a.6: parseHandback on three 3200-character runs (< 100 ms) and the stage-id parser on 100 KB (< 500 ms), the data dir parser on 100 KB (< 1 s), apart from the pool
   { id: 'vt6s12', weight: 3 }, // Stage 12 of VT-6 (P1, decision 12c): a repo-local team review skill named in the config i…
   { id: 'vt6s12r1', weight: 3 }, // Stage 12 of VT-6, round 1: the findings ledger on the team review report and its re-runs
   { id: 'vt6s13', weight: 3 }, // Stage 13 of VT-6: the project’s `## Repo rules` on a force commit
@@ -257,6 +260,7 @@ const report = (units, results, { quiet = false } = {}) => {
   return { lines, problems, passed, failedChecks, exit: failedChecks || problems ? 1 : 0 }
 }
 
+const STDIO_GRACE_MS = 2000
 const runUnits = async (units, jobs, dataRoot, spawnArgs = (id) => [SELF, '--units', id]) => {
   const results = new Map()
   const runOne = (u) =>
@@ -266,7 +270,10 @@ const runUnits = async (units, jobs, dataRoot, spawnArgs = (id) => [SELF, '--uni
       const startedAt = Date.now()
       let out = ''
       let err = ''
+      let settled = false
       const finish = (code, signal) => {
+        if (settled) return
+        settled = true
         const result = { ...classify(out, err, code, signal), out, startedAt, endedAt: Date.now(), dataDir }
         results.set(u.id, result)
         process.stderr.write(`· ${u.id} ${((result.endedAt - startedAt) / 1000).toFixed(1)} s${result.state === 'ok' ? '' : ` ${result.state}`}\n`)
@@ -286,6 +293,16 @@ const runUnits = async (units, jobs, dataRoot, spawnArgs = (id) => [SELF, '--uni
       child.stderr.on('data', (chunk) => { err += chunk })
       child.on('error', (error) => { err += String(error); finish(null, null) })
       child.on('close', finish)
+      // A process the worker started can outlive it and hold its stdout or stderr open, so 'close' never comes: 2 s after the exit the runner stops waiting.
+      child.on('exit', (code, signal) => {
+        setTimeout(() => {
+          if (settled) return
+          err += `hooks-test: the worker's output stayed open ${STDIO_GRACE_MS / 1000} s after it exited — a process it started still holds it; not waited for\n`
+          child.stdout.destroy()
+          child.stderr.destroy()
+          finish(code, signal)
+        }, STDIO_GRACE_MS).unref()
+      })
     })
   const parallel = units.filter((u) => !u.serial).sort((a, b) => b.weight - a.weight)
   let next = 0
@@ -298,7 +315,7 @@ const runUnits = async (units, jobs, dataRoot, spawnArgs = (id) => [SELF, '--uni
 
 if (MODE === 'self-test') {
   // The failure cases of the runner: each must end the run with exit 1 and name the unit. Not part of the default run, so the set of checks stays as it was.
-  const fakes = [{ id: 'selftest-ok', weight: 1 }, { id: 'selftest-fail', weight: 2 }, { id: 'selftest-crash', weight: 3 }, { id: 'selftest-empty', weight: 4 }, { id: 'selftest-slow', weight: 5 }, { id: 'selftest-serial', weight: 1, serial: true }]
+  const fakes = [{ id: 'selftest-ok', weight: 1 }, { id: 'selftest-fail', weight: 2 }, { id: 'selftest-crash', weight: 3 }, { id: 'selftest-empty', weight: 4 }, { id: 'selftest-slow', weight: 5 }, { id: 'selftest-exit2', weight: 2 }, { id: 'selftest-holder', weight: 2 }, { id: 'selftest-serial', weight: 1, serial: true }]
   const root = mkdtempSync(join(tmpdir(), 'hooks-test-selftest-'))
   const results = await runUnits(fakes, 3, root)
   const get = (id) => results.get(id)
@@ -307,6 +324,12 @@ if (MODE === 'self-test') {
   check('runner self-test: a worker that crashes — state crashed, its stderr kept, the problem line quotes the error line, not a stack frame or the Node.js trailer', get('selftest-crash').state === 'crashed' && /\n\s+at /.test(get('selftest-crash').err) && get('selftest-crash').err.includes('Node.js v') && /unit "selftest-crash" crashed \(exit 1\): Error: boom: the fake worker died$/.test(verdict(['selftest-crash']).lines[0]))
   check('runner self-test: the cause of a crash without an error line is the last line that is not a stack frame or the trailer', causeOf('x\n}\n    at foo (bar:1:1)\n\nNode.js v22.0.0') === '}')
   check('runner self-test: --units with no value, an empty value or a value starting with -- is a usage error (exit 2)', ['--units', '--units=', '--units=--serial'].every((arg) => spawnSync(process.execPath, [SELF, arg], { encoding: 'utf8' }).status === 2) && spawnSync(process.execPath, [SELF, '--units', ''], { encoding: 'utf8' }).status === 2)
+  check('runner self-test: a worker that passes its checks but exits with a code other than 0 or 1 — state crashed, "exit 2" in the problem line', get('selftest-exit2').state === 'crashed' && get('selftest-exit2').passed === 1 && /unit "selftest-exit2" crashed \(exit 2\)/.test(verdict(['selftest-exit2']).lines[0] ?? ''), JSON.stringify({ state: get('selftest-exit2').state, line: verdict(['selftest-exit2']).lines[0] }))
+  {
+    const held = get('selftest-holder')
+    check('runner self-test: a worker whose child holds its stderr after it exits — finished within the grace, not when the child ends; the output says why', held.state === 'ok' && held.endedAt - held.startedAt < STDIO_GRACE_MS + 2000 && held.err.includes(`stayed open ${STDIO_GRACE_MS / 1000} s after it exited`), JSON.stringify({ state: held.state, ms: held.endedAt - held.startedAt, err: held.err }))
+  }
+  check('runner self-test: --units naming no unit (`,`) is a usage error (exit 2), not a run of nothing', ['--units=,', '--units=,,'].every((arg) => spawnSync(process.execPath, [SELF, arg], { encoding: 'utf8' }).status === 2) && spawnSync(process.execPath, [SELF, '--units', ','], { encoding: 'utf8' }).status === 2)
   check('runner self-test: a unit that prints no check — state empty, named in the problem line', get('selftest-empty').state === 'empty' && /unit "selftest-empty" printed no check/.test(verdict(['selftest-empty']).lines[0]))
   check('runner self-test: the reporting loop of the default run — each of fail / crash / empty gives exit 1, a clean unit exit 0 and no problem line', ['selftest-fail', 'selftest-crash', 'selftest-empty'].every((id) => verdict([id]).exit === 1 && verdict([id]).lines.length === 1) && verdict(['selftest-ok']).exit === 0 && verdict(['selftest-ok']).lines.length === 0)
   check('runner self-test: a serial unit starts only after every parallel unit has ended', fakes.filter((u) => !u.serial).every(({ id }) => get('selftest-serial').startedAt >= get(id).endedAt))
@@ -705,6 +728,18 @@ rmSync(root, { recursive: true, force: true })
 // Russian fixtures (the second supported task language).
 // A Bash call as the hooks see it: the PreToolUse run stamps the journal files, `effect` is what the command does, the PostToolUse run judges.
 if (unit('gates')) {
+// 0.25.2: on macOS a pipe is written asynchronously, so a hook verdict over 64 KiB followed by process.exit was cut at 65,536 bytes. readHookInput makes stdout blocking.
+{
+  const hookInput = JSON.stringify(join(PLUGIN, 'hooks/hook-input.mjs'))
+  const verdict = (code) => spawnSync(process.execPath, ['--input-type=module', '-e', code], { input: '{}', encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).stdout
+  const bigWrite = `process.stdout.write(JSON.stringify({ decision: 'block', reason: 'x'.repeat(300000) })); process.exit(0)`
+  const whole = verdict(`const { readHookInput } = await import(${hookInput}); await readHookInput(); ${bigWrite}`)
+  check('hook output: a 300 KB verdict written right before process.exit arrives whole and parses, once the hook has read its input', whole.length === 300032 && JSON.parse(whole).reason.length === 300000, `${whole.length} bytes`)
+  if (process.platform === 'darwin') {
+    const cut = verdict(bigWrite)
+    check('hook output incident (macOS): without readHookInput the same write is cut at the pipe buffer', cut.length < 300032, `${cut.length} bytes`)
+  }
+}
 const gRoot = mkdtempSync(join(tmpdir(), 'gates-test-'))
 const app = join(gRoot, 'app')
 repoAt(app, 'main')
@@ -3067,6 +3102,12 @@ if (unit('receipts')) {
     const withinResult = within.close()
     check('delta AC-1.1: a full report older than the tree and a delta anchored on it, newer than the tree and within the bound — the close is accepted', !verdict(withinResult), withinResult.text)
     check('delta AC-1.1: the full report alone (older than the tree, no delta) is still stale — the close is denied', verdict(deltaFx('delta-none', { skipDelta: true }).close()))
+    // `changedLinesSince` returns null when `git diff --numstat` fails: here the base's own tree object is gone, while its commit, the merge base and HEAD still resolve.
+    const noDiff = deltaFx('delta-diff-fails')
+    const baseTree = git(noDiff.fx.dir, 'rev-parse', `${noDiff.anchor}^{tree}`).trim()
+    rmSync(join(noDiff.fx.dir, '.git', 'objects', baseTree.slice(0, 2), baseTree.slice(2)))
+    const noDiffResult = noDiff.close()
+    check('delta: the change since the base cannot be counted (git diff fails) — denied, "could not count", a full review asked', verdict(noDiffResult) && /could not count the change since the base/.test(noDiffResult.text) && /a full review, it becomes the new anchor/.test(noDiffResult.text), noDiffResult.text)
     const atBound = deltaFx('delta-at-bound', { lines: rc.DELTA_MAX_LINES - 1 }) // +1 line of the one-line a.ts of the anchor commit replaced: 399 added, 1 deleted = 400
     check('delta AC-1.2 legit: exactly DELTA_MAX_LINES changed lines since the base — accepted', !verdict(atBound.close()), atBound.close().text)
     const over = deltaFx('delta-over', { lines: rc.DELTA_MAX_LINES + 100 }).close()
@@ -3125,7 +3166,7 @@ if (unit('receipts')) {
     const plainDelta = deltaFx('delta-plain-capital', { deltaHeader: (a, n, f) => `head: ${n}\nDelta: ${f} ${a}..${n}\n` }).close()
     check('delta S3-D1 legit: a plain `Delta:` line within the bound — accepted', !verdict(plainDelta), plainDelta.text)
     const boldIn = deltaFx('delta-bold-in-bound', { deltaHeader: (a, n, f) => `head: ${n}\n**delta:** ${f} ${a}..${n}\n` }).close()
-    check('delta S3-D1: a `**delta:**` line within the bound — denied with the rewrite remedy, not a full review', verdict(boldIn) && /rewrite the line as plain/.test(boldIn.text) && !/full review/.test(boldIn.text), boldIn.text)
+    check('delta S3-D1: a `**delta:**` line within the bound — denied with the rewrite remedy, not a full review', verdict(boldIn) && /rewrite the line as plain.*or re-run the delta review \(`pro-review --delta/.test(boldIn.text) && !/full review/.test(boldIn.text), boldIn.text)
     const wrongEnd = deltaFx('delta-wrong-end', { deltaHeader: (a) => `head: ${a}\ndelta: pro-review-branch.md ${a}..${a}\n` }).close()
     check('delta S3-D4: the range end is not HEAD\'s tree — denied, "not HEAD"', verdict(wrongEnd) && /not HEAD/.test(wrongEnd.text), wrongEnd.text)
     const longName = deltaFx('delta-long-name', { deltaHeader: (a, n) => `head: ${n}\ndelta: ${'x'.repeat(5000)}.md ${a}..${n}\n` }).close()
@@ -4053,12 +4094,13 @@ if (unit('vt1s5a')) {
     check('M-1 first look: with no PreToolUse run a block dated before the migration day is taken for an old run (the date filter alone keeps it)', pastNoPre.gate.seen.has(`## Force run ${yesterday}`) && pastNoPre.verdict.decision === 'allow', pastNoPre.shown)
   }
 
-  // m-3: the assumption lines Step 0 of /stage-force shows pass the decision-evidence rule; the short form it used to show does not.
+  // m-3: the assumption lines Step 0 of /stage-force points to (references/interview.md since 0.25.2) pass the decision-evidence rule; the short form it used to show does not.
   {
-    const skill = readFileSync(join(PLUGIN, '../skills/stage-force/SKILL.md'), 'utf8')
+    const skill = readFileSync(join(PLUGIN, '../skills/stage-force/references/interview.md'), 'utf8')
     const shown = skill.split('\n').filter((line) => /^\s*- (?:auth probe|login "not now")/.test(line)).map((line) => line.trim())
     const block = (lines) => `# T-72\n\n## Force run 2026-10-22\nAssumptions:\n${lines.join('\n')}\nConfirmed: 2026-10-22 — answers\n`
     check('m-3: Step 0 shows the three auth-probe assumption lines', shown.length === 3, shown.join(' | '))
+    check('m-3: Step 0 of stage-force SKILL.md points to those lines in references/interview.md', /the three lines to copy are in `references\/interview\.md`, "5\. The auth probe lines"/.test(readFileSync(join(PLUGIN, '../skills/stage-force/SKILL.md'), 'utf8')) && /^## 5\. The auth probe lines$/m.test(skill))
     check('m-3: each shown line passes decision-evidence (Rollback and Basis)', decisionViolations(block(shown)).length === 0, JSON.stringify(decisionViolations(block(shown)).map(({ message }) => message)))
     check('m-3: the old short form ("auth probe: `/orders` opened without a redirect") is rejected', decisionViolations(block(['- auth probe: `/orders` opened without a redirect'])).length === 1)
   }
@@ -4508,10 +4550,11 @@ if (unit('vt1s5cfix')) {
     write(app, { 'src/a.ts': 'export const a = 3\n' })
     git(app, 'commit', '-qam', 'after the close')
     const started = hookTimed('session-start.mjs', { cwd: app })
+    // the walk refuses the archive by its size and never reads it: its time is git's process starts, 0.6–0.8 s under load 8, so 2 s, as the PreToolUse check above
     const walk = timed(() => ps.unjournaledCommits(readPipelineState(app), readPipelineState(app).tasks.find((task) => task.ticket === 'T-88')))
     check(
-      'S-4: session-start with a 600 MB STAGES-ARCHIVE.md ends in < 3 s with the task line and names the commit the rest of the journal does not know',
-      started.status === 0 && started.ms < 3000 && /T-88/.test(started.stdout) && /after the close/.test(started.stdout) && walk.value.some(({ subject }) => subject === 'after the close') && walk.ms < 1000,
+      'S-4: session-start with a 600 MB STAGES-ARCHIVE.md ends in < 3 s with the task line and names the commit the rest of the journal does not know (the walk < 2 s)',
+      started.status === 0 && started.ms < 3000 && /T-88/.test(started.stdout) && /after the close/.test(started.stdout) && walk.value.some(({ subject }) => subject === 'after the close') && walk.ms < 2000,
       `${started.status} ${started.ms.toFixed(0)} ms, walk ${walk.ms.toFixed(0)} ms ${started.stdout.slice(0, 200)} ${started.stderr.split('\n')[0]}`,
     )
     rmSync(r, { recursive: true, force: true })
@@ -4562,6 +4605,20 @@ if (unit('vt1s5b')) {
   const bRoot = realpathSync(mkdtempSync(join(tmpdir(), 'browsers-test-')))
   const SCRIPT = join(PLUGIN, 'browser-cleanup.mjs')
   const started = new Set()
+  // Kills what this block started, by PID, only a process whose command line still names the block's directory (a reused PID is left alone). Also on exit:
+  // an error thrown in a callback ends the worker without the `finally` below, and the fake claude and MCP processes then held its stderr for 2 minutes.
+  const killStarted = () => {
+    for (const pid of started) {
+      if (pid > 0 && proc.alive(pid) && proc.commandOf(pid)?.includes(bRoot)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // gone in between
+        }
+      }
+    }
+  }
+  process.on('exit', killStarted)
   const pause = (ms) => new Promise((done) => setTimeout(done, ms))
   const goneWithin = async (pid, ms = 3000) => {
     const deadline = Date.now() + ms
@@ -5420,15 +5477,8 @@ if (unit('vt1s5b')) {
       )
     }
   } finally {
-    for (const pid of started) {
-      if (pid > 0 && proc.alive(pid) && proc.commandOf(pid)?.includes(bRoot)) {
-        try {
-          process.kill(pid, 'SIGKILL')
-        } catch {
-          // gone in between
-        }
-      }
-    }
+    killStarted()
+    process.off('exit', killStarted)
     rmSync(bRoot, { recursive: true, force: true })
   }
 }
@@ -5836,7 +5886,8 @@ if (unit('vt1s5e')) {
     }
     check('5e: openBlockers on 50 000 characters of pathological input (the lift field, the carried form, sub-items, the interview field) < 100 ms', worst.ms < 100, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
   }
-  // 5f (B2 m-1, security #3) and 5g (M-3, A15): one blocker line of 1 MB of lift fields, in an old block and a new one, one read under 250 ms
+  // 5f (B2 m-1, security #3) and 5g (M-3, A15): one blocker line of 1 MB of lift fields, in an old block and a new one, one read under 500 ms
+  // (about 100 ms on a quiet Mac; 250 ms failed once at 257 ms on the 4-vCPU CI runner; a quadratic read of 1 MB takes seconds)
   {
     const worst = { ms: 0, input: '' }
     for (const unit of ['; Lifted: no 2026-10-27', ' — Снят: пока нет 27.10.2026', '(lifted: a 2026-10-27 ', '. Lifted: user 2026-10-27 needs', '. Снят: пока нет ', '; Lifted: x', '; Снят: ']) {
@@ -5848,7 +5899,7 @@ if (unit('vt1s5e')) {
         if (ms > worst.ms) Object.assign(worst, { ms, input: unit })
       }
     }
-    check('5f: openBlockers on one 1 MB line of lift fields (refused values, a parenthesis that never closes, request words), old and new block, the units `; Lifted: x` and the Russian label unit included, < 250 ms per read', worst.ms < 250, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
+    check('5f: openBlockers on one 1 MB line of lift fields (refused values, a parenthesis that never closes, request words), old and new block, the units `; Lifted: x` and the Russian label unit included, < 500 ms per read', worst.ms < 500, `${worst.ms.toFixed(0)} ms on "${worst.input}"`)
   }
 }
 
@@ -5940,14 +5991,9 @@ if (unit('vt3s7a')) {
   for (let n = 0; n < 12; n++) hookRun('force-guard.mjs', bash('pkill -f vite'), { STAGE_PIPELINE_DATA_DIR: small, STAGE_PIPELINE_FIRINGS_MAX: '700' })
   const live = rowsIn(small)
   const old = rowsIn(small, 'firings.jsonl.1')
-  const size = (name) => {
-    try {
-      return statSync(join(small, name)).size
-    } catch {
-      return 0
-    }
-  }
-  check('firings AC-7.2: rotation - past the size cap the log becomes firings.jsonl.1 and a new file starts', old.length > 0 && live.length > 0 && size('firings.jsonl') < 700 + 400 && size('firings.jsonl.1') < 700 + 400, `live ${live.length} (${size('firings.jsonl')} B), old ${old.length} (${size('firings.jsonl.1')} B)`)
+  // statSync was not imported until 0.25.2 and a catch returned 0, so the size half of this check passed on any file: no catch now, and both sizes must be above 0.
+  const size = (name) => (existsSync(join(small, name)) ? statSync(join(small, name)).size : 0)
+  check('firings AC-7.2: rotation - past the size cap the log becomes firings.jsonl.1 and a new file starts', old.length > 0 && live.length > 0 && [size('firings.jsonl'), size('firings.jsonl.1')].every((bytes) => bytes > 0 && bytes < 700 + 400), `live ${live.length} (${size('firings.jsonl')} B), old ${old.length} (${size('firings.jsonl.1')} B)`)
   check('firings: rotation keeps one older generation only', !existsSync(join(small, 'firings.jsonl.2')) && live.length + old.length <= 12)
 
   // retro.mjs prints the counts per rule, the repeats per task and the firings on reads, from the rows the hooks wrote
@@ -8256,13 +8302,7 @@ if (unit('vt5s11a')) {
     const edit = (cwd, tool, file) => runHook('journal-gate.mjs', { cwd, hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { file_path: file } })
     check('journal-gate K11b.2 D7: a Write into the data directory in a run already going at the first look — never denied', edit(old.dir, 'Write', join(DATA, 'maker', `${old.ticket}.jsonl`)).decision === 'allow')
     check('journal-gate K11b.2: the same Write in a new run is still denied', edit(f.dir, 'Write', join(DATA, 'maker', `${T}.jsonl`)).decision === 'deny')
-    const big = `cat ${'a '.repeat(50_000)} ${DATA}/maker/x ${'>'.repeat(20_000)} ${'$( '.repeat(500)}`
-    const began = Date.now()
-    const { writesDataDir } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
-    writesDataDir(big)
-    writesDataDir(`echo ${'x'.repeat(100_000)} > ${DATA}/y`)
-    writesDataDir(`node -e "${DATA} ${"open('x', 'a".repeat(10_000)} ${"open(".repeat(20_000)} ${"readFileSync(".repeat(10_000)}"`)
-    check('force K11b.2: a 100 KB command is parsed in linear time (under a second)', Date.now() - began < 1000, `${Date.now() - began} ms`)
+    // the linear-time check of the data dir parser runs in the serial tail, unit vt5s11atime: in the pool it once took 1033 ms at load 15 for about 3 ms of work
   }
 
   // B4 / K11b.3 — a command that commits chains only add, commit, status, diff, log, show, rev-parse; no wrapper hides a git call.
@@ -8328,6 +8368,14 @@ if (unit('vt5s11atime')) {
     pa.stageForSpawn(full, `stage${pad}x stage${pad}`)
     return Date.now() - begun < 500
   })())
+  // from vt5s11a (0.25.2): about 3 ms of work, timed apart from the import and at the normal priority
+  const { writesDataDir } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  const big = `cat ${'a '.repeat(50_000)} ${DATA}/maker/x ${'>'.repeat(20_000)} ${'$( '.repeat(500)}`
+  const began = Date.now()
+  writesDataDir(big)
+  writesDataDir(`echo ${'x'.repeat(100_000)} > ${DATA}/y`)
+  writesDataDir(`node -e "${DATA} ${"open('x', 'a".repeat(10_000)} ${"open(".repeat(20_000)} ${"readFileSync(".repeat(10_000)}"`)
+  check('force K11b.2: a 100 KB command is parsed in linear time (under a second)', Date.now() - began < 1000, `${Date.now() - began} ms`)
 }
 
 // ── Stage 12 of VT-6 (P1, decision 12c): a repo-local team review skill named in the config is a final checker the force close requires ──────

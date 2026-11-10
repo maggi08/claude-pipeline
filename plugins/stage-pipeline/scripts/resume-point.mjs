@@ -7,11 +7,11 @@
  */
 import { spawnSync } from 'node:child_process'
 import { statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { join } from 'node:path'
 import { CLOSED_STAGE, stageBlocksOf, statusBracket } from './markers.mjs'
 import { findingCounts, lastForceBlock, newReports, openBlockers, readTaskFile, reportChecker, reportLedgerViolations } from './journal-check.mjs'
 import { dirtyBlobs, isCodeFile, lastMakerBlobs, readMakerRecords, recordBlobs } from './maker.mjs'
-import { realOr as real } from './hooks/pipeline-state.mjs'
+import { inTaskDir, realOr as real, taskRelTo } from './hooks/pipeline-state.mjs'
 import { readReceipts } from './receipts.mjs'
 
 export const OUTPUT_MAX = 10000
@@ -61,8 +61,8 @@ export function resumeState({ dataDir, state, task }) {
   const commitMs = (Number(git(state.worktree, ['log', '-1', '--format=%ct'])) || 0) * 1000
   const since = Math.max(blockStart, lastReceipt ? Date.parse(lastReceipt.at) || 0 : commitMs)
 
-  const taskRel = relative(root, real(taskDir)).split(sep).join('/')
-  const inTask = (path) => !taskRel.startsWith('..') && (path === taskRel || path.startsWith(`${taskRel}/`))
+  const taskRel = taskRelTo(root, taskDir)
+  const inTask = (path) => inTaskDir(taskRel, path)
   const dirty = dirtyBlobs(root)
   const recorded = lastMakerBlobs(dataDir, task.ticket, root)
   const code = dirty ? [...dirty].filter(([path]) => isCodeFile(path) && !inTask(path)) : []
