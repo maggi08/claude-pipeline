@@ -17,6 +17,7 @@ Force moves all the questions to the start: they are collected ONCE, then the ru
 
 - `<task_dir>/<TICKET>/STAGES.md` — required. If missing, run `/stage-plan` first, then come here.
 - Optional: the number of the stage to continue from (by default — the first one that is not `done`).
+- `--interview-only`: only Step 0, for the night queue: stop after the `Confirmed:` line — no Step 1, no commit (`references/interview.md`, "6.").
 
 ## Step 0. Interview — the only place questions are collected
 
@@ -104,6 +105,8 @@ For each stage in order:
 8. **The next stage** — in the same context: only summaries remain in it, not code.
 
 **One maker at a time.** Never run two `stage-implement` at once in one worktree in a force run: makers in parallel in one tree cannot be told apart by a tree snapshot.
+
+**Headless.** In a `claude -p` session (the night run of `force-run.mjs`, any print-mode launch) each subagent runs in the foreground (`run_in_background: false`; several in one message are fine), and the turn ends only after they have returned: print mode stops background agents about 10 minutes after the last turn.
 
 Between stages keep in the context only STAGES.md (the current stage) and the subagent summaries; after a compaction the continuation starts with reading STAGES.md.
 
