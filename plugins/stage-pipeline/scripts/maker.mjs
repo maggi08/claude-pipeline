@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, isAbsolute, resolve, sep } from 'node:path'
-import { readDataFiles, readDataJsonl, realOr } from './hooks/pipeline-state.mjs'
+import { inTaskDir, readDataFiles, readDataJsonl, realOr, taskRelTo } from './hooks/pipeline-state.mjs'
 import { forceKey } from './markers.mjs'
 import { siblingRepos, takePlanSnapshot } from './plan-check.mjs'
 import { receiptRun } from './receipts.mjs'
@@ -60,15 +60,6 @@ function git(cwd, args, { input, timeout = 3000, deadline = null } = {}) {
 
 /** The real path (symlinks resolved: `/var` → `/private/var`), the path itself when it does not exist. */
 const real = realOr
-
-/** The task directory relative to the repo root, `/`-separated; null when it is the root itself or outside it. Shared with the resume point. */
-export function taskRelTo(root, taskDir) {
-  const rel = relative(root, real(taskDir)).split(sep).join('/')
-  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : null
-}
-
-/** A repo-relative path is the task directory or inside it (the journal and the reports, not the code). */
-export const inTaskDir = (taskRel, path) => Boolean(taskRel) && (path === taskRel || path.startsWith(`${taskRel}/`))
 
 /** Blob hashes of paths at a revision in one git call: `Map<path, blob | null>` (null — the path is not there, or is no blob). */
 function revBlobs(root, rev, paths) {

@@ -10,8 +10,8 @@ import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { CLOSED_STAGE, stageBlocksOf, statusBracket } from './markers.mjs'
 import { findingCounts, lastForceBlock, newReports, openBlockers, readTaskFile, reportChecker, reportLedgerViolations } from './journal-check.mjs'
-import { dirtyBlobs, inTaskDir, isCodeFile, lastMakerBlobs, readMakerRecords, recordBlobs, taskRelTo } from './maker.mjs'
-import { realOr as real } from './hooks/pipeline-state.mjs'
+import { dirtyBlobs, isCodeFile, lastMakerBlobs, readMakerRecords, recordBlobs } from './maker.mjs'
+import { inTaskDir, realOr as real, taskRelTo } from './hooks/pipeline-state.mjs'
 import { readReceipts } from './receipts.mjs'
 
 export const OUTPUT_MAX = 10000

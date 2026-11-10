@@ -14,7 +14,8 @@
  *   node scripts/hooks-test.mjs                  every unit, in parallel worker processes (one `--units <id>` child per unit), the output in source order
  *   node scripts/hooks-test.mjs --serial         one process, source order — the reference run, for debugging
  *   node scripts/hooks-test.mjs --units a,b      only the named units (what a worker runs; the firings late checks need the whole suite and are skipped)
- *   node scripts/hooks-test.mjs --self-test      the runner's own failure cases (a failing check, a crashing worker, a unit with no check, the serial tail)
+ *   node scripts/hooks-test.mjs --self-test      the runner's own failure cases (a failing check, a crashing worker, an exit code other than 0 or 1, a unit with no check,
+ *                                                a child that holds a worker's output after it exits, the serial tail)
  *   HOOKS_TEST_JOBS=N                            the number of workers; without it: min(cores - 2, cores - load average), at least 1. Pool workers run at nice 10.
  * Units marked `serial` hold tight timing assertions and run one at a time after the parallel ones have finished, at the normal priority:
  * one process, as the whole suite ran before the pool, so the sessions next to it at nice 0 do not starve their timings.
@@ -326,7 +327,7 @@ if (MODE === 'self-test') {
   check('runner self-test: a worker that passes its checks but exits with a code other than 0 or 1 — state crashed, "exit 2" in the problem line', get('selftest-exit2').state === 'crashed' && get('selftest-exit2').passed === 1 && /unit "selftest-exit2" crashed \(exit 2\)/.test(verdict(['selftest-exit2']).lines[0] ?? ''), JSON.stringify({ state: get('selftest-exit2').state, line: verdict(['selftest-exit2']).lines[0] }))
   {
     const held = get('selftest-holder')
-    check('runner self-test: a worker whose child holds its stderr after it exits — finished within the grace, not when the child ends; the output says why', held.state === 'ok' && held.endedAt - held.startedAt < STDIO_GRACE_MS + 2000 && /stayed open 2 s after it exited/.test(held.err), JSON.stringify({ state: held.state, ms: held.endedAt - held.startedAt, err: held.err }))
+    check('runner self-test: a worker whose child holds its stderr after it exits — finished within the grace, not when the child ends; the output says why', held.state === 'ok' && held.endedAt - held.startedAt < STDIO_GRACE_MS + 2000 && held.err.includes(`stayed open ${STDIO_GRACE_MS / 1000} s after it exited`), JSON.stringify({ state: held.state, ms: held.endedAt - held.startedAt, err: held.err }))
   }
   check('runner self-test: --units naming no unit (`,`) is a usage error (exit 2), not a run of nothing', ['--units=,', '--units=,,'].every((arg) => spawnSync(process.execPath, [SELF, arg], { encoding: 'utf8' }).status === 2) && spawnSync(process.execPath, [SELF, '--units', ','], { encoding: 'utf8' }).status === 2)
   check('runner self-test: a unit that prints no check — state empty, named in the problem line', get('selftest-empty').state === 'empty' && /unit "selftest-empty" printed no check/.test(verdict(['selftest-empty']).lines[0]))
@@ -731,10 +732,13 @@ if (unit('gates')) {
 {
   const hookInput = JSON.stringify(join(PLUGIN, 'hooks/hook-input.mjs'))
   const verdict = (code) => spawnSync(process.execPath, ['--input-type=module', '-e', code], { input: '{}', encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).stdout
-  const write = `process.stdout.write(JSON.stringify({ decision: 'block', reason: 'x'.repeat(300000) })); process.exit(0)`
-  const whole = verdict(`const { readHookInput } = await import(${hookInput}); await readHookInput(); ${write}`)
+  const bigWrite = `process.stdout.write(JSON.stringify({ decision: 'block', reason: 'x'.repeat(300000) })); process.exit(0)`
+  const whole = verdict(`const { readHookInput } = await import(${hookInput}); await readHookInput(); ${bigWrite}`)
   check('hook output: a 300 KB verdict written right before process.exit arrives whole and parses, once the hook has read its input', whole.length === 300032 && JSON.parse(whole).reason.length === 300000, `${whole.length} bytes`)
-  if (process.platform === 'darwin') check('hook output incident (macOS): without readHookInput the same write is cut at the pipe buffer', verdict(write).length < 300032, `${verdict(write).length} bytes`)
+  if (process.platform === 'darwin') {
+    const cut = verdict(bigWrite)
+    check('hook output incident (macOS): without readHookInput the same write is cut at the pipe buffer', cut.length < 300032, `${cut.length} bytes`)
+  }
 }
 const gRoot = mkdtempSync(join(tmpdir(), 'gates-test-'))
 const app = join(gRoot, 'app')
@@ -4096,6 +4100,7 @@ if (unit('vt1s5a')) {
     const shown = skill.split('\n').filter((line) => /^\s*- (?:auth probe|login "not now")/.test(line)).map((line) => line.trim())
     const block = (lines) => `# T-72\n\n## Force run 2026-10-22\nAssumptions:\n${lines.join('\n')}\nConfirmed: 2026-10-22 — answers\n`
     check('m-3: Step 0 shows the three auth-probe assumption lines', shown.length === 3, shown.join(' | '))
+    check('m-3: Step 0 of stage-force SKILL.md points to those lines in references/interview.md', /the three lines to copy are in `references\/interview\.md`, "5\. The auth probe lines"/.test(readFileSync(join(PLUGIN, '../skills/stage-force/SKILL.md'), 'utf8')) && /^## 5\. The auth probe lines$/m.test(skill))
     check('m-3: each shown line passes decision-evidence (Rollback and Basis)', decisionViolations(block(shown)).length === 0, JSON.stringify(decisionViolations(block(shown)).map(({ message }) => message)))
     check('m-3: the old short form ("auth probe: `/orders` opened without a redirect") is rejected', decisionViolations(block(['- auth probe: `/orders` opened without a redirect'])).length === 1)
   }

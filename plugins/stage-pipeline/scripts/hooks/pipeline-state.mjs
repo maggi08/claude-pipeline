@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { commandSegments } from './git-command.mjs'
 import {
@@ -892,6 +892,15 @@ export const realOr = (path) => {
     return path
   }
 }
+
+/** The task directory relative to the repo root, `/`-separated; null when it is the root itself or outside it. Shared by the maker gate, the resume point and the receipts. */
+export function taskRelTo(root, taskDir) {
+  const rel = relative(root, realOr(taskDir)).split(sep).join('/')
+  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : null
+}
+
+/** A repo-relative path is the task directory or inside it (the journal and the reports, not the code). */
+export const inTaskDir = (taskRel, path) => Boolean(taskRel) && (path === taskRel || path.startsWith(`${taskRel}/`))
 
 /**
  * Tracked paths with uncommitted edits, relative to the repo root. `-z` porcelain: a path comes unquoted (a space, a non-ASCII letter), and a rename or a copy

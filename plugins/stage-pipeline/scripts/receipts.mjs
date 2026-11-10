@@ -24,10 +24,10 @@
  * is installed). A block without a readable date fails closed. The receipt `{sha, tree, reports, counts, skips, ...}` goes to `<plugin data>/receipts/<TICKET>.jsonl`.
  */
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join, relative, sep } from 'node:path'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, configRoot, dirtyPaths, pathList, patchIds, readConfig, readDataFiles, readDataJsonl, taskLanguage } from './hooks/pipeline-state.mjs'
+import { OPEN_STATUS, configRoot, dirtyPaths, inTaskDir, pathList, patchIds, readConfig, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
@@ -318,19 +318,16 @@ function treeSince(dataDir, worktree, ticket, branch) {
   return times.length ? Math.min(...times) : 0
 }
 
-/** The task directory relative to the repo top, or null when it is outside the repo. */
+/** The task directory relative to the repo top, or null when it is outside the repo or git fails (nothing to exclude then). */
 function taskRelPath(worktree, taskDir) {
-  try {
-    return relative(realpathSync(git(worktree, 'rev-parse', '--show-toplevel')), realpathSync(taskDir)).split(sep).join('/')
-  } catch {
-    return null // task directory outside the repo: nothing to exclude
-  }
+  const top = git(worktree, 'rev-parse', '--show-toplevel')
+  return top ? taskRelTo(realOr(top), taskDir) : null
 }
 
 /** Tracked files with uncommitted edits outside the task directory (the journal and the reports change all the time and are not the code). */
 function dirtyTracked(worktree, taskDir) {
   const taskRel = taskRelPath(worktree, taskDir)
-  return (dirtyPaths(worktree) ?? []).filter((file) => !taskRel || !(file === taskRel || file.startsWith(`${taskRel}/`)))
+  return (dirtyPaths(worktree) ?? []).filter((file) => !inTaskDir(taskRel, file))
 }
 
 /** Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory (a move out of it counts by its destination); a binary file counts 0 (S1-D2); null when git fails. */
@@ -342,7 +339,7 @@ function changedLinesSince(worktree, taskDir, base) {
   for (const line of out.trim().split('\n').filter(Boolean)) {
     const [added, deleted, ...rest] = line.split('\t')
     const path = rest.join('\t')
-    if (taskRel && (path === taskRel || path.startsWith(`${taskRel}/`))) continue
+    if (inTaskDir(taskRel, path)) continue
     sum += (Number(added) || 0) + (Number(deleted) || 0)
   }
   return sum
