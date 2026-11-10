@@ -2,32 +2,31 @@
 /**
  * The queue of force runs of this machine — tasks may come from different repos, nobody is at the screen.
  *
- *   node force-queue.mjs add <repo> <TICKET>   only a task with a confirmed interview (/stage-force <TICKET> --interview-only); the reason is named otherwise
+ *   node force-queue.mjs add <repo> <TICKET>   only a task with a confirmed interview (/stage-force <TICKET> --interview-only); the reason is named otherwise. Makes the task's worktree (to prepare it before the night)
  *   node force-queue.mjs list                  the queue with the status of each task
  *   node force-queue.mjs remove <TICKET>       only a task that was not started
- *   node force-queue.mjs check                 before the night: for each task the repo, the task folder, the interview, the branch, `claude` — every "no" named; exit 1 on any
+ *   node force-queue.mjs check                 before the night: for each task the repo, the task folder, the interview, the branch (after `git fetch origin <branch>`), the worktree (the hooks see the task in it; what the main copy has and it lacks: node_modules, .env*, the local config), `claude` — every "no" named; exit 1 on any
  *   node force-queue.mjs run [--threshold 90] [--margin-min 5] [--max-sessions 3] [--retries 1]
  *
  * The queue is `force-queue.json` in the plugin data directory. `run` holds a lock of this machine (a PID file: a second `run` is refused at once while the first is alive, the
  * file of a dead PID is taken over), runs the queued tasks one by one in the order they were added through `runLoop` of force-run.mjs, the next only after the outcome of the previous.
  * Before each task it reads `five_hour` of the latest `rate_limit_event` of all run records: at or above the threshold (percent) it waits for the reset (plus the margin) first;
- * a `seven_day` window that is `rejected` stops the queue. An outcome error / stopped / gave_up of one task does not stop the queue; a weekly limit, a spend limit and an interrupt do,
+ * a `seven_day` window that is `rejected` stops the queue. An outcome error / stopped / gave_up of one task does not stop the queue; a weekly limit, a spend limit, a limit with no known window or reset time (`limit_unknown`) and an interrupt do,
  * and the tasks not yet run stay queued (the task that hit the limit stays queued too and goes on with a new session at the next `run`).
- * The morning summary — a line per task: outcome, commits of the run, open blockers, the path to RUN-DIGEST.md — goes to stdout and to `force-queue-summary.md`.
+ * The morning summary — a line per task: outcome, commits of the run, open blockers, the log of the last session, the path to RUN-DIGEST.md when this run wrote it (else the command that writes it) — goes to stdout and to `force-queue-summary.md`.
  *
- * Exit codes of `run`: 0 every task completed · 1 some task did not · 2 refused to start (a lock, nothing to run) · 4 interrupted · 5 weekly limit · 6 spend limit.
+ * Exit codes of `run`: 0 every task completed · 1 some task did not · 2 refused to start (a lock, nothing to run) · 3 limit of unknown window · 4 interrupted · 5 weekly limit · 6 spend limit.
  */
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { EXIT, TICKET, acquirePidLock, findOnPath, gitOk, numberFlag, prepareRun, runLoop, taskReadiness, ticketLockFile, waitUntil } from './force-run.mjs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { EXIT, TICKET, acquirePidLock, findOnPath, gitOk, numberFlag, prepareRun, prepareWorktree, runLoop, taskReadiness, ticketLockFile, waitUntil } from './force-run.mjs'
 import { blockerGate, lastForceBlock, openBlockers } from './journal-check.mjs'
 import { pluginDataDir, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const say = (text) => console.log(`force-queue: ${text}`)
-export const queueFile = (dataDir = pluginDataDir()) => join(dataDir, 'force-queue.json')
-export const summaryFile = (dataDir = pluginDataDir()) => join(dataDir, 'force-queue-summary.md')
+const queueFile = (dataDir = pluginDataDir()) => join(dataDir, 'force-queue.json')
+const summaryFile = (dataDir = pluginDataDir()) => join(dataDir, 'force-queue-summary.md')
 const queueLockFile = (dataDir = pluginDataDir()) => join(dataDir, 'locks', 'queue.lock')
 const fileLockFile = (dataDir = pluginDataDir()) => join(dataDir, 'locks', 'queue-file.lock')
 
@@ -46,7 +45,7 @@ function withQueueFile(dataDir, fn) {
   }
 }
 
-export function readQueue(dataDir = pluginDataDir()) {
+function readQueue(dataDir = pluginDataDir()) {
   try {
     const parsed = JSON.parse(readFileSync(queueFile(dataDir), 'utf8'))
     return { tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [] }
@@ -70,10 +69,13 @@ const notStarted = (task) => task.status === 'queued' && !task.started
 
 // ── add / list / remove ──────────────────────────────────────────────────────
 
-export function addTask(repo, ticket, dataDir = pluginDataDir()) {
+function addTask(repo, ticket, dataDir = pluginDataDir()) {
   if (!TICKET.test(ticket ?? '')) return { ok: false, message: `not a ticket: ${ticket}` }
   const ready = taskReadiness(repo, ticket)
   if (!ready.ok) return { ok: false, message: ready.message }
+  // the worktree exists from the evening: it can be prepared (deps, .env) before the night, and a task the hooks cannot see in it is refused now
+  const tree = prepareWorktree(ready.state.root, ready.task, ready.state.taskDir)
+  if (tree.problem) return { ok: false, message: tree.problem }
   return withQueueFile(dataDir, () => {
     const queue = readQueue(dataDir)
     const same = queue.tasks.find((task) => task.ticket === ticket)
@@ -81,11 +83,11 @@ export function addTask(repo, ticket, dataDir = pluginDataDir()) {
     const entry = { ticket, repo: ready.state.root, status: 'queued', started: false, addedAt: new Date().toISOString() }
     queue.tasks = [...queue.tasks.filter((task) => task.ticket !== ticket), entry]
     writeQueue(queue, dataDir)
-    return { ok: true, entry }
+    return { ok: true, entry, worktree: tree.path }
   })
 }
 
-export function removeTask(ticket, dataDir = pluginDataDir()) {
+function removeTask(ticket, dataDir = pluginDataDir()) {
   return withQueueFile(dataDir, () => {
     const queue = readQueue(dataDir)
     const task = queue.tasks.find((item) => item.ticket === ticket)
@@ -101,8 +103,25 @@ const listLines = (queue) => queue.tasks.map((task, at) => `${at + 1}. ${task.ti
 
 // ── check ────────────────────────────────────────────────────────────────────
 
+/** What the main copy has that a fresh worktree does not: `node_modules`, the `.env*` files of its root, its `.claude/pipeline.config.local.md`. */
+function missingInWorktree(main, worktree) {
+  const missing = []
+  const has = (dir, name) => existsSync(join(dir, name))
+  if (has(main, 'node_modules') && !has(worktree, 'node_modules')) missing.push('node_modules')
+  let names = []
+  try {
+    names = readdirSync(main).filter((name) => name.startsWith('.env'))
+  } catch {
+    // an unreadable main copy has other problems
+  }
+  for (const name of names) if (!has(worktree, name)) missing.push(name)
+  const local = '.claude/pipeline.config.local.md'
+  if (has(main, local) && !has(worktree, local)) missing.push(local)
+  return missing
+}
+
 /** Every "no" of the queue as a line naming the task; an empty list means ready for the night. */
-export function checkQueue(dataDir = pluginDataDir(), pathEnv = process.env.PATH ?? '') {
+function checkQueue(dataDir = pluginDataDir(), pathEnv = process.env.PATH ?? '') {
   const problems = []
   const tasks = readQueue(dataDir).tasks.filter(runnable)
   if (!tasks.length) return { problems, tasks: 0 }
@@ -120,8 +139,14 @@ export function checkQueue(dataDir = pluginDataDir(), pathEnv = process.env.PATH
     }
     const branches = ready.task.branches ?? []
     if (!branches.length) no(`no branch in the header of ${ready.task.stagesPath}`)
-    else if (!branches.some((b) => gitOk(task.repo, 'rev-parse', '--verify', '-q', `refs/heads/${b}`) || gitOk(task.repo, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${b}`))) {
-      no(`branch ${branches.join(' / ')} exists neither locally nor on origin`)
+    else {
+      // the fetch is inside: "on origin" is judged after it
+      const tree = prepareWorktree(task.repo, ready.task, ready.state.taskDir)
+      if (tree.problem) no(tree.problem)
+      else {
+        const lacks = missingInWorktree(task.repo, tree.path)
+        if (lacks.length) no(`worktree ${tree.path} lacks what the main copy has: ${lacks.join(', ')} — prepare it there (nothing is installed or copied for you)`)
+      }
     }
   }
   return { problems, tasks: tasks.length }
@@ -130,7 +155,7 @@ export function checkQueue(dataDir = pluginDataDir(), pathEnv = process.env.PATH
 // ── the rate limit between tasks ─────────────────────────────────────────────
 
 /** The latest `rate_limit_event` over every run record of the data directory: `{ ts, five_hour, seven_day }` or null. */
-export function latestRateLimit(dataDir = pluginDataDir()) {
+function latestRateLimit(dataDir = pluginDataDir()) {
   const dir = join(dataDir, 'force-runs')
   let latest = null
   let names = []
@@ -166,7 +191,7 @@ const percent = (utilization) => (typeof utilization === 'number' ? (utilization
  * What the latest event says before the next task: `{ stop: 'seven_day', resetsAt }`, `{ wait: true, resetsAt, percent }` or `{}`.
  * A window whose reset time already passed is a new window: nothing to wait for (an event of yesterday's night).
  */
-export function gate(event, threshold, nowS = Date.now() / 1000) {
+function gate(event, threshold, nowS = Date.now() / 1000) {
   if (!event) return {}
   const week = event.seven_day
   if (week?.status === 'rejected' && (week.resetsAt == null || week.resetsAt > nowS)) return { stop: 'seven_day', resetsAt: week.resetsAt ?? null }
@@ -178,23 +203,14 @@ export function gate(event, threshold, nowS = Date.now() / 1000) {
 
 // ── the summary ──────────────────────────────────────────────────────────────
 
+const gitHead = (cwd) => gitOk(cwd, 'rev-parse', 'HEAD')
 const gitCount = (cwd, from) => {
-  try {
-    return Number(execFileSync('git', ['rev-list', '--count', `${from}..HEAD`], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim())
-  } catch {
-    return null
-  }
-}
-const gitHead = (cwd) => {
-  try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-  } catch {
-    return null
-  }
+  const count = gitOk(cwd, 'rev-list', '--count', `${from}..HEAD`)
+  return count === null ? null : Number(count)
 }
 
 /** The blockers of the last Force block of the task that are not lifted (the parser of the journal gates). */
-export function openBlockersOf(repo, ticket, dataDir = pluginDataDir()) {
+function openBlockersOf(repo, ticket, dataDir = pluginDataDir()) {
   let task = null
   try {
     task = readPipelineState(resolve(repo))?.tasks.find((item) => item.ticket === ticket) ?? null
@@ -209,11 +225,11 @@ export function openBlockersOf(repo, ticket, dataDir = pluginDataDir()) {
 
 const clip = (text, n = 160) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
 
-export function summaryText(rows, stop, notRun) {
+function summaryText(rows, stop, notRun) {
   const lines = ['# Force queue — morning summary', '']
   for (const row of rows) {
     const blockers = row.blockers === null ? 'blockers unknown (journal unreadable)' : row.blockers.length ? `${row.blockers.length} open blocker(s): ${row.blockers.map((b) => clip(b)).join(' | ')}` : 'no open blockers'
-    lines.push(`${row.ticket}: ${row.outcome}${row.detail ? ` (${row.detail})` : ''} — ${row.commits ?? '?'} commit(s) — ${blockers} — digest: ${row.digest}`)
+    lines.push(`${row.ticket}: ${row.outcome}${row.detail ? ` (${row.detail})` : ''} — ${row.commits ?? '?'} commit(s) — ${blockers} — log: ${row.log ?? '—'} — digest: ${row.digest}`)
   }
   if (!rows.length) lines.push('No task ran.')
   if (stop) lines.push('', `Queue stopped: ${stop}`)
@@ -224,13 +240,13 @@ export function summaryText(rows, stop, notRun) {
 // ── run ──────────────────────────────────────────────────────────────────────
 
 const OUTCOME = { completed: 'completed', error: 'error', stopped: 'stopped', gave_up: 'gave_up', limit_unknown: 'limit_unknown', weekly_limit: 'weekly_limit', spend_limit: 'spend_limit' }
-const QUEUE_STOPS = new Set(['weekly_limit', 'spend_limit'])
+const QUEUE_STOPS = new Set(['weekly_limit', 'spend_limit', 'limit_unknown'])
 
 /**
  * The queue to its end or its stop. `{ ok: false, code, message }` when it cannot start (a lock, nothing queued), else `{ ok: true, exit, rows, stop, summary }`.
  * `options`: `threshold` (percent, default 90), `marginMin`, `maxSessions`, `retries`, `dataDir`, `now`, `scale` (tests: a multiplier of the waits).
  */
-export async function runQueue(options = {}) {
+async function runQueue(options = {}) {
   const { threshold = 90, marginMin = 5, dataDir = pluginDataDir(), now = Date.now } = options
   const scale = Number(options.scale ?? process.env.FORCE_RUN_WAIT_SCALE ?? 1)
   const lock = acquirePidLock(queueLockFile(dataDir), 'force-queue run')
@@ -283,6 +299,12 @@ export async function runQueue(options = {}) {
           break
         }
       }
+      // a `remove` during the wait above: the task is gone (or no longer queued), it does not run
+      if (!readQueue(dataDir).tasks.some((item) => item.ticket === task.ticket && runnable(item))) {
+        say(`${task.ticket}: removed from the queue while waiting — skipped`)
+        tried.add(task.ticket)
+        continue
+      }
       tried.add(task.ticket)
       const tl = acquirePidLock(ticketLockFile(task.ticket, dataDir), 'force-queue run')
       if (!tl.ok) {
@@ -306,8 +328,16 @@ export async function runQueue(options = {}) {
         break
       }
       if (QUEUE_STOPS.has(row.outcome)) {
-        stop = row.outcome === 'weekly_limit' ? `weekly limit hit by ${task.ticket}${row.resetsAt ? `, resets ${new Date(row.resetsAt * 1000).toISOString()}` : ''}` : `spend limit hit by ${task.ticket}`
-        exit = row.outcome === 'weekly_limit' ? EXIT.weekly : EXIT.spend
+        if (row.outcome === 'weekly_limit') {
+          stop = `weekly limit hit by ${task.ticket}${row.resetsAt ? `, resets ${new Date(row.resetsAt * 1000).toISOString()}` : ''}`
+          exit = EXIT.weekly
+        } else if (row.outcome === 'spend_limit') {
+          stop = `spend limit hit by ${task.ticket}`
+          exit = EXIT.spend
+        } else {
+          stop = `a limit with no known window or reset time hit by ${task.ticket} — nothing says when to go on`
+          exit = EXIT.limit
+        }
         break
       }
       if (row.outcome !== 'completed' && exit === EXIT.completed) exit = EXIT.error
@@ -319,9 +349,22 @@ export async function runQueue(options = {}) {
   }
 }
 
+const SCRIPTS = dirname(fileURLToPath(import.meta.url))
+/** The path of RUN-DIGEST.md when this run wrote it (its mtime is not before the start of the task), else the command that writes it. */
+function digestOf(taskDir, startedMs) {
+  const file = join(taskDir, 'RUN-DIGEST.md')
+  try {
+    if (statSync(file).mtimeMs >= startedMs - 1000) return file
+  } catch {
+    // none yet
+  }
+  return `not written — node ${join(SCRIPTS, 'run-digest.mjs')} ${taskDir}`
+}
+
 async function runTask(task, options) {
   const { dataDir, update } = options
   const base = { ticket: task.ticket, commits: null, blockers: null, digest: '—' }
+  const startedMs = Date.now()
   const ctx = prepareRun(task.repo, task.ticket)
   if (!ctx.ok) {
     update(task.ticket, { status: 'not_ready', finishedAt: new Date().toISOString(), note: ctx.message })
@@ -333,7 +376,7 @@ async function runTask(task, options) {
   say(`${task.ticket}: starting`)
   let loop
   try {
-    loop = await runLoop(task.repo, task.ticket, options)
+    loop = await runLoop(task.repo, task.ticket, { ...options, fetch: false })
   } catch (error) {
     loop = { ok: true, status: 'error', text: `the loop failed: ${error.message}` }
   }
@@ -349,7 +392,8 @@ async function runTask(task, options) {
     detail: loop.text ?? loop.message ?? '',
     commits,
     blockers: openBlockersOf(task.repo, task.ticket, dataDir),
-    digest: join(ctx.task.dir, 'RUN-DIGEST.md'),
+    log: loop.last?.log ?? null,
+    digest: digestOf(ctx.task.dir, startedMs),
     resetsAt: loop.resetsAt ?? null,
     interrupted,
   }
@@ -367,7 +411,7 @@ async function main(argv) {
   try {
     if (command === 'add' && rest.length === 2) {
       const out = addTask(resolve(rest[0]), rest[1])
-      say(out.ok ? `${rest[1]} added (${out.entry.repo})` : `${rest[1]} not added — ${out.message}`)
+      say(out.ok ? `${rest[1]} added (${out.entry.repo}), worktree ${out.worktree} — put its dependencies and .env there before the night` : `${rest[1]} not added — ${out.message}`)
       process.exit(out.ok ? 0 : EXIT.notReady)
     }
     if (command === 'list' && !rest.length) {

@@ -49,3 +49,8 @@ Assumptions:
 
 `add` takes only a task whose Force block is open and confirmed; the queue then runs it headless (`force-queue.mjs run`, README "Night queue").
 
+**What the probe and the checks mean for a night run.** The night session runs on the machine that runs the queue, not where the interview was held:
+
+- The auth probe of Step 0 counts as a pass only through the `stage-pipeline-chrome` persistent profile on the machine that runs the night. A login in an `--isolated` browser dies with the session, and a login on another machine does not carry over. Without a pass in that profile, write the auth-gated criteria as an assumption that defers them as `[live: user-side — …]` (the "login not now" form of "5.").
+- The Figma desktop MCP (the app open with the file) and the dev server must be up on the night machine; if they will not be, write the Figma comparison and the runtime checks as deferred the same way (`[live: user-side — …]`), not as checks the night run will make.
+

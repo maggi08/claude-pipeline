@@ -132,25 +132,34 @@ Always forbidden: `git push`, creating and commenting on a PR/MR, deploy, publis
 
 The interview needs you; the run does not. Collect the answers in the evening, leave the runs for the night.
 
+**Your own repos only.** `claude -p --permission-mode auto` runs the repo's project hooks and settings unattended, so a queue entry executes whatever the repo's `.claude/` says. Queue only repos you trust.
+
 **Evening, per task.** `/stage-force <TICKET> --interview-only` runs the interview (Step 0) and writes the Force block with the `Confirmed:` line, but starts no stage and makes no commit. It ends with the command that queues the task (`<plugin>` is the plugin directory on the machine that will run the night):
 
 ```
-node <plugin>/scripts/force-queue.mjs add <repo> <TICKET>     # only a task with a confirmed interview; otherwise the reason is named
+node <plugin>/scripts/force-queue.mjs add <repo> <TICKET>     # only a task with a confirmed interview; otherwise the reason is named. Makes the task's worktree now, so you can prepare it
 node <plugin>/scripts/force-queue.mjs list                    # the queue and the status of each task
 node <plugin>/scripts/force-queue.mjs remove <TICKET>         # only a task that was not started
 node <plugin>/scripts/force-queue.mjs check                   # before the night: every "no" is named, exit 1 on any
 node <plugin>/scripts/force-queue.mjs run                     # the queue, one task after another, in the order they were added
 ```
 
-`run` takes `--threshold 90` (percent of the 5-hour window at which a task waits for the reset before it starts), `--margin-min 5`, `--max-sessions 3` (new sessions in a row without a newly closed stage, then the task stops), `--retries 1`. Each task runs as a headless `claude -p` force session in its own worktree next to the repo (the main copy is not touched); the machine is kept awake with `caffeinate`. Push and PR stay forbidden, as in any force run.
+`run` takes `--threshold 90` (percent of the 5-hour window at which a task waits for the reset before it starts), `--margin-min 5`, `--max-sessions 3` (new sessions in a row without a newly closed stage, then the task stops), `--retries 1`. Each task runs as a headless `claude -p` force session in its own worktree next to the repo (the main copy is not touched; a task branch that is checked out in the main copy is refused: switch the main copy to another branch); the machine is kept awake with `caffeinate`. At the start of each task `git fetch origin <branch>` runs: a local branch behind origin with a clean worktree is fast-forwarded (`merge --ff-only`), a diverged one is refused with both SHAs, and a failed fetch (no network, no origin) is one line in the output and the run goes on with the local branch. The raw session log is created `0600`. Push and PR stay forbidden, as in any force run.
 
-**What the second machine needs.** macOS, `claude` and `node` on PATH (a login shell is not read, so check `PATH` of the shell that starts `run`), the repo cloned, the task folder (`<task_dir>/<TICKET>/` with STAGES.md and the confirmed Force block) and the task branch pushed to origin. Run `check` first: for every queued task it says whether the repo, the task folder, the interview, the branch and `claude` are in place.
+**What the second machine needs.** macOS, `claude` and `node` on PATH (a login shell is not read, so check `PATH` of the shell that starts `run`), the repo cloned, the task folder (`<task_dir>/<TICKET>/` with STAGES.md and the confirmed Force block) and the task branch pushed to origin. Before the night:
+
+- the task worktree (`<repo>-<ticket>`, made by `add`) has what a fresh checkout lacks: the dependencies installed and the `.env*` files in place. Nothing is installed or copied for you; `check` names, per task, `node_modules`, the `.env*` files of the main copy's root and the main copy's `.claude/pipeline.config.local.md` when the worktree lacks them;
+- a repo whose `.claude/pipeline.config.md` is committed with a relative `task_path`: the hooks of a session in the worktree look for the task in the worktree's own folder and find nothing, so the commit and journal guards would be silent. `add` and `check` refuse such a task and print the fix: create `<worktree>/.claude/pipeline.config.local.md` with `- task_path: <the absolute task folder of the main copy>`;
+- the login is done in the `stage-pipeline-chrome` persistent profile (an `--isolated` login dies with the session), the Figma desktop app is open with the file, and the dev server is up. Otherwise the checks that need them are deferred as `[live: user-side — …]` at the interview, not made at night;
+- the machine stays on with the lid open (`caffeinate -i` stops idle sleep, not lid-close sleep) and the queue is started under `tmux` or `nohup` (closing a terminal sends SIGHUP to `run`).
+
+Run `check` first: it fetches each task branch (`git fetch origin <branch>`) and says, for every queued task, whether the repo, the task folder, the interview, the branch on origin, the worktree and `claude` are in place.
 
 **The 5-hour limit.** The session stops with `usage_limit_reached`. The queue waits until the reset plus 5 minutes (`--margin-min`) and starts a NEW session of the same task in the same worktree (never `--resume`). Before the next task it also waits if the window is already at the threshold.
 
-**The weekly limit and the spend limit.** The queue stops at once and prints the reset time. The task that hit the limit and every task not started stay queued; the next `run` goes on with a new session. A task that failed for another reason does not stop the queue.
+**The weekly limit, the spend limit and a limit of unknown window.** The queue stops at once and prints the reset time (for a limit with no known window or reset time, there is none to print). The task that hit the limit and every task not started stay queued; the next `run` goes on with a new session. A task that failed for another reason does not stop the queue.
 
-**The morning.** The summary is printed to stdout and written to `force-queue-summary.md` in the plugin data directory (`~/.claude/plugins/data/stage-pipeline-<marketplace>/`, or `$CLAUDE_PLUGIN_DATA`). One line per task: outcome, commits of the run, open blockers, the path to its `RUN-DIGEST.md`; then the reason the queue stopped and the tasks not started. The summary is rewritten after each task, so a crash keeps what was done.
+**The morning.** The summary is printed to stdout and written to `force-queue-summary.md` in the plugin data directory (`~/.claude/plugins/data/stage-pipeline-<marketplace>/`, or `$CLAUDE_PLUGIN_DATA`). One line per task: outcome, commits of the run, open blockers, `log:` (the raw log of its last session) and `digest:` (the path to its `RUN-DIGEST.md` when this run wrote it; otherwise `not written` with the `run-digest.mjs` command that writes it); then the reason the queue stopped and the tasks not started. The summary is rewritten after each task, so a crash keeps what was done.
 
 What to do with a line of the summary:
 
@@ -158,14 +167,14 @@ What to do with a line of the summary:
 |---|---|---|
 | `completed` | the stages are done, the Force block is closed | read `RUN-DIGEST.md` (blockers, "Awaiting user confirmation"), then `/task-wrapup` |
 | `completed` with open blockers | the run finished what did not depend on them | answer each blocker: write `Lifted: <who> <date> — <answer>` on its line in the Force block, then run the task again (`/stage-force <TICKET>`) |
-| `weekly_limit`, `spend_limit` | the account limit; the task is still queued | wait for the reset time in the summary (or raise the organization's limit), then `run` again — nothing to repair |
+| `weekly_limit`, `spend_limit`, `limit_unknown` | the account limit, or a limit with no known window or reset time (`limit_unknown`: the queue stops, nothing says when to go on); the task is still queued | wait for the reset time in the summary (or raise the organization's limit; for `limit_unknown` read the text of the limit in the log), then `run` again — nothing to repair |
 | `stopped` | the session ended with the Force block still open | read the end of the raw log in the task folder and `RUN-DIGEST.md`; `add <repo> <TICKET>` again (a finished ticket is re-added in place of its old entry), then `run`; it continues from the first stage that is not done |
 | `gave_up` | several new sessions in a row closed no stage | something blocks the task: read the log, fix the cause (a login, a missing file), then `add <repo> <TICKET>` again and `run` |
-| `error`, `limit_unknown` | a non-zero exit or an API error; the text is in the line | the line says why; fix it, then `add <repo> <TICKET>` again and `run`. A finished entry stays in `list` until it is re-added (`remove` takes only a task that was not started); you can also take the task by hand with `/stage-force` |
+| `error` | a non-zero exit or an API error; the text is in the line | the line says why; fix it, then `add <repo> <TICKET>` again and `run`. A finished entry stays in `list` until it is re-added (`remove` takes only a task that was not started); you can also take the task by hand with `/stage-force` |
 | `not_ready` | the Force block is missing, closed or has no `Confirmed:` line, or the branch is not there | check the block and the branch (`force-queue.mjs check`), re-interview with `/stage-force <TICKET> --interview-only` if needed, then `add` and `run` |
 | `busy` | another run holds this task | wait for it or stop it, `run` again |
 
-Exit codes of `run`: `0` every task completed · `1` some task did not · `2` refused to start (a second `run` on this machine, or nothing queued) · `4` interrupted · `5` weekly limit · `6` spend limit. `force-run.mjs <repo> <TICKET>` runs one task without the queue (exit codes: `0` completed, `1` error, `2` not ready, `3` `limit_unknown` — with `--once`, `limit`: the 5-hour limit, no wait —, `4` stopped, `5` weekly limit, `6` spend limit, `7` gave up).
+Exit codes of `run`: `0` every task completed · `1` some task did not · `2` refused to start (a second `run` on this machine, or nothing queued) · `3` a limit with no known window or reset time · `4` interrupted · `5` weekly limit · `6` spend limit. `force-run.mjs <repo> <TICKET>` runs one task without the queue (exit codes: `0` completed, `1` error, `2` not ready, `3` `limit_unknown` — with `--once`, `limit`: the 5-hour limit, no wait —, `4` stopped, `5` weekly limit, `6` spend limit, `7` gave up).
 
 ## 3. Task finale
 

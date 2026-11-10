@@ -9322,6 +9322,15 @@ if (unit('vt6s13c')) {
 }
 
 // VT-12 stage 1: force-run.mjs — one headless run of one task, with a fake `claude` that prints stream-json (an executable first on the PATH, like the `git` shim above).
+// VT-12: the stream events of a fake `claude` (rate-limit and usage-limit shapes) are written once; the fakes of the three units below interpolate this source.
+const FAKE_STREAM = `const out = (event) => console.log(JSON.stringify(event))
+const rateEvent = (five, seven, { fiveReset, sevenReset, fiveStatus = 'allowed', sevenStatus = 'allowed' }) => out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: five, resetsAt: fiveReset, status: fiveStatus }, seven_day: { utilization: seven, resetsAt: sevenReset, status: sevenStatus } } } })
+const limitAssistant = (type, resetsAt, text, reason) => out({ type: 'assistant', message: { content: [{ type: 'text', text }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt, rateLimitType: type, ...(reason ? { overageDisabledReason: reason } : {}) } } })
+const limitEvents = (type, resetsAt, text, reason) => {
+  limitAssistant(type, resetsAt, text, reason)
+  out({ type: 'result', subtype: 'success', is_error: true, result: text })
+}
+`
 if (unit('vt12s1')) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt12s1-')))
   const FORCE_RUN = join(PLUGIN, 'force-run.mjs')
@@ -9333,8 +9342,8 @@ const fs = require('fs')
 const path = require('path')
 const scenario = process.env.FAKE_SCENARIO
 fs.appendFileSync(path.join(__dirname, 'calls.jsonl'), JSON.stringify({ argv: process.argv.slice(2), cwd: fs.realpathSync(process.cwd()), pid: process.pid, scenario }) + '\\n')
-const out = (event) => console.log(JSON.stringify(event))
-const rate = (five, seven, status = 'allowed') => out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: five, resetsAt: 1793082600, status }, seven_day: { utilization: seven, resetsAt: 1793600000, status: 'allowed' } } } })
+${FAKE_STREAM}
+const rate = (five, seven, status = 'allowed') => rateEvent(five, seven, { fiveReset: 1793082600, sevenReset: 1793600000, fiveStatus: status })
 out({ type: 'system', subtype: 'init' })
 if (scenario === 'completed' || scenario === 'stopped') {
   rate(0.25, 0.1)
@@ -9346,8 +9355,7 @@ if (scenario === 'completed' || scenario === 'stopped') {
   out({ type: 'result', subtype: 'success', is_error: false, result: 'done' })
 } else if (scenario === 'limit-assistant') {
   rate(0.99, 0.3, 'rejected')
-  out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your session limit · resets 11:30am (Asia/Almaty)" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: 1793082600, rateLimitType: 'five_hour' } } })
-  out({ type: 'result', subtype: 'success', is_error: true, result: "You've hit your session limit · resets 11:30am (Asia/Almaty)" })
+  limitEvents('five_hour', 1793082600, "You've hit your session limit · resets 11:30am (Asia/Almaty)", null)
   process.exit(1)
 } else if (scenario === 'limit-result') {
   rate(0.4, 0.99, 'allowed')
@@ -9382,9 +9390,9 @@ if (scenario === 'completed' || scenario === 'stopped') {
   const home = join(root, 'home')
   mkdirSync(home, { recursive: true })
   let n = 0
-  const launch = (scenario, { path = `${bin}:${dirname(node)}:/usr/bin:/bin` } = {}) => {
+  const launch = (scenario, { path = `${bin}:${dirname(node)}:/usr/bin:/bin`, at = repo } = {}) => {
     const dataDir = join(root, `data-${n++}`)
-    const run = spawnSync(node, [FORCE_RUN, repo, 'VT-12', '--once'], { encoding: 'utf8', env: { PATH: path, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SCENARIO: scenario } })
+    const run = spawnSync(node, [FORCE_RUN, at, 'VT-12', '--once'], { encoding: 'utf8', env: { PATH: path, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SCENARIO: scenario } })
     const recordPath = join(dataDir, 'force-runs/VT-12.jsonl')
     const records = existsSync(recordPath) ? readFileSync(recordPath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
     return { ...run, dataDir, records, outcomes: records.filter((record) => record.type === 'outcome'), rates: records.filter((record) => record.type === 'rate_limit') }
@@ -9421,6 +9429,7 @@ if (scenario === 'completed' || scenario === 'stopped') {
   const win = (rate) => JSON.stringify(rate?.five_hour) + JSON.stringify(rate?.seven_day)
   check('AC-1.3: every rate_limit_event is in the run record with utilization, resetsAt and status of five_hour and seven_day', done.rates.length === 2 && win(done.rates[0]) === '{"utilization":0.25,"resetsAt":1793082600,"status":"allowed"}{"utilization":0.1,"resetsAt":1793600000,"status":"allowed"}' && done.rates[1].five_hour.utilization === 0.5, JSON.stringify(done.rates))
   check('AC-1.3: the raw stream goes to a log file of the task, one per session', Boolean(logFile) && dirname(logFile) === dirname(stagesFile) && readFileSync(logFile, 'utf8').includes('"type":"rate_limit_event"') && logFile.includes(done.outcomes[0].session), String(logFile))
+  check('security S-1: the raw session log is created for its owner only (0600)', (statSync(logFile).mode & 0o777) === 0o600, (statSync(logFile).mode & 0o777).toString(8))
   check('AC-1.4 completed: the session ended and the heading is closed — one `completed` outcome, exit 0', done.status === 0 && done.outcomes.length === 1 && done.outcomes[0].outcome === 'completed', `${done.status} ${JSON.stringify(done.outcomes)}`)
 
   // AC-1.4: the other outcomes, each exactly once, with what it carries.
@@ -9448,6 +9457,61 @@ if (scenario === 'completed' || scenario === 'stopped') {
     const nocafLog = nocaf.outcomes[0] ? readFileSync(nocaf.outcomes[0].log, 'utf8') : ''
     check('AC-1.5: no caffeinate on the PATH — one line in the log, the run goes on and records its outcome', nocaf.status === 4 && nocaf.outcomes.length === 1 && nocafLog.split('\n').filter((line) => /caffeinate not found/.test(line)).length === 1, `${nocaf.status} ${nocafLog}`)
   }
+
+  // final checks #1: a committed config with a relative task_path — the worktree's hooks would not see the task; refused with the remedy, started once the local config is there.
+  const gitC = (cwd, ...args) => git(cwd, ...args)
+  const taskRepo = (name, { commitConfig = false } = {}) => {
+    const dir = join(root, name)
+    repoAt(dir, 'main')
+    write(dir, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/VT-12/STAGES.md': stagesText(OPEN) })
+    if (commitConfig) {
+      gitC(dir, 'add', '-f', '.claude/pipeline.config.md')
+      gitC(dir, 'commit', '-qm', 'config')
+    }
+    gitC(dir, 'branch', 'VT-12/feat/q')
+    return dir
+  }
+  const crepo = taskRepo('c-repo', { commitConfig: true })
+  const cCalls = calls().length
+  const hidden = launch('stopped', { at: crepo })
+  const remedyDir = join(crepo, '.claude/tasks')
+  check('final #1 incident: a committed config with a relative task_path — the worktree does not see the task: exit 2, no claude, the remedy (local config + absolute task_path) printed', hidden.status === 2 && calls().length === cCalls && hidden.stdout.includes(join(root, 'c-repo-vt-12', '.claude/pipeline.config.local.md')) && hidden.stdout.includes(`- task_path: ${remedyDir}`), `${hidden.status} ${hidden.stdout}`)
+  writeFileSync(join(root, 'c-repo-vt-12', '.claude/pipeline.config.local.md'), `- task_path: ${remedyDir}\n`)
+  const seen = launch('stopped', { at: crepo })
+  check('final #1 legitimate: with the local config written in the worktree the run starts', seen.status === 4 && calls().length === cCalls + 1, `${seen.status} ${seen.stdout}`)
+
+  // final checks #7: the task branch checked out in the main copy — refused, nothing run in the main copy.
+  const mrepo = taskRepo('m-repo')
+  gitC(mrepo, 'checkout', '-q', 'VT-12/feat/q')
+  const mCalls = calls().length
+  const inMain = launch('stopped', { at: mrepo })
+  check('final #7 incident: the task branch is checked out in the main copy — exit 2, the message says to switch the main copy, claude does not run there', inMain.status === 2 && /checked out in the main copy/.test(inMain.stdout) && calls().length === mCalls && !existsSync(join(root, 'm-repo-vt-12')), `${inMain.status} ${inMain.stdout}`)
+
+  // final checks #4: fetch before the run — behind origin and clean: fast-forward; diverged: refused naming both SHAs; no network: one line, goes on.
+  const frepo = taskRepo('f-repo')
+  const origin = join(root, 'f-origin.git')
+  execFileSync('git', ['init', '-q', '--bare', origin])
+  gitC(frepo, 'remote', 'add', 'origin', origin)
+  gitC(frepo, 'push', '-q', 'origin', 'main', 'VT-12/feat/q')
+  const fWt = join(root, 'f-repo-vt-12')
+  check('final #4 legitimate: in sync with origin — the run starts', launch('stopped', { at: frepo }).status === 4 && existsSync(fWt))
+  const other = join(root, 'f-other')
+  execFileSync('git', ['clone', '-q', '-b', 'VT-12/feat/q', origin, other])
+  gitC(other, 'config', 'user.email', 'test@example.com')
+  gitC(other, 'config', 'user.name', 'test')
+  gitC(other, 'commit', '-q', '--allow-empty', '-m', 'upstream work')
+  gitC(other, 'push', '-q', 'origin', 'VT-12/feat/q')
+  const upstream = gitC(other, 'rev-parse', 'HEAD').trim()
+  const behind = launch('stopped', { at: frepo })
+  check('final #4 incident: the branch is behind origin and the worktree is clean — fast-forwarded to origin before the session', behind.status === 4 && gitC(fWt, 'rev-parse', 'HEAD').trim() === upstream && /fast-forwarded/.test(behind.stdout), `${behind.status} ${behind.stdout}`)
+  gitC(fWt, 'commit', '-q', '--allow-empty', '-m', 'local work')
+  gitC(other, 'commit', '-q', '--allow-empty', '-m', 'more upstream work')
+  gitC(other, 'push', '-q', 'origin', 'VT-12/feat/q')
+  const diverge = launch('stopped', { at: frepo })
+  check('final #4 incident: local and origin diverged — exit 2, both SHAs named, no session', diverge.status === 2 && /diverged/.test(diverge.stdout) && diverge.stdout.includes(gitC(fWt, 'rev-parse', 'HEAD').trim().slice(0, 12)) && diverge.stdout.includes(gitC(other, 'rev-parse', 'HEAD').trim().slice(0, 12)), `${diverge.status} ${diverge.stdout}`)
+  gitC(frepo, 'remote', 'set-url', 'origin', join(root, 'no-such-origin.git'))
+  const offline = launch('stopped', { at: frepo })
+  check('final #4: the fetch failed (no network / no origin) — one line says so and the run goes on with the local branch', offline.status === 4 && offline.stdout.split('\n').filter((line) => /git fetch origin .* failed/.test(line)).length === 1, `${offline.status} ${offline.stdout}`)
   const noClaude = launch('completed', { path: `${dirname(node)}:/usr/bin:/bin` })
   check('A10: no claude on the PATH — exit 2 and the missing binary is named', noClaude.status === 2 && /`claude` is not on the PATH/.test(noClaude.stdout) && noClaude.records.length === 0, `${noClaude.status} ${noClaude.stdout}`)
 
@@ -9469,11 +9533,10 @@ const seq = (process.env.FAKE_SEQ || 'completed').split(',')
 const before = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').split('\\n').filter(Boolean).length : 0
 const scenario = seq[Math.min(before, seq.length - 1)]
 fs.appendFileSync(callsFile, JSON.stringify({ argv: process.argv.slice(2), cwd: fs.realpathSync(process.cwd()), pid: process.pid, scenario }) + '\\n')
-const out = (event) => console.log(JSON.stringify(event))
+${FAKE_STREAM}
 const now = Math.floor(Date.now() / 1000)
 const limit = (type, resetsAt, text, reason) => {
-  out({ type: 'assistant', message: { content: [{ type: 'text', text }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt, rateLimitType: type, ...(reason ? { overageDisabledReason: reason } : {}) } } })
-  out({ type: 'result', subtype: 'success', is_error: true, result: text })
+  limitEvents(type, resetsAt, text, reason)
   process.exit(1)
 }
 const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
@@ -9491,7 +9554,7 @@ else if (scenario === 'weekly') limit('seven_day', now + 3 * 86400, "You've hit 
 else if (scenario === 'sleep') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'The computer went to sleep' }] }, apiError: 'computer_slept' }); process.exit(1) }
 else if (scenario === 'conn') { out({ type: 'result', subtype: 'error', is_error: true, result: 'API Error: connection_failed after 3 retries' }); process.exit(1) }
 else if (scenario === 'conn500') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'blip' }] }, apiError: 'connection_failed' }); out({ type: 'assistant', message: { content: [{ type: 'text', text: 'carrying on' }] } }); out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); process.exit(1) }
-else if (scenario === 'limitclosed') { edit('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'); out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your session limit" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: now + 3600, rateLimitType: 'five_hour' } } }); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }) }
+else if (scenario === 'limitclosed') { edit('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'); limitAssistant('five_hour', now + 3600, "You've hit your session limit", null); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }) }
 else if (scenario === 'hangdeaf') { process.on('SIGTERM', () => {}); process.on('SIGINT', () => {}); fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid)); setInterval(() => {}, 1000) }
 else if (scenario === 'logfail') {
   fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid))
@@ -9696,9 +9759,9 @@ const ticket = /stage-force (\\S+)/.exec(process.argv[3])[1]
 const scenario = JSON.parse(process.env.FAKE_PLAN || '{}')[ticket] || 'completed'
 const log = (ev) => fs.appendFileSync(path.join(__dirname, 'calls.jsonl'), JSON.stringify({ ticket, ev, scenario, t: Date.now(), cwd: fs.realpathSync(process.cwd()) }) + '\\n')
 log('start')
-const out = (event) => console.log(JSON.stringify(event))
+${FAKE_STREAM}
 const now = Math.floor(Date.now() / 1000)
-const rate = (five, seven, sevenStatus) => out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: five, resetsAt: now + 3600, status: 'allowed' }, seven_day: { utilization: seven, resetsAt: now + 86400, status: sevenStatus || 'allowed' } } } })
+const rate = (five, seven, sevenStatus) => rateEvent(five, seven, { fiveReset: now + 3600, sevenReset: now + 86400, sevenStatus })
 const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
 const close = () => {
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'))
@@ -9711,13 +9774,13 @@ setTimeout(() => {
   else if (scenario === 'hot') { rate(0.95, 0.1); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
   else if (scenario === 'weekrejected') { rate(0.2, 0.99, 'rejected'); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
   else if (scenario === 'weekly') {
-    out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your weekly limit" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: now + 3 * 86400, rateLimitType: 'seven_day' } } })
-    out({ type: 'result', subtype: 'success', is_error: true, result: "You've hit your weekly limit" }); end(1)
+    limitEvents('seven_day', now + 3 * 86400, "You've hit your weekly limit", null); end(1)
   } else if (scenario === 'error') { out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); end(1) }
   else if (scenario === 'limit5') {
-    out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your session limit" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: now + 3600, rateLimitType: 'five_hour' } } })
-    out({ type: 'result', subtype: 'success', is_error: true, result: "You've hit your session limit" }); end(1)
-  } else if (scenario === 'slow') { setTimeout(() => { close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }, 2500) }
+    limitEvents('five_hour', now + 3600, "You've hit your session limit", null); end(1)
+  } else if (scenario === 'limitunknown') { limitEvents('five_hour', null, "You've hit your session limit", null); end(1) }
+  else if (scenario === 'digest') { fs.writeFileSync(path.join(path.dirname(file), 'RUN-DIGEST.md'), 'digest'); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'slow') { setTimeout(() => { close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }, 2500) }
 }, 300)
 `
   writeFileSync(join(bin, 'claude'), fake)
@@ -9780,7 +9843,7 @@ setTimeout(() => {
   // AC-3.4: the summary
   const summary = readFileSync(join(d2, 'force-queue-summary.md'), 'utf8')
   const lineA = summary.split('\n').find((l) => l.startsWith('VT-A:')) ?? ''
-  check('AC-3.4 incident: the summary file and stdout carry a line per task — outcome, commit count of the run, blockers, path to RUN-DIGEST.md', /VT-A: completed/.test(lineA) && /— 1 commit\(s\)/.test(lineA) && /no open blockers/.test(lineA) && lineA.includes(join(repos['VT-A'], '.claude/tasks/VT-A/RUN-DIGEST.md')) && ordered.stdout.includes(lineA) && /VT-B: completed/.test(summary), `${summary}`)
+  check('AC-3.4 incident: the summary file and stdout carry a line per task — outcome, commit count of the run, blockers, path to RUN-DIGEST.md', /VT-A: completed/.test(lineA) && /— 1 commit\(s\)/.test(lineA) && /no open blockers/.test(lineA) && /log: \S+force-run-[0-9a-f-]+\.log/.test(lineA) && lineA.includes('digest: not written — node ') && lineA.includes('run-digest.mjs ' + join(repos['VT-A'], '.claude/tasks/VT-A')) && ordered.stdout.includes(lineA) && /VT-B: completed/.test(summary), `${summary}`)
 
   // AC-3.2: the lock of the machine; a stale one is taken over; the lock of the ticket.
   const d3 = sandbox()
@@ -9890,6 +9953,90 @@ setTimeout(() => {
   check('AC-3.5 incident: check names each failing task — repo missing, branch missing, interview unconfirmed, no task folder — exit 1; the ready VT-A is not named', bad.status === 1 && /VT-G: repo .*gone does not exist/.test(bad.stdout) && /VT-N: branch VT-N\/feat\/q exists neither locally nor on origin/.test(bad.stdout) && /VT-I: interview not confirmed/.test(bad.stdout) && /VT-NOFOLDER: task folder: no task VT-NOFOLDER/.test(bad.stdout) && !/NO — VT-A:/.test(bad.stdout), `${bad.status} ${bad.stdout}`)
   const noClaude = spawnSync(node, [QUEUE, 'check'], { encoding: 'utf8', env: { PATH: bare, HOME: home, STAGE_PIPELINE_DATA_DIR: d11 } })
   check('AC-3.5: claude missing from the PATH is named, exit 1', noClaude.status === 1 && /NO — `claude` is not on the PATH/.test(noClaude.stdout), noClaude.stdout)
+
+  // final checks #2/#1: `add` makes the worktree; `check` names what it lacks against the main copy; the committed-config case is refused in add and check.
+  const wt = (t) => join(root, `repo-${t}-${t.toLowerCase()}`)
+  mkTask('VT-W')
+  const dW = sandbox()
+  fill(dW, ['VT-W'])
+  check('final #2: `add` makes the worktree of the task (it can be prepared in the evening)', existsSync(join(wt('VT-W'), '.git')), wt('VT-W'))
+  mkdirSync(join(repos['VT-W'], 'node_modules'))
+  writeFileSync(join(repos['VT-W'], '.env.local'), 'SECRET=1\n')
+  writeFileSync(join(repos['VT-W'], '.claude/pipeline.config.local.md'), '- main_branch: main\n')
+  const lacking = q(dW, ['check'])
+  check('final #2 incident: check names what the worktree lacks against the main copy — node_modules, .env.local and the local config — exit 1, nothing installed or copied', lacking.status === 1 && /VT-W: worktree .* lacks what the main copy has: node_modules, \.env\.local, \.claude\/pipeline\.config\.local\.md/.test(lacking.stdout) && !existsSync(join(wt('VT-W'), 'node_modules')) && !existsSync(join(wt('VT-W'), '.env.local')), `${lacking.status} ${lacking.stdout}`)
+  mkdirSync(join(wt('VT-W'), 'node_modules'))
+  mkdirSync(join(wt('VT-W'), '.claude'), { recursive: true })
+  writeFileSync(join(wt('VT-W'), '.env.local'), 'SECRET=1\n')
+  writeFileSync(join(wt('VT-W'), '.claude/pipeline.config.local.md'), '- main_branch: main\n')
+  const prepared = q(dW, ['check'])
+  check('final #2 legitimate: the worktree prepared by hand — check is ready, exit 0', prepared.status === 0 && /ready: 1 task/.test(prepared.stdout), `${prepared.status} ${prepared.stdout}`)
+
+  mkTask('VT-H')
+  git(repos['VT-H'], 'add', '-f', '.claude/pipeline.config.md')
+  git(repos['VT-H'], 'commit', '-qm', 'config')
+  git(repos['VT-H'], 'branch', '-f', 'VT-H/feat/q', 'HEAD')
+  const dH = sandbox()
+  const refusedH = q(dH, ['add', repos['VT-H'], 'VT-H'])
+  const remedy = `- task_path: ${join(repos['VT-H'], '.claude/tasks')}`
+  check('final #1 incident: add of a task whose worktree hooks cannot see it (committed config, relative task_path) — exit 2, not queued, the remedy printed verbatim', refusedH.status === 2 && refusedH.stdout.includes(join(wt('VT-H'), '.claude/pipeline.config.local.md')) && refusedH.stdout.includes(remedy) && queueOf(dH).length === 0, `${refusedH.status} ${refusedH.stdout}`)
+  mkdirSync(dH, { recursive: true })
+  writeFileSync(join(dH, 'force-queue.json'), JSON.stringify({ tasks: [{ ticket: 'VT-H', repo: repos['VT-H'], status: 'queued', started: false, addedAt: 'x' }] }))
+  const checkH = q(dH, ['check'])
+  check('final #1 incident: check names the same remedy for it', checkH.status === 1 && checkH.stdout.includes(remedy), `${checkH.status} ${checkH.stdout}`)
+  writeFileSync(join(wt('VT-H'), '.claude/pipeline.config.local.md'), `${remedy}\n`)
+  check('final #1 legitimate: with the local config in the worktree check is ready', q(dH, ['check']).status === 0)
+
+  // final checks #4: check judges "on origin" after a fetch (a branch that only the remote has).
+  mkTask('VT-O')
+  const originO = join(root, 'o-origin.git')
+  execFileSync('git', ['init', '-q', '--bare', originO])
+  git(repos['VT-O'], 'remote', 'add', 'origin', originO)
+  git(repos['VT-O'], 'push', '-q', 'origin', 'VT-O/feat/q')
+  git(repos['VT-O'], 'branch', '-D', 'VT-O/feat/q')
+  git(repos['VT-O'], 'update-ref', '-d', 'refs/remotes/origin/VT-O/feat/q')
+  const dO = sandbox()
+  mkdirSync(dO, { recursive: true })
+  writeFileSync(join(dO, 'force-queue.json'), JSON.stringify({ tasks: [{ ticket: 'VT-O', repo: repos['VT-O'], status: 'queued', started: false, addedAt: 'x' }] }))
+  const checkO = q(dO, ['check'])
+  check('final #4 incident: the branch exists only on origin and was never fetched — check fetches first and is ready', checkO.status === 0 && /ready: 1 task/.test(checkO.stdout), `${checkO.status} ${checkO.stdout}`)
+
+  // final checks #5: `log:` on the line; `digest:` only for a RUN-DIGEST.md this run wrote.
+  const d13 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  const oldDigest = join(repos['VT-A'], '.claude/tasks/VT-A/RUN-DIGEST.md')
+  writeFileSync(oldDigest, 'yesterday')
+  utimesSync(oldDigest, new Date(Date.now() - 86400_000), new Date(Date.now() - 86400_000))
+  fill(d13, ['VT-A', 'VT-B'])
+  q(d13, ['run'], { 'VT-A': 'completed', 'VT-B': 'digest' })
+  const sum13 = readFileSync(join(d13, 'force-queue-summary.md'), 'utf8').split('\n')
+  const rowA = sum13.find((l) => l.startsWith('VT-A:')) ?? ''
+  const rowB = sum13.find((l) => l.startsWith('VT-B:')) ?? ''
+  check('final #5 incident: a RUN-DIGEST.md left from an earlier night is not reported as this run\'s — the line says "not written" with the command, and has the session log', /log: \S+force-run-[0-9a-f-]+\.log/.test(rowA) && /digest: not written — node \S+run-digest\.mjs /.test(rowA) && !rowA.includes(oldDigest + ' ') && !/digest: \S*RUN-DIGEST/.test(rowA), rowA)
+  check('final #5 legitimate: a RUN-DIGEST.md written by this run — its path is on the line', rowB.includes(`digest: ${join(repos['VT-B'], '.claude/tasks/VT-B/RUN-DIGEST.md')}`), rowB)
+
+  // final checks #8: a limit with no known window/reset stops the queue, the task stays queued.
+  const d14 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d14, ['VT-A', 'VT-B'])
+  const unknown = q(d14, ['run'], { 'VT-A': 'limitunknown', 'VT-B': 'completed' })
+  check('final #8 incident: a limit with no known reset time — the queue stops (exit 3), VT-A stays queued, VT-B never starts', unknown.status === 3 && starts().join() === 'VT-A' && statusOf(d14, 'VT-A') === 'queued' && statusOf(d14, 'VT-B') === 'queued' && /Queue stopped: a limit with no known window or reset time hit by VT-A/.test(unknown.stdout), `${unknown.status} ${unknown.stdout}`)
+
+  // final checks #6: a task removed during the gate wait before it does not run.
+  const d15 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d15, ['VT-A', 'VT-B'])
+  const gateQ = spawn(node, [QUEUE, 'run'], { env: envFor(d15, { 'VT-A': 'hot', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '0.001' }), stdio: ['ignore', 'pipe', 'pipe'] })
+  let gateOut = ''
+  gateQ.stdout.on('data', (c) => (gateOut += c))
+  const gateDone = new Promise((done) => gateQ.on('close', (code) => done(code)))
+  for (let t = 0; t < 8000 && !/VT-B: five_hour is at/.test(gateOut); t += 50) await new Promise((r) => setTimeout(r, 50))
+  const removed = q(d15, ['remove', 'VT-B'])
+  const gateCode = await gateDone
+  check('final #6 incident: VT-B is removed while the queue waits for the reset before it — it does not run, the queue ends without it', removed.status === 0 && gateCode === 0 && starts().join() === 'VT-A' && /VT-B: removed from the queue while waiting/.test(gateOut), `${removed.status} ${gateCode} ${starts().join()} ${gateOut}`)
 
   rmSync(root, { recursive: true, force: true })
 }

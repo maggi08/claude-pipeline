@@ -5,7 +5,7 @@
  *   node force-run.mjs <repo> <TICKET>
  *
  * What it does: checks the task is ready (an open Force block with the `Confirmed:` line), finds the task's worktree or creates it next to the repo from the
- * branch in the STAGES.md header (the main copy's HEAD and status are not touched), starts a fresh `claude -p "/stage-pipeline:stage-force <TICKET> …"` session
+ * branch in the STAGES.md header (the main copy's HEAD and status are not touched; a task branch checked out in the main copy is refused), starts a fresh `claude -p "/stage-pipeline:stage-force <TICKET> …"` session
  * there, writes the raw stream-json to a log file in the task folder, writes every `rate_limit_event` and exactly one outcome into the run record
  * `force-runs/<TICKET>.jsonl` of the plugin data directory. On macOS the machine is kept awake with `caffeinate -i -w <pid>`.
  *
@@ -21,7 +21,7 @@
  *
  *   node force-run.mjs <repo> <TICKET> [--once] [--margin-min 5] [--max-sessions 3] [--retries 1]
  *
- * Tests shrink the wait with the env `FORCE_RUN_WAIT_SCALE` (a multiplier of the wait; 0 skips it). The queue of tasks is not here: it imports `prepareRun`, `runLoop`, `taskReadiness`, `acquirePidLock`, `waitUntil` and the helpers `TICKET`, `gitOk`, `numberFlag`.
+ * Tests shrink the wait with the env `FORCE_RUN_WAIT_SCALE` (a multiplier of the wait; 0 skips it). The queue of tasks is not here: it imports `prepareRun`, `prepareWorktree`, `runLoop`, `taskReadiness`, `acquirePidLock`, `waitUntil` and the helpers `TICKET`, `gitOk`, `numberFlag`.
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -32,6 +32,8 @@ import { pathToFileURL } from 'node:url'
 import { lastForceBlock } from './journal-check.mjs'
 import { taskWorktree } from './ci-gates.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE } from './markers.mjs'
+import { alive } from './processes.mjs'
+import { stageList } from './resume-point.mjs'
 import { pluginDataDir, readPipelineState, readTaskFile, realOr } from './hooks/pipeline-state.mjs'
 
 export const EXIT = { completed: 0, error: 1, notReady: 2, limit: 3, stopped: 4, weekly: 5, spend: 6, gaveUp: 7 }
@@ -44,7 +46,7 @@ const say = (text) => console.log(`force-run: ${text}`)
 // ── the stream ───────────────────────────────────────────────────────────────
 
 /** One line of the stream-json output → the event object, or null for a line that is not JSON (a stderr echo, a banner). */
-export function parseStreamLine(line) {
+function parseStreamLine(line) {
   const text = String(line).trim()
   if (!text.startsWith('{')) return null
   try {
@@ -62,7 +64,7 @@ const windowOf = (raw) => (raw && typeof raw === 'object' ? { utilization: num(r
  * A `rate_limit_event` → `{ five_hour, seven_day }` with `utilization`, `resetsAt`, `status` (null for a window the event does not carry), or null for another event.
  * The windows come in `unifiedWindows` (on the event or in its `rate_limit_info`); an event that names one window by `rateLimitType` carries just that one.
  */
-export function rateLimitWindows(event) {
+function rateLimitWindows(event) {
   if (event?.type !== 'rate_limit_event') return null
   const info = event.rate_limit_info ?? event
   const unified = info.unifiedWindows ?? event.unifiedWindows ?? {}
@@ -80,7 +82,7 @@ const windowFromText = (text) => WINDOWS.find((name) => WINDOW_NAMES[name].test(
  * (`apiError` / `api_error_status` 429 / the "hit your … limit" text). `{ window, resetsAt, reason, spend, text }` — the window and `resetsAt` are null when the event does not carry them;
  * `reason` is `overageDisabledReason`, `spend` says the text is about a spend limit.
  */
-export function limitInfo(event) {
+function limitInfo(event) {
   if (!event || typeof event !== 'object') return null
   const apiError = event.apiError ?? event.message?.apiError
   const text = textOf(event)
@@ -115,7 +117,7 @@ const TRANSIENT = /computer[_ ]slept|connection[_ ]failed/i
  * A short failure that a new session may survive: `computer_slept` or `connection_failed`, as `apiError` of an assistant message or in the text of an error `result`.
  * `{ name, source: 'apiError' | 'result' }` or null.
  */
-export function transientInfo(event) {
+function transientInfo(event) {
   if (!event || typeof event !== 'object') return null
   const apiError = event.apiError ?? event.message?.apiError
   if (event.type === 'assistant' && TRANSIENT.test(apiError ?? '')) return { name: apiError.toLowerCase().replace(' ', '_'), source: 'apiError' }
@@ -139,6 +141,22 @@ function recordRun(ticket, entry, dataDir = pluginDataDir()) {
 }
 
 // ── the machine ──────────────────────────────────────────────────────────────
+
+/**
+ * macOS: `caffeinate -i -w <pid>` keeps the machine awake while the process lives. The child, or null (not macOS, no binary, no pid); `notice` gets the one line that says why it does not run.
+ * `caffeinate -i` stops idle sleep only: a closed lid still sleeps the machine.
+ */
+function keepAwake(pid, pathEnv, what, notice) {
+  if (process.platform !== 'darwin' || !pid) return null
+  const caffeinate = findOnPath('caffeinate', pathEnv)
+  if (!caffeinate) {
+    notice(`caffeinate not found, the machine may sleep during this ${what}`)
+    return null
+  }
+  const awake = spawn(caffeinate, ['-i', '-w', String(pid)], { stdio: 'ignore' })
+  awake.on('error', () => notice(`caffeinate could not start — the machine may sleep during this ${what}`))
+  return awake
+}
 
 /** A binary on the PATH (an executable regular file), or null. */
 export function findOnPath(name, pathEnv = process.env.PATH ?? '') {
@@ -170,12 +188,15 @@ export const gitOk = (cwd, ...args) => {
  * (local, else `origin/`). Only `git worktree add` runs: the HEAD, the index and the status of the repo it is called on stay as they were.
  * `{ path, created }` or `{ problem }`.
  */
-export function ensureWorktree(repo, task) {
+function ensureWorktree(repo, task) {
   const branches = task.branches ?? []
   if (!branches.length) return { problem: `no branch in the header of ${task.stagesPath} (a "Branch:" line) — nothing to make a worktree from` }
   const found = taskWorktree(repo, task)
   const at = gitOk(found, 'symbolic-ref', '--short', '-q', 'HEAD')
-  if (at && branches.includes(at)) return { path: found, created: false }
+  if (at && branches.includes(at)) {
+    if (realOr(found) === realOr(repo)) return { problem: `the task branch ${at} is checked out in the main copy (${repo}) — switch the main copy to another branch; the run needs its own worktree and does not touch the main copy` }
+    return { path: found, created: false }
+  }
   const path = join(dirname(realOr(repo)), `${basename(realOr(repo))}-${task.ticket.toLowerCase()}`)
   if (existsSync(path)) return { problem: `${path} exists but does not have ${branches.join(' / ')} checked out — remove it or check the branch out there` }
   for (const branch of branches) {
@@ -188,7 +209,83 @@ export function ensureWorktree(repo, task) {
       return { problem: `git worktree add ${path} ${branch} failed: ${String(error.stderr ?? error.message).trim().slice(0, 300)}` }
     }
   }
-  return { problem: `branch ${branches.join(' / ')} of ${task.ticket} exists neither locally nor on origin — nothing to make a worktree from` }
+  return { problem: `branch ${branches.join(' / ')} exists neither locally nor on origin — nothing to make a worktree from` }
+}
+
+const fetchLine = (error) => String(error.stderr ?? error.message).trim().split('\n')[0].slice(0, 200)
+
+/**
+ * `git fetch origin <branch>` for each branch of the task, from the main copy (only the remote-tracking refs move). True when at least one fetch worked; otherwise ONE line
+ * says why (no origin, no network, a branch that is not on origin) and the run goes on with the local branch.
+ */
+function fetchBranches(repo, branches, ticket) {
+  if (!gitOk(repo, 'remote', 'get-url', 'origin')) {
+    say(`${ticket}: no origin remote — going on with the local branch`)
+    return false
+  }
+  let failure = null
+  let worked = false
+  for (const branch of branches) {
+    try {
+      execFileSync('git', ['fetch', '-q', 'origin', branch], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+      worked = true
+    } catch (error) {
+      failure ??= fetchLine(error)
+    }
+  }
+  if (!worked) say(`${ticket}: git fetch origin ${branches.join(' / ')} failed (${failure}) — going on with the local branch`)
+  return worked
+}
+
+/** The worktree's branch against `origin/<branch>` after a fetch: behind and clean → `merge --ff-only`; ahead or equal → as it is; diverged (or behind with edits) → `{ problem }` naming both SHAs. */
+function syncBranch(worktree, ticket) {
+  const branch = gitOk(worktree, 'symbolic-ref', '--short', '-q', 'HEAD')
+  const local = gitOk(worktree, 'rev-parse', 'HEAD')
+  const remote = branch ? gitOk(worktree, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`) : null
+  if (!local || !remote || local === remote) return {}
+  if (gitOk(worktree, 'merge-base', '--is-ancestor', remote, local) !== null) return {}
+  const shas = `local ${local.slice(0, 12)}, origin/${branch} ${remote.slice(0, 12)}`
+  if (gitOk(worktree, 'merge-base', '--is-ancestor', local, remote) === null) return { problem: `${branch} has diverged from origin (${shas}) in ${worktree} — merge or rebase it by hand, then start again` }
+  if (gitOk(worktree, 'status', '--porcelain', '--untracked-files=no') !== '') return { problem: `${branch} is behind origin (${shas}) and ${worktree} has uncommitted changes — commit or discard them, then start again` }
+  try {
+    gitIn(worktree, 'merge', '--ff-only', '-q', remote)
+  } catch (error) {
+    return { problem: `git merge --ff-only origin/${branch} failed in ${worktree}: ${fetchLine(error)}` }
+  }
+  say(`${ticket}: ${branch} fast-forwarded to origin (${local.slice(0, 12)} → ${remote.slice(0, 12)})`)
+  return {}
+}
+
+/**
+ * The hooks of a session in the worktree must see the task, or git-guard, floor-guard and journal-gate stay silent all night: a committed config with a relative `task_path`
+ * makes the worktree read its own empty tasks folder. A problem text with the remedy (the local config is the person's to write), or null.
+ */
+function hiddenFromHooks(worktree, task, taskDir) {
+  let seen = null
+  try {
+    seen = readPipelineState(worktree)?.tasks.find((item) => item.ticket === task.ticket) ?? null
+  } catch {
+    // unreadable: treated as not seen
+  }
+  if (seen?.current && seen.forceActive) return null
+  return `the hooks of a session in ${worktree} do not see ${task.ticket} as the current task with an open Force block (the worktree reads its own task folder), so the commit and journal guards would be silent all night. Create ${join(worktree, '.claude/pipeline.config.local.md')} with the line:\n- task_path: ${taskDir}`
+}
+
+/**
+ * The worktree a night run can start in: the branch is fetched, the worktree is found or made (`ensureWorktree`), fast-forwarded to origin, and its hooks see the task.
+ * `taskDir` is the task folder of the main copy. `{ path, created }` or `{ problem }`; `fetch: false` skips the fetch and the fast-forward (the second call of one run).
+ */
+export function prepareWorktree(repo, task, taskDir, { fetch = true } = {}) {
+  const branches = task.branches ?? []
+  const fetched = fetch && branches.length ? fetchBranches(repo, branches, task.ticket) : false
+  const tree = ensureWorktree(repo, task)
+  if (tree.problem) return tree
+  if (fetched) {
+    const synced = syncBranch(tree.path, task.ticket)
+    if (synced.problem) return synced
+  }
+  const hidden = hiddenFromHooks(tree.path, task, taskDir)
+  return hidden ? { problem: hidden } : tree
 }
 
 /** The part of `prepareRun` that touches nothing: the task exists and has an open, confirmed Force block. `{ ok: true, state, task }` or `{ ok: false, code, message }`. */
@@ -235,7 +332,7 @@ export function acquirePidLock(file, label = '') {
     } catch {
       // being written by its owner right now, or garbage
     }
-    if (owner && pidAlive(owner.pid)) return { ok: false, owner }
+    if (owner && alive(owner.pid)) return { ok: false, owner }
     if (!owner) {
       try {
         if (Date.now() - statSync(file).mtimeMs < 2000) return { ok: false, owner: { pid: null, label: 'being created' } }
@@ -254,21 +351,13 @@ export function acquirePidLock(file, label = '') {
   }
   return { ok: false, owner: { pid: null, label: 'could not take the lock' } }
 }
-const pidAlive = (pid) => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error.code === 'EPERM'
-  }
-}
 export const ticketLockFile = (ticket, dataDir = pluginDataDir()) => join(dataDir, 'locks', `ticket-${ticket}.lock`)
 
 /**
  * Everything before the session: the task is found, its Force block is open and confirmed, `claude` and `node` are on the PATH, the worktree is there.
  * `{ ok: true, ticket, repo, task, worktree, created, claude, node, prompt, env }` or `{ ok: false, code, message }` (code 2: the person has something to do first).
  */
-export function prepareRun(repo, ticket, { pathEnv = process.env.PATH ?? '' } = {}) {
+export function prepareRun(repo, ticket, { pathEnv = process.env.PATH ?? '', fetch = true } = {}) {
   const ready = taskReadiness(repo, ticket)
   if (!ready.ok) return ready
   const { state, task } = ready
@@ -276,7 +365,7 @@ export function prepareRun(repo, ticket, { pathEnv = process.env.PATH ?? '' } = 
   const claude = findOnPath('claude', pathEnv)
   if (!claude) return fail('`claude` is not on the PATH — nothing was started')
   const node = findOnPath('node', pathEnv) ?? process.execPath
-  const tree = ensureWorktree(state.root, task)
+  const tree = prepareWorktree(state.root, task, state.taskDir, { fetch })
   if (tree.problem) return fail(tree.problem)
   // A session of a worktree of the product repo may not find the journal of the main copy: the prompt carries its absolute path (A1).
   const prompt = `/stage-pipeline:stage-force ${ticket} — the journal of the task is ${task.stagesPath}; the Force block there is already confirmed, continue the run without asking questions`
@@ -290,15 +379,15 @@ const closedNow = (task) => {
   const block = lastForceBlock(stagesOf(task))
   return Boolean(block && CLOSED_WORD.test(block.heading))
 }
-/** How many stage headings of STAGES.md are `done` (archive-stages keeps the heading line of a closed stage). */
-const closedStages = (task) => (stagesOf(task).match(/^#{2,4} .*\[status:\s*done\b/gim) ?? []).length
+/** How many stages of STAGES.md are closed (the one definition of a closed stage: `stageList`). */
+const closedStages = (task) => stageList(stagesOf(task)).filter((stage) => stage.done).length
 
 /**
  * One fresh session: spawns `claude -p`, logs the raw stream, records the rate-limit events, and records and returns exactly one outcome.
  * `{ outcome, session, log, code, window?, resetsAt?, kind?, reason?, transient?, interrupted?, text?, windows }` — `windows` is the last `rate_limit_event` read; `kind` is `limitKind` of a `limit`.
  * A file error of the launcher (the log, the record) kills the child and ends as `error` with its text.
  */
-export function runSession(ctx, { dataDir = pluginDataDir(), onEvent = null } = {}) {
+function runSession(ctx, { dataDir = pluginDataDir(), onEvent = null } = {}) {
   const { ticket, task, worktree, claude, prompt, env } = ctx
   const session = randomUUID()
   const log = join(task.dir, `force-run-${session}.log`)
@@ -310,7 +399,8 @@ export function runSession(ctx, { dataDir = pluginDataDir(), onEvent = null } = 
     }
   }
   try {
-    appendFileSync(log, `session ${session} started ${new Date().toISOString()} in ${worktree}\n`)
+    // the raw stream carries the session's prompts and tool output: the owner only
+    appendFileSync(log, `session ${session} started ${new Date().toISOString()} in ${worktree}\n`, { mode: 0o600 })
     recordRun(ticket, { type: 'start', session, worktree, log }, dataDir)
   } catch (error) {
     return Promise.resolve({ outcome: 'error', session, log, code: null, windows: null, text: `launcher could not write its files: ${error.message}`.slice(0, 500) })
@@ -358,16 +448,10 @@ export function runSession(ctx, { dataDir = pluginDataDir(), onEvent = null } = 
     process.on('SIGINT', stop)
     process.on('SIGTERM', stop)
 
-    if (process.platform === 'darwin' && child.pid) {
-      const caffeinate = findOnPath('caffeinate', env.PATH)
-      if (caffeinate) {
-        awake = spawn(caffeinate, ['-i', '-w', String(child.pid)], { stdio: 'ignore' })
-        awake.on('error', () => note('caffeinate could not start — the machine may sleep during this run'))
-      } else {
-        note('caffeinate not found — the machine may sleep during this run')
-        say('caffeinate not found, the machine may sleep during this run')
-      }
-    }
+    awake = keepAwake(child.pid, env.PATH, 'run', (text) => {
+      note(text)
+      say(text)
+    })
 
     const take = (line) => {
       const event = parseStreamLine(line)
@@ -461,7 +545,7 @@ export function runSession(ctx, { dataDir = pluginDataDir(), onEvent = null } = 
 }
 
 /** Readiness, worktree, one session. `{ ok: false, code, message }` before the start, else the outcome of `runSession`. */
-export async function runForce(repo, ticket, options = {}) {
+async function runForce(repo, ticket, options = {}) {
   const ctx = prepareRun(repo, ticket, options)
   if (!ctx.ok) return ctx
   if (ctx.created) say(`${ticket}: made worktree ${ctx.worktree}`)
@@ -488,13 +572,7 @@ export function waitUntil(targetMs, pathEnv = process.env.PATH ?? '', now = Date
     const onSignal = () => finish(false)
     process.once('SIGINT', onSignal)
     process.once('SIGTERM', onSignal)
-    if (process.platform === 'darwin') {
-      const caffeinate = findOnPath('caffeinate', pathEnv)
-      if (caffeinate) {
-        awake = spawn(caffeinate, ['-i', '-w', String(process.pid)], { stdio: 'ignore' })
-        awake.on('error', () => say('caffeinate could not start — the machine may sleep during the wait'))
-      } else say('caffeinate not found, the machine may sleep during the wait')
-    }
+    awake = keepAwake(process.pid, pathEnv, 'wait', say)
     // Short timers against the wall clock: a sleep of the machine or a clock jump does not leave a stale long timer.
     const tick = () => {
       const left = targetMs - now()
