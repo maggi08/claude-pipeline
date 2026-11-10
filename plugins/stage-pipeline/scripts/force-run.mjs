@@ -34,7 +34,7 @@ import { taskWorktree } from './ci-gates.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE } from './markers.mjs'
 import { alive } from './processes.mjs'
 import { stageList } from './resume-point.mjs'
-import { pluginDataDir, readPipelineState, readTaskFile, realOr } from './hooks/pipeline-state.mjs'
+import { mainRoot, pluginDataDir, readPipelineState, readTaskFile, realOr } from './hooks/pipeline-state.mjs'
 
 export const EXIT = { completed: 0, error: 1, notReady: 2, limit: 3, stopped: 4, weekly: 5, spend: 6, gaveUp: 7 }
 const FIVE_HOURS_S = 5 * 3600
@@ -191,13 +191,15 @@ export const gitOk = (cwd, ...args) => {
 function ensureWorktree(repo, task) {
   const branches = task.branches ?? []
   if (!branches.length) return { problem: `no branch in the header of ${task.stagesPath} (a "Branch:" line) — nothing to make a worktree from` }
-  const found = taskWorktree(repo, task)
+  // `current: false`: the caller may be the task worktree itself, and a "current" task would make `taskWorktree` answer with the caller whatever is checked out there
+  const found = taskWorktree(repo, { ...task, current: false })
+  const main = realOr(mainRoot(repo) ?? repo)
   const at = gitOk(found, 'symbolic-ref', '--short', '-q', 'HEAD')
   if (at && branches.includes(at)) {
-    if (realOr(found) === realOr(repo)) return { problem: `the task branch ${at} is checked out in the main copy (${repo}) — switch the main copy to another branch; the run needs its own worktree and does not touch the main copy` }
+    if (realOr(found) === main) return { problem: `the task branch ${at} is checked out in the main copy (${main}) — switch the main copy to another branch; the run needs its own worktree and does not touch the main copy` }
     return { path: found, created: false }
   }
-  const path = join(dirname(realOr(repo)), `${basename(realOr(repo))}-${task.ticket.toLowerCase()}`)
+  const path = join(dirname(main), `${basename(main)}-${task.ticket.toLowerCase()}`)
   if (existsSync(path)) return { problem: `${path} exists but does not have ${branches.join(' / ')} checked out — remove it or check the branch out there` }
   for (const branch of branches) {
     try {
@@ -206,13 +208,15 @@ function ensureWorktree(repo, task) {
       else continue
       return { path, created: true }
     } catch (error) {
-      return { problem: `git worktree add ${path} ${branch} failed: ${String(error.stderr ?? error.message).trim().slice(0, 300)}` }
+      return { problem: `git worktree add ${path} ${branch} failed: ${gitError(error, 300)}` }
     }
   }
   return { problem: `branch ${branches.join(' / ')} exists neither locally nor on origin — nothing to make a worktree from` }
 }
 
-const fetchLine = (error) => String(error.stderr ?? error.message).trim().split('\n')[0].slice(0, 200)
+/** The text of a failed git call, trimmed to `max` characters. */
+const gitError = (error, max) => String(error.stderr ?? error.message).trim().slice(0, max)
+const fetchLine = (error) => gitError(error, 400).split('\n')[0].slice(0, 200)
 
 /**
  * `git fetch origin <branch>` for each branch of the task, from the main copy (only the remote-tracking refs move). True when at least one fetch worked; otherwise ONE line
@@ -225,9 +229,13 @@ function fetchBranches(repo, branches, ticket) {
   }
   let failure = null
   let worked = false
+  // a night fetch never waits on a prompt: no terminal prompt, no SSH password question (unless the person set their own GIT_SSH_COMMAND)
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  if (!process.env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
   for (const branch of branches) {
     try {
-      execFileSync('git', ['fetch', '-q', 'origin', branch], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+      // an explicit refspec: in a --single-branch or shallow clone a bare `git fetch origin <b>` writes only FETCH_HEAD, and origin/<b> would stay old
+      execFileSync('git', ['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, env })
       worked = true
     } catch (error) {
       failure ??= fetchLine(error)
@@ -267,7 +275,13 @@ function hiddenFromHooks(worktree, task, taskDir) {
   } catch {
     // unreadable: treated as not seen
   }
-  if (seen?.current && seen.forceActive) return null
+  if (seen?.current && seen.forceActive && realOr(seen.dir) === realOr(task.dir)) return null
+  if (seen?.current && !seen.forceActive) {
+    return `the hooks of a session in ${worktree} read ${seen.stagesPath} and find the Force run closed (its "## Status:" line says the run is completed), so the commit and journal guards would be silent all night. Update the status line there (and commit it) to say the run is in progress`
+  }
+  if (seen?.current && realOr(seen.dir) !== realOr(task.dir)) {
+    return `${worktree} has its own copy of the task folder (${seen.dir}) and the hooks of a session there would read that stale copy, not ${task.dir}. Remove the copy or point the worktree at ${taskDir} with a line in ${join(worktree, '.claude/pipeline.config.local.md')}:\n- task_path: ${taskDir}`
+  }
   return `the hooks of a session in ${worktree} do not see ${task.ticket} as the current task with an open Force block (the worktree reads its own task folder), so the commit and journal guards would be silent all night. Create ${join(worktree, '.claude/pipeline.config.local.md')} with the line:\n- task_path: ${taskDir}`
 }
 
@@ -300,6 +314,10 @@ export function taskReadiness(repo, ticket) {
   const block = lastForceBlock(task.stages)
   if (!block || CLOSED_WORD.test(block.heading) || !CONFIRMED_LINE.test(block.body)) {
     return fail(`${ticket} has no open Force block with a "Confirmed:" line — nothing was started. Ask the questions first: /stage-force ${ticket} --interview-only`)
+  }
+  if (!task.forceActive) {
+    const status = task.status ? `"${task.status.slice(0, 80)}"` : '(none)'
+    return fail(`the hooks do not count the Force run of ${ticket} as open: the status line of ${task.stagesPath} says ${status} — a run that is completed (with blockers) is closed. Update the "## Status:" line to say the run is in progress, then start again`)
   }
   return { ok: true, state, task }
 }

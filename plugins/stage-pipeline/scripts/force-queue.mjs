@@ -73,6 +73,8 @@ function addTask(repo, ticket, dataDir = pluginDataDir()) {
   if (!TICKET.test(ticket ?? '')) return { ok: false, message: `not a ticket: ${ticket}` }
   const ready = taskReadiness(repo, ticket)
   if (!ready.ok) return { ok: false, message: ready.message }
+  const queued = readQueue(dataDir).tasks.find((task) => task.ticket === ticket && (runnable(task) || task.status === 'running'))
+  if (queued) return { ok: false, message: `${ticket} is already in the queue (${queued.status})` }
   // the worktree exists from the evening: it can be prepared (deps, .env) before the night, and a task the hooks cannot see in it is refused now
   const tree = prepareWorktree(ready.state.root, ready.task, ready.state.taskDir)
   if (tree.problem) return { ok: false, message: tree.problem }
@@ -83,7 +85,7 @@ function addTask(repo, ticket, dataDir = pluginDataDir()) {
     const entry = { ticket, repo: ready.state.root, status: 'queued', started: false, addedAt: new Date().toISOString() }
     queue.tasks = [...queue.tasks.filter((task) => task.ticket !== ticket), entry]
     writeQueue(queue, dataDir)
-    return { ok: true, entry, worktree: tree.path }
+    return { ok: true, entry, worktree: tree.path, lacks: missingInWorktree(ready.state.root, tree.path) }
   })
 }
 
@@ -116,7 +118,8 @@ function missingInWorktree(main, worktree) {
   }
   for (const name of names) if (!has(worktree, name)) missing.push(name)
   const local = '.claude/pipeline.config.local.md'
-  if (has(main, local) && !has(worktree, local)) missing.push(local)
+  // a worktree without a config of its own reads the main copy's config, local one included
+  if (has(main, local) && has(worktree, '.claude/pipeline.config.md') && !has(worktree, local)) missing.push(local)
   return missing
 }
 
@@ -411,7 +414,7 @@ async function main(argv) {
   try {
     if (command === 'add' && rest.length === 2) {
       const out = addTask(resolve(rest[0]), rest[1])
-      say(out.ok ? `${rest[1]} added (${out.entry.repo}), worktree ${out.worktree} — put its dependencies and .env there before the night` : `${rest[1]} not added — ${out.message}`)
+      say(out.ok ? `${rest[1]} added (${out.entry.repo}), worktree ${out.worktree}${out.lacks?.length ? ` — it lacks ${out.lacks.join(', ')}: put it there before the night` : ''}` : `${rest[1]} not added — ${out.message}`)
       process.exit(out.ok ? 0 : EXIT.notReady)
     }
     if (command === 'list' && !rest.length) {

@@ -9423,6 +9423,24 @@ if (scenario === 'completed' || scenario === 'stopped') {
   check('AC-1.2 legitimate: a worktree that is already there is reused — claude runs in it, nothing new is made', second.status === 0 && calls()[1]?.cwd === sibling && !/made worktree/.test(second.stdout) && git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length === 2 && mainState() === before, `${second.stdout} ${second.stderr}`)
   reopen()
 
+  // final round 2 #12: the path the user passes may be the task worktree itself — it is reused, no second `git worktree add`.
+  const callsBefore = calls().length
+  const fromWorktree = launch('completed', { at: sibling })
+  check('final #12 incident: `force-run.mjs <task worktree> <T>` reuses the worktree — claude runs in it, exit 0, no `already used by worktree`', fromWorktree.status === 0 && calls().length === callsBefore + 1 && calls().at(-1).cwd === sibling && !/already used/.test(fromWorktree.stdout + fromWorktree.stderr), `${fromWorktree.status} ${fromWorktree.stderr}`)
+  reopen()
+  // final round 2 #13: a status line that says the run is completed closes it for the hooks (in the main copy too) — not ready, the status line is named, not the local-config recipe.
+  writeFileSync(stagesFile, stagesText(OPEN).replace('## Status: stage 1', '## Status: force run 2026-11-10 completed (with blockers)'))
+  const closedStatus = launch('completed')
+  check('final #13 incident: a re-run whose status line says the run is completed — exit 2, the status line is named, no claude, no local-config recipe', closedStatus.status === 2 && calls().length === callsBefore + 1 && /Status:/.test(closedStatus.stdout + closedStatus.stderr) && /completed/.test(closedStatus.stdout + closedStatus.stderr) && !/task_path/.test(closedStatus.stdout + closedStatus.stderr), `${closedStatus.status} ${closedStatus.stdout}${closedStatus.stderr}`)
+  reopen()
+  // final round 2 #14: a copy of the task folder inside the worktree would be read by its hooks instead of the real one.
+  mkdirSync(join(sibling, '.claude/tasks/VT-12'), { recursive: true })
+  writeFileSync(join(sibling, '.claude/pipeline.config.md'), '- task_path: .claude/tasks/\n- main_branch: main\n')
+  writeFileSync(join(sibling, '.claude/tasks/VT-12/STAGES.md'), stagesText(OPEN))
+  const staleCopy = launch('completed')
+  check('final #14 incident: a copy of the task folder in the worktree — exit 2, the stale copy is named, no claude', staleCopy.status === 2 && calls().length === callsBefore + 1 && /own copy of the task folder/.test(staleCopy.stdout + staleCopy.stderr), `${staleCopy.status} ${staleCopy.stdout}${staleCopy.stderr}`)
+  rmSync(join(sibling, '.claude'), { recursive: true, force: true })
+
   // AC-1.3 + completed: the raw stream in the task's log, each rate_limit_event in the record.
   const done = launch('completed')
   const logFile = done.outcomes[0] && done.outcomes[0].log
@@ -9964,9 +9982,12 @@ setTimeout(() => {
   writeFileSync(join(repos['VT-W'], '.env.local'), 'SECRET=1\n')
   writeFileSync(join(repos['VT-W'], '.claude/pipeline.config.local.md'), '- main_branch: main\n')
   const lacking = q(dW, ['check'])
-  check('final #2 incident: check names what the worktree lacks against the main copy — node_modules, .env.local and the local config — exit 1, nothing installed or copied', lacking.status === 1 && /VT-W: worktree .* lacks what the main copy has: node_modules, \.env\.local, \.claude\/pipeline\.config\.local\.md/.test(lacking.stdout) && !existsSync(join(wt('VT-W'), 'node_modules')) && !existsSync(join(wt('VT-W'), '.env.local')), `${lacking.status} ${lacking.stdout}`)
+  check('final #2 incident (#15: the local config only when the worktree has its own config): check names what the worktree lacks against the main copy — node_modules, .env.local — exit 1, nothing installed or copied', lacking.status === 1 && /VT-W: worktree .* lacks what the main copy has: node_modules, \.env\.local( —|$)/m.test(lacking.stdout) && !existsSync(join(wt('VT-W'), 'node_modules')) && !existsSync(join(wt('VT-W'), '.env.local')), `${lacking.status} ${lacking.stdout}`)
   mkdirSync(join(wt('VT-W'), 'node_modules'))
   mkdirSync(join(wt('VT-W'), '.claude'), { recursive: true })
+  writeFileSync(join(wt('VT-W'), '.claude/pipeline.config.md'), `- task_path: ${join(repos['VT-W'], '.claude/tasks')}\n- main_branch: main\n`)
+  const lacksLocal = q(dW, ['check'])
+  check('final #15: a worktree with its own config but no local config — the local config is named as missing', /lacks what the main copy has: .*\.claude\/pipeline\.config\.local\.md/.test(lacksLocal.stdout), lacksLocal.stdout)
   writeFileSync(join(wt('VT-W'), '.env.local'), 'SECRET=1\n')
   writeFileSync(join(wt('VT-W'), '.claude/pipeline.config.local.md'), '- main_branch: main\n')
   const prepared = q(dW, ['check'])
