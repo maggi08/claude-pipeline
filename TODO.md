@@ -17,10 +17,6 @@ Several stage-pipeline sessions run at once in different repos, and the machine 
 
 VT-8 only lowers the priority of its own test workers and sizes them by the load average at start. The rest is a separate task. What VT-8 measured: on a quiet machine (load average 2–5) hooks-test takes 78–81 s; next to other sessions (load 5–12) its workers give way and it takes 123–216 s.
 
-## Unattended force runs (asked 2026-11-09)
-- Usage limits during a force run: track how much limit is left while the run goes. If the limit runs out before the run is done, schedule a job for the reset time that resumes only that force run, nothing else.
-- A night queue: plan several tasks (say three) with `/stage-plan` as usual, then queue them so they run one after another in force mode, for example overnight on a second, weaker machine. A queued task that hits the limit waits for the reset like above, and the next task starts after it.
-
 ## Notifications while working in VS Code (asked 2026-11-10)
 When I work in VS Code on something else, a stage-pipeline session should notify me when it needs me:
 - a stage or a force run stopped: it is done, or the session ended its turn;
