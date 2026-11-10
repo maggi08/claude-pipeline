@@ -358,7 +358,7 @@ function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
   const match = DELTA_LINE.exec(reportHeader(text))
   const redo = `re-run the delta review (${item.checker === 'pro-review' ? '`pro-review --delta checks/<full report>`' : `the delta mode of the project skill \`${item.checker}\``}) after the last fix`
   const fullRun = `run ${item.how} (a full review, it becomes the new anchor)`
-  if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: 'rewrite the line as plain `delta: <full report file> <base sha>..<new head sha>` (no markup), or re-run the delta review' }
+  if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: `rewrite the line as plain \`delta: <full report file> <base sha>..<new head sha>\` (no markup), or ${redo}` }
   const [, file, baseRaw, endRaw] = match
   const full = /^[\w.-]{1,120}\.md$/.test(file) && item.match(file) ? readTaskFile(taskDir, 'checks', file) : null
   const shown = file.slice(0, 120)
@@ -409,16 +409,17 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
   // A full report keeps today's rule; a report with a `delta:` line is never read as a full one: it counts only when deltaProblem finds nothing (VT-7, D3).
   const fresh = new Set(newReports(taskDir, since))
   const deltaWhy = new Map()
+  const noteDelta = (checker, entry) => deltaWhy.set(checker, [...(deltaWhy.get(checker) ?? []), entry])
   const counts = (item, name) => {
     const text = item.match(name) ? readTaskFile(taskDir, 'checks', name) : null
     if (text === null) return false
     if (!isDeltaReport(name, text)) return fresh.has(name)
     if (item.checker === 'task-converge') { // a delta never counts for it, and it is not read as a full report either (S3-D2)
-      deltaWhy.set(item.checker, [...(deltaWhy.get(item.checker) ?? []), { name, why: 'task-converge has no delta mode', run: `run ${item.how} (a full pass)` }])
+      noteDelta(item.checker, { name, why: 'task-converge has no delta mode', run: `run ${item.how} (a full pass)` })
       return false
     }
     const problem = deltaProblem(worktree, taskDir, name, text, since, item, fresh.has(name))
-    if (problem) deltaWhy.set(item.checker, [...(deltaWhy.get(item.checker) ?? []), { name, ...problem }])
+    if (problem) noteDelta(item.checker, { name, ...problem })
     return !problem
   }
   const missing = wanted.filter((item) => dirty.length || !newReports(taskDir, 0).some((name) => counts(item, name)))

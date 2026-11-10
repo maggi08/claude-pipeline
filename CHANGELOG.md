@@ -5,6 +5,24 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.25.2 — 2026-11-10
+
+### A hook message over 64 KiB reaches Claude Code whole on macOS; the backlog of next-version minors
+
+What changes against 0.25.1:
+
+- **A long hook verdict is no longer cut.** On macOS Node writes to a pipe asynchronously, and a hook ends with `process.exit` right after its write, so a verdict longer than the pipe buffer (65,536 bytes) arrived cut and Claude Code got invalid JSON. A journal-gate close with many long violations could reach that size. `readHookInput`, which every hook calls first, now makes stdout blocking, and the whole verdict arrives.
+- **A delta report whose `delta:` line does not parse** now gets the same remedy as the other delta problems: rewrite the line, or re-run the delta review with `pro-review --delta checks/<full report>` after the last fix.
+- **`/stage-force` SKILL.md has room again** (29,782 of the 30,720-byte budget, 73 bytes were left). The three auth-probe assumption lines move to `references/interview.md` ("5. The auth probe lines"); two rare fallbacks of the run summary (a short view with no `Session browser:` line, a digest file that could not be written) move to `references/final-checks-notes.md`. No rule sentence moved.
+- One task-directory check for the maker gate and the resume point (`taskRelTo`, `inTaskDir` in `maker.mjs`), and one append for the reasons a delta report does not count.
+
+**Dev repo only** (`scripts/hooks-test.mjs`):
+- the runner stops waiting for a worker 2 s after it exits, when a process the worker started still holds its output, and says so; the browser-cleanup unit kills what it started on exit too, so a crash in a callback no longer leaves its fake processes holding the run for 2 minutes;
+- `--units ,` is a usage error; the self-test has a worker that exits with code 2 (a crash) and a worker whose child outlives it;
+- the rotation check of the firings log measures real sizes (`statSync` was not imported, so its size half passed on any file);
+- a fixture for a `git diff --numstat` that fails in the delta bound;
+- timing checks with more headroom: the 1 MB `openBlockers` read < 500 ms (was 250, failed at 257 ms on CI), the 100 KB data-dir parse moved to the serial tail and timed without its import, the unjournaled-commits walk next to a 600 MB archive < 2 s.
+
 ## 0.25.1 — 2026-11-10
 
 ### A run closed from the main tree is judged on its own worktree's CI gates, and a gate run that did not count says why

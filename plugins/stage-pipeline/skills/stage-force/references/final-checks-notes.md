@@ -23,6 +23,8 @@ The round's diff is reviewed by your own read of it, or by a stage-mode `pro-rev
 
 `Session browser: left open — …; close: …` means the user switched the close off (`STAGE_PIPELINE_BROWSER_CLEANUP=off`) or the heading was closed outside this session's call.
 
+A short view with no `Session browser:` line at all comes from an older plugin in the session: run `node ${CLAUDE_PLUGIN_ROOT}/scripts/browser-cleanup.mjs --session` yourself before the summary and put its line in as `Browser: …`.
+
 ## The delta loop after the final checks (Step 4)
 
 - Why a delta: the freshness rule makes every fix round end in another whole-branch review. The speed audit of 2026-10-28 (18 force runs) found that the active time after the first whole-branch review is 61% of a median run; the repeated whole-branch opus reviews took 814 minutes against 237 for the first review of each run, and one delta review took 1.3 minutes.
@@ -41,6 +43,8 @@ The round's diff is reviewed by your own read of it, or by a stage-mode `pro-rev
 - The rollback cost of a decided-yourself line, by example: "rewrite the email template" against "rebuild three screens".
 
 ## The run summary (Step 4)
+
+- A short view with no path to `RUN-DIGEST.md` means the file could not be written: when the user asks "more", run `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-digest.mjs <task_dir>/<TICKET> --full --no-write` for the full view.
 
 - Why the short view is pasted whole: a summary once reduced everything to "kk/en texts and minor deviations", and under it lay two defects the user found themselves. That is why the choice of what the short view shows belongs to the script.
 - After the heading is renamed, the short view you paste says the browser was closed.
