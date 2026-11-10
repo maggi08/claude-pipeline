@@ -40,3 +40,19 @@ Assumptions:
 - auth probe skipped: no Chrome DevTools MCP server of the plugin is available in this session, devtools-verify probes by itself — Rollback: none needed — Basis: guess
 - login "not now" (interview answer): the auth-gated criteria `AC-…` are deferred in the honest form at check time — Rollback: cheap, log in and rerun devtools-verify on them — Basis: interview answer
 ```
+
+## 6. `--interview-only`: the evening interview for the night queue
+
+`/stage-force <TICKET> --interview-only` runs Step 0 as usual (the probe, the batch, the Force block with `Confirmed:`) and then stops: it does not start `stage-implement`, does not commit, does not go to Step 1. Its last message is the command that queues the task, with the real paths:
+
+`node ${CLAUDE_PLUGIN_ROOT}/scripts/force-queue.mjs add <repo> <TICKET>`
+
+`add` takes only a task whose Force block is open and confirmed; the queue then runs it headless (`force-queue.mjs run`, README "Night queue").
+
+**A task whose earlier force run is closed.** When the `## Status:` line says an earlier force run is completed (`force run <date> completed (with blockers)`, or the same in the task language), rewrite it to the open form together with the new block: `force run <date> not completed` in the task language (the forms the hooks read are `STATUS_FORCE_CLOSED` and `NOT_CLOSED` in `scripts/markers.mjs`). The hooks read a closed status line as a closed run whatever the new block says, and `add` refuses the task until the line is open. The same holds for a plain second `/stage-force` run of the task.
+
+**What the probe and the checks mean for a night run.** The night session runs on the machine that runs the queue, not where the interview was held:
+
+- The auth probe of Step 0 counts as a pass only through the `stage-pipeline-chrome` persistent profile on the machine that runs the night. A login in an `--isolated` browser dies with the session, and a login on another machine does not carry over. Without a pass in that profile, write the auth-gated criteria as an assumption that defers them as `[live: user-side — …]` (the "login not now" form of "5.").
+- The Figma desktop MCP (the app open with the file) and the dev server must be up on the night machine; if they will not be, write the Figma comparison and the runtime checks as deferred the same way (`[live: user-side — …]`), not as checks the night run will make.
+

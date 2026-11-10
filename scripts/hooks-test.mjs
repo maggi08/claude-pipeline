@@ -178,6 +178,9 @@ const UNITS = [
   { id: 'vt6s13a', weight: 5 }, // Stage 13a of VT-6, fix round 1: pro-review M-1 (post-done base), security 1, 3, 4, 6, 7
   { id: 'vt6s13b', weight: 7 }, // Stage 13b of VT-6 (part A): B1 team_review config in a linked worktree, B3 M-1..M-4, B4 o…
   { id: 'vt6s13c', weight: 2 }, // Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit…
+  { id: 'vt12s1', weight: 4 }, // VT-12 stage 1: force-run.mjs — one headless run with a fake `claude`: readiness, worktree, rate-limit record, the four outcomes, caffeinate
+  { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
+  { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
 const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
@@ -9316,6 +9319,775 @@ if (unit('vt6s13c')) {
   const preOne = runHook('git-guard.mjs', { cwd: c13, tool_name: 'Bash', tool_use_id: 'toolu_b5_one', hook_event_name: 'PreToolUse', tool_input: { command: 'git commit -m x' } })
   check('B5 legitimate: the single-span files cell denies the same line as before', preOne.decision === 'deny' && /\[repo:no-resolve\] src\/A\.vue:2/.test(preOne.text), `${preOne.decision} ${preOne.text}`)
   rmSync(c13, { recursive: true, force: true })
+}
+
+// VT-12 stage 1: force-run.mjs — one headless run of one task, with a fake `claude` that prints stream-json (an executable first on the PATH, like the `git` shim above).
+// VT-12: the stream events of a fake `claude` (rate-limit and usage-limit shapes) are written once; the fakes of the three units below interpolate this source.
+const FAKE_STREAM = `const out = (event) => console.log(JSON.stringify(event))
+const rateEvent = (five, seven, { fiveReset, sevenReset, fiveStatus = 'allowed', sevenStatus = 'allowed' }) => out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: five, resetsAt: fiveReset, status: fiveStatus }, seven_day: { utilization: seven, resetsAt: sevenReset, status: sevenStatus } } } })
+const limitAssistant = (type, resetsAt, text, reason) => out({ type: 'assistant', message: { content: [{ type: 'text', text }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt, rateLimitType: type, ...(reason ? { overageDisabledReason: reason } : {}) } } })
+const limitEvents = (type, resetsAt, text, reason) => {
+  limitAssistant(type, resetsAt, text, reason)
+  out({ type: 'result', subtype: 'success', is_error: true, result: text })
+}
+`
+if (unit('vt12s1')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt12s1-')))
+  const FORCE_RUN = join(PLUGIN, 'force-run.mjs')
+  const bin = join(root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  const node = process.execPath
+  const fake = `#!/usr/bin/env node
+const fs = require('fs')
+const path = require('path')
+const scenario = process.env.FAKE_SCENARIO
+fs.appendFileSync(path.join(__dirname, 'calls.jsonl'), JSON.stringify({ argv: process.argv.slice(2), cwd: fs.realpathSync(process.cwd()), pid: process.pid, scenario }) + '\\n')
+${FAKE_STREAM}
+const rate = (five, seven, status = 'allowed') => rateEvent(five, seven, { fiveReset: 1793082600, sevenReset: 1793600000, fiveStatus: status })
+out({ type: 'system', subtype: 'init' })
+if (scenario === 'completed' || scenario === 'stopped') {
+  rate(0.25, 0.1)
+  rate(0.5, 0.12)
+  if (scenario === 'completed') {
+    const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'))
+  }
+  out({ type: 'result', subtype: 'success', is_error: false, result: 'done' })
+} else if (scenario === 'limit-assistant') {
+  rate(0.99, 0.3, 'rejected')
+  limitEvents('five_hour', 1793082600, "You've hit your session limit · resets 11:30am (Asia/Almaty)", null)
+  process.exit(1)
+} else if (scenario === 'limit-result') {
+  rate(0.4, 0.99, 'allowed')
+  out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: "You've hit your weekly limit · resets Fri 9:00am" })
+  process.exit(1)
+} else if (scenario === 'error-result') {
+  out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' })
+  process.exit(1)
+} else {
+  console.error('boom: the fake claude died')
+  process.exit(3)
+}
+`
+  writeFileSync(join(bin, 'claude'), fake)
+  writeFileSync(join(bin, 'caffeinate'), `#!/bin/sh\necho "$@" >> "${bin}/caffeinate.log"\n`)
+  execFileSync('chmod', ['+x', join(bin, 'claude'), join(bin, 'caffeinate')])
+  const gitBin = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  // A PATH with no caffeinate in it: only the fake claude, node and git.
+  const bare = join(root, 'bare')
+  mkdirSync(bare, { recursive: true })
+  for (const [name, target] of [['claude', join(bin, 'claude')], ['node', node], ['git', gitBin]]) symlinkSync(target, join(bare, name))
+
+  const repo = join(root, 'q-repo')
+  const sibling = join(root, 'q-repo-vt-12')
+  repoAt(repo, 'main')
+  git(repo, 'branch', 'VT-12/feat/q')
+  const stagesFile = join(repo, '.claude/tasks/VT-12/STAGES.md')
+  const stagesText = (force) => `# VT-12: queue\nBranch: \`VT-12/feat/q\`\n\n## Status: stage 1\n\n${force}## Stages\n\n### Stage 1: a  [status: in-progress]\n`
+  const OPEN = '## Force run 2026-11-10\nMode: autonomous.\nConfirmed: 2026-11-10 — interview answers\n\n'
+  write(repo, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/VT-12/STAGES.md': stagesText(OPEN) })
+  const calls = () => (existsSync(join(bin, 'calls.jsonl')) ? readFileSync(join(bin, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+  const home = join(root, 'home')
+  mkdirSync(home, { recursive: true })
+  let n = 0
+  const launch = (scenario, { path = `${bin}:${dirname(node)}:/usr/bin:/bin`, at = repo } = {}) => {
+    const dataDir = join(root, `data-${n++}`)
+    const run = spawnSync(node, [FORCE_RUN, at, 'VT-12', '--once'], { encoding: 'utf8', env: { PATH: path, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SCENARIO: scenario } })
+    const recordPath = join(dataDir, 'force-runs/VT-12.jsonl')
+    const records = existsSync(recordPath) ? readFileSync(recordPath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
+    return { ...run, dataDir, records, outcomes: records.filter((record) => record.type === 'outcome'), rates: records.filter((record) => record.type === 'rate_limit') }
+  }
+  const mainState = () => [git(repo, 'rev-parse', 'HEAD'), git(repo, 'symbolic-ref', 'HEAD'), git(repo, 'status', '--porcelain')].join('|')
+  const reopen = () => writeFileSync(stagesFile, stagesText(OPEN))
+
+  // AC-1.1: not ready — no claude, exit 2, the reason and the interview command.
+  writeFileSync(stagesFile, stagesText('## Force run 2026-11-10\nMode: autonomous.\n\n'))
+  const unconfirmed = launch('completed')
+  check('AC-1.1 incident: an open Force block without a Confirmed line — claude is not started, exit 2, the reason and `/stage-force VT-12 --interview-only`', unconfirmed.status === 2 && calls().length === 0 && /Confirmed/.test(unconfirmed.stdout) && /\/stage-force VT-12 --interview-only/.test(unconfirmed.stdout) && unconfirmed.records.length === 0, `${unconfirmed.status} ${unconfirmed.stdout} ${unconfirmed.stderr}`)
+  writeFileSync(stagesFile, stagesText('## Force run 2026-11-10 — completed\nConfirmed: 2026-11-10\n\n'))
+  check('AC-1.1: a closed Force block is not ready either — exit 2, no claude', launch('completed').status === 2 && calls().length === 0)
+  writeFileSync(stagesFile, stagesText(''))
+  check('AC-1.1: no Force block at all — exit 2, no claude', launch('completed').status === 2 && calls().length === 0)
+  reopen()
+
+  // AC-1.2: a branch with no worktree — one is made next to the repo; the main copy stays as it was; the second run reuses it.
+  const before = mainState()
+  const first = launch('completed')
+  const call = calls()[0]
+  check('AC-1.2 incident: no worktree for the branch — made next to the repo (`<repo>-vt-12`) and claude runs in it', first.status === 0 && existsSync(sibling) && call?.cwd === sibling && git(sibling, 'symbolic-ref', '--short', 'HEAD').trim() === 'VT-12/feat/q', `${first.status} ${first.stdout} ${first.stderr} ${JSON.stringify(call)}`)
+  check('AC-1.2: HEAD, branch and `git status` of the main copy are the same before and after', mainState() === before, `${before} → ${mainState()}`)
+  const sessionId = call?.argv[call.argv.indexOf('--session-id') + 1] ?? ''
+  check('AC-1.2/A1: argv has -p with the stage-force prompt carrying the absolute STAGES.md path, a fresh --session-id, --permission-mode auto, stream-json and --verbose', call?.argv[0] === '-p' && /^\/stage-pipeline:stage-force VT-12\b/.test(call.argv[1]) && call.argv[1].includes(stagesFile) && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(sessionId) && call.argv.join(' ').includes('--permission-mode auto --output-format stream-json --verbose'), JSON.stringify(call))
+  check('catch-up B1: the prompt carries the headless rule — every subagent with run_in_background: false, the turn ends only after they return', /run_in_background: false/.test(call?.argv[1] ?? '') && /end a turn only after they have returned/.test(call?.argv[1] ?? ''), call?.argv[1])
+  check('catch-up #25: the first session of a run gets the resume point too (the task may go on from last night) and no "previous session" line', /Resume point \(force run, VT-12\)/.test(call?.argv[1] ?? '') && !/The previous session/.test(call?.argv[1] ?? ''), call?.argv[1])
+  reopen()
+  const second = launch('completed')
+  check('AC-1.2 legitimate: a worktree that is already there is reused — claude runs in it, nothing new is made', second.status === 0 && calls()[1]?.cwd === sibling && !/made worktree/.test(second.stdout) && git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length === 2 && mainState() === before, `${second.stdout} ${second.stderr}`)
+  reopen()
+
+  // final round 2 #12: the path the user passes may be the task worktree itself — it is reused, no second `git worktree add`.
+  const callsBefore = calls().length
+  const fromWorktree = launch('completed', { at: sibling })
+  check('final #12 incident: `force-run.mjs <task worktree> <T>` reuses the worktree — claude runs in it, exit 0, no `already used by worktree`', fromWorktree.status === 0 && calls().length === callsBefore + 1 && calls().at(-1).cwd === sibling && !/already used/.test(fromWorktree.stdout + fromWorktree.stderr), `${fromWorktree.status} ${fromWorktree.stderr}`)
+  reopen()
+  // final round 2 #13: a status line that says the run is completed closes it for the hooks (in the main copy too) — not ready, the status line is named, not the local-config recipe.
+  writeFileSync(stagesFile, stagesText(OPEN).replace('## Status: stage 1', '## Status: force run 2026-11-10 completed (with blockers)'))
+  const closedStatus = launch('completed')
+  check('final #13 incident: a re-run whose status line says the run is completed — exit 2, the status line is named, no claude, no local-config recipe', closedStatus.status === 2 && calls().length === callsBefore + 1 && /Status:/.test(closedStatus.stdout + closedStatus.stderr) && /completed/.test(closedStatus.stdout + closedStatus.stderr) && !/task_path/.test(closedStatus.stdout + closedStatus.stderr), `${closedStatus.status} ${closedStatus.stdout}${closedStatus.stderr}`)
+  reopen()
+  // final round 2 #14: a copy of the task folder inside the worktree would be read by its hooks instead of the real one.
+  mkdirSync(join(sibling, '.claude/tasks/VT-12'), { recursive: true })
+  writeFileSync(join(sibling, '.claude/pipeline.config.md'), '- task_path: .claude/tasks/\n- main_branch: main\n')
+  writeFileSync(join(sibling, '.claude/tasks/VT-12/STAGES.md'), stagesText(OPEN))
+  const staleCopy = launch('completed')
+  check('final #14 incident: a copy of the task folder in the worktree — exit 2, the stale copy is named, no claude', staleCopy.status === 2 && calls().length === callsBefore + 1 && /own copy of the task folder/.test(staleCopy.stdout + staleCopy.stderr), `${staleCopy.status} ${staleCopy.stdout}${staleCopy.stderr}`)
+  writeFileSync(join(sibling, '.claude/tasks/VT-12/STAGES.md'), stagesText('## Force run 2026-11-09 — completed with blockers\nConfirmed: 2026-11-09\n\n').replace('## Status: stage 1', '## Status: force run 2026-11-09 completed (with blockers)'))
+  const closedCopy = launch('completed')
+  const closedCopyOut = closedCopy.stdout + closedCopy.stderr
+  check('catch-up #19 incident: a stale copy whose run is closed — the copy is named, not the status-line advice, no claude', closedCopy.status === 2 && calls().length === callsBefore + 1 && /own copy of the task folder/.test(closedCopyOut) && !/Update the status line/.test(closedCopyOut), closedCopyOut)
+  rmSync(join(sibling, '.claude'), { recursive: true, force: true })
+
+  // catch-up #20: the repo's core.sshCommand (a key of a second account) is the base of the night fetch, not replaced by a bare ssh.
+  const sshLog = join(root, 'ssh-command.log')
+  writeFileSync(join(bin, 'ssh-own'), `#!/bin/sh\necho "$@" >> "${sshLog}"\nexit 1\n`)
+  execFileSync('chmod', ['+x', join(bin, 'ssh-own')])
+  git(repo, 'config', 'core.sshCommand', join(bin, 'ssh-own'))
+  git(repo, 'remote', 'add', 'origin', 'ssh://example.invalid/q-repo.git')
+  const ownSsh = launch('completed')
+  const sshArgs = existsSync(sshLog) ? readFileSync(sshLog, 'utf8') : ''
+  check('catch-up #20 incident: core.sshCommand of the repo runs the fetch, with BatchMode added; the failed fetch is one line and the run goes on', /BatchMode=yes/.test(sshArgs) && /example\.invalid/.test(sshArgs) && /fetch .* failed/.test(ownSsh.stdout) && ownSsh.status === 0, `${sshArgs} | ${ownSsh.status} ${ownSsh.stdout}`)
+  git(repo, 'remote', 'remove', 'origin')
+  git(repo, 'config', '--unset', 'core.sshCommand')
+  reopen()
+
+  // AC-1.3 + completed: the raw stream in the task's log, each rate_limit_event in the record.
+  const done = launch('completed')
+  const logFile = done.outcomes[0] && done.outcomes[0].log
+  const win = (rate) => JSON.stringify(rate?.five_hour) + JSON.stringify(rate?.seven_day)
+  check('AC-1.3: every rate_limit_event is in the run record with utilization, resetsAt and status of five_hour and seven_day', done.rates.length === 2 && win(done.rates[0]) === '{"utilization":0.25,"resetsAt":1793082600,"status":"allowed"}{"utilization":0.1,"resetsAt":1793600000,"status":"allowed"}' && done.rates[1].five_hour.utilization === 0.5, JSON.stringify(done.rates))
+  check('AC-1.3: the raw stream goes to a log file of the task, one per session', Boolean(logFile) && dirname(logFile) === dirname(stagesFile) && readFileSync(logFile, 'utf8').includes('"type":"rate_limit_event"') && logFile.includes(done.outcomes[0].session), String(logFile))
+  check('security S-1: the raw session log is created for its owner only (0600)', (statSync(logFile).mode & 0o777) === 0o600, (statSync(logFile).mode & 0o777).toString(8))
+  check('AC-1.4 completed: the session ended and the heading is closed — one `completed` outcome, exit 0', done.status === 0 && done.outcomes.length === 1 && done.outcomes[0].outcome === 'completed', `${done.status} ${JSON.stringify(done.outcomes)}`)
+
+  // AC-1.4: the other outcomes, each exactly once, with what it carries.
+  reopen()
+  const stopped = launch('stopped')
+  check('AC-1.4 stopped: the session ended and the block is still open — one `stopped` outcome, exit 4', stopped.status === 4 && stopped.outcomes.length === 1 && stopped.outcomes[0].outcome === 'stopped', `${stopped.status} ${JSON.stringify(stopped.outcomes)}`)
+  const limitA = launch('limit-assistant')
+  check('AC-1.4 limit (assistant message with apiError): one `limit` outcome with the window `five_hour` and resetsAt, even though the result event is an error too, exit 3', limitA.status === 3 && limitA.outcomes.length === 1 && limitA.outcomes[0].outcome === 'limit' && limitA.outcomes[0].window === 'five_hour' && limitA.outcomes[0].resetsAt === 1793082600 && /2026|\d{4}-/.test(limitA.outcomes[0].resetsAtIso), `${limitA.status} ${JSON.stringify(limitA.outcomes)}`)
+  const limitR = launch('limit-result')
+  check('AC-1.4 limit (an error `result` only): `limit` with the weekly window and its resetsAt from the last rate_limit_event, not `error`', limitR.status === 3 && limitR.outcomes.length === 1 && limitR.outcomes[0].outcome === 'limit' && limitR.outcomes[0].window === 'seven_day' && limitR.outcomes[0].resetsAt === 1793600000, `${limitR.status} ${JSON.stringify(limitR.outcomes)}`)
+  const errResult = launch('error-result')
+  check('AC-1.4 error (another API error in the result): one `error` outcome with the text, exit 1', errResult.status === 1 && errResult.outcomes.length === 1 && errResult.outcomes[0].outcome === 'error' && /API Error: 500/.test(errResult.outcomes[0].text), `${errResult.status} ${JSON.stringify(errResult.outcomes)}`)
+  const crash = launch('crash')
+  check('AC-1.4 error (exit code 3, no result): one `error` outcome with the code and stderr text', crash.status === 1 && crash.outcomes.length === 1 && crash.outcomes[0].outcome === 'error' && /exit code 3/.test(crash.outcomes[0].text) && /boom/.test(crash.outcomes[0].text), `${crash.status} ${JSON.stringify(crash.outcomes)}`)
+
+  // AC-1.5: caffeinate on macOS, and its absence is one log line, not a stop.
+  if (process.platform === 'darwin') {
+    reopen()
+    rmSync(join(bin, 'caffeinate.log'), { force: true })
+    const awake = launch('stopped')
+    const caffeine = existsSync(join(bin, 'caffeinate.log')) ? readFileSync(join(bin, 'caffeinate.log'), 'utf8').trim() : ''
+    const last = calls().at(-1)
+    check('AC-1.5: on macOS `caffeinate -i -w <pid of the claude run>` is started', caffeine === `-i -w ${last?.pid}`, `${caffeine} vs ${last?.pid}`)
+    const nocaf = launch('stopped', { path: bare })
+    const nocafLog = nocaf.outcomes[0] ? readFileSync(nocaf.outcomes[0].log, 'utf8') : ''
+    check('AC-1.5: no caffeinate on the PATH — one line in the log, the run goes on and records its outcome', nocaf.status === 4 && nocaf.outcomes.length === 1 && nocafLog.split('\n').filter((line) => /caffeinate not found/.test(line)).length === 1, `${nocaf.status} ${nocafLog}`)
+  }
+
+  // final checks #1: a committed config with a relative task_path — the worktree's hooks would not see the task; refused with the remedy, started once the local config is there.
+  const gitC = (cwd, ...args) => git(cwd, ...args)
+  const taskRepo = (name, { commitConfig = false } = {}) => {
+    const dir = join(root, name)
+    repoAt(dir, 'main')
+    write(dir, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/VT-12/STAGES.md': stagesText(OPEN) })
+    if (commitConfig) {
+      gitC(dir, 'add', '-f', '.claude/pipeline.config.md')
+      gitC(dir, 'commit', '-qm', 'config')
+    }
+    gitC(dir, 'branch', 'VT-12/feat/q')
+    return dir
+  }
+  const crepo = taskRepo('c-repo', { commitConfig: true })
+  const cCalls = calls().length
+  const hidden = launch('stopped', { at: crepo })
+  const remedyDir = join(crepo, '.claude/tasks')
+  check('final #1 incident: a committed config with a relative task_path — the worktree does not see the task: exit 2, no claude, the remedy (local config + absolute task_path) printed', hidden.status === 2 && calls().length === cCalls && hidden.stdout.includes(join(root, 'c-repo-vt-12', '.claude/pipeline.config.local.md')) && hidden.stdout.includes(`- task_path: ${remedyDir}`), `${hidden.status} ${hidden.stdout}`)
+  writeFileSync(join(root, 'c-repo-vt-12', '.claude/pipeline.config.local.md'), `- task_path: ${remedyDir}\n`)
+  const seen = launch('stopped', { at: crepo })
+  check('final #1 legitimate: with the local config written in the worktree the run starts', seen.status === 4 && calls().length === cCalls + 1, `${seen.status} ${seen.stdout}`)
+
+  // final checks #7: the task branch checked out in the main copy — refused, nothing run in the main copy.
+  const mrepo = taskRepo('m-repo')
+  gitC(mrepo, 'checkout', '-q', 'VT-12/feat/q')
+  const mCalls = calls().length
+  const inMain = launch('stopped', { at: mrepo })
+  check('final #7 incident: the task branch is checked out in the main copy — exit 2, the message says to switch the main copy, claude does not run there', inMain.status === 2 && /checked out in the main copy/.test(inMain.stdout) && calls().length === mCalls && !existsSync(join(root, 'm-repo-vt-12')), `${inMain.status} ${inMain.stdout}`)
+
+  // final checks #4: fetch before the run — behind origin and clean: fast-forward; diverged: refused naming both SHAs; no network: one line, goes on.
+  const frepo = taskRepo('f-repo')
+  const origin = join(root, 'f-origin.git')
+  execFileSync('git', ['init', '-q', '--bare', origin])
+  gitC(frepo, 'remote', 'add', 'origin', origin)
+  gitC(frepo, 'push', '-q', 'origin', 'main', 'VT-12/feat/q')
+  const fWt = join(root, 'f-repo-vt-12')
+  check('final #4 legitimate: in sync with origin — the run starts', launch('stopped', { at: frepo }).status === 4 && existsSync(fWt))
+  const other = join(root, 'f-other')
+  execFileSync('git', ['clone', '-q', '-b', 'VT-12/feat/q', origin, other])
+  gitC(other, 'config', 'user.email', 'test@example.com')
+  gitC(other, 'config', 'user.name', 'test')
+  gitC(other, 'commit', '-q', '--allow-empty', '-m', 'upstream work')
+  gitC(other, 'push', '-q', 'origin', 'VT-12/feat/q')
+  const upstream = gitC(other, 'rev-parse', 'HEAD').trim()
+  const behind = launch('stopped', { at: frepo })
+  check('final #4 incident: the branch is behind origin and the worktree is clean — fast-forwarded to origin before the session', behind.status === 4 && gitC(fWt, 'rev-parse', 'HEAD').trim() === upstream && /fast-forwarded/.test(behind.stdout), `${behind.status} ${behind.stdout}`)
+  gitC(fWt, 'commit', '-q', '--allow-empty', '-m', 'local work')
+  gitC(other, 'commit', '-q', '--allow-empty', '-m', 'more upstream work')
+  gitC(other, 'push', '-q', 'origin', 'VT-12/feat/q')
+  const diverge = launch('stopped', { at: frepo })
+  check('final #4 incident: local and origin diverged — exit 2, both SHAs named, no session', diverge.status === 2 && /diverged/.test(diverge.stdout) && diverge.stdout.includes(gitC(fWt, 'rev-parse', 'HEAD').trim().slice(0, 12)) && diverge.stdout.includes(gitC(other, 'rev-parse', 'HEAD').trim().slice(0, 12)), `${diverge.status} ${diverge.stdout}`)
+  gitC(frepo, 'remote', 'set-url', 'origin', join(root, 'no-such-origin.git'))
+  const offline = launch('stopped', { at: frepo })
+  check('final #4: the fetch failed (no network / no origin) — one line says so and the run goes on with the local branch', offline.status === 4 && offline.stdout.split('\n').filter((line) => /git fetch origin .* failed/.test(line)).length === 1, `${offline.status} ${offline.stdout}`)
+  const noClaude = launch('completed', { path: `${dirname(node)}:/usr/bin:/bin` })
+  check('A10: no claude on the PATH — exit 2 and the missing binary is named', noClaude.status === 2 && /`claude` is not on the PATH/.test(noClaude.stdout) && noClaude.records.length === 0, `${noClaude.status} ${noClaude.stdout}`)
+
+  rmSync(root, { recursive: true, force: true })
+}
+
+// VT-12 stage 2: the loop of one task in force-run.mjs — a fake `claude` that answers per call from a sequence (FAKE_SEQ), the wait shrunk by FORCE_RUN_WAIT_SCALE.
+if (unit('vt12s2')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt12s2-')))
+  const FORCE_RUN = join(PLUGIN, 'force-run.mjs')
+  const bin = join(root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  const node = process.execPath
+  const fake = `#!/usr/bin/env node
+const fs = require('fs')
+const path = require('path')
+const callsFile = path.join(__dirname, 'calls.jsonl')
+const seq = (process.env.FAKE_SEQ || 'completed').split(',')
+const before = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').split('\\n').filter(Boolean).length : 0
+const scenario = seq[Math.min(before, seq.length - 1)]
+fs.appendFileSync(callsFile, JSON.stringify({ argv: process.argv.slice(2), cwd: fs.realpathSync(process.cwd()), pid: process.pid, scenario }) + '\\n')
+${FAKE_STREAM}
+const now = Math.floor(Date.now() / 1000)
+const limit = (type, resetsAt, text, reason) => {
+  limitEvents(type, resetsAt, text, reason)
+  process.exit(1)
+}
+const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
+const edit = (from, to) => fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(from, to))
+out({ type: 'system', subtype: 'init' })
+if (scenario === 'completed') {
+  edit('## Force run 2026-11-10', '## Force run 2026-11-10 — completed')
+  out({ type: 'result', subtype: 'success', is_error: false, result: 'done' })
+} else if (scenario === 'limit5') limit('five_hour', now - 1000, "You've hit your session limit · resets 11:30am", null)
+else if (scenario === 'limit5credits') limit('five_hour', now + 3600, "You've hit your session limit · resets 11:30am", 'out_of_credits')
+else if (scenario === 'limit5hold') limit('five_hour', now + 3600, "You've hit your session limit · resets 11:30am", null)
+else if (scenario === 'progress') { edit('[status: in-progress]', '[status: done]'); limit('five_hour', now - 1000, "You've hit your session limit", null) }
+else if (scenario === 'spend') limit('five_hour', now + 20 * 86400, "You've hit your org's monthly spend limit · run /usage-credits", 'org_level_disabled_until')
+else if (scenario === 'weekly') limit('seven_day', now + 3 * 86400, "You've hit your weekly limit · resets Fri 9:00am", null)
+else if (scenario === 'sleep') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'The computer went to sleep' }] }, apiError: 'computer_slept' }); process.exit(1) }
+else if (scenario === 'conn') { out({ type: 'result', subtype: 'error', is_error: true, result: 'API Error: connection_failed after 3 retries' }); process.exit(1) }
+else if (scenario === 'conn500') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'blip' }] }, apiError: 'connection_failed' }); out({ type: 'assistant', message: { content: [{ type: 'text', text: 'carrying on' }] } }); out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); process.exit(1) }
+else if (scenario === 'limitclosed') { edit('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'); limitAssistant('five_hour', now + 3600, "You've hit your session limit", null); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }) }
+else if (scenario === 'hangdeaf') { process.on('SIGTERM', () => {}); process.on('SIGINT', () => {}); fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid)); setInterval(() => {}, 1000) }
+else if (scenario === 'logfail') {
+  fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid))
+  const log = path.join(path.dirname(file), 'force-run-' + process.argv[process.argv.indexOf('--session-id') + 1] + '.log')
+  setTimeout(() => { fs.rmSync(log, { force: true }); fs.mkdirSync(log); out({ type: 'system', subtype: 'again' }) }, 300)
+  setInterval(() => {}, 1000)
+} else if (scenario === 'error') { out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); process.exit(1) }
+else if (scenario === 'utf8') {
+  const line = Buffer.from(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Ошибка сервера: сбой' }) + '\\n')
+  const cut = line.indexOf(Buffer.from('О')) + 1
+  process.stdout.write(line.subarray(0, cut))
+  setTimeout(() => { process.stdout.write(line.subarray(cut)); process.exit(1) }, 150)
+} else if (scenario === 'hang') { fs.writeFileSync(path.join(__dirname, 'hang.pid'), String(process.pid)); setInterval(() => {}, 1000) }
+`
+  writeFileSync(join(bin, 'claude'), fake)
+  // caffeinate: logs its arguments; with CAFF_HOLD it records its pid and stays alive until killed (like the real one while the watched pid lives).
+  writeFileSync(join(bin, 'caffeinate'), `#!/bin/sh\necho "$@" >> "${bin}/caffeinate.log"\nif [ -n "$CAFF_HOLD" ]; then echo $$ >> "${bin}/caffeinate.pids"; exec sleep 60; fi\n`)
+  execFileSync('chmod', ['+x', join(bin, 'claude'), join(bin, 'caffeinate')])
+
+  const repo = join(root, 'q2-repo')
+  repoAt(repo, 'main')
+  git(repo, 'branch', 'VT-12/feat/q')
+  const stagesFile = join(repo, '.claude/tasks/VT-12/STAGES.md')
+  const OPEN = '## Force run 2026-11-10\nMode: autonomous.\nConfirmed: 2026-11-10 — interview answers\n\n'
+  const fresh = () => writeFileSync(stagesFile, `# VT-12: queue\nBranch: \`VT-12/feat/q\`\n\n## Status: stage 1\n\n${OPEN}## Stages\n\n### Stage 1: a  [status: in-progress]\n\n### Stage 2: b  [status: todo]\n`)
+  write(repo, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/VT-12/STAGES.md': 'x' })
+  fresh()
+  const calls = () => (existsSync(join(bin, 'calls.jsonl')) ? readFileSync(join(bin, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+  const home = join(root, 'home')
+  mkdirSync(home, { recursive: true })
+  let n = 0
+  const recordsOf = (dataDir) => {
+    const file = join(dataDir, 'force-runs/VT-12.jsonl')
+    return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
+  }
+  const envFor = (dataDir, seq, extra = {}) => ({ PATH: `${bin}:${dirname(node)}:/usr/bin:/bin`, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SEQ: seq, FORCE_RUN_WAIT_SCALE: '0', ...extra })
+  // One loop run to its end, from a clean call log and a fresh journal.
+  const loop = (seq, flags = [], extra = {}) => {
+    rmSync(join(bin, 'calls.jsonl'), { force: true })
+    fresh()
+    const dataDir = join(root, `data-${n++}`)
+    const run = spawnSync(node, [FORCE_RUN, repo, 'VT-12', ...flags], { encoding: 'utf8', env: envFor(dataDir, seq, extra) })
+    const records = recordsOf(dataDir)
+    return { ...run, records, outcomes: records.filter((r) => r.type === 'outcome'), statuses: records.filter((r) => r.type === 'status'), last: records.filter((r) => r.type === 'status').at(-1) }
+  }
+  const noResume = () => calls().every((c) => !c.argv.some((a) => /resume|^-c$|--continue/.test(a)))
+  const sameTree = () => new Set(calls().map((c) => c.cwd)).size === 1
+
+  // AC-2.1: five-hour limit → wait → a NEW session of the same task in the same worktree, which completes.
+  const five = loop('limit5,completed')
+  check('AC-2.1 incident: five_hour limit, then a second session that completes — two sessions, exit 0, a `waiting` status before the second', five.status === 0 && calls().length === 2 && five.outcomes.map((o) => o.outcome).join() === 'limit,completed' && five.statuses.map((s) => s.status).join() === 'waiting,continuing,completed', `${five.status} ${five.stdout} ${five.stderr} ${JSON.stringify(five.statuses)}`)
+  check('AC-2.1: the second session is a fresh one for the same task in the same worktree — a new --session-id, the same prompt, no --resume in any command', new Set(calls().map((c) => c.argv[c.argv.indexOf('--session-id') + 1])).size === 2 && calls()[0].argv[1].split('\n\n')[0] === calls()[1].argv[1].split('\n\n')[0] && /stage-force VT-12\b/.test(calls()[1].argv[1]) && sameTree() && noResume(), JSON.stringify(calls()))
+  const secondPrompt = calls()[1]?.argv[1] ?? ''
+  check('catch-up B2 incident: the session after the limit is told how the first one ended and gets the resume point of the state on disk (stage in progress, next action)', /The previous session of this run ended: limit/.test(secondPrompt) && /Resume point \(force run, VT-12\)/.test(secondPrompt) && /Stage in progress: Stage 1: a/.test(secondPrompt) && /Next action: /.test(secondPrompt), secondPrompt)
+  const waiting = five.statuses.find((s) => s.status === 'waiting')
+  check('AC-2.5: the run record says "waiting until <time>" and the output says it too', /^waiting until \d{4}-/.test(waiting?.text ?? '') && /waiting until \d{4}-/.test(five.stdout), `${JSON.stringify(waiting)} ${five.stdout}`)
+  // the margin: the target is resetsAt + margin; a reset an hour ahead and a scale of 0.001 makes it checkable without waiting
+  const held = loop('limit5hold,completed', ['--margin-min', '7'], { FORCE_RUN_WAIT_SCALE: '0.001' })
+  const heldWait = held.statuses.find((s) => s.status === 'waiting')
+  const expectMs = (held.outcomes[0].resetsAt * 1000 + 7 * 60000 - Date.parse(heldWait.ts)) * 0.001
+  check('AC-2.1: the wait is resetsAt plus the margin (the flag --margin-min 7), shrunk by FORCE_RUN_WAIT_SCALE only in tests', Math.abs(Date.parse(heldWait.until) - Date.parse(heldWait.ts) - expectMs) < 2000 && held.status === 0, `${heldWait?.until} ${heldWait?.ts} ${expectMs}`)
+  const credits = loop('limit5credits,completed')
+  check('D10: a real five-hour limit that carries overageDisabledReason "out_of_credits" within five hours is still a five-hour wait, then a second session', credits.status === 0 && calls().length === 2 && credits.outcomes[0].kind === 'five_hour' && credits.outcomes[0].reason === 'out_of_credits', `${credits.status} ${JSON.stringify(credits.outcomes)}`)
+
+  // AC-2.2: weekly — no wait, its own exit code and the reset time.
+  const weekly = loop('weekly,completed')
+  check('AC-2.2 incident: weekly limit — one session, no wait, exit 5, status weekly_limit with the reset time', weekly.status === 5 && calls().length === 1 && weekly.last?.status === 'weekly_limit' && /resets \d{4}-/.test(weekly.last.text) && !weekly.statuses.some((s) => s.status === 'waiting'), `${weekly.status} ${weekly.stdout} ${JSON.stringify(weekly.statuses)}`)
+  // D10: monthly spend limit (resetsAt days away, five_hour label, org reason, spend text) — stop, not a wait.
+  const spend = loop('spend,completed')
+  check('D10 incident: org monthly spend limit labelled five_hour with resetsAt days away — stopped (exit 6, spend_limit), not waited', spend.status === 6 && calls().length === 1 && spend.last?.status === 'spend_limit' && spend.outcomes[0].kind === 'spend' && spend.outcomes[0].reason === 'org_level_disabled_until' && !spend.statuses.some((s) => s.status === 'waiting'), `${spend.status} ${spend.stdout} ${JSON.stringify(spend.outcomes)}`)
+
+  // AC-2.4: a short failure → exactly one new session; a second one in a row → stop; any other error → stop with its text.
+  const sleep = loop('sleep,completed')
+  check('AC-2.4 legitimate: computer_slept (apiError of an assistant message) once, then a session that completes — two sessions, exit 0, no wait', sleep.status === 0 && calls().length === 2 && sleep.outcomes[0].transient === 'computer_slept' && sleep.outcomes[0].transientSource === 'apiError' && !sleep.statuses.some((s) => s.status === 'waiting'), `${sleep.status} ${sleep.stdout} ${JSON.stringify(sleep.outcomes)}`)
+  const conn = loop('conn,completed')
+  check('AC-2.4 legitimate: connection_failed named in an error result — recorded as source `result`, one new session, completes', conn.status === 0 && calls().length === 2 && conn.outcomes[0].transient === 'connection_failed' && conn.outcomes[0].transientSource === 'result', `${conn.status} ${JSON.stringify(conn.outcomes)}`)
+  const conn500 = loop('conn500,completed')
+  check('AC-2.4: a session that survived connection_failed (a later clean assistant message) and then died of API Error 500 is an error, not a transient retry — one session, exit 1', conn500.status === 1 && calls().length === 1 && conn500.outcomes[0].outcome === 'error' && !conn500.outcomes[0].transient && /500/.test(conn500.outcomes[0].text), `${conn500.status} ${JSON.stringify(conn500.outcomes)}`)
+  const limitClosed = loop('limitclosed,completed')
+  check('AC-1.4/AC-2.1: a limit event in the stream, but the Force block was closed and the session exited 0 — completed, one session, no wait', limitClosed.status === 0 && calls().length === 1 && limitClosed.outcomes[0].outcome === 'completed' && !limitClosed.statuses.some((s) => s.status === 'waiting'), `${limitClosed.status} ${JSON.stringify(limitClosed.outcomes)} ${JSON.stringify(limitClosed.statuses)}`)
+  const sleepTwice = loop('sleep,conn,completed')
+  check('AC-2.4 incident: a second short failure in a row — the task stops with the error, exit 1, only two sessions', sleepTwice.status === 1 && calls().length === 2 && sleepTwice.last?.status === 'error' && /connection_failed/.test(sleepTwice.last.text), `${sleepTwice.status} ${sleepTwice.stdout}`)
+  const retries2 = loop('sleep,conn,completed', ['--retries', '2'])
+  check('AC-2.4: --retries 2 lets two short failures in a row pass — three sessions', retries2.status === 0 && calls().length === 3, `${retries2.status} ${calls().length}`)
+  const other = loop('error,completed')
+  check('AC-2.4 incident: any other error stops the task with the error text — one session, exit 1', other.status === 1 && calls().length === 1 && other.last?.status === 'error' && /API Error: 500/.test(other.last.text), `${other.status} ${other.stdout}`)
+
+  // AC-2.3: N new sessions in a row without a newly closed stage.
+  const capped = loop('limit5')
+  check('AC-2.3 incident: limit again and again with no closed stage — stops after 3 new sessions (4 in all), exit 7, status gave_up with the reason', capped.status === 7 && calls().length === 4 && capped.last?.status === 'gave_up' && /3 new sessions/.test(capped.last.text) && noResume(), `${capped.status} ${calls().length} ${capped.stdout}`)
+  const cap1 = loop('limit5', ['--max-sessions', '1'])
+  check('AC-2.3: --max-sessions 1 — two sessions in all', cap1.status === 7 && calls().length === 2, `${cap1.status} ${calls().length}`)
+  const progress = loop('limit5,limit5,progress,limit5,limit5,completed', ['--max-sessions', '3'])
+  check('AC-2.3 legitimate: a newly closed stage resets the count — six sessions go on past the cap of 3 and complete', progress.status === 0 && calls().length === 6, `${progress.status} ${calls().length} ${progress.stdout}`)
+
+  // #3: a multi-byte letter cut between two chunks stays whole in the raw log and in the error text.
+  const split = loop('utf8')
+  const rawLog = split.outcomes[0] ? readFileSync(split.outcomes[0].log) : Buffer.alloc(0)
+  check('stage-1 minor #3: a Cyrillic letter split between two chunks — the raw log holds the bytes as they came and the error text is whole', split.status === 1 && split.outcomes[0].text === 'Ошибка сервера: сбой' && rawLog.includes(Buffer.from('Ошибка сервера: сбой')) && !rawLog.toString('utf8').includes('�'), `${split.status} ${JSON.stringify(split.outcomes)}`)
+
+  // #4: a launcher file error (the record directory is a file) — no claude is started, the launcher says why instead of a stack.
+  rmSync(join(bin, 'calls.jsonl'), { force: true })
+  fresh()
+  const blocked = join(root, 'data-blocked')
+  writeFileSync(blocked, 'a file, not a directory')
+  const bad = spawnSync(node, [FORCE_RUN, repo, 'VT-12'], { encoding: 'utf8', env: envFor(blocked, 'completed') })
+  check('stage-1 minor #4: the record directory cannot be written — no claude is started, the launcher says why and exits 1 without a stack', bad.status === 1 && calls().length === 0 && /launcher could not write its files|failed:/.test(bad.stdout) && !/\n\s+at /.test(bad.stderr), `${bad.status} ${bad.stdout} ${bad.stderr}`)
+
+  // AC-2.5 / D11: Ctrl-C or SIGTERM during the wait and during a session — no live claude, no live caffeinate, `stopped` + interrupted, no new session.
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const sleepMs = (ms) => new Promise((done) => setTimeout(done, ms))
+  const until = async (fn, ms = 8000) => {
+    for (let t = 0; t < ms && !fn(); t += 50) await sleepMs(50)
+    return fn()
+  }
+  const caffPids = () => (existsSync(join(bin, 'caffeinate.pids')) ? readFileSync(join(bin, 'caffeinate.pids'), 'utf8').split('\n').filter(Boolean).map(Number) : [])
+  const caffLog = () => (existsSync(join(bin, 'caffeinate.log')) ? readFileSync(join(bin, 'caffeinate.log'), 'utf8').split('\n').filter(Boolean) : [])
+  const startLoop = (seq, extra) => {
+    for (const f of ['calls.jsonl', 'caffeinate.log', 'caffeinate.pids', 'hang.pid']) rmSync(join(bin, f), { force: true })
+    fresh()
+    const dataDir = join(root, `data-${n++}`)
+    const child = spawn(node, [FORCE_RUN, repo, 'VT-12'], { env: envFor(dataDir, seq, extra), stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    const exited = new Promise((done) => child.on('close', (code) => done(code)))
+    return { child, dataDir, exited, stdout: () => stdout }
+  }
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    const w = startLoop('limit5hold,completed', { FORCE_RUN_WAIT_SCALE: '1', CAFF_HOLD: '1' })
+    // the session's own caffeinate ends with the session; the wait's one is the one watching the launcher
+    const waitingNow = await until(() => /waiting until/.test(w.stdout()) && (process.platform !== 'darwin' || caffLog().some((l) => l === `-i -w ${w.child.pid}`)))
+    const waitCaff = caffPids().at(-1)
+    if (process.platform === 'darwin') check(`AC-2.5 (${signal}): during the wait \`caffeinate -i -w <launcher pid>\` is held and alive`, waitingNow && waitCaff && alive(waitCaff), `${w.stdout()} ${caffLog()}`)
+    const claudePid = calls()[0]?.pid
+    w.child.kill(signal)
+    const code = await Promise.race([w.exited, sleepMs(8000).then(() => 'timeout')])
+    await sleepMs(300)
+    const recs = recordsOf(w.dataDir)
+    check(`AC-2.5/D11 (${signal} during the wait): the launcher ends with exit 4, status stopped + interrupted, no second session, no live claude, no live caffeinate`, code === 4 && calls().length === 1 && !alive(claudePid) && (process.platform !== 'darwin' || !alive(waitCaff)) && recs.at(-1)?.status === 'stopped' && recs.at(-1)?.interrupted === true, `${code} ${w.stdout()} ${JSON.stringify(recs.at(-1))}`)
+    if (code === 'timeout') w.child.kill('SIGKILL')
+
+    const s = startLoop('hang,completed', { CAFF_HOLD: '1' })
+    await until(() => existsSync(join(bin, 'hang.pid')))
+    const hangPid = Number(readFileSync(join(bin, 'hang.pid'), 'utf8'))
+    await until(() => process.platform !== 'darwin' || caffPids().length > 0)
+    const sessionCaff = caffPids().at(-1)
+    s.child.kill(signal)
+    const sCode = await Promise.race([s.exited, sleepMs(8000).then(() => 'timeout')])
+    await sleepMs(300)
+    const sRecs = recordsOf(s.dataDir)
+    const sOut = sRecs.find((r) => r.type === 'outcome')
+    check(`AC-2.5/D11 (${signal} during a session): claude is killed, caffeinate is gone, the outcome is stopped with interrupted: true and the loop does not start a new session`, sCode === 4 && calls().length === 1 && !alive(hangPid) && (process.platform !== 'darwin' || !alive(sessionCaff)) && sOut?.outcome === 'stopped' && sOut.interrupted === true && sRecs.at(-1)?.status === 'stopped', `${sCode} ${JSON.stringify(sRecs.slice(-2))}`)
+    if (sCode === 'timeout') s.child.kill('SIGKILL')
+  }
+
+  // AC-2.5: a second signal inside the grace window must not leave claude alive (it ignores SIGTERM here).
+  {
+    const d = startLoop('hangdeaf,completed', {})
+    await until(() => existsSync(join(bin, 'hang.pid')))
+    const deafPid = Number(readFileSync(join(bin, 'hang.pid'), 'utf8'))
+    d.child.kill('SIGTERM')
+    await sleepMs(300)
+    d.child.kill('SIGTERM')
+    const dCode = await Promise.race([d.exited, sleepMs(8000).then(() => 'timeout')])
+    await sleepMs(300)
+    check('AC-2.5: two signals in a row while claude ignores SIGTERM — claude is dead (SIGKILL at the second), the launcher exits 4', dCode === 4 && !alive(deafPid), `${dCode} alive=${alive(deafPid)}`)
+    if (alive(deafPid)) process.kill(deafPid, 'SIGKILL')
+    if (dCode === 'timeout') d.child.kill('SIGKILL')
+  }
+  // a file error after the start (the log path stops being writable): claude is killed, the outcome is a launcher file error
+  {
+    const f = startLoop('logfail,completed', {})
+    const fCode = await Promise.race([f.exited, sleepMs(10000).then(() => 'timeout')])
+    await sleepMs(300)
+    const fPid = Number(existsSync(join(bin, 'hang.pid')) ? readFileSync(join(bin, 'hang.pid'), 'utf8') : 0)
+    const fOut = recordsOf(f.dataDir).find((r) => r.type === 'outcome')
+    check('guarded: a file error after the start kills claude and gives an error outcome naming the launcher file error', fCode === 1 && fOut?.outcome === 'error' && /launcher file error/.test(fOut.text ?? '') && fPid > 0 && !alive(fPid), `${fCode} ${JSON.stringify(fOut)}`)
+    if (fPid > 0 && alive(fPid)) process.kill(fPid, 'SIGKILL')
+    if (fCode === 'timeout') f.child.kill('SIGKILL')
+  }
+
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('vt12s3')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt12s3-')))
+  const QUEUE = join(PLUGIN, 'force-queue.mjs')
+  const FORCE_RUN = join(PLUGIN, 'force-run.mjs')
+  const bin = join(root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  const node = process.execPath
+  const fake = `#!/usr/bin/env node
+const fs = require('fs')
+const path = require('path')
+const { execFileSync } = require('child_process')
+const ticket = /stage-force (\\S+)/.exec(process.argv[3])[1]
+const scenario = JSON.parse(process.env.FAKE_PLAN || '{}')[ticket] || 'completed'
+const log = (ev) => fs.appendFileSync(path.join(__dirname, 'calls.jsonl'), JSON.stringify({ ticket, ev, scenario, t: Date.now(), cwd: fs.realpathSync(process.cwd()) }) + '\\n')
+log('start')
+${FAKE_STREAM}
+const now = Math.floor(Date.now() / 1000)
+const rate = (five, seven, sevenStatus) => rateEvent(five, seven, { fiveReset: now + 3600, sevenReset: now + 86400, sevenStatus })
+const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
+const close = () => {
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'))
+  execFileSync('git', ['commit', '--allow-empty', '-qm', 'work of ' + ticket])
+}
+const end = (code) => { log('end'); process.exit(code) }
+out({ type: 'system', subtype: 'init' })
+setTimeout(() => {
+  if (scenario === 'completed') { rate(0.2, 0.1); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'hot') { rate(0.95, 0.1); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'weekrejected') { rate(0.2, 0.99, 'rejected'); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'weekly') {
+    limitEvents('seven_day', now + 3 * 86400, "You've hit your weekly limit", null); end(1)
+  } else if (scenario === 'error') { out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); end(1) }
+  else if (scenario === 'limit5') {
+    limitEvents('five_hour', now + 3600, "You've hit your session limit", null); end(1)
+  } else if (scenario === 'limitunknown') { limitEvents('five_hour', null, "You've hit your session limit", null); end(1) }
+  else if (scenario === 'digest') { fs.writeFileSync(path.join(path.dirname(file), 'RUN-DIGEST.md'), 'digest'); close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }
+  else if (scenario === 'slow') { setTimeout(() => { close(); out({ type: 'result', subtype: 'success', is_error: false, result: 'done' }); end(0) }, 2500) }
+}, 300)
+`
+  writeFileSync(join(bin, 'claude'), fake)
+  writeFileSync(join(bin, 'caffeinate'), '#!/bin/sh\nexit 0\n')
+  execFileSync('chmod', ['+x', join(bin, 'claude'), join(bin, 'caffeinate')])
+  const bare = join(root, 'bare')
+  mkdirSync(bare, { recursive: true })
+  symlinkSync(node, join(bare, 'node'))
+  symlinkSync(execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim(), join(bare, 'git'))
+  const home = join(root, 'home')
+  mkdirSync(home, { recursive: true })
+  const OPEN = '## Force run 2026-11-10\nMode: autonomous.\nConfirmed: 2026-11-10 — interview answers\n\n'
+  const repos = {}
+  const journalPath = (t) => join(repos[t], `.claude/tasks/${t}/STAGES.md`)
+  const journal = (t, force = OPEN) => `# ${t}: queue\nBranch: \`${t}/feat/q\`\n\n## Status: stage 1\n\n${force}## Stages\n\n### Stage 1: a  [status: in-progress]\n`
+  const mkTask = (t, force = OPEN) => {
+    repos[t] = join(root, `repo-${t}`)
+    repoAt(repos[t], 'main')
+    git(repos[t], 'branch', `${t}/feat/q`)
+    write(repos[t], { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', [`.claude/tasks/${t}/STAGES.md`]: journal(t, force) })
+  }
+  const reopen = (...ts) => ts.forEach((t) => writeFileSync(journalPath(t), journal(t)))
+  for (const t of ['VT-A', 'VT-B', 'VT-C']) mkTask(t)
+  const calls = () => (existsSync(join(bin, 'calls.jsonl')) ? readFileSync(join(bin, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+  const resetCalls = () => rmSync(join(bin, 'calls.jsonl'), { force: true })
+  let n = 0
+  const sandbox = () => join(root, `data-${n++}`)
+  const envFor = (dataDir, plan = {}, extra = {}) => ({ PATH: `${bin}:${dirname(node)}:/usr/bin:/bin`, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_PLAN: JSON.stringify(plan), FORCE_RUN_WAIT_SCALE: '0', ...extra })
+  const q = (dataDir, args, plan, extra) => spawnSync(node, [QUEUE, ...args], { encoding: 'utf8', env: envFor(dataDir, plan, extra) })
+  const queueOf = (dataDir) => (existsSync(join(dataDir, 'force-queue.json')) ? JSON.parse(readFileSync(join(dataDir, 'force-queue.json'), 'utf8')).tasks : [])
+  const statusOf = (dataDir, t) => queueOf(dataDir).find((task) => task.ticket === t)?.status
+  const fill = (dataDir, ts) => ts.forEach((t) => assertAdd(q(dataDir, ['add', repos[t], t])))
+  const assertAdd = (r) => { if (r.status !== 0) throw new Error(`add failed: ${r.stdout} ${r.stderr}`) }
+  const starts = () => calls().filter((c) => c.ev === 'start').map((c) => c.ticket)
+
+  // AC-3.1: add refuses an unconfirmed task and names the reason; list and remove.
+  mkTask('VT-U', '## Force run 2026-11-10\nMode: autonomous.\n\n')
+  const d1 = sandbox()
+  const refused = q(d1, ['add', repos['VT-U'], 'VT-U'])
+  check('AC-3.1 incident: add of a task without a confirmed interview — exit 2, not queued, the output names "Confirmed" and the interview command', refused.status === 2 && /Confirmed/.test(refused.stdout) && /--interview-only/.test(refused.stdout) && queueOf(d1).length === 0, `${refused.status} ${refused.stdout} ${refused.stderr}`)
+  fill(d1, ['VT-A', 'VT-B'])
+  const listed = q(d1, ['list'])
+  check('AC-3.1: list shows the queue in insertion order with statuses', listed.status === 0 && /1\. VT-A\s+queued/.test(listed.stdout) && /2\. VT-B\s+queued/.test(listed.stdout), listed.stdout)
+  const dup = q(d1, ['add', repos['VT-A'], 'VT-A'])
+  check('AC-3.1: a task already queued is not added twice', dup.status === 2 && /already in the queue/.test(dup.stdout) && queueOf(d1).length === 2, dup.stdout)
+  const rem = q(d1, ['remove', 'VT-B'])
+  check('AC-3.1: remove takes a not-started task out', rem.status === 0 && queueOf(d1).map((t) => t.ticket).join() === 'VT-A', `${rem.stdout}`)
+  check('AC-3.1: remove of a task that is not there says so, exit 1', q(d1, ['remove', 'VT-Z']).status === 1)
+  const dNr = sandbox()
+  mkdirSync(dNr, { recursive: true })
+  writeFileSync(join(dNr, 'force-queue.json'), JSON.stringify({ tasks: [{ ticket: 'VT-R', repo: repos['VT-A'], status: 'not_ready', started: false, addedAt: 'x' }, { ticket: 'VT-W', repo: repos['VT-B'], status: 'running', started: true, addedAt: 'x' }] }))
+  const remNr = q(dNr, ['remove', 'VT-R'])
+  check('catch-up #21 incident: a task refused before its first session (not_ready, never started) can be removed', remNr.status === 0 && queueOf(dNr).map((t) => t.ticket).join() === 'VT-W', `${remNr.status} ${remNr.stdout}`)
+  const remRun = q(dNr, ['remove', 'VT-W'])
+  check('catch-up #21: a running task is not removed and the refusal says it is running', remRun.status === 1 && /VT-W is marked running/.test(remRun.stdout) && queueOf(dNr).length === 1, remRun.stdout)
+
+  // AC-3.2: one by one in order, the next after the outcome of the previous.
+  const d2 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d2, ['VT-A', 'VT-B'])
+  const ordered = q(d2, ['run'], { 'VT-A': 'completed', 'VT-B': 'completed' })
+  const cs = calls()
+  const order = cs.map((c) => `${c.ticket}:${c.ev}`).join()
+  check('AC-3.2 incident: two tasks run in the order added, the second starts only after the first ended', ordered.status === 0 && order === 'VT-A:start,VT-A:end,VT-B:start,VT-B:end', `${ordered.status} ${order} ${ordered.stdout} ${ordered.stderr}`)
+  check('AC-3.2: each task ran in its own worktree and both ended `completed` in the queue', cs[0].cwd !== cs[2].cwd && statusOf(d2, 'VT-A') === 'completed' && statusOf(d2, 'VT-B') === 'completed', JSON.stringify(queueOf(d2)))
+  // AC-3.4: the summary
+  const summary = readFileSync(join(d2, 'force-queue-summary.md'), 'utf8')
+  const lineA = summary.split('\n').find((l) => l.startsWith('VT-A:')) ?? ''
+  check('AC-3.4 incident: the summary file and stdout carry a line per task — outcome, commit count of the run, blockers, path to RUN-DIGEST.md', /VT-A: completed/.test(lineA) && /— 1 commit\(s\)/.test(lineA) && /no open blockers/.test(lineA) && /log: \S+force-run-[0-9a-f-]+\.log/.test(lineA) && lineA.includes('digest: not written — node ') && lineA.includes('run-digest.mjs ' + join(repos['VT-A'], '.claude/tasks/VT-A')) && ordered.stdout.includes(lineA) && /VT-B: completed/.test(summary), `${summary}`)
+
+  // AC-3.2: the lock of the machine; a stale one is taken over; the lock of the ticket.
+  const d3 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d3, ['VT-A', 'VT-B'])
+  const first = spawn(node, [QUEUE, 'run'], { env: envFor(d3, { 'VT-A': 'slow', 'VT-B': 'completed' }), stdio: ['ignore', 'pipe', 'pipe'] })
+  let firstOut = ''
+  first.stdout.on('data', (c) => (firstOut += c))
+  const firstDone = new Promise((done) => first.on('close', (code) => done(code)))
+  for (let t = 0; t < 8000 && !starts().includes('VT-A'); t += 50) await new Promise((r) => setTimeout(r, 50))
+  const second = q(d3, ['run'])
+  check('AC-3.2 incident: a second `run` while the first is alive is refused at once — exit 2, the first one\'s pid named, nothing of it started', second.status === 2 && /another queue run is alive \(pid \d+/.test(second.stdout) && starts().length === 1, `${second.status} ${second.stdout}`)
+  const manual = spawnSync(node, [FORCE_RUN, repos['VT-A'], 'VT-A', '--once'], { encoding: 'utf8', env: envFor(d3) })
+  check('D16: a manual force-run of the ticket the queue is running is refused (exit 2, "already being run"), no second claude', manual.status === 2 && /already being run/.test(manual.stdout) && starts().length === 1, `${manual.status} ${manual.stdout}`)
+  const firstCode = await firstDone
+  check('AC-3.2: the first run goes on undisturbed and ends both tasks; after it the locks are gone', firstCode === 0 && starts().join() === 'VT-A,VT-B' && !existsSync(join(d3, 'locks/queue.lock')) && !existsSync(join(d3, 'locks/ticket-VT-A.lock')), `${firstCode} ${firstOut}`)
+  const manualAfter = spawnSync(node, [FORCE_RUN, repos['VT-A'], 'VT-A', '--once'], { encoding: 'utf8', env: envFor(d3, { 'VT-A': 'error' }) })
+  check('D16: after the queue the ticket lock is free — a manual run starts again (a closed Force block here: not ready, but not "already being run")', !/already being run/.test(manualAfter.stdout), manualAfter.stdout)
+  const d4 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d4, ['VT-A'])
+  mkdirSync(join(d4, 'locks'), { recursive: true })
+  writeFileSync(join(d4, 'locks/queue.lock'), JSON.stringify({ pid: 2147483646, label: 'dead', started: '2026-01-01T00:00:00.000Z' }))
+  const stale = q(d4, ['run'], { 'VT-A': 'completed' })
+  check('AC-3.2: a lock left by a dead pid is taken over — the queue runs', stale.status === 0 && starts().join() === 'VT-A', `${stale.status} ${stale.stdout}`)
+
+  // AC-3.3: the threshold wait before the next task.
+  const d5 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d5, ['VT-A', 'VT-B'])
+  const hot = q(d5, ['run'], { 'VT-A': 'hot', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '0.0006' })
+  const hc = calls()
+  const gap = hc.find((c) => c.ticket === 'VT-B' && c.ev === 'start')?.t - hc.find((c) => c.ticket === 'VT-A' && c.ev === 'end')?.t
+  check('AC-3.3 incident: five_hour at 95% in the latest event (threshold 90) — the queue says it waits for the reset and VT-B starts only after the wait', hot.status === 0 && /VT-B: five_hour is at 95%.*waiting until/.test(hot.stdout) && gap >= 1500, `${hot.status} gap=${gap} ${hot.stdout}`)
+  const d6 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d6, ['VT-A', 'VT-B'])
+  const cool = q(d6, ['run', '--threshold', '99'], { 'VT-A': 'hot', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '1' })
+  check('AC-3.3 legitimate: the same 95% under a threshold of 99 — no wait, both ran', cool.status === 0 && !/waiting until/.test(cool.stdout) && starts().join() === 'VT-A,VT-B', `${cool.status} ${cool.stdout}`)
+  // seven_day rejected stops the queue, the rest stays.
+  const d7 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B', 'VT-C')
+  fill(d7, ['VT-A', 'VT-B', 'VT-C'])
+  const week = q(d7, ['run'], { 'VT-A': 'weekrejected', 'VT-B': 'completed' })
+  check('AC-3.3 incident: seven_day `rejected` in the latest event — the queue stops after VT-A, exit 5, VT-B and VT-C stay queued and never start', week.status === 5 && starts().join() === 'VT-A' && statusOf(d7, 'VT-B') === 'queued' && statusOf(d7, 'VT-C') === 'queued' && /Queue stopped: the weekly window is rejected, resets \d{4}-/.test(week.stdout) && /Not started \(still queued\): VT-B, VT-C/.test(week.stdout), `${week.status} ${week.stdout}`)
+  // the weekly limit inside a task
+  const d8 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d8, ['VT-A', 'VT-B'])
+  const weekly = q(d8, ['run'], { 'VT-A': 'weekly', 'VT-B': 'completed' })
+  const lineW = readFileSync(join(d8, 'force-queue-summary.md'), 'utf8')
+  check('D15/AC-3.4 incident: a weekly limit inside VT-A stops the queue (exit 5), VT-B is not started and stays queued; the summary has the reset time and the not-started task', weekly.status === 5 && starts().join() === 'VT-A' && statusOf(d8, 'VT-B') === 'queued' && /VT-A: weekly_limit/.test(lineW) && /resets \d{4}-/.test(lineW) && /Not started \(still queued\): VT-B/.test(lineW), `${weekly.status} ${lineW}`)
+  check('AC-3.1: VT-A hit the limit and is still queued but started — it cannot be removed, VT-B (not started) can', q(d8, ['remove', 'VT-A']).status === 1 && /was started/.test(q(d8, ['remove', 'VT-A']).stdout) && q(d8, ['remove', 'VT-B']).status === 0)
+  // D15: an error of the first task does not stop the queue.
+  const d9 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d9, ['VT-A', 'VT-B'])
+  const failFirst = q(d9, ['run'], { 'VT-A': 'error', 'VT-B': 'completed' })
+  check('D15 incident: VT-A ends in an error — VT-B still runs and completes; exit 1; the queue holds both outcomes', failFirst.status === 1 && starts().join() === 'VT-A,VT-B' && statusOf(d9, 'VT-A') === 'error' && statusOf(d9, 'VT-B') === 'completed' && /VT-A: error/.test(failFirst.stdout) && /VT-B: completed/.test(failFirst.stdout), `${failFirst.status} ${failFirst.stdout}`)
+  // AC-3.4: open blockers of the Force block reach the line
+  const d10 = sandbox()
+  resetCalls()
+  reopen('VT-A')
+  writeFileSync(journalPath('VT-A'), journal('VT-A', `${OPEN.trimEnd()}\nBlockers: B1 — the payment sandbox has no key.\n\n`))
+  fill(d10, ['VT-A'])
+  q(d10, ['run'], { 'VT-A': 'completed' })
+  const lineB = (readFileSync(join(d10, 'force-queue-summary.md'), 'utf8').split('\n').find((l) => l.startsWith('VT-A:')) ?? '')
+  check('AC-3.4: an open blocker of the Force block is in the line of its task', /1 open blocker\(s\): .*payment sandbox has no key/.test(lineB), lineB)
+
+  // D15: an interrupt during the five-hour wait INSIDE a task stops the queue and leaves the task queued; the next task never starts.
+  const d12 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d12, ['VT-A', 'VT-B'])
+  const waitQ = spawn(node, [QUEUE, 'run'], { env: envFor(d12, { 'VT-A': 'limit5', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '1' }), stdio: ['ignore', 'pipe', 'pipe'] })
+  let waitOut = ''
+  waitQ.stdout.on('data', (c) => (waitOut += c))
+  const waitDone = new Promise((done) => waitQ.on('close', (code) => done(code)))
+  for (let t = 0; t < 8000 && !/waiting until/.test(waitOut); t += 50) await new Promise((r) => setTimeout(r, 50))
+  waitQ.kill('SIGTERM')
+  const waitCode = await Promise.race([waitDone, new Promise((r) => setTimeout(() => r('timeout'), 8000))])
+  if (waitCode === 'timeout') waitQ.kill('SIGKILL')
+  await new Promise((r) => setTimeout(r, 300))
+  check('D15/AC-3.3 incident: an interrupt during the five-hour wait inside VT-A stops the queue (exit 4), VT-B never starts, VT-A stays queued, no claude left', waitCode === 4 && starts().join() === 'VT-A' && statusOf(d12, 'VT-A') === 'queued' && statusOf(d12, 'VT-B') === 'queued' && calls().filter((c) => c.ev === 'start').length === calls().filter((c) => c.ev === 'end').length, `${waitCode} ${waitOut} ${JSON.stringify(queueOf(d12))}`)
+
+  // AC-3.5: check names every "no" with its task.
+  const d11 = sandbox()
+  reopen('VT-A')
+  fill(d11, ['VT-A'])
+  const okCheck = q(d11, ['check'])
+  check('AC-3.5 legitimate: a ready queue — exit 0', okCheck.status === 0 && /ready: 1 task/.test(okCheck.stdout), okCheck.stdout)
+  mkTask('VT-N')
+  git(repos['VT-N'], 'branch', '-D', 'VT-N/feat/q')
+  mkTask('VT-I')
+  const queue = queueOf(d11)
+  const base = { status: 'queued', started: false, addedAt: 'x' }
+  writeFileSync(join(d11, 'force-queue.json'), JSON.stringify({ tasks: [...queue, { ...base, ticket: 'VT-G', repo: join(root, 'gone') }, { ...base, ticket: 'VT-N', repo: repos['VT-N'] }, { ...base, ticket: 'VT-I', repo: repos['VT-I'] }, { ...base, ticket: 'VT-NOFOLDER', repo: repos['VT-A'] }] }))
+  writeFileSync(journalPath('VT-I'), journal('VT-I', '## Force run 2026-11-10\nMode: autonomous.\n\n'))
+  const bad = q(d11, ['check'])
+  check('AC-3.5 incident: check names each failing task — repo missing, branch missing, interview unconfirmed, no task folder — exit 1; the ready VT-A is not named', bad.status === 1 && /VT-G: repo .*gone does not exist/.test(bad.stdout) && /VT-N: branch VT-N\/feat\/q exists neither locally nor on origin/.test(bad.stdout) && /VT-I: interview not confirmed/.test(bad.stdout) && /VT-NOFOLDER: task folder: no task VT-NOFOLDER/.test(bad.stdout) && !/NO — VT-A:/.test(bad.stdout), `${bad.status} ${bad.stdout}`)
+  const noClaude = spawnSync(node, [QUEUE, 'check'], { encoding: 'utf8', env: { PATH: bare, HOME: home, STAGE_PIPELINE_DATA_DIR: d11 } })
+  check('AC-3.5: claude missing from the PATH is named, exit 1', noClaude.status === 1 && /NO — `claude` is not on the PATH/.test(noClaude.stdout), noClaude.stdout)
+
+  // final checks #2/#1: `add` makes the worktree; `check` names what it lacks against the main copy; the committed-config case is refused in add and check.
+  const wt = (t) => join(root, `repo-${t}-${t.toLowerCase()}`)
+  mkTask('VT-W')
+  const dW = sandbox()
+  fill(dW, ['VT-W'])
+  check('final #2: `add` makes the worktree of the task (it can be prepared in the evening)', existsSync(join(wt('VT-W'), '.git')), wt('VT-W'))
+  mkdirSync(join(repos['VT-W'], 'node_modules'))
+  writeFileSync(join(repos['VT-W'], '.env.local'), 'SECRET=1\n')
+  writeFileSync(join(repos['VT-W'], '.claude/pipeline.config.local.md'), '- main_branch: main\n')
+  const lacking = q(dW, ['check'])
+  check('final #2 incident (#15: the local config only when the worktree has its own config): check names what the worktree lacks against the main copy — node_modules, .env.local — exit 1, nothing installed or copied', lacking.status === 1 && /VT-W: worktree .* lacks what the main copy has: node_modules, \.env\.local( —|$)/m.test(lacking.stdout) && !existsSync(join(wt('VT-W'), 'node_modules')) && !existsSync(join(wt('VT-W'), '.env.local')), `${lacking.status} ${lacking.stdout}`)
+  mkdirSync(join(wt('VT-W'), 'node_modules'))
+  mkdirSync(join(wt('VT-W'), '.claude'), { recursive: true })
+  writeFileSync(join(wt('VT-W'), '.claude/pipeline.config.md'), `- task_path: ${join(repos['VT-W'], '.claude/tasks')}\n- main_branch: main\n`)
+  const lacksLocal = q(dW, ['check'])
+  check('final #15: a worktree with its own config but no local config — the local config is named as missing', /lacks what the main copy has: .*\.claude\/pipeline\.config\.local\.md/.test(lacksLocal.stdout), lacksLocal.stdout)
+  writeFileSync(join(wt('VT-W'), '.env.local'), 'SECRET=1\n')
+  writeFileSync(join(wt('VT-W'), '.claude/pipeline.config.local.md'), '- main_branch: main\n')
+  const prepared = q(dW, ['check'])
+  check('final #2 legitimate: the worktree prepared by hand — check is ready, exit 0', prepared.status === 0 && /ready: 1 task/.test(prepared.stdout), `${prepared.status} ${prepared.stdout}`)
+
+  mkTask('VT-H')
+  git(repos['VT-H'], 'add', '-f', '.claude/pipeline.config.md')
+  git(repos['VT-H'], 'commit', '-qm', 'config')
+  git(repos['VT-H'], 'branch', '-f', 'VT-H/feat/q', 'HEAD')
+  const dH = sandbox()
+  const refusedH = q(dH, ['add', repos['VT-H'], 'VT-H'])
+  const remedy = `- task_path: ${join(repos['VT-H'], '.claude/tasks')}`
+  check('final #1 incident: add of a task whose worktree hooks cannot see it (committed config, relative task_path) — exit 2, not queued, the remedy printed verbatim', refusedH.status === 2 && refusedH.stdout.includes(join(wt('VT-H'), '.claude/pipeline.config.local.md')) && refusedH.stdout.includes(remedy) && queueOf(dH).length === 0, `${refusedH.status} ${refusedH.stdout}`)
+  mkdirSync(dH, { recursive: true })
+  writeFileSync(join(dH, 'force-queue.json'), JSON.stringify({ tasks: [{ ticket: 'VT-H', repo: repos['VT-H'], status: 'queued', started: false, addedAt: 'x' }] }))
+  const checkH = q(dH, ['check'])
+  check('final #1 incident: check names the same remedy for it', checkH.status === 1 && checkH.stdout.includes(remedy), `${checkH.status} ${checkH.stdout}`)
+  writeFileSync(join(wt('VT-H'), '.claude/pipeline.config.local.md'), `${remedy}\n`)
+  check('final #1 legitimate: with the local config in the worktree check is ready', q(dH, ['check']).status === 0)
+
+  // final checks #4: check judges "on origin" after a fetch (a branch that only the remote has).
+  mkTask('VT-O')
+  const originO = join(root, 'o-origin.git')
+  execFileSync('git', ['init', '-q', '--bare', originO])
+  git(repos['VT-O'], 'remote', 'add', 'origin', originO)
+  git(repos['VT-O'], 'push', '-q', 'origin', 'VT-O/feat/q')
+  git(repos['VT-O'], 'branch', '-D', 'VT-O/feat/q')
+  git(repos['VT-O'], 'update-ref', '-d', 'refs/remotes/origin/VT-O/feat/q')
+  const dO = sandbox()
+  mkdirSync(dO, { recursive: true })
+  writeFileSync(join(dO, 'force-queue.json'), JSON.stringify({ tasks: [{ ticket: 'VT-O', repo: repos['VT-O'], status: 'queued', started: false, addedAt: 'x' }] }))
+  const checkO = q(dO, ['check'])
+  check('final #4 incident: the branch exists only on origin and was never fetched — check fetches first and is ready', checkO.status === 0 && /ready: 1 task/.test(checkO.stdout), `${checkO.status} ${checkO.stdout}`)
+
+  // final checks #5: `log:` on the line; `digest:` only for a RUN-DIGEST.md this run wrote.
+  const d13 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  const oldDigest = join(repos['VT-A'], '.claude/tasks/VT-A/RUN-DIGEST.md')
+  writeFileSync(oldDigest, 'yesterday')
+  utimesSync(oldDigest, new Date(Date.now() - 86400_000), new Date(Date.now() - 86400_000))
+  fill(d13, ['VT-A', 'VT-B'])
+  q(d13, ['run'], { 'VT-A': 'completed', 'VT-B': 'digest' })
+  const sum13 = readFileSync(join(d13, 'force-queue-summary.md'), 'utf8').split('\n')
+  const rowA = sum13.find((l) => l.startsWith('VT-A:')) ?? ''
+  const rowB = sum13.find((l) => l.startsWith('VT-B:')) ?? ''
+  check('final #5 incident: a RUN-DIGEST.md left from an earlier night is not reported as this run\'s — the line says "not written" with the command, and has the session log', /log: \S+force-run-[0-9a-f-]+\.log/.test(rowA) && /digest: not written — node \S+run-digest\.mjs /.test(rowA) && !rowA.includes(oldDigest + ' ') && !/digest: \S*RUN-DIGEST/.test(rowA), rowA)
+  check('final #5 legitimate: a RUN-DIGEST.md written by this run — its path is on the line', rowB.includes(`digest: ${join(repos['VT-B'], '.claude/tasks/VT-B/RUN-DIGEST.md')}`), rowB)
+
+  // final checks #8: a limit with no known window/reset stops the queue, the task stays queued.
+  const d14 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d14, ['VT-A', 'VT-B'])
+  const unknown = q(d14, ['run'], { 'VT-A': 'limitunknown', 'VT-B': 'completed' })
+  check('final #8 incident: a limit with no known reset time — the queue stops (exit 3), VT-A stays queued, VT-B never starts', unknown.status === 3 && starts().join() === 'VT-A' && statusOf(d14, 'VT-A') === 'queued' && statusOf(d14, 'VT-B') === 'queued' && /Queue stopped: a limit with no known window or reset time hit by VT-A/.test(unknown.stdout), `${unknown.status} ${unknown.stdout}`)
+
+  // final checks #6: a task removed during the gate wait before it does not run.
+  const d15 = sandbox()
+  resetCalls()
+  reopen('VT-A', 'VT-B')
+  fill(d15, ['VT-A', 'VT-B'])
+  const gateQ = spawn(node, [QUEUE, 'run'], { env: envFor(d15, { 'VT-A': 'hot', 'VT-B': 'completed' }, { FORCE_RUN_WAIT_SCALE: '0.001' }), stdio: ['ignore', 'pipe', 'pipe'] })
+  let gateOut = ''
+  gateQ.stdout.on('data', (c) => (gateOut += c))
+  const gateDone = new Promise((done) => gateQ.on('close', (code) => done(code)))
+  for (let t = 0; t < 8000 && !/VT-B: five_hour is at/.test(gateOut); t += 50) await new Promise((r) => setTimeout(r, 50))
+  const removed = q(d15, ['remove', 'VT-B'])
+  const gateCode = await gateDone
+  check('final #6 incident: VT-B is removed while the queue waits for the reset before it — it does not run, the queue ends without it', removed.status === 0 && gateCode === 0 && starts().join() === 'VT-A' && /VT-B: removed from the queue while waiting/.test(gateOut), `${removed.status} ${gateCode} ${starts().join()} ${gateOut}`)
+
+  rmSync(root, { recursive: true, force: true })
 }
 
 if (MODE === 'serial') for (const late of lateChecks) late(DATA)
