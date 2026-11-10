@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import { realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
 import { sep } from 'node:path'
-import { configRoot, devServerConfig } from './hooks/pipeline-state.mjs'
+import { configRoot, devServerConfig, realOr } from './hooks/pipeline-state.mjs'
 import { listeners } from './processes.mjs'
 
 /**
@@ -48,13 +47,7 @@ process.on('uncaughtException', failed)
 process.on('unhandledRejection', failed)
 
 const cwd = flag('--cwd') ?? process.cwd()
-const real = (path) => {
-  try {
-    return realpathSync(path)
-  } catch {
-    return path
-  }
-}
+const real = realOr
 const git = (...gitArgs) => {
   try {
     return execFileSync('git', gitArgs, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()

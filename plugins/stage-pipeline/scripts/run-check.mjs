@@ -25,7 +25,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
-import { UNRECORDED, isGateCommand, recordGate, treeState } from './ci-gates.mjs'
+import { UNRECORDED, isGateCommand, recordGate, shellQuote, treeState } from './ci-gates.mjs'
 import { configRoot, pathList, pluginDataDir, readConfig } from './hooks/pipeline-state.mjs'
 import { alive } from './processes.mjs'
 
@@ -184,10 +184,6 @@ function isFile(path) {
   } catch {
     return false
   }
-}
-
-function shellQuote(text) {
-  return `'${text.replaceAll("'", `'\\''`)}'`
 }
 
 function fail(message) {

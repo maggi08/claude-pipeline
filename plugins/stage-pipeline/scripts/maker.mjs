@@ -58,8 +58,8 @@ function git(cwd, args, { input, timeout = 3000, deadline = null } = {}) {
   return run.status === 0 ? run.stdout : null
 }
 
-/** The real path (symlinks resolved: `/var` → `/private/var`), the path itself when it does not exist. Shared with the resume point. */
-export const real = realOr
+/** The real path (symlinks resolved: `/var` → `/private/var`), the path itself when it does not exist. */
+const real = realOr
 
 /** Blob hashes of paths at a revision in one git call: `Map<path, blob | null>` (null — the path is not there, or is no blob). */
 function revBlobs(root, rev, paths) {

@@ -123,18 +123,25 @@ export function treeState(cwd) {
 /** Why a gate run may not have counted: one wording for run-check, the close message and the listing. */
 export const UNRECORDED = 'run-check records a gate run only on a clean tree'
 
-/** The command is one of the config's gates (equal, or the gate with a tail of flags — the rule `gateStatus` reads records by). */
+/** A run of the gate: its command, or the command with a tail of flags (`… playwright test --grep-invert "snapshot"` runs `… playwright test`). */
+const runsGate = (gate, command) => command === gate.command || command.startsWith(`${gate.command} `)
+
+/** The command is one of the config's gates, by the rule `gateStatus` reads records by. */
 export const isGateCommand = (config, command) => {
   const run = normalize(command)
-  return gateCommands(config).some((gate) => run === gate.command || run.startsWith(`${gate.command} `))
+  return gateCommands(config).some((gate) => runsGate(gate, run))
 }
+
+/** One shell word: single quotes, a quote inside closed and escaped. */
+export const shellQuote = (text) => `'${text.replaceAll("'", `'\\''`)}'`
 
 /**
  * The worktree whose gates close a task: the one where the task's branch is checked out. The journal of a task run in a linked worktree lives in the
  * main tree, so its close was judged on the main tree's HEAD: VT-8 bounced 12 closes on "ran on another tree" while its gates were green in its own worktree.
  * The caller's worktree is a candidate like any other. Matched in this order, and the first level with a match decides:
  * 1. the branch of the `Branch:` header (`task.branches`): a header that names a branch checked out nowhere keeps the caller's worktree;
- * 2. no header: a worktree whose path STAGES.md names in backticks (VT-8 names its worktree in the Force block);
+ * 2. no header: a linked worktree whose path STAGES.md names in backticks (VT-8 names its worktree in the Force block). The main tree is not matched by
+ *    its path: a journal that names the repo root is not naming a task worktree;
  * 3. no header: a worktree whose branch carries the ticket (`isCurrentTask`). A bare branch name in the prose (`dev`, `main`) is never a match:
  *    most journals name the base branch, and a base worktree's green gates must not close a task.
  * Two matches at one level, or none — the caller's. A prunable worktree (its directory gone) is never picked.
@@ -149,8 +156,9 @@ export function taskWorktree(worktree, task) {
   }
   const trees = listing
     .split('\n\n')
-    .filter((block) => !/^prunable\b/m.test(block) && !/^bare$/m.test(block))
-    .map((block) => ({ path: block.match(/^worktree (.+)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null }))
+    .map((block, index) => ({ block, main: index === 0 }))
+    .filter(({ block }) => !/^prunable\b/m.test(block) && !/^bare$/m.test(block))
+    .map(({ block, main }) => ({ path: block.match(/^worktree (.+)$/m)?.[1], branch: block.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null, main }))
     .filter((tree) => tree.path && existsSync(tree.path))
   const caller = realOr(worktree)
   const level = (test) => {
@@ -162,7 +170,7 @@ export function taskWorktree(worktree, task) {
   if (branches.length) return level((tree) => tree.branch && branches.includes(tree.branch)) ?? worktree
   const text = task.stages ?? ''
   return (
-    level((tree) => text.includes(`\`${tree.path}\``) || text.includes(`\`${realOr(tree.path)}\``)) ??
+    level((tree) => !tree.main && (text.includes(`\`${tree.path}\``) || text.includes(`\`${realOr(tree.path)}\``))) ??
     level((tree) => tree.branch && task.ticket && isCurrentTask(task.ticket, [], tree.branch)) ??
     worktree
   )
@@ -220,7 +228,7 @@ export function gateStatus(dataDir, worktree, config, skips = []) {
   const { tree } = treeState(worktree)
   const records = Object.entries(gateRecords(dataDir, worktree))
   return gates.map((gate) => {
-    const runs = records.filter(([command]) => command === gate.command || command.startsWith(`${gate.command} `)).map(([, record]) => record)
+    const runs = records.filter(([command]) => runsGate(gate, command)).map(([, record]) => record)
     const here = runs.filter((record) => tree && record.tree === tree).sort((a, b) => (a.at < b.at ? 1 : -1))
     const status = here.length ? (here[0].code === 0 ? 'green' : 'red') : runs.length ? 'stale' : 'missing'
     // A green run beats a skip: the mark only stands in for a run that cannot happen. A run red on HEAD beats the Force block's own skip line: the run
@@ -269,7 +277,7 @@ export function gateCloseViolations(dataDir, worktree, config, taskDir, { caller
   const { dirty } = treeState(worktree)
   const unrecorded = dirty.length ? ` Tracked files there differ from HEAD (${pathList(dirty)}): ${UNRECORDED}, so commit or stash them first.` : ''
   // The commands of the message run where the gates are judged: a run in the caller's worktree records for the caller's tree.
-  const there = (command) => (worktree === caller ? command : `cd '${worktree}' && ${command}`)
+  const there = (command) => (worktree === caller ? command : `cd ${shellQuote(worktree)} && ${command}`)
   return failing
     .filter((gate) => !withBlockers || !(blockers.includes(gate.name.toLowerCase()) || blockers.includes(gate.command.toLowerCase())))
     .map((gate) => ({

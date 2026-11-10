@@ -1,8 +1,8 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { CONFIRMED_LINE, headingDate, ruleAppliesToBlock } from '../markers.mjs'
 import { blockWith } from './firing.mjs'
-import { openForceBlock, pluginDataDir, readHookInput, readPipelineState } from './pipeline-state.mjs'
+import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, realOr as real } from './pipeline-state.mjs'
 
 /**
  * The runtime checker does not finish until it has looked at every frame it took.
@@ -368,15 +368,6 @@ async function leftoverRulesApply() {
     return ruleAppliesToBlock(releaseGate(pluginDataDir(), task.dir), block.heading, confirmed)
   } catch {
     return true
-  }
-}
-
-// The task directory can sit behind a symlink (`/var` → `/private/var`, `~/.claude/<team>-tasks`): real paths are compared.
-function real(path) {
-  try {
-    return realpathSync(path)
-  } catch {
-    return path
   }
 }
 

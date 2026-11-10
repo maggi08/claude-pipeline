@@ -900,7 +900,8 @@ export const realOr = (path) => {
 export function dirtyPaths(worktree) {
   let out
   try {
-    out = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=no'], { cwd: worktree, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    // a big dirty tree must not read as a clean one: the default 1 MiB buffer ends at about 18,000 changed paths
+    out = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=no'], { cwd: worktree, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
   } catch {
     return null
   }

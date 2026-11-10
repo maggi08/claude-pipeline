@@ -386,9 +386,10 @@ function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
  * (`[final: pro-review — not run]`, markers.mjs). A blocker that names the checker in prose does not count: it gets the marker to add.
  * A project whose config names a repo-local team review skill (`- team_review: cleanup-review`) gets one more wanted report, `checks/<skill>-branch.md`,
  * under the same rule (a re-run `-branch-2.md` / `-branch-fresh.md` counts); a config without the line asks for no extra report. The ledger classifier reads any `checks/<name>-branch*.md` as a checker report, config line or not.
- * Only for a closing written after the snapshot, a block of the new rules' dates, the current task.
+ * Only for a closing written after the snapshot, a block of the new rules' dates, the current task — or a task closed from another worktree, judged on the worktree of
+ * its branch (`taskWorktree`; `caller` is the worktree the hook ran in), which the message then names.
  */
-export function finalReviewViolations(dataDir, worktree, taskDir) {
+export function finalReviewViolations(dataDir, worktree, taskDir, { caller = worktree } = {}) {
   const run = receiptRun(dataDir, taskDir)
   if (!run || !CLOSED_WORD.test(run.block.heading)) return []
   if (baselineInfo(dataDir, taskDir).lines.has(fingerprint(run.block.heading))) return []
@@ -426,9 +427,10 @@ export function finalReviewViolations(dataDir, worktree, taskDir) {
   const withBlockers = WITH_BLOCKERS.test(run.block.heading)
   const language = taskLanguage(run.stages)
   const fixedBlock = withBlockers && blockerFieldApplies(bGate, run.block.heading, run.block.body)
+  const where = worktree === caller ? '' : ` in the task's worktree \`${worktree}\``
   const reason = dirty.length
-    ? `tracked files have uncommitted edits (${pathList(dirty)})`
-    : `newer than the code last changed (the tree of HEAD appeared ${new Date(since).toISOString()}; a rewrite that keeps the tree does not count)`
+    ? `tracked files${where} have uncommitted edits (${pathList(dirty)})`
+    : `newer than the code last changed${where} (the tree of HEAD appeared ${new Date(since).toISOString()}; a rewrite that keeps the tree does not count)`
   return missing
     .filter((item) => !withBlockers || !blockers.some((line) => finalMarkerReports(line).has(item.checker)))
     .map((item) => {

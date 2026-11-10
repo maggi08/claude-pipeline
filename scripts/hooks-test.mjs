@@ -1386,6 +1386,7 @@ check('run-check: a run on a clean tree is recorded — the gate is green', gate
   check('taskWorktree incident: no header, `dev` named in the prose and checked out in a worktree — the caller\'s, not dev\'s', gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: [], stages: 'branched off `dev`, PR into `dev`' }) === kApp)
   check('taskWorktree: a header branch checked out nowhere keeps the caller\'s, with no fallback to the prose', gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: ['T-77/feat/nowhere'], stages: `the worktree \`${linkedReal}\`` }) === kApp)
   check('taskWorktree: called from the task\'s own worktree, which the journal names — stays there', gates.taskWorktree(linked, { current: false, ticket: 'T-77', branches: [], stages: `in the worktree \`${linkedReal}\`` }) === linked)
+  check('taskWorktree incident (dm-3): called from the task\'s own worktree, the journal names only the main tree\'s path — stays there, not the main tree', gates.taskWorktree(linked, { current: false, ticket: 'T-77', branches: [], stages: `the repo \`${kApp}\`, the root \`${realpathSync(kApp)}\`` }) === linked)
   check('taskWorktree: two worktrees named at one level — the caller\'s', gates.taskWorktree(kApp, { current: false, ticket: 'T-77', branches: [], stages: `\`${linkedReal}\` and \`${realpathSync(devTree)}\`` }) === kApp)
   check('taskWorktree: no header, two worktrees whose branches carry the ticket (T-12/feat/k, T-12/feat/linked) — the caller\'s', gates.taskWorktree(kApp, { current: false, ticket: 'T-12', branches: [], stages: '' }) === kApp)
   git(kApp, 'worktree', 'remove', '--force', devTree)
@@ -2948,6 +2949,10 @@ if (unit('receipts')) {
   close.journal(closed())
   const noFinal = closeGate()
   check('receipts AC-3.3: completed with no whole-branch pro-review and no task-converge — rejected, both named', noFinal.decision === 'block' && /pro-review: no whole-task report/.test(noFinal.text) && /task-converge: no whole-task report/.test(noFinal.text), noFinal.text)
+  // dm-2 of the 0.25.1 delta: judged on the task's worktree from another one, the message names the worktree it judged; judged where the hook runs, it does not.
+  const elsewhere = rc.finalReviewViolations(DATA, close.dir, close.tdir, { caller: join(close.dir, 'elsewhere') })
+  check('receipts: a close judged on the task\'s worktree from another one names that worktree in each message', elsewhere.length === 2 && elsewhere.every((item) => item.message.includes(`in the task's worktree \`${close.dir}\``)), elsewhere.map((item) => item.message.slice(0, 200)).join(' | '))
+  check('receipts legit: judged where the hook runs — no worktree named', rc.finalReviewViolations(DATA, close.dir, close.tdir).every((item) => !item.message.includes("the task's worktree")))
   close.report('pro-review-branch.md', 'pro-review', 8)
   close.report('task-converge.md', 'task-converge', 8)
   utimesSync(join(close.tdir, 'checks/task-converge.md'), REAL_STALE, REAL_STALE)
