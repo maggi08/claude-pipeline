@@ -73,6 +73,7 @@ A task spanning two repositories (core + webview) lives in the task directory of
 
 ### Scripts
 
+- `scripts/force-queue.mjs add|list|remove|check|run` and `scripts/force-run.mjs <repo> <TICKET>` — the night queue of headless force runs (section 2c).
 - `scripts/archive-stages.mjs <STAGES.md> [--apply]` — fold closed stages and the old journal into `STAGES-ARCHIVE.md` (called from `/stage-check`, Step 4.2).
 - `scripts/run-check.mjs -- <command with {files}>` — a stage's lint/test/type_check/build: only the changed files; on a machine with RAM ≤ 16 GB — one after another across projects and at a lowered priority (`references/heavy-checks.md`; `--mode` — the machine mode). A whole command on a clean tree records its result under the commit's tree — the hook sees the CI gates through it.
 - `scripts/ci-gates.mjs [--run]` — the CI gates from the config (the "## CI gates" table or `e2e`/`smoke` in Commands) and their state on HEAD; `--run` runs the non-green ones through `run-check.mjs`. A gate that cannot run here is skipped on the record: `skip: <reason> <date>` in its table row (or after an `e2e`/`smoke` Commands line), or `skip: <gate> — <reason> <date>` in the run's Force block. It is listed once as skipped and accepted at close; without a reason and a date the mark does not count, and an unmarked gate still blocks. A green run on HEAD beats any skip, and a run red on HEAD beats the Force block's skip (that line stands only for a gate that cannot run here; the user's mark in the config row still counts). Called from the final checks.
@@ -126,6 +127,45 @@ The same plan and the same checkers, but the stops are moved to the beginning: a
 The context does not pile up between stages without any `/compact` (the model cannot call it anyway): the stage code is written by the `stage-implement` subagent, the fix-loop fixes by the same one in fix mode, and the checker subagents verify. The main context keeps STAGES.md and short summaries, so a long run goes in one session.
 
 Always forbidden: `git push`, creating and commenting on a PR/MR, deploy, publishing. Always mandatory: a stop on irreversible forks, an exhausted fix-loop, a red build and a conflict of sources of truth. Reversible forks are decided on its own: the revertible option is taken, and a line goes into "⚠ Awaiting user confirmation".
+
+## 2c. Night queue — `force-queue.mjs`
+
+The interview needs you; the run does not. Collect the answers in the evening, leave the runs for the night.
+
+**Evening, per task.** `/stage-force <TICKET> --interview-only` runs the interview (Step 0) and writes the Force block with the `Confirmed:` line, but starts no stage and makes no commit. It ends with the command that queues the task (`<plugin>` is the plugin directory on the machine that will run the night):
+
+```
+node <plugin>/scripts/force-queue.mjs add <repo> <TICKET>     # only a task with a confirmed interview; otherwise the reason is named
+node <plugin>/scripts/force-queue.mjs list                    # the queue and the status of each task
+node <plugin>/scripts/force-queue.mjs remove <TICKET>         # only a task that was not started
+node <plugin>/scripts/force-queue.mjs check                   # before the night: every "no" is named, exit 1 on any
+node <plugin>/scripts/force-queue.mjs run                     # the queue, one task after another, in the order they were added
+```
+
+`run` takes `--threshold 90` (percent of the 5-hour window at which a task waits for the reset before it starts), `--margin-min 5`, `--max-sessions 3` (new sessions in a row without a newly closed stage, then the task stops), `--retries 1`. Each task runs as a headless `claude -p` force session in its own worktree next to the repo (the main copy is not touched); the machine is kept awake with `caffeinate`. Push and PR stay forbidden, as in any force run.
+
+**What the second machine needs.** macOS, `claude` and `node` on PATH (a login shell is not read, so check `PATH` of the shell that starts `run`), the repo cloned, the task folder (`<task_dir>/<TICKET>/` with STAGES.md and the confirmed Force block) and the task branch pushed to origin. Run `check` first: for every queued task it says whether the repo, the task folder, the interview, the branch and `claude` are in place.
+
+**The 5-hour limit.** The session stops with `usage_limit_reached`. The queue waits until the reset plus 5 minutes (`--margin-min`) and starts a NEW session of the same task in the same worktree (never `--resume`). Before the next task it also waits if the window is already at the threshold.
+
+**The weekly limit and the spend limit.** The queue stops at once and prints the reset time. The task that hit the limit and every task not started stay queued; the next `run` goes on with a new session. A task that failed for another reason does not stop the queue.
+
+**The morning.** The summary is printed to stdout and written to `force-queue-summary.md` in the plugin data directory (`~/.claude/plugins/data/stage-pipeline-<marketplace>/`, or `$CLAUDE_PLUGIN_DATA`). One line per task: outcome, commits of the run, open blockers, the path to its `RUN-DIGEST.md`; then the reason the queue stopped and the tasks not started. The summary is rewritten after each task, so a crash keeps what was done.
+
+What to do with a line of the summary:
+
+| Outcome | What it means | What you do |
+|---|---|---|
+| `completed` | the stages are done, the Force block is closed | read `RUN-DIGEST.md` (blockers, "Awaiting user confirmation"), then `/task-wrapup` |
+| `completed` with open blockers | the run finished what did not depend on them | answer each blocker: write `Lifted: <who> <date> — <answer>` on its line in the Force block, then run the task again (`/stage-force <TICKET>`) |
+| `weekly_limit`, `spend_limit` | the account limit; the task is still queued | wait for the reset time in the summary (or raise the organization's limit), then `run` again — nothing to repair |
+| `stopped` | the session ended with the Force block still open | read the end of the raw log in the task folder and `RUN-DIGEST.md`; `add <repo> <TICKET>` again (a finished ticket is re-added in place of its old entry), then `run`; it continues from the first stage that is not done |
+| `gave_up` | several new sessions in a row closed no stage | something blocks the task: read the log, fix the cause (a login, a missing file), then `add <repo> <TICKET>` again and `run` |
+| `error`, `limit_unknown` | a non-zero exit or an API error; the text is in the line | the line says why; fix it, then `add <repo> <TICKET>` again and `run`. A finished entry stays in `list` until it is re-added (`remove` takes only a task that was not started); you can also take the task by hand with `/stage-force` |
+| `not_ready` | the Force block is missing, closed or has no `Confirmed:` line, or the branch is not there | check the block and the branch (`force-queue.mjs check`), re-interview with `/stage-force <TICKET> --interview-only` if needed, then `add` and `run` |
+| `busy` | another run holds this task | wait for it or stop it, `run` again |
+
+Exit codes of `run`: `0` every task completed · `1` some task did not · `2` refused to start (a second `run` on this machine, or nothing queued) · `4` interrupted · `5` weekly limit · `6` spend limit. `force-run.mjs <repo> <TICKET>` runs one task without the queue (exit codes: `0` completed, `1` error, `2` not ready, `3` `limit_unknown` — with `--once`, `limit`: the 5-hour limit, no wait —, `4` stopped, `5` weekly limit, `6` spend limit, `7` gave up).
 
 ## 3. Task finale
 

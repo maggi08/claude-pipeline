@@ -40,3 +40,12 @@ Assumptions:
 - auth probe skipped: no Chrome DevTools MCP server of the plugin is available in this session, devtools-verify probes by itself — Rollback: none needed — Basis: guess
 - login "not now" (interview answer): the auth-gated criteria `AC-…` are deferred in the honest form at check time — Rollback: cheap, log in and rerun devtools-verify on them — Basis: interview answer
 ```
+
+## 6. `--interview-only`: the evening interview for the night queue
+
+`/stage-force <TICKET> --interview-only` runs Step 0 as usual (the probe, the batch, the Force block with `Confirmed:`) and then stops: it does not start `stage-implement`, does not commit, does not go to Step 1. Its last message is the command that queues the task, with the real paths:
+
+`node ${CLAUDE_PLUGIN_ROOT}/scripts/force-queue.mjs add <repo> <TICKET>`
+
+`add` takes only a task whose Force block is open and confirmed; the queue then runs it headless (`force-queue.mjs run`, README "Night queue").
+

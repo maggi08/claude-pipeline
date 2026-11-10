@@ -5,6 +5,22 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.26.0 — 2026-11-10
+
+### A night queue: collect the interviews in the evening, the runs go by themselves
+
+What changes against 0.25.2:
+
+- **`/stage-force <TICKET> --interview-only`** runs only the interview (Step 0) and writes the Force block with `Confirmed:`. It starts no stage and makes no commit; it ends with the command that queues the task.
+- **`scripts/force-run.mjs <repo> <TICKET>`** runs one force task headless (`claude -p`) in its own worktree next to the repo, with the machine kept awake, and records the outcome and every rate-limit event under the plugin data directory. At the 5-hour limit it waits for the reset plus 5 minutes and starts a new session of the same task; the weekly limit, the spend limit, a second short failure and N sessions in a row without a newly closed stage stop it with a status.
+- **`scripts/force-queue.mjs add|list|remove|check|run`** runs the queued tasks one after another, from different repos. `check` names every missing piece before the night (repo, task folder, confirmed interview, branch on origin, `claude`). `run` waits for the 5-hour reset between tasks when the window is above the threshold, and stops on a weekly or spend limit with the tasks left queued. The morning summary, a line per task with its outcome, commits, open blockers and the `RUN-DIGEST.md` path, goes to stdout and to `force-queue-summary.md`.
+- README section 2c: the evening interview, the queue commands, what the second machine needs, the limits, and a table of what to do with each outcome of the morning summary.
+- `/stage-force` SKILL.md: one line for the flag (29,872 of the 30,720-byte budget); the details are in `references/interview.md`, "6.".
+
+Hooks are unchanged.
+
+eval: skipped stage-force — the release eval gate does not fire on `skills/stage-force/SKILL.md` (the skill has no agent of its own, `scripts/release-check.mjs:66`); the change is a one-line flag and a reference section.
+
 ## 0.25.2 — 2026-11-10
 
 ### A hook message over 64 KiB reaches Claude Code whole on macOS; the backlog of next-version minors

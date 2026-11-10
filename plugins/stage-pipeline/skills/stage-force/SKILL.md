@@ -17,6 +17,7 @@ Force moves all the questions to the start: they are collected ONCE, then the ru
 
 - `<task_dir>/<TICKET>/STAGES.md` — required. If missing, run `/stage-plan` first, then come here.
 - Optional: the number of the stage to continue from (by default — the first one that is not `done`).
+- `--interview-only`: only Step 0, for the night queue: stop after the `Confirmed:` line — no Step 1, no commit (`references/interview.md`, "6.").
 
 ## Step 0. Interview — the only place questions are collected
 
