@@ -178,6 +178,7 @@ const UNITS = [
   { id: 'vt6s13a', weight: 5 }, // Stage 13a of VT-6, fix round 1: pro-review M-1 (post-done base), security 1, 3, 4, 6, 7
   { id: 'vt6s13b', weight: 7 }, // Stage 13b of VT-6 (part A): B1 team_review config in a linked worktree, B3 M-1..M-4, B4 o…
   { id: 'vt6s13c', weight: 2 }, // Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit…
+  { id: 'vt12s1', weight: 4 }, // VT-12 stage 1: force-run.mjs — one headless run with a fake `claude`: readiness, worktree, rate-limit record, the four outcomes, caffeinate
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
 const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
@@ -9316,6 +9317,139 @@ if (unit('vt6s13c')) {
   const preOne = runHook('git-guard.mjs', { cwd: c13, tool_name: 'Bash', tool_use_id: 'toolu_b5_one', hook_event_name: 'PreToolUse', tool_input: { command: 'git commit -m x' } })
   check('B5 legitimate: the single-span files cell denies the same line as before', preOne.decision === 'deny' && /\[repo:no-resolve\] src\/A\.vue:2/.test(preOne.text), `${preOne.decision} ${preOne.text}`)
   rmSync(c13, { recursive: true, force: true })
+}
+
+// VT-12 stage 1: force-run.mjs — one headless run of one task, with a fake `claude` that prints stream-json (an executable first on the PATH, like the `git` shim above).
+if (unit('vt12s1')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt12s1-')))
+  const FORCE_RUN = join(PLUGIN, 'force-run.mjs')
+  const bin = join(root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  const node = process.execPath
+  const fake = `#!/usr/bin/env node
+const fs = require('fs')
+const path = require('path')
+const scenario = process.env.FAKE_SCENARIO
+fs.appendFileSync(path.join(__dirname, 'calls.jsonl'), JSON.stringify({ argv: process.argv.slice(2), cwd: fs.realpathSync(process.cwd()), pid: process.pid, scenario }) + '\\n')
+const out = (event) => console.log(JSON.stringify(event))
+const rate = (five, seven, status = 'allowed') => out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: five, resetsAt: 1793082600, status }, seven_day: { utilization: seven, resetsAt: 1793600000, status: 'allowed' } } } })
+out({ type: 'system', subtype: 'init' })
+if (scenario === 'completed' || scenario === 'stopped') {
+  rate(0.25, 0.1)
+  rate(0.5, 0.12)
+  if (scenario === 'completed') {
+    const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('## Force run 2026-11-10', '## Force run 2026-11-10 — completed'))
+  }
+  out({ type: 'result', subtype: 'success', is_error: false, result: 'done' })
+} else if (scenario === 'limit-assistant') {
+  rate(0.99, 0.3, 'rejected')
+  out({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your session limit · resets 11:30am (Asia/Almaty)" }] }, apiError: 'usage_limit_reached', apiErrorParams: { rate_limit_info: { status: 'rejected', resetsAt: 1793082600, rateLimitType: 'five_hour' } } })
+  out({ type: 'result', subtype: 'success', is_error: true, result: "You've hit your session limit · resets 11:30am (Asia/Almaty)" })
+  process.exit(1)
+} else if (scenario === 'limit-result') {
+  rate(0.4, 0.99, 'allowed')
+  out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: "You've hit your weekly limit · resets Fri 9:00am" })
+  process.exit(1)
+} else if (scenario === 'error-result') {
+  out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' })
+  process.exit(1)
+} else {
+  console.error('boom: the fake claude died')
+  process.exit(3)
+}
+`
+  writeFileSync(join(bin, 'claude'), fake)
+  writeFileSync(join(bin, 'caffeinate'), `#!/bin/sh\necho "$@" >> "${bin}/caffeinate.log"\n`)
+  execFileSync('chmod', ['+x', join(bin, 'claude'), join(bin, 'caffeinate')])
+  const gitBin = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  // A PATH with no caffeinate in it: only the fake claude, node and git.
+  const bare = join(root, 'bare')
+  mkdirSync(bare, { recursive: true })
+  for (const [name, target] of [['claude', join(bin, 'claude')], ['node', node], ['git', gitBin]]) symlinkSync(target, join(bare, name))
+
+  const repo = join(root, 'q-repo')
+  const sibling = join(root, 'q-repo-vt-12')
+  repoAt(repo, 'main')
+  git(repo, 'branch', 'VT-12/feat/q')
+  const stagesFile = join(repo, '.claude/tasks/VT-12/STAGES.md')
+  const stagesText = (force) => `# VT-12: queue\nBranch: \`VT-12/feat/q\`\n\n## Status: stage 1\n\n${force}## Stages\n\n### Stage 1: a  [status: in-progress]\n`
+  const OPEN = '## Force run 2026-11-10\nMode: autonomous.\nConfirmed: 2026-11-10 — interview answers\n\n'
+  write(repo, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/VT-12/STAGES.md': stagesText(OPEN) })
+  const calls = () => (existsSync(join(bin, 'calls.jsonl')) ? readFileSync(join(bin, 'calls.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [])
+  const home = join(root, 'home')
+  mkdirSync(home, { recursive: true })
+  let n = 0
+  const launch = (scenario, { path = `${bin}:${dirname(node)}:/usr/bin:/bin` } = {}) => {
+    const dataDir = join(root, `data-${n++}`)
+    const run = spawnSync(node, [FORCE_RUN, repo, 'VT-12'], { encoding: 'utf8', env: { PATH: path, HOME: home, STAGE_PIPELINE_DATA_DIR: dataDir, FAKE_SCENARIO: scenario } })
+    const recordPath = join(dataDir, 'force-runs/VT-12.jsonl')
+    const records = existsSync(recordPath) ? readFileSync(recordPath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
+    return { ...run, dataDir, records, outcomes: records.filter((record) => record.type === 'outcome'), rates: records.filter((record) => record.type === 'rate_limit') }
+  }
+  const mainState = () => [git(repo, 'rev-parse', 'HEAD'), git(repo, 'symbolic-ref', 'HEAD'), git(repo, 'status', '--porcelain')].join('|')
+  const reopen = () => writeFileSync(stagesFile, stagesText(OPEN))
+
+  // AC-1.1: not ready — no claude, exit 2, the reason and the interview command.
+  writeFileSync(stagesFile, stagesText('## Force run 2026-11-10\nMode: autonomous.\n\n'))
+  const unconfirmed = launch('completed')
+  check('AC-1.1 incident: an open Force block without a Confirmed line — claude is not started, exit 2, the reason and `/stage-force VT-12 --interview-only`', unconfirmed.status === 2 && calls().length === 0 && /Confirmed/.test(unconfirmed.stdout) && /\/stage-force VT-12 --interview-only/.test(unconfirmed.stdout) && unconfirmed.records.length === 0, `${unconfirmed.status} ${unconfirmed.stdout} ${unconfirmed.stderr}`)
+  writeFileSync(stagesFile, stagesText('## Force run 2026-11-10 — completed\nConfirmed: 2026-11-10\n\n'))
+  check('AC-1.1: a closed Force block is not ready either — exit 2, no claude', launch('completed').status === 2 && calls().length === 0)
+  writeFileSync(stagesFile, stagesText(''))
+  check('AC-1.1: no Force block at all — exit 2, no claude', launch('completed').status === 2 && calls().length === 0)
+  reopen()
+
+  // AC-1.2: a branch with no worktree — one is made next to the repo; the main copy stays as it was; the second run reuses it.
+  const before = mainState()
+  const first = launch('completed')
+  const call = calls()[0]
+  check('AC-1.2 incident: no worktree for the branch — made next to the repo (`<repo>-vt-12`) and claude runs in it', first.status === 0 && existsSync(sibling) && call?.cwd === sibling && git(sibling, 'symbolic-ref', '--short', 'HEAD').trim() === 'VT-12/feat/q', `${first.status} ${first.stdout} ${first.stderr} ${JSON.stringify(call)}`)
+  check('AC-1.2: HEAD, branch and `git status` of the main copy are the same before and after', mainState() === before, `${before} → ${mainState()}`)
+  const sessionId = call?.argv[call.argv.indexOf('--session-id') + 1] ?? ''
+  check('AC-1.2/A1: argv has -p with the stage-force prompt carrying the absolute STAGES.md path, a fresh --session-id, --permission-mode auto, stream-json and --verbose', call?.argv[0] === '-p' && /^\/stage-pipeline:stage-force VT-12\b/.test(call.argv[1]) && call.argv[1].includes(stagesFile) && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(sessionId) && call.argv.join(' ').includes('--permission-mode auto --output-format stream-json --verbose'), JSON.stringify(call))
+  reopen()
+  const second = launch('completed')
+  check('AC-1.2 legitimate: a worktree that is already there is reused — claude runs in it, nothing new is made', second.status === 0 && calls()[1]?.cwd === sibling && !/made worktree/.test(second.stdout) && git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length === 2 && mainState() === before, `${second.stdout} ${second.stderr}`)
+  reopen()
+
+  // AC-1.3 + completed: the raw stream in the task's log, each rate_limit_event in the record.
+  const done = launch('completed')
+  const logFile = done.outcomes[0] && done.outcomes[0].log
+  const win = (rate) => JSON.stringify(rate?.five_hour) + JSON.stringify(rate?.seven_day)
+  check('AC-1.3: every rate_limit_event is in the run record with utilization, resetsAt and status of five_hour and seven_day', done.rates.length === 2 && win(done.rates[0]) === '{"utilization":0.25,"resetsAt":1793082600,"status":"allowed"}{"utilization":0.1,"resetsAt":1793600000,"status":"allowed"}' && done.rates[1].five_hour.utilization === 0.5, JSON.stringify(done.rates))
+  check('AC-1.3: the raw stream goes to a log file of the task, one per session', Boolean(logFile) && dirname(logFile) === dirname(stagesFile) && readFileSync(logFile, 'utf8').includes('"type":"rate_limit_event"') && logFile.includes(done.outcomes[0].session), String(logFile))
+  check('AC-1.4 completed: the session ended and the heading is closed — one `completed` outcome, exit 0', done.status === 0 && done.outcomes.length === 1 && done.outcomes[0].outcome === 'completed', `${done.status} ${JSON.stringify(done.outcomes)}`)
+
+  // AC-1.4: the other outcomes, each exactly once, with what it carries.
+  reopen()
+  const stopped = launch('stopped')
+  check('AC-1.4 stopped: the session ended and the block is still open — one `stopped` outcome, exit 4', stopped.status === 4 && stopped.outcomes.length === 1 && stopped.outcomes[0].outcome === 'stopped', `${stopped.status} ${JSON.stringify(stopped.outcomes)}`)
+  const limitA = launch('limit-assistant')
+  check('AC-1.4 limit (assistant message with apiError): one `limit` outcome with the window `five_hour` and resetsAt, even though the result event is an error too, exit 3', limitA.status === 3 && limitA.outcomes.length === 1 && limitA.outcomes[0].outcome === 'limit' && limitA.outcomes[0].window === 'five_hour' && limitA.outcomes[0].resetsAt === 1793082600 && /2026|\d{4}-/.test(limitA.outcomes[0].resetsAtIso), `${limitA.status} ${JSON.stringify(limitA.outcomes)}`)
+  const limitR = launch('limit-result')
+  check('AC-1.4 limit (an error `result` only): `limit` with the weekly window and its resetsAt from the last rate_limit_event, not `error`', limitR.status === 3 && limitR.outcomes.length === 1 && limitR.outcomes[0].outcome === 'limit' && limitR.outcomes[0].window === 'seven_day' && limitR.outcomes[0].resetsAt === 1793600000, `${limitR.status} ${JSON.stringify(limitR.outcomes)}`)
+  const errResult = launch('error-result')
+  check('AC-1.4 error (another API error in the result): one `error` outcome with the text, exit 1', errResult.status === 1 && errResult.outcomes.length === 1 && errResult.outcomes[0].outcome === 'error' && /API Error: 500/.test(errResult.outcomes[0].text), `${errResult.status} ${JSON.stringify(errResult.outcomes)}`)
+  const crash = launch('crash')
+  check('AC-1.4 error (exit code 3, no result): one `error` outcome with the code and stderr text', crash.status === 1 && crash.outcomes.length === 1 && crash.outcomes[0].outcome === 'error' && /exit code 3/.test(crash.outcomes[0].text) && /boom/.test(crash.outcomes[0].text), `${crash.status} ${JSON.stringify(crash.outcomes)}`)
+
+  // AC-1.5: caffeinate on macOS, and its absence is one log line, not a stop.
+  if (process.platform === 'darwin') {
+    reopen()
+    rmSync(join(bin, 'caffeinate.log'), { force: true })
+    const awake = launch('stopped')
+    const caffeine = existsSync(join(bin, 'caffeinate.log')) ? readFileSync(join(bin, 'caffeinate.log'), 'utf8').trim() : ''
+    const last = calls().at(-1)
+    check('AC-1.5: on macOS `caffeinate -i -w <pid of the claude run>` is started', caffeine === `-i -w ${last?.pid}`, `${caffeine} vs ${last?.pid}`)
+    const nocaf = launch('stopped', { path: bare })
+    const nocafLog = nocaf.outcomes[0] ? readFileSync(nocaf.outcomes[0].log, 'utf8') : ''
+    check('AC-1.5: no caffeinate on the PATH — one line in the log, the run goes on and records its outcome', nocaf.status === 4 && nocaf.outcomes.length === 1 && nocafLog.split('\n').filter((line) => /caffeinate not found/.test(line)).length === 1, `${nocaf.status} ${nocafLog}`)
+  }
+  const noClaude = launch('completed', { path: `${dirname(node)}:/usr/bin:/bin` })
+  check('A10: no claude on the PATH — exit 2 and the missing binary is named', noClaude.status === 2 && /`claude` is not on the PATH/.test(noClaude.stdout) && noClaude.records.length === 0, `${noClaude.status} ${noClaude.stdout}`)
+
+  rmSync(root, { recursive: true, force: true })
 }
 
 if (MODE === 'serial') for (const late of lateChecks) late(DATA)
