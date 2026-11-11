@@ -4,7 +4,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -273,7 +273,7 @@ export function agentReports(dir, before) {
 
 /** Everything one run needs, built in a neutral temp directory: <work>/<repo>/ is the cwd, mcp.json and the stubs sit next to it. */
 export function buildWorld({ caseDir, name, spec, plugin }) {
-  const work = mkdtempSync(join(tmpdir(), 'wk-'))
+  const work = tempDir('wk-')
   const identity = identityOf(name, spec, dirname(caseDir))
   // `serve: { dir }` — the case needs a page served locally; `{port}` in the tree and the prompt is that server's port.
   const serve = spec.serve ? { dir: spec.serve.dir, port: freePort() } : null
@@ -293,7 +293,7 @@ export function buildWorld({ caseDir, name, spec, plugin }) {
 export function lintCase(caseDir, source = SOURCE_PLUGIN) {
   const name = caseDir.split('/').pop()
   const spec = readCase(caseDir)
-  const holder = mkdtempSync(join(tmpdir(), 'pl-'))
+  const holder = tempDir('pl-')
   const plugin = join(holder, 'stage-pipeline')
   cpSync(source, plugin, { recursive: true })
   try {
@@ -390,6 +390,16 @@ export function parseStream(stdout) {
 /** The text of a message `content` (a string, or an array of blocks); shared with scripts/run-audit.mjs. */
 export const textOf = (content) =>
   typeof content === 'string' ? content : Array.isArray(content) ? content.map((block) => (typeof block === 'string' ? block : block?.text ?? '')).join('\n') : ''
+
+/** The text the top-level session said: the text parts of its assistant events, not the subagents' (`parent_tool_use_id`) and not thinking or tool calls. A decision session ends at the spawn, so its final result can be empty. */
+export function topLevelText(events) {
+  return events.filter((event) => event.type === 'assistant' && !event.parent_tool_use_id).flatMap((event) => event.message?.content ?? []).filter((part) => part.type === 'text').map((part) => part.text).join('\n')
+}
+
+/** A temp directory under its real path: on macOS tmpdir() is under the /var -> /private/var symlink, and the plugin scripts' `import.meta.url === pathToFileURL(argv[1])` main guard is then false (the script exits 0 silently). */
+export function tempDir(prefix) {
+  return realpathSync(mkdtempSync(join(tmpdir(), prefix)))
+}
 
 /** Every tool call of the stream with its result; `parent` is the Agent call a call was made under (null for the top-level session). */
 export function toolCalls(events) {
@@ -611,7 +621,7 @@ export function unreadScreenshots(calls) {
 }
 
 /**
- * The verdict on one agent run. `ctx`: { repo, report, summary, calls, hooks, snapshot, commitsBefore, commitsAfter }.
+ * The verdict on one agent run. `ctx`: { repo, report, summary, said?, calls, hooks, snapshot, commitsBefore, commitsAfter }; `said` is the text forbidSummary reads (default: summary).
  * Returns the failure messages and a compact hit/miss mark per expectation, for the ledger.
  */
 export function gradeAgent(spec, ctx) {
@@ -630,7 +640,7 @@ export function gradeAgent(spec, ctx) {
   }
   ;(spec.expect ?? []).forEach((e, i) => mark(`E${i + 1}`, re(e.pattern).test(haystack), `not found: ${e.why} (/${e.pattern}/)`))
   ;(spec.forbid ?? []).forEach((e, i) => mark(`F${i + 1}`, !re(e.pattern).test(ctx.report), `extra in the report: ${e.why} (/${e.pattern}/)`))
-  ;(spec.forbidSummary ?? []).forEach((e, i) => mark(`S${i + 1}`, !re(e.pattern).test(ctx.summary), `extra in the message: ${e.why} (/${e.pattern}/)`))
+  ;(spec.forbidSummary ?? []).forEach((e, i) => mark(`S${i + 1}`, !re(e.pattern).test(ctx.said ?? ctx.summary), `extra in the message: ${e.why} (/${e.pattern}/)`))
   ;(spec.findings ?? []).forEach((g, i) => mark(`N${i + 1}`, findingMatchesIn(g, ctx.report, ctx.summary).length > 0, `no finding line: ${g.why} (${g.severity ?? 'any'} /${g.file}/${g.line !== undefined ? `:${g.line}` : ''})`))
   ;(spec.findingsForbid ?? []).forEach((g, i) => {
     const found = findingMatchesIn(g, ctx.report, ctx.summary)
@@ -740,7 +750,7 @@ export function questionLines(text) {
 }
 
 /**
- * The verdict on a decision case: the orchestrator ran as the main session until its first spawn or question. `ctx`: { calls (top-level), final, hooks, stagesText, configText }.
+ * The verdict on a decision case: the orchestrator ran as the main session until its first spawn or question. `ctx`: { calls (top-level), final, assistantText (the top-level assistant text parts), hooks, stagesText, configText }.
  *   expectAgents    [name]       subagent types that must be spawned
  *   forbidAgents    [name]       subagent types that must not
  *   agentPrompts    [{ agent, acs?: { tag, stage }, contains?: [{ pattern, why }] }]  — the prompt of that agent carries every `[verify: <tag>]` AC ID of the stage and each pattern
@@ -748,10 +758,12 @@ export function questionLines(text) {
  *   forbidTools     [{ tool, input?, why }]  — top-level tools the orchestrator must not call (AskUserQuestion)
  *   forbidQuestionEnd { why }  — no spawn happened and the final text has a line asking the user something (`questionLines`): the plain-text form of a question
  *   askQuestion     [{ pattern, why }]  — over the AskUserQuestion input; the final text when the tool did not run
- * and the generic trace / traceForbid / expect / forbidSummary / hooks of gradeAgent over the same calls.
+ * and the generic trace / traceForbid / expect / hooks of gradeAgent over the same calls; forbidSummary reads assistantText plus the final text.
  */
 export function gradeDecision(spec, ctx) {
-  const generic = gradeAgent(spec, { repo: ctx.repo ?? '', report: '', summary: ctx.final ?? '', calls: ctx.calls, hooks: ctx.hooks, snapshot: {} })
+  // forbidSummary reads everything said at the top level (see topLevelText), the other graders keep the final message
+  const said = `${ctx.assistantText ?? ''}\n${ctx.final ?? ''}`
+  const generic = gradeAgent(spec, { repo: ctx.repo ?? '', report: '', summary: ctx.final ?? '', said, calls: ctx.calls, hooks: ctx.hooks, snapshot: {} })
   const failures = [...generic.failures]
   const marks = [...generic.marks]
   const mark = (id, ok, message) => {

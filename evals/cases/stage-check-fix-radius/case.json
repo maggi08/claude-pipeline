@@ -1,0 +1,62 @@
+{
+  "kind": "decision",
+  "why": "the recheck of a fix round: the fix is in a module shared with another page, so the runtime recheck must reach the mapped feature of that other page too, not only the page where the defect was found",
+  "identity": {
+    "repo": "pay-portal",
+    "ticket": "PAY-9",
+    "user": "Tomas Reyes",
+    "email": "tomas.reyes@pay-portal.dev",
+    "branch": "feature"
+  },
+  "serve": {
+    "dir": "public"
+  },
+  "prompt": "/stage-pipeline:stage-check PAY-9 1\nThe fix round for the devtools-verify finding on `AC-1.2` is done: it is in the working tree, `lib/money.ts`. Run the recheck of the fixed item.",
+  "maxTurns": 25,
+  "budgetUsd": 1.2,
+  "timeoutSec": 600,
+  "expectAgents": [
+    "devtools-verify"
+  ],
+  "forbidAgents": [
+    "stage-implement"
+  ],
+  "agentPrompts": [
+    {
+      "agent": "devtools-verify",
+      "contains": [
+        {
+          "pattern": "AC-1\\.2",
+          "why": "the fixed criterion"
+        },
+        {
+          "pattern": "/invoices",
+          "why": "the route of the other page that imports the shared module"
+        },
+        {
+          "pattern": "invoices\\.md|Invoices»|feature\\W{0,3}invoices\\b|\\binvoices\\W{0,3}(map )?feature|mapped:\\s*invoices",
+          "why": "the map feature of the radius (its id, file or primary path)"
+        }
+      ]
+    }
+  ],
+  "forbidTools": [
+    {
+      "tool": "AskUserQuestion",
+      "why": "a recheck of a named fix asks the user nothing before the checker ran"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.19.0",
+    "date": "2026-11-11",
+    "plugin": "0.19.0@d5a2a33e8",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "704b3f15caa8fd68",
+    "failures": [
+      "devtools-verify prompt: the route of the other page that imports the shared module (//invoices/); the map feature of the radius (its id, file or primary path) (",
+      "devtools-verify prompt: the map feature of the radius (its id, file or primary path) (/invoices\\.md|Invoices»|feature\\W{0,3}invoices\\b|\\binvoices\\W{0,3}(map )?f"
+    ]
+  }
+}

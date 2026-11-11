@@ -1,0 +1,5 @@
+body { font-family: system-ui, sans-serif; margin: 0; }
+.top { display: flex; gap: 12px; align-items: center; padding: 16px 32px; border-bottom: 1px solid #ddd; }
+.badge { background: #c62828; color: #fff; border-radius: 12px; padding: 2px 10px; }
+main { padding: 32px; }
+li { margin-bottom: 8px; }

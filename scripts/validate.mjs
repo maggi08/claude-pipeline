@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync, utimesSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync, utimesSync, symlinkSync } from 'node:fs'
 import { join, dirname, basename, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -726,7 +726,7 @@ async function validateEvals() {
 
 async function validateEvalSelfTests(names) {
   // Loaded here, not at the top: scripts/hooks-test.mjs runs copies of this file in directories that have no eval harness.
-  const { acIdsFor, agentReports, applyVariantEdits, checksSnapshot, caseHash, decisionSettings, questionLines, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, unreadScreenshots } = await import('./eval-lib.mjs')
+  const { acIdsFor, agentReports, applyVariantEdits, checksSnapshot, caseHash, decisionSettings, questionLines, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, tempDir, topLevelText, unreadScreenshots } = await import('./eval-lib.mjs')
   const here = 'scripts/eval-lib.mjs'
   // AC-6.1: a copy of a case with a planted word is aborted, and the original passes.
   const probe = names.find((name) => existsSync(join(ROOT, 'evals/cases', name, 'base/CLAUDE.md'))) ?? names[0]
@@ -898,6 +898,35 @@ async function validateEvalSelfTests(names) {
   for (const heading of ['## Whole-branch findings', '## Branch findings', '## Findings (full report)', '## Whole-branch report']) expectMatches(`ordinary heading «${heading}» is not a kept section`, gateSpec, `${heading}\n\n- 🟠 major \`src/loyalty/points.ts:5\` — NaN\n`, 1)
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
+  // forbidSummary of a decision case reads the text said before the spawn, not only the (empty) final message.
+  const saidBefore = (said, final) => gradeDecision({ forbidSummary: [{ pattern: 'cause\\s*:', why: 'x' }] }, { repo: ROOT, calls: [], hooks: [], final, assistantText: said }).failures.length
+  if (!saidBefore('Cause: renderBadge is never subscribed', '')) fail(here, 'decision grader self-test: forbidSummary did not see the text said before the spawn')
+  if (!gradeAgent({ forbidSummary: [{ pattern: 'cause\\s*:', why: 'x' }] }, { repo: ROOT, report: '', summary: 'Cause: x', calls: [] }).failures.length) fail(here, 'finding grader self-test: forbidSummary of an agent case did not read the summary when nothing was said')
+  if (saidBefore('Reproducing first', '')) fail(here, 'decision grader self-test: forbidSummary failed a clean text')
+  // The extraction of the text the decision session said: top-level text parts only (no subagent events, no thinking or tool calls), and temp directories under their real path.
+  const said = topLevelText([
+    { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'secret' }, { type: 'text', text: 'before spawn' }, { type: 'tool_use', id: 't1', name: 'Agent', input: {} }] } },
+    { type: 'assistant', parent_tool_use_id: 't1', message: { content: [{ type: 'text', text: 'from the subagent' }] } },
+    { type: 'user', message: { content: [{ type: 'text', text: 'a user part' }] } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'after' }] } },
+  ])
+  if (said !== 'before spawn\nafter') fail(here, `topLevelText self-test: got ${JSON.stringify(said)}, wanted the top-level text parts only`)
+  // tempDir resolves symlinks: point TMPDIR at a symlink to a real directory, so the check bites where tmpdir() is not under one (Linux CI).
+  const realTmp = mkdtempSync(join(tmpdir(), 'vt-real-'))
+  const linkTmp = `${realTmp}-link`
+  const savedTmp = process.env.TMPDIR
+  let dir
+  try {
+    symlinkSync(realTmp, linkTmp)
+    process.env.TMPDIR = linkTmp
+    dir = tempDir('vt-')
+    if (dirname(dir) !== realpathSync(realTmp)) fail(here, `tempDir self-test: ${dir} is not under the real path of the symlinked TMPDIR`)
+  } finally {
+    if (savedTmp === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = savedTmp
+    rmSync(linkTmp, { force: true })
+    rmSync(realTmp, { recursive: true, force: true })
+  }
   // Trace graders: a denied call does not count; every screenshot must be opened.
   const call = (name, input, extra = {}) => ({ name, input, result: '', isError: false, denied: false, ...extra })
   const traced = (calls) => gradeAgent({ trace: [{ tool: 'Bash', input: 'floor-guard\\.mjs', why: 'floor-guard ran' }] }, { repo: ROOT, report: '', summary: '', calls }).failures.length

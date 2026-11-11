@@ -1,0 +1,76 @@
+{
+  "agent": "devtools-verify",
+  "why": "in a repo with a verify map the runtime checker reads the map, drives the feature's entry points through the page and reports the map line with the entries it drove; an entry that needs an SMS code it cannot get goes to the unverified list with the prerequisite",
+  "identity": {
+    "repo": "mug-shop",
+    "ticket": "MUG-31",
+    "user": "Ines Varga",
+    "email": "ines.varga@mug-shop.dev"
+  },
+  "serve": {
+    "dir": "public"
+  },
+  "mcp": [
+    "chrome-devtools"
+  ],
+  "mcpServers": {
+    "chrome-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@1.6.0",
+        "--isolated",
+        "--headless"
+      ],
+      "env": {}
+    }
+  },
+  "prompt": "Ticket MUG-31, stage 1. Language: en. Check the cart in the browser at http://127.0.0.1:{port}/. Width 1440; the light theme only, skip the dark pass and the other widths. The repo has a verify map: follow the skill's Verify map. Routes of the stage, mapped by the repo's verify map:\nroute / — mapped: cart\nroute /account/ — mapped: cart\nfeature touched: cart\nStage criteria tagged devtools-verify:\n- `AC-1.1` WHEN the customer clicks \"Add to cart\" THEN the header cart link shows the new count\n- `AC-1.2` WHEN the customer applies the promo code SAVE10 to one mug THEN the cart total is 11.61 EUR\n- `AC-1.3` WHEN a signed-in customer opens Account, Saved addresses THEN the saved addresses are listed",
+  "budgetUsd": 2,
+  "timeoutSec": 900,
+  "expect": [
+    {
+      "pattern": "(^|\\n)[ \\t]*(- )?`?map:[^\\n]*cart[^\\n]*entries\\s+\\d+\\s*/\\s*4",
+      "why": "the report carries the map line with the feature and the entries count of the four entry points of the feature file"
+    },
+    {
+      "pattern": "## Could not verify[^\\n]*(?:\\n(?!## )[^\\n]*)*?\\n[ \\t]*- [^\\n]*(saved address|cart-address|AC-1\\.3)[^\\n]*(SMS|phone)",
+      "why": "the saved addresses entry (AC-1.3), which needs an SMS code of a phone, is a bullet of the Could not verify section with its prerequisite"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "entries\\s+4\\s*/\\s*4",
+      "why": "all four entries cannot be driven: one needs the SMS code of a phone"
+    },
+    {
+      "pattern": "map:\\s*none",
+      "why": "the feature is mapped, the report must not say there is no map entry"
+    }
+  ],
+  "trace": [
+    {
+      "tool": "mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_page)",
+      "why": "the page was opened through the plugin's chrome-devtools server under its production name"
+    }
+  ],
+  "traceForbid": [
+    {
+      "tool": "mcp__chrome-devtools__.*",
+      "why": "never a project's own chrome-devtools server"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.19.0",
+    "date": "2026-11-11",
+    "plugin": "0.19.0@d5a2a33e8",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "76fff78f2dffcf62",
+    "failures": [
+      "not found: the report carries the map line with the feature and the entries count of the four entry points of the feature file (/(^|\\n)[ \\t]*(- )?`?map:[^\\n]*ca"
+    ]
+  }
+}

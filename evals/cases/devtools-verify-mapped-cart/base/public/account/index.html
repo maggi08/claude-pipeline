@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mugshop - Account</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="top"><h1>Mugshop</h1><nav><a href="/">Home</a></nav></header>
+  <main>
+    <h2>Sign in</h2>
+    <p>We sent a 6-digit code by SMS to the phone on your account.</p>
+    <form id="sign-in">
+      <label>Code <input id="code" type="text" inputmode="numeric" aria-label="Code"></label>
+      <button type="submit">Confirm</button>
+    </form>
+    <p id="result" role="status"></p>
+  </main>
+  <script>
+    document.getElementById('sign-in').addEventListener('submit', (event) => {
+      event.preventDefault()
+      fetch('/api/session', { method: 'POST', body: document.getElementById('code').value })
+        .then((response) => {
+          if (!response.ok) throw new Error('rejected')
+          location.href = '/account/addresses/'
+        })
+        .catch(() => { document.getElementById('result').textContent = 'The code was not accepted.' })
+    })
+  </script>
+</body>
+</html>

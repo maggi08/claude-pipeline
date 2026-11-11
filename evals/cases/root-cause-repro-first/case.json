@@ -1,0 +1,92 @@
+{
+  "kind": "decision",
+  "why": "a runtime symptom without an obvious cause: before any cause is named or any edit made, the debugging flow reproduces the broken state through the runtime checker in its reproduction mode",
+  "identity": {
+    "repo": "inbox-lite",
+    "ticket": "INB-9",
+    "user": "Petra Novak",
+    "email": "petra.novak@inbox-lite.dev",
+    "branch": "feature"
+  },
+  "serve": {
+    "dir": "public"
+  },
+  "prompt": "/stage-pipeline:root-cause INB-9 stage 1: on http://127.0.0.1:{port}/ the red number next to the Inbox title does not go down when I press \"Mark as read\" on a message. The message row loses its button, the number stays 3. Width 1440, light theme. No idea why, it looked fine yesterday.",
+  "maxTurns": 20,
+  "budgetUsd": 1.2,
+  "timeoutSec": 600,
+  "expectAgents": [
+    "devtools-verify"
+  ],
+  "forbidAgents": [
+    "stage-implement"
+  ],
+  "agentPrompts": [
+    {
+      "agent": "devtools-verify",
+      "contains": [
+        {
+          "pattern": "repro(duction)? mode",
+          "why": "the prompt asks for the reproduction mode"
+        },
+        {
+          "pattern": "127\\.0\\.0\\.1:\\d+",
+          "why": "the route"
+        }
+      ]
+    }
+  ],
+  "forbidTools": [
+    {
+      "tool": "Edit",
+      "why": "no fix before the broken state was observed"
+    },
+    {
+      "tool": "Write",
+      "why": "no fix before the broken state was observed"
+    },
+    {
+      "tool": "AskUserQuestion",
+      "why": "the symptom and the route are given, nothing to ask before reproducing"
+    }
+  ],
+  "forbidSummary": [
+    {
+      "pattern": "(root cause|the cause|the culprit|the bug|the problem) (is|was|lies)\\b",
+      "why": "a cause is named before the broken state was observed"
+    },
+    {
+      "pattern": "(caused|broken) by\\b",
+      "why": "a cause is named before the broken state was observed"
+    },
+    {
+      "pattern": "(because|since) (the )?(badge|renderBadge|subscribe|store|listener)",
+      "why": "a cause is named before the broken state was observed"
+    },
+    {
+      "pattern": "(^|\\n)\\s*\\**Cause\\**\\s*:",
+      "why": "a cause is named before the broken state was observed"
+    },
+    {
+      "pattern": "renderBadge[^\\n]{0,80}(never|not|n't)[^\\n]{0,40}subscri",
+      "why": "a cause is named before the broken state was observed"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.19.0",
+    "date": "2026-11-11",
+    "plugin": "0.19.0@d5a2a33e8",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "d1fddd631aacbce1",
+    "failures": [
+      "extra in the message: a cause is named before the broken state was observed (/(root cause|the cause|the culprit|the bug|the problem) (is|was|lies)\\b/)",
+      "extra in the message: a cause is named before the broken state was observed (/(^|\\n)\\s*\\**Cause\\**\\s*:/)",
+      "agent devtools-verify was not spawned (spawned: none)",
+      "devtools-verify prompt: no devtools-verify call",
+      "Edit was called: no fix before the broken state was observed",
+      "extra in the message: a cause is named before the broken state was observed (/renderBadge[^\\n]{0,80}(never|not|n't)[^\\n]{0,40}subscri/)"
+    ]
+  }
+}
