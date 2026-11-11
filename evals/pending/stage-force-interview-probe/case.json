@@ -1,0 +1,41 @@
+{
+  "kind": "decision",
+  "why": "the opening interview of a force run on a plan whose stage leans on four observable premises (files and helpers named in Reuse, all wrong): the probe pass spawns one read-only general-purpose subagent with them before any question is asked. PENDING (VT-13 stage 7): on the tree the orchestrator never spawns the probe subagent of references/interview.md section 1 — it reads the plan and src/ with Bash, runs plan-check, reads interview.md in 1 of 5 runs (-6o11), checks the Reuse premises itself in the main context and asks the batch in plain text; 0/5 runs on 0.26.0@50cd14c3a over three invocations: 20261111T143728-9ckn 0/3 (node scripts/eval.mjs stage-force-interview-probe --runs 3), 20261111T115637-6o11 0/1, and 20261111T115550-9yl9 0/1 on the earlier one-premise version of the fixture. No provenFailing recorded: a tag record without a tree pass is useless.",
+  "identity": {
+    "repo": "shipping-calc",
+    "ticket": "SHP-6",
+    "user": "Ines Marlowe",
+    "email": "ines.marlowe@shipping-calc.dev",
+    "branch": "feature"
+  },
+  "prompt": "/stage-pipeline:stage-force SHP-6",
+  "maxTurns": 25,
+  "budgetUsd": 3,
+  "timeoutSec": 600,
+  "expectAgents": [
+    "general-purpose"
+  ],
+  "forbidAgents": [
+    "stage-implement"
+  ],
+  "agentPrompts": [
+    {
+      "agent": "general-purpose",
+      "contains": [
+        {
+          "pattern": "formatCents|src/lib/money|zones\\.json|ceilCents|roundWeightKg",
+          "why": "the probe prompt carries the premise the plan rests on (the helper named in Reuse)"
+        }
+      ]
+    }
+  ],
+  "forbidTools": [
+    {
+      "tool": "AskUserQuestion",
+      "why": "the probe pass runs before the batch: the premise is checked first, the questions are asked after"
+    }
+  ],
+  "forbidQuestionEnd": {
+    "why": "the turn does not end on a question in plain text before the probe is spawned"
+  }
+}
