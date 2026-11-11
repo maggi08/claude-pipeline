@@ -1,6 +1,7 @@
 const express = require('express')
 const { requireUser } = require('../auth')
 const db = require('../db')
+const { redirectInternal } = require('../redirect')
 
 const router = express.Router()
 
@@ -15,6 +16,11 @@ router.get('/api/invoices/:id', requireUser, (req, res) => {
   const invoice = db.invoices.find((item) => item.id === req.params.id)
   if (!invoice) return res.status(404).json({ error: 'not found' })
   res.json(invoice)
+})
+
+// The payment page sends the member back here; `next` is the page they paid from.
+router.get('/api/invoices/:id/paid', requireUser, (req, res) => {
+  redirectInternal(res, req.query.next)
 })
 
 router.post('/api/invoices/:id/comments', requireUser, (req, res) => {

@@ -18,7 +18,7 @@
     },
     {
       "severity": "critical|major",
-      "file": "AC-1\\.1[^\\n]*(itself|demand|require|mandat|spec|criteri|as written|by design)[^\\n]*(role|admin|privilege|escalat|permission)|(role|admin|privilege|escalat)[^\\n]*(itself|demand|require|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1|(itself|demand|require|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1[^\\n]*(role|admin|privilege|escalat)",
+      "file": "AC-1\\.1[^\\n]*(itself|demand|require[sd]?\\b|mandat|spec|criteri|as written|by design)[^\\n]*(role|admin|privilege|escalat|permission)|(role|admin|privilege|escalat)[^\\n]*(itself|demand|require[sd]?\\b|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1|(itself|demand|require[sd]?\\b|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1[^\\n]*(role|admin|privilege|escalat)",
       "why": "the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion"
     }
   ],

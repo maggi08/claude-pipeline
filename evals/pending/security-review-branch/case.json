@@ -1,6 +1,6 @@
 {
   "agent": "security-review",
-  "why": "recall and precision of the security review: an invoice read by id with no company check (sequential ids, IBANs of other companies), a sign-in return path whose same-site check `startsWith('/')` lets `//other.example` through, comments of other members rendered as raw HTML; the footer renders a constant line of the app's own locale file as HTML, which is not a finding. PENDING: compares sonnet with opus for the agent's model; move to evals/cases/ with a provenFailing record once a run that fails on an ablation exists.",
+  "why": "recall and precision of the security review: an invoice read by id with no company check (sequential ids, IBANs of other companies), a sign-in return path whose same-site check `startsWith('/')` lets `//other.example` through, a payment-return route that hands its `next` query to a helper in another file (server/redirect.js, untouched by the diff) whose check only rejects `://`, so `//other.example` leaves the site, comments of other members rendered as raw HTML; the footer renders a constant line of the app's own locale file as HTML, which is not a finding. PENDING: compares sonnet with opus for the agent's model. Not proven failing on the ablation (agent:security-review), and the failures it gave are mostly report-format failures, not missed defects: of the five failed ablation runs (20261111T061610-e747 runs 2 and 3, 20261111T061920-tuaw run 3, 20261111T150611-1t5u runs 1 and 2), four found the defects and failed the graders on format (severity written High/Medium or as a heading, the file only on a «Where:» line; -1t5u run 2 also carries a harness mark W-); only -tuaw run 3 is a real miss (Bash denied, web/src/ never read). With the `next` redirect through server/redirect.js added (one record attempt, VT-13 B1) the tree passed 1/1 (20261111T150520-e8ol) and the ablation passed 1/3 (-1t5u): run 1 read every file and reported all four defects, the redirect as «S-2. Open redirect via protocol-relative URLs» with server/redirect.js:4, but failed on format; run 2 (W-) also reported the redirect (server/redirect.js, redirectInternal); run 3 passed all four. So the bare model found the redirect in all three runs and nothing was recorded; the graders N1 and N4 were anchored on the sink after review (N4 on redirect.js / redirectInternal / /paid, N1 no longer matches «other» in //other.example); move to evals/cases/ only with a provenFailing record.",
   "identity": {
     "repo": "billing-portal",
     "ticket": "BILL-31",
@@ -13,7 +13,7 @@
   "findings": [
     {
       "severity": "critical",
-      "file": "invoices\\.js[^\\n]*(compan|owner|IDOR|another|other|any invoice|access|authori)|(IDOR|owner|compan|access control|authori)[^\\n]*invoices\\.js",
+      "file": "invoices\\.js[^\\n]*(compan|owner|IDOR|another|(?<!//)other|any invoice|access|authori)|(IDOR|owner|compan|access control|authori)[^\\n]*invoices\\.js",
       "why": "GET /api/invoices/:id returns any company's invoice: no companyId check, sequential ids"
     },
     {
@@ -25,6 +25,11 @@
       "severity": "critical|major",
       "file": "(InvoiceComments|richText)\\.tsx?",
       "why": "comments of other members are rendered with dangerouslySetInnerHTML: stored XSS"
+    },
+    {
+      "severity": "critical|major",
+      "file": "(redirect\\.js|redirectInternal|/paid\\b)[^\\n]*(redirect|//|protocol|next)|redirect[^\\n]*(redirect\\.js|redirectInternal|/paid\\b|invoices\\.js)|invoices\\.js[^\\n]*redirect",
+      "why": "GET /api/invoices/:id/paid passes the `next` query to redirectInternal, whose check only rejects `://`: `//other.example` or `/\\\\other.example` redirects off-site"
     }
   ],
   "findingsForbid": [
