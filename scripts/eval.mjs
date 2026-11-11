@@ -109,7 +109,7 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { wantedFor, loadProfile } from '../plugins/stage-pipeline/scripts/permission-profile.mjs'
 import {
-  CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, STATIC_SERVER, agentModelsOf, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
+  CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, STATIC_SERVER, agentModelsOf, agentReports, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
   INVOCATION_RE, newInvocationId, sessionEnv, spentSince, subagentRun, toolCalls, validEffort, walk, withEffort,
 } from './eval-lib.mjs'
 import { agentCases, agentTreeAt, buildReleaseRows, mergeReleases, modelDrift, ownModels, readModels, readReleases, releaseWarnings, seedModels, shaProblem, writeModels, writeReleases } from './release-lib.mjs'
@@ -524,7 +524,8 @@ function runAgent(name, attempt, spec, world, dataDir) {
 
   // The file name is the skill convention's business; the case only checks that a report was saved at all.
   const checksDir = join(world.repo, world.checks)
-  const report = existsSync(checksDir) ? walk(checksDir).filter((file) => file.endsWith('.md')).map((file) => readFileSync(file, 'utf8')).join('\n') : ''
+  // Only what the agent wrote: a fixture report that a case layer committed to checks/ is neither the agent's output nor a saved report.
+  const report = agentReports(checksDir, world.checksBefore)
   const graded = gradeAgent(spec, {
     repo: world.repo, report, summary: sub.summary, calls: sub.calls, hooks, snapshot, commitsBefore, commitsAfter: git(world.repo, 'rev-list', '--count', 'HEAD').trim(),
   })

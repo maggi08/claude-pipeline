@@ -260,6 +260,17 @@ const launchPrompt = (agent, prompt) =>
   `Launch the subagent stage-pipeline:${agent} (the Agent tool, subagent_type "stage-pipeline:${agent}") and pass it exactly the text between the two lines of equals signs as its prompt, unchanged. ` +
   `Run it in the foreground (run_in_background false), wait for it to finish, then answer with the single word done.\n\n==========\n${prompt}\n==========`
 
+/** The `.md` files under a checks/ directory with a content hash each: what the case layers put there before the agent ran. */
+export function checksSnapshot(dir) {
+  return new Map(existsSync(dir) ? walk(dir).filter((file) => file.endsWith('.md')).map((file) => [file, createHash('sha256').update(readFileSync(file)).digest('hex')]) : [])
+}
+
+/** The text of the reports the agent wrote: the `.md` files under checks/ that are new or changed since the snapshot (a fixture report of a case layer is not the agent's output). */
+export function agentReports(dir, before) {
+  const now = checksSnapshot(dir)
+  return [...now].filter(([file, hash]) => before.get(file) !== hash).map(([file]) => readFileSync(file, 'utf8')).join('\n')
+}
+
 /** Everything one run needs, built in a neutral temp directory: <work>/<repo>/ is the cwd, mcp.json and the stubs sit next to it. */
 export function buildWorld({ caseDir, name, spec, plugin }) {
   const work = mkdtempSync(join(tmpdir(), 'wk-'))
@@ -275,7 +286,7 @@ export function buildWorld({ caseDir, name, spec, plugin }) {
   const prompts = routing ? { prompt } : { prompt, parent: launchPrompt(spec.agent, prompt) }
   const servers = spec.mcp ?? []
   const mcp = servers.length ? mcpConfig(servers, spec, caseDir, plugin, work) : null
-  return { work, repo, identity, checks, prompt, prompts, mcp, plugin, serve, cleanup: () => rmSync(work, { recursive: true, force: true }) }
+  return { work, repo, identity, checks, checksBefore: checksSnapshot(join(repo, checks)), prompt, prompts, mcp, plugin, serve, cleanup: () => rmSync(work, { recursive: true, force: true }) }
 }
 
 /** The leak lint of one case dir, for the free `--lint` mode and the self-test: builds the world on a neutral copy of the plugin, lints it, removes it. */
@@ -467,7 +478,7 @@ const negatedTail = (tail) => {
   const rest = tail.slice(bridged.length)
   return NEGATION.test(rest)
 }
-const KEPT_SECTION = /\b(kept|discarded|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен[оыа]?(?![а-яё])|не удалось проверить|итог находок|отброшено/i
+const KEPT_SECTION = /\b(kept|discarded|could not verify|cannot verify|not verified|dismissed|out of scope|ruled out|false positives?|findings outcome)\b|не проверен|оставлен|намеренно|отклонен[оыа]?(?![а-яё])|не удалось проверить|итог находок|отброшено|\b(?:previous|prior|earlier|fixed) findings\b|\bstatus of (?:the |previous |prior )?findings\b|\b(?:full|base)[ -]report findings\b|\bfindings of the (?:full|base) report\b|\bfixes of the (?:full|base) report\b|\bbranch findings re-?check\b|предыдущ\w+ находк|находк\w+ полного отчёта|статус находок/i
 const ITEM = /^\s*(?:[-*•]|\d+[.)])\s+|^\s*\|(?![\s:|-]*$)|^\s*[*_`>]*\s*(?:[CMFSm]-?\d+|#\d+|AC-[\d.]+)\b|^\s*[*_`>]*\s*(?:critical|major|minor|blocker)\b|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)|^\s*[*_`>]*\s*(?:🔴|🟠|🟡|⚪)?\s*\[(?=[^\]\n]*(?:🔴|🟠|🟡|⚪|critical|major|minor|blocker|nit))\s*(?:🔴|🟠|🟡|⚪)?\s*(?:critical|major|minor|blocker|nit)?\s*\]/i
 // A heading that is itself a finding. It is judged as a line, and it does not open a «kept» section. Two forms:
 // an id-led heading («### M-1 (major) — …», «### 🟡 minor m-4 …», «### 1. 🟠 M-2 …»), and a heading led by a severity mark (an emoji, a word, or a bracket with either)

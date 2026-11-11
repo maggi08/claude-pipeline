@@ -726,7 +726,7 @@ async function validateEvals() {
 
 async function validateEvalSelfTests(names) {
   // Loaded here, not at the top: scripts/hooks-test.mjs runs copies of this file in directories that have no eval harness.
-  const { acIdsFor, applyVariantEdits, caseHash, decisionSettings, questionLines, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, unreadScreenshots } = await import('./eval-lib.mjs')
+  const { acIdsFor, agentReports, applyVariantEdits, checksSnapshot, caseHash, decisionSettings, questionLines, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, unreadScreenshots } = await import('./eval-lib.mjs')
   const here = 'scripts/eval-lib.mjs'
   // AC-6.1: a copy of a case with a planted word is aborted, and the original passes.
   const probe = names.find((name) => existsSync(join(ROOT, 'evals/cases', name, 'base/CLAUDE.md'))) ?? names[0]
@@ -868,6 +868,34 @@ async function validateEvalSelfTests(names) {
   // The security review leads its findings with an `S-<n>` id (agents/security-review.md), as a plain line or as a heading.
   expectMatches('a security finding led by an S id', { severity: 'critical', file: 'invoices\\.js' }, 'S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
   expectMatches('a security finding as an S-id heading', { severity: 'critical', file: 'invoices\\.js' }, '### S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
+  // M-2 (VT-13 stage 5): a fixture report under checks/ is not the agent's report; only a new or changed one is.
+  const reportsHolder = mkdtempSync(join(tmpdir(), 'reports-probe-'))
+  try {
+    mkdirSync(reportsHolder, { recursive: true })
+    writeFileSync(join(reportsHolder, 'fixture.md'), '- 🟠 major: src/a.ts:1 fixture finding\n')
+    const before = checksSnapshot(reportsHolder)
+    if (agentReports(reportsHolder, before) !== '') fail(here, 'report reader self-test: a fixture checks/*.md was read as the agent report')
+    writeFileSync(join(reportsHolder, 'agent.md'), 'agent report\n')
+    if (agentReports(reportsHolder, before) !== 'agent report\n') fail(here, 'report reader self-test: a report the agent wrote is missing, or the fixture one leaked in')
+    writeFileSync(join(reportsHolder, 'fixture.md'), 'rewritten by the agent\n')
+    if (!agentReports(reportsHolder, before).includes('rewritten by the agent')) fail(here, 'report reader self-test: a fixture report the agent rewrote was not read')
+  } finally {
+    rmSync(reportsHolder, { recursive: true, force: true })
+  }
+  // M-1 (VT-13 stage 5): the status lines of the full report's findings sit under a status heading and are not findings, whatever words they use; a re-raise outside it is.
+  const gate = JSON.parse(readFileSync(join(ROOT, 'evals/cases/pro-review-delta-round/case.json'), 'utf8')).findingsForbid[0]
+  const gateSpec = { severity: gate.severity, file: gate.file }
+  const statusLines = ['- Finding 2 (overdraw, major): `redeem(100, 250)` now throws at `src/loyalty/points.ts:10`, but the guard is off by one, see Finding 1 above.', '- 🟠 major `src/loyalty/points.ts:5` — fixed: the key set is not changed', '- 🟠 major `src/loyalty/points.ts:5` — fixed for absent keys but `constructor` gives NaN', 'Finding 1 fixed; an open question remains elsewhere: `src/loyalty/points.ts:5` major', '- 🟠 major `src/loyalty/points.ts:5` — not fixed, still NaN']
+  for (const heading of ['## Full report findings, checked in the new code', '## Status of the findings of the full report', '## Previous findings', '## Fixed findings of the full report', '## Status of findings from the base report', '## Branch findings recheck']) {
+    for (const line of statusLines) expectMatches(`status section «${heading}»: ${line.slice(0, 40)}`, gateSpec, `${heading}\n\n${line}\n`, 0)
+  }
+  for (const line of statusLines.slice(2)) expectMatches(`re-raise under Findings: ${line.slice(0, 40)}`, gateSpec, `## Findings\n\n${line}\n`, line.startsWith('Finding 1') ? 0 : 1)
+  expectMatches('a re-raise after the status section, under Findings', gateSpec, `## Previous findings\n\n- fine\n\n## Findings\n\n- 🟠 major \`src/loyalty/points.ts:5\` — NaN again\n`, 1)
+  for (const heading of ['## Findings', '## Major', '## Review summary', '## Report', '### Finding 1 — NaN (severity: major)']) {
+    if (/^#{3}/.test(heading)) expectMatches(`ordinary heading «${heading}» is a finding heading`, gateSpec, `${heading}\n\n- \`src/loyalty/points.ts:5\` major\n`, 1)
+    else expectMatches(`ordinary heading «${heading}» is not a kept section`, gateSpec, `${heading}\n\n- 🟠 major \`src/loyalty/points.ts:5\` — NaN\n`, 1)
+  }
+  for (const heading of ['## Whole-branch findings', '## Branch findings', '## Findings (full report)', '## Whole-branch report']) expectMatches(`ordinary heading «${heading}» is not a kept section`, gateSpec, `${heading}\n\n- 🟠 major \`src/loyalty/points.ts:5\` — NaN\n`, 1)
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
   // Trace graders: a denied call does not count; every screenshot must be opened.
