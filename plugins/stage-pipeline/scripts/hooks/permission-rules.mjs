@@ -41,6 +41,70 @@ export function nameKill(line) {
   return null
 }
 
+// The GitHub / GitLab CLI calls a force run may make: reads only. `null` — every subcommand of the group reads; `api` is judged by its flags.
+const CLI_READS = {
+  gh: {
+    pr: ['view', 'list', 'checks', 'diff', 'status'],
+    run: ['view', 'list', 'watch'],
+    repo: ['view'],
+    issue: ['view', 'list'],
+    release: ['view', 'list'],
+    workflow: ['view', 'list'],
+    auth: ['status'],
+    search: null,
+  },
+  glab: {
+    mr: ['view', 'list', 'diff'],
+    ci: ['view', 'list', 'status', 'trace'],
+    issue: ['view', 'list'],
+    repo: ['view'],
+    auth: ['status'],
+  },
+}
+const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'])
+
+/** `gh api` / `glab api` arguments that write: a method other than GET, or a body (`-f`, `-F`, `--field`, `--raw-field`, `--input` switch the default to POST). */
+export function apiWrites(args) {
+  let explicitGet = false
+  let body = false
+  for (let i = 0; i < args.length; i++) {
+    const method = args[i].match(/^(?:-X|--method)=?(.*)$/)
+    if (method) {
+      const value = method[1] || args[i + 1] || ''
+      if (value.toUpperCase() !== 'GET') return true
+      explicitGet = true
+    } else if (/^(?:-[fF]|--field|--raw-field|--input)(?:=|$)/.test(args[i]) || /^-[fF]./.test(args[i])) body = true
+  }
+  return body && !explicitGet
+}
+
+/**
+ * The first subcommand a force run never makes, whatever the permissions allow: a `git push`, and a `gh` / `glab` call that
+ * is not a read (a PR or MR created, edited, merged or commented on, a rerun, an API write). Null when there is none.
+ * The profile's optional `pr` group lets the user's own sessions push a branch and open a PR without a question,
+ * so the ban in force cannot rest on the ask list any more.
+ */
+export function forceNever(line) {
+  for (const words of subcommands(line)) {
+    const name = basename(words[0])
+    if (name === 'git') {
+      let i = 1
+      while (i < words.length && words[i].startsWith('-')) i += GIT_OPTIONS_WITH_VALUE.has(words[i]) ? 2 : 1
+      if (words[i] === 'push') return words.join(' ')
+      continue
+    }
+    const reads = CLI_READS[name]
+    if (!reads) continue
+    const [group, sub] = words.slice(1)
+    if (group === 'api') {
+      if (apiWrites(words.slice(2))) return words.join(' ')
+      continue
+    }
+    if (!(group in reads) || (reads[group] !== null && !reads[group].includes(sub))) return words.join(' ')
+  }
+  return null
+}
+
 /**
  * `Bash(...)` → regexp. `*` is any characters, the tail ` *` is the command itself or the same with arguments,
  * the old form `:*` means the same. A bare `Bash` and `Bash(*)` in ask are not taken: the hook does not turn

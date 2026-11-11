@@ -56,6 +56,16 @@
       ],
       "head": "falls under the ask rule"
     },
+    "force-guard/never-in-force": {
+      "incident": [
+        "force 0.27.0: git push allowed by the settings is still denied"
+      ],
+      "legitimate": [
+        "force 0.27.0: gh pr view, gh pr checks and a GET gh api pass in force",
+        "normal mode 0.27.0: git push -u origin is left alone"
+      ],
+      "head": "publishes outside the repo"
+    },
     "git-guard/journal-unreadable": {
       "incident": [
         "S-2: a commit on that branch is denied with the journal named and the limit"

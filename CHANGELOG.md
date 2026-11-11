@@ -5,6 +5,23 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.27.0 — 2026-11-10
+
+### Reading GitHub through gh asks nothing; pushing your branch and opening the PR can stop asking too, and a force run still never publishes
+
+What changes against 0.26.0: the permission profile stops asking about `gh` reads, gets an optional group for the PR flow, and the ban on push and PR in a force run no longer depends on the ask list.
+
+- **`github-read` (a new default group).** `gh pr view`/`list`/`checks`/`diff`/`status`, `gh run view`/`list`/`watch`, `gh repo view`, `gh auth status` and `gh api` are allowed. `Bash(gh *)` leaves `ask`. Only the write forms of `gh` stay there: `pr create`/`edit`/`merge`/`close`/`comment`/`review`/`ready`, an `api` call with `-X`/`--method`, `-f`/`-F`/`--field`/`--raw-field` or `--input`, `auth status -t` and `auth token`, `run rerun`/`cancel`, `workflow run`, releases, secrets, variables, and the writes of `repo` and `issue`.
+- **`pr` (a new optional group, not in the defaults).** It allows `git push -u origin <branch>`, `git push origin <branch>`, `gh pr create` and `gh pr edit`. A group can now narrow an entry of the profile's `ask` (`narrowsAsk`): with `pr` chosen, `Bash(git push *)` and the two PR writes leave `ask`, and the pushes that stay asked come in their place: a bare `git push`, `git push origin` and `git push -u origin` with no branch, `HEAD`, `main`/`master`/`dev`/`release` anywhere in the line, a tag (` v…`, `--tags`), `--all`, `--mirror`, force (`--force…`, `-f`, `+<ref>`) and a deletion (`--delete`, `-d`, or `:<ref>` of a protected name). Apply it with `--groups <the defaults>,pr` or `--all`.
+- **force-guard (rule `force-guard/never-in-force`).** In a force run a push and any `gh`/`glab` call that is not a read are denied whatever the settings allow, with the usual blocker hint. Until now this ban rested on `Bash(git push *)` and `Bash(gh *)` in ask, which the new profile no longer has for everyone. A PR's state, its checks and runs, and a GET `gh api` pass in force now. It holds for a run already going too: with the old profile the same calls were denied as ask rules.
+- **`permissions.mjs` sees a wider rule.** A conflict used to be an exact match, so `Bash(gh *)` in `ask` next to the new `Bash(gh pr view *)` counted as "in place" while every call still asked. Now an `ask`/`deny` rule that takes the command an allow entry stands for is a conflict, the conflicts are grouped by the rule that beats them, and `--check` returns 1 on them. `Bash(gh *)` in `ask` is named as an obsolete entry to remove by hand, and with the `pr` group a remaining `Bash(git push *)` in `ask` is named too. The script still removes nothing.
+
+**The measured basis.** In the transcripts of 2026-10-10 – 11-10 the user answered 287 Bash permission prompts by hand; 240 of them touched `gh` or `git push`. 195 were reads only (by subcommand, a prompt can hold several: `gh pr view` 63, `gh pr list` 46, `gh api` 39, all GET, `gh run view` 29, `gh run list` 27, `gh pr checks` 24); with the `pr` group 224 of the 240 would not ask. One session with 12 `gh pr create` calls answered 97 of them.
+
+**To update existing settings.** Remove `Bash(gh *)` from `ask` by hand, then `node "$PERMS" --apply` (with `pr` in `--groups` if you want it; then also remove `Bash(git push *)` from `ask` first). `node "$PERMS" --check` shows what is left.
+
+**Dev repo only:** the `perm027` unit of `scripts/hooks-test.mjs` (what force never makes, `overriddenBy`, the profile's decisions on 25 commands with and without `pr`, `permissions.mjs` on old and new settings, force-guard on live fixtures); `validate.mjs` checks that a group narrows only an entry that is in `ask`, that a retired entry is not handed out from `ask`/`deny`, and that the profile's own `ask`/`deny` beat none of its allow entries, with the default groups and with all of them.
+
 ## 0.26.0 — 2026-11-10
 
 ### A night queue: collect the interviews in the evening, the runs go by themselves

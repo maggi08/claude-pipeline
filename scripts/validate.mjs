@@ -1,12 +1,15 @@
 import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync, utimesSync } from 'node:fs'
 import { join, dirname, basename, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+// the profile's own resolver; a fixture repo of the validate tests has no plugin scripts, and then the self-override check is skipped
+const PROFILE_LIB = join(ROOT, 'plugins/stage-pipeline/scripts/permission-profile.mjs')
+const profileLib = existsSync(PROFILE_LIB) ? await import(pathToFileURL(PROFILE_LIB).href) : null
 const errors = []
 const fail = (file, msg) => {
   const line = `${file}: ${msg}`
@@ -216,13 +219,33 @@ function validatePermissions(pluginDir) {
     if (entry === '$comment') continue
     if (allowed.has(entry)) fail(rel, `"${entry}" is marked retired and also granted from allow`)
   }
+  for (const [name, group] of Object.entries(groups)) {
+    for (const wide of Object.keys(group.narrowsAsk ?? {})) {
+      if (!profile.ask?.includes(wide)) fail(rel, `group "${name}": narrowsAsk names "${wide}", which is not in ask — nothing to narrow`)
+    }
+  }
+  // an ask entry a group narrows away may be that group's allow: with the group chosen it is no longer asked
+  const narrowedBy = (entry) => Object.values(groups).some((group) => group.allow?.includes(entry) && group.narrowsAsk && entry in group.narrowsAsk)
   for (const key of ['ask', 'deny']) {
     if (!Array.isArray(profile[key])) {
       fail(rel, `no ${key} array — the /stage-force rules rest on it`)
       continue
     }
     for (const entry of profile[key]) {
-      if (allowed.has(entry)) fail(rel, `"${entry}" is in both allow and ${key}`)
+      if (allowed.has(entry) && !(key === 'ask' && narrowedBy(entry))) fail(rel, `"${entry}" is in both allow and ${key}`)
+    }
+  }
+  for (const entry of Object.keys(profile.retired ?? {})) {
+    if (profile.ask?.includes(entry) || profile.deny?.includes(entry)) fail(rel, `"${entry}" is marked retired and is still handed out from ask/deny`)
+  }
+  if (!Array.isArray(profile.ask) || !Array.isArray(profile.deny) || !profileLib) return
+  // the profile's own ask / deny must not beat its own allow: a user who applied it would be asked anyway, and --check would never go green
+  const pluginRoot = join(ROOT, pluginDir)
+  for (const [label, chosen] of [['the default groups', profile.defaultGroups ?? []], ['all groups', Object.keys(groups)]]) {
+    const wanted = profileLib.wantedFor(pluginRoot, chosen, profile)
+    for (const entry of wanted.allow) {
+      const beaten = profileLib.overriddenBy(entry, wanted)
+      if (beaten) fail(rel, `with ${label}, ${beaten.key} "${beaten.rule}" beats the profile's own allow "${entry}"`)
     }
   }
 }
