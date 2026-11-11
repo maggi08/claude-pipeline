@@ -1,0 +1,56 @@
+{
+  "agent": "pro-review",
+  "why": "recall (deleted-parity, guards): the split of refund.ts into two files meets both criteria and drops three guards and the audit entry of the deleted function - the payment must belong to the agent's account, the refund must fit into what is left of the payment, and the gateway call carries an idempotency key. refund.ts is deleted, so only git show HEAD:src/billing/refund.ts (or the deleted lines of the diff) shows them",
+  "identity": {
+    "repo": "pay-desk",
+    "ticket": "PDK-77",
+    "user": "Ingrid Valtonen",
+    "email": "ingrid.valtonen@pay-desk.dev"
+  },
+  "prompt": "Ticket PDK-77, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN the support agent submits a refund for a payment THEN the payment is refunded for that amount through the gateway\n- `AC-1.2` WHEN the amount has more than two decimals THEN it is rounded to whole cents before it is sent",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "createRefund\\.ts[^\\n]*(account|owner|tenant|forbidden|another|authori|permission|cross)|(account|tenant|forbidden|another account|authori|permission|cross-account)[^\\n]*createRefund\\.ts",
+      "why": "the check that the payment belongs to the agent's account is gone: an agent can refund a payment of another account"
+    },
+    {
+      "severity": "critical|major",
+      "file": "createRefund\\.ts[^\\n]*(exceed|over-?refund|already refunded|left|remaining|balance|more than|cap|total)|(over-?refund|already refunded|remaining|exceeds? (what|the paid|the payment))[^\\n]*createRefund\\.ts",
+      "why": "the check that the refund fits into what is left of the payment is gone: repeated refunds can exceed the paid amount"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "createRefund\\.ts[^\\n]*(idempoten|twice|double|duplicate|retry|retries|repeat)|(idempoten|double refund|refunds twice|duplicate refund)[^\\n]*createRefund\\.ts",
+      "why": "the idempotency key of the gateway call is gone: a retry or a double click refunds twice"
+    },
+    {
+      "severity": "critical|major|minor",
+      "file": "createRefund\\.ts[^\\n]*(audit|recordAudit|trail)|(audit (trail|log|entry)|recordAudit|no audit)[^\\n]*createRefund\\.ts",
+      "why": "the audit entry of the refund is gone: a refund leaves no trace of who made it"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Approve\\*{0,2}\\s*$",
+      "why": "a plain Approve on a rewrite that drops three guards and the audit entry of the deleted function"
+    }
+  ],
+  "provenFailing": {
+    "on": "ablate:agent:pro-review",
+    "date": "2026-11-11",
+    "plugin": "0.26.0@0e62b881f",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "a4bad571e0ed7c15",
+    "failures": [
+      "no finding line: the audit entry of the refund is gone: a refund leaves no trace of who made it (critical|major|minor /createRefund\\.ts[^\\n]*(audit|recordAudit|",
+      "no finding line: the check that the payment belongs to the agent's account is gone: an agent can refund a payment of another account (critical|major /createRefu",
+      "no finding line: the check that the refund fits into what is left of the payment is gone: repeated refunds can exceed the paid amount (critical|major /createRef",
+      "no finding line: the idempotency key of the gateway call is gone: a retry or a double click refunds twice (critical|major|minor /createRefund\\.ts[^\\n]*(idempote"
+    ]
+  }
+}

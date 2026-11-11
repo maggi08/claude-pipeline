@@ -1,0 +1,44 @@
+{
+  "agent": "pro-review",
+  "why": "recall (ac-encoded-it, privilege): criterion AC-1.1 demands that every column of the file, role included, overwrites the stored member - and the code does exactly that, so a coach (who may not assign coach or admin roles anywhere else, see canAssignRole) makes anyone an admin with one file row, bypassing the rule that service.ts enforces. Only a review that questions the criterion and reads the sibling service finds it",
+  "identity": {
+    "repo": "club-roster",
+    "ticket": "CLB-9",
+    "user": "Tomas Wiklund",
+    "email": "tomas.wiklund@club-roster.dev"
+  },
+  "prompt": "Ticket CLB-9, stage 1. Language: en. Mode: stage. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged pro-review:\n- `AC-1.1` WHEN a row of the file has an email that already exists THEN the stored member is overwritten with every column of the row (name, phone, role), the file is the single source of truth\n- `AC-1.2` WHEN a row has no email THEN the row is skipped and counted in the result",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "importRoster\\.ts[^\\n]*(role|admin|privilege|escalat|canAssignRole|permission)|(role|admin|privilege|escalat|canAssignRole)[^\\n]*importRoster\\.ts",
+      "why": "a coach can give any member the admin or coach role through the file, bypassing canAssignRole that service.ts applies to every other role change"
+    },
+    {
+      "severity": "critical|major",
+      "file": "AC-1\\.1[^\\n]*(itself|demand|require|mandat|spec|criteri|as written|by design)[^\\n]*(role|admin|privilege|escalat|permission)|(role|admin|privilege|escalat)[^\\n]*(itself|demand|require|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1|(itself|demand|require|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1[^\\n]*(role|admin|privilege|escalat)",
+      "why": "the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Approve\\*{0,2}\\s*$",
+      "why": "a plain Approve on an import that lets a coach make an admin"
+    }
+  ],
+  "provenFailing": {
+    "on": "ablate:agent:pro-review",
+    "date": "2026-11-11",
+    "plugin": "0.26.0@0e62b881f",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "77e45cf723a849c3",
+    "failures": [
+      "no finding line: a coach can give any member the admin or coach role through the file, bypassing canAssignRole that service.ts applies to every other role chang",
+      "no finding line: the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion (critical|major /AC-1\\.1[^\\n]"
+    ]
+  }
+}
