@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { alive } from '../plugins/stage-pipeline/scripts/processes.mjs'
 import { INVOCATION_RE, appendLedger, readLedger, sessionEnv } from './eval-lib.mjs'
-import { assertNoLiveEvalChildren, caseLedgerSummary, chargeInflight, climb, climbLabel, DEFAULT_HOLDOUT, DEFAULT_TRAIN, identityArgs, decisionPath, editorArgs, inflightDir, makeEditor, markInflight, makeEvaluator, median, missExcerpts, parseDecision, resumedTrain, runScore, spentByRun, splitMean } from './hillclimb-lib.mjs'
+import { assertNoLiveEvalChildren, caseLedgerSummary, chargeInflight, climb, climbLabel, DEFAULT_HOLDOUT, DEFAULT_TRAIN, identityArgs, decisionPath, editorArgs, editorEnv, inflightDir, makeEditor, markInflight, makeEvaluator, median, missExcerpts, parseDecision, resumedHoldout, resumedTrain, runScore, spentByRun, splitMean } from './hillclimb-lib.mjs'
 
 const INV = '20261030T000000'
 const AGENT = 'pro-review'
@@ -234,7 +234,7 @@ export async function selfTest() {
       const repo = repoFor()
       const stub = join(repo, 'stub-claude.mjs')
       writeFileSync(stub, `import { writeFileSync, appendFileSync } from 'node:fs'
-writeFileSync(${JSON.stringify(join(repo, 'argv.json'))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }))
+writeFileSync(${JSON.stringify(join(repo, 'argv.json'))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }))
 appendFileSync('${REF}', 'T+\\n')
 process.stdout.write(JSON.stringify({ type: 'result', is_error: false, total_cost_usd: 0.42, result: 'I edited the lens.\\nEDIT: lens for stale state' }))
 `)
@@ -246,7 +246,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, total_cos
       await climb(cfgFor(repo, 'ed', { maxIterations: 1 }), { evaluator: scripted(log), editor })
       const seen = JSON.parse(readFileSync(join(repo, 'argv.json'), 'utf8'))
       const has = (...tokens) => tokens.every((token) => seen.argv.includes(token))
-      check(has('--model', 'opus', '--max-budget-usd', '0.9', '--output-format', 'json', '--setting-sources', 'project', '--strict-mcp-config', '--no-session-persistence', 'dontAsk'), `editor: argv misses an isolation flag: ${seen.argv.filter((x) => x.startsWith('--')).join(' ')}`)
+      check(has('--model', 'opus', '--max-budget-usd', '0.9', '--output-format', 'json', '--restricted', '--strict-mcp-config', '--no-session-persistence', 'dontAsk'), `editor: argv misses an isolation flag: ${seen.argv.filter((x) => x.startsWith('--')).join(' ')}`)
       const tools = seen.argv[seen.argv.indexOf('--tools') + 1]
       const allowed = seen.argv.slice(seen.argv.indexOf('--allowedTools') + 1, seen.argv.indexOf('--disallowedTools'))
       check(tools === 'Read,Edit,Write,Glob,Grep', `S-1: the toolset (--tools) should be exactly Read,Edit,Write,Glob,Grep; got ${tools}`)
@@ -257,6 +257,10 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, total_cos
       const rows = decisions(repo, 'ed')
       check(rows[1]?.summary === 'lens for stale state' && Number(rows[1].cost_usd) >= 0.42, `editor: the EDIT line and the cost should reach the row; got ${rows[1]?.summary} ${rows[1]?.cost_usd}`)
       check(editorArgs({ prompt: 'p', model: 'opus', budget: 1 }).includes('--no-session-persistence'), 'editor: editorArgs')
+      // S-1 (VT-13): --restricted ends the auto-memory exemption of the working-directory blocks; project settings are not read under it, so nothing may depend on --setting-sources; the env switches auto-memory off
+      check(seen.argv.includes('--restricted') && !seen.argv.includes('--setting-sources'), `S-1: the editor argv needs --restricted and no --setting-sources; got ${seen.argv.filter((x) => x.startsWith('--')).join(' ')}`)
+      check(seen.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1' && seen.env?.PATH === process.env.PATH, `S-1: the editor process must get CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 on top of the driver's env; got ${seen.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY} PATH ${seen.env?.PATH === process.env.PATH}`)
+      check(editorEnv({ A: 'b', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' }).CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1' && editorEnv({ A: 'b' }).A === 'b', 'S-1: editorEnv forces the switch on and keeps the rest')
     }
 
     // 10. a failed baseline: the row names the case, no editor call is made, and --resume refuses it (its empty scores would read as 0)
@@ -526,6 +530,60 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: ' + runs + ', i
       const none = await climbWith('m6d', (text, name) => (name.startsWith('t') ? (text.includes('FIXF') ? [GOOD, GOOD, GOOD] : [BAD, BAD, BAD]) : holdMarks(text)), 'FIXF\n')
       check(none.rows[1]?.decision === 'kept', `M-6 legitimate: an edit with no failed run before or after is kept; got ${none.rows[1]?.decision}`)
       check(/^# no new failures:.*rejected \(rejected-failures\)/m.test(readFileSync(decisionPath(incident.repo, 'm6a'), 'utf8')), 'M-6: the decision.tsv header names the rule')
+    }
+
+    // M-1 (VT-13): after --resume the failure counts of BOTH splits come back from the decision row's invocation ids (the ledger rows of those invocations), so an edit that adds a holdout (or train) run without its report
+    // is rejected-failures as without a resume; a log written before the holdout_invocations column cannot restore the holdout's failure counts: --resume refuses it
+    {
+      const GOOD = 'D1+ F1+ N1+ N2+'
+      const BAD = 'D1+ F1- N1+ N2+'
+      const DROP = 'D1- F1+ N1+ N2+'
+      const HGOOD = 'D1+ E1+ F1+'
+      const HDROP = 'D1- E1+ F1+'
+      const makeEvaluator = () => {
+        let n = 0
+        return {
+          async evaluate(worktree, cases, ctx = {}) {
+            const text = readFileSync(join(worktree, REF), 'utf8')
+            n++
+            const perCase = {}
+            for (const name of cases) {
+              const marks = name.startsWith('t')
+                ? (text.includes('TFIX') ? [GOOD, GOOD, GOOD] : text.includes('TDROP') ? [GOOD, GOOD, DROP] : [BAD, BAD, BAD])
+                : (text.includes('HDROP') ? [HGOOD, HGOOD, HDROP] : [HGOOD, HGOOD, HGOOD])
+              const invocation = `${INV}-x${n}${name}`
+              for (const mark of marks) appendLedger({ ts: new Date().toISOString(), invocation, case: name, marks: mark, pass: 1, cost_usd: '0' }, ctx.ledgerPath)
+              perCase[name] = { scores: marks.map(runScore), score: median(marks.map(runScore)), marks, invocation }
+            }
+            return { perCase, mean: splitMean(perCase), cost: 0, failed: [] }
+          },
+        }
+      }
+      const resumeWith = async (run, edit, { oldLog = false } = {}) => {
+        const repo = repoFor()
+        const evaluator = makeEvaluator()
+        await climb(cfgFor(repo, run, { maxIterations: 0 }), { evaluator, editor: editorWith([], { edits: [] }) })
+        const path = decisionPath(repo, run)
+        if (oldLog) {
+          const lines = readFileSync(path, 'utf8').split('\n')
+          const header = lines.findIndex((line) => line.startsWith('attempt\t'))
+          const drop = lines[header].split('\t').indexOf('holdout_invocations')
+          writeFileSync(path, lines.map((line, i) => (i >= header && line ? line.split('\t').filter((_, col) => col !== drop).join('\t') : line)).join('\n'))
+        }
+        await climb(cfgFor(repo, run, { maxIterations: 1, resume: true }), { evaluator, editor: editorWith([step('the edit', append(REF, edit))], { edits: [] }) })
+        return { repo, rows: decisions(repo, run).filter((row) => row.kind !== 'stop') }
+      }
+      const base = await resumeWith('m1base', 'TFIX\n')
+      check(base.rows[0].kind === 'baseline' && /^h1=/.test(base.rows[0].holdout_invocations) && base.rows[0].holdout_invocations.split(';').length === HOLD.length, `M-1: the baseline row stores the holdout invocation ids; got «${base.rows[0].holdout_invocations}»`)
+      check(base.rows[1]?.decision === 'kept' && /^h1=/.test(base.rows[1].holdout_invocations), `M-1: a clean edit after a resume is kept and its row stores the holdout ids; got ${base.rows[1]?.decision} «${base.rows[1]?.holdout_invocations}»`)
+      const hold = await resumeWith('m1hold', 'TFIX\nHDROP\n')
+      check(hold.rows[1]?.decision === 'rejected-failures' && /holdout: h1 0 → 1/.test(hold.rows[1].summary), `M-1 incident (AC-2.1): after --resume an edit that makes one holdout run drop its report must be rejected-failures; got ${hold.rows[1]?.decision} ${hold.rows[1]?.summary}`)
+      const train = await resumeWith('m1train', 'TDROP\n')
+      check(train.rows[1]?.decision === 'rejected-failures' && /t1 0 → 1/.test(train.rows[1].summary), `M-1 (train after resume): got ${train.rows[1]?.decision} ${train.rows[1]?.summary}`)
+      const oldError = await resumeWith('m1old', 'TFIX\nHDROP\n', { oldLog: true }).then(() => '', (error) => error.message)
+      check(/m1old.*holdout_invocations.*start a new run/.test(oldError), `M-1 compat: --resume of a log without holdout_invocations is refused with a clear message; got «${oldError}»`)
+      const split = resumedHoldout([{ invocation: `${INV}-a`, case: 'h1', marks: 'D1- E1+ F1+' }], { holdout_cases: 'h1=0.500', holdout_invocations: `h1=${INV}-a` })
+      check(split.h1.marks[0] === 'D1- E1+ F1+' && split.h1.resumed === true, `M-1: resumedHoldout rebuilds marks from the ledger; got ${JSON.stringify(split)}`)
     }
 
     // m-16: the cleanup never prunes the registrations of a repo that encloses a scratch dir (TMPDIR inside a git work tree); a repo's own are pruned through its own .git
