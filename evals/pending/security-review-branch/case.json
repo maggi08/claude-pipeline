@@ -23,7 +23,7 @@
     },
     {
       "severity": "critical|major",
-      "file": "InvoiceComments\\.tsx",
+      "file": "(InvoiceComments|richText)\\.tsx?",
       "why": "comments of other members are rendered with dangerouslySetInnerHTML: stored XSS"
     }
   ],

@@ -33,5 +33,19 @@
       "file": "ToolbarButton",
       "why": "a thin wrapper over the kit's Button is not a duplicate"
     }
-  ]
+  ],
+  "provenFailing": {
+    "on": "ablate:agent:ds-parity",
+    "date": "2026-11-11",
+    "plugin": "0.26.0@e78019760",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "932cd15bae693a65",
+    "failures": [
+      "no finding line: outside the diff: LoadingDots duplicates the kit's Spinner (the breadth sweep of the tree) (critical|major|minor /LoadingDots[^\\n]*Spinner|Spin",
+      "no finding line: a hand-rolled modal where the kit's Dialog (tone danger) is a drop-in: no portal, focus trap, Escape or aria-modal, light-only colors (critical",
+      "no finding line: a hand-rolled status pill where the kit's Badge has the same tones with dark values (critical|major|minor /MaintenanceStatus[^\\n]*Badge|Badge[^"
+    ]
+  }
 }
