@@ -1,6 +1,6 @@
 {
   "agent": "pro-review",
-  "why": "precision for the deleted-code parity rule (stage 12 of the review work): GuestRow.tsx is deleted and its behaviours must each be found in the new tree - the VIP badge (inline in GuestList), the two-click and disabled-while-running delete (ConfirmButton, unchanged in the diff), the refresh after the delete (useDeleteGuest) - so the report must not call them lost. One behaviour really is lost: the old row hid the delete button for the owner guest (`!guest.owner`), the new list offers it for everyone; the report must find that, and the parity table is how. PENDING: no run has proven that it discriminates (a bare model may already read the rewrite correctly); no provenFailing yet, move to evals/cases/ with one once a run on the previous tag fails it.",
+  "why": "precision for the deleted-code parity rule (stage 12 of the review work): GuestRow.tsx is deleted and its behaviours must each be found in the new tree - the VIP badge (inline in GuestList), the two-click and disabled-while-running delete (ConfirmButton, unchanged in the diff), the refresh after the delete (deleteGuest in guestStore, a file the diff does not touch; useDeleteGuest only calls it) - so the report must not call them lost. One behaviour really is lost: the old row hid the delete button for the owner guest (`!guest.owner`), the new list offers it for everyone; the report must find that, and the parity table is how. PENDING: on stage-pipeline--v0.18.0 the case passed 3 of 3 (20261111T064606-sxfc) and, after one tightening (the refresh moved into guestStore.deleteGuest, a file the diff does not touch), 3 of 3 again (20261111T064810-mgb0): the previous tag reads the rewrite correctly and finds the owner guard, so the case does not tell the versions apart; no provenFailing, move to evals/cases/ with one once a run on the previous tag or an ablation fails it.",
   "identity": {
     "repo": "guest-admin",
     "ticket": "GST-14",
@@ -26,7 +26,7 @@
     {
       "severity": "critical|major|minor",
       "file": "^(?![^\\n]*\\bowner\\b)[^\\n]*\\b(refresh(Guests)?|two[- ]click|disabled while|ConfirmButton)\\b[^\\n]{0,40}?(?<!not )(?<!never )(?<!nothing )\\b(lost|removed|missing|dropped|no longer)\\b",
-      "why": "the refresh moved to useDeleteGuest and the two-click, disabled-while-running behaviour stays in ConfirmButton"
+      "why": "the refresh stays in deleteGuest (guestStore, not in the diff) and the two-click, disabled-while-running behaviour stays in ConfirmButton"
     }
   ]
 }
