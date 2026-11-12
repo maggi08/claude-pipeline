@@ -110,7 +110,7 @@ import { join, relative } from 'node:path'
 import { wantedFor, loadProfile } from '../plugins/stage-pipeline/scripts/permission-profile.mjs'
 import {
   CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, STATIC_SERVER, agentModelsOf, agentReports, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
-  INVOCATION_RE, newInvocationId, sessionEnv, spentSince, subagentRun, tempDir, toolCalls, topLevelText, validEffort, walk, withEffort,
+  INVOCATION_RE, newInvocationId, sessionEnv, spentSince, subagentRun, tempDir, toolCalls, topLevelText, validEffort, withEffort,
 } from './eval-lib.mjs'
 import { agentCases, agentTreeAt, buildReleaseRows, mergeReleases, modelDrift, ownModels, readModels, readReleases, releaseWarnings, seedModels, shaProblem, writeModels, writeReleases } from './release-lib.mjs'
 

@@ -126,6 +126,7 @@ function gitHistory(repo) {
 
 function applyLayer(layer, repo) {
   for (const file of walk(layer)) {
+    if (file.endsWith('.DS_Store')) continue
     const target = join(repo, relative(layer, file))
     if (readFileSync(file, 'utf8').trim() === '__DELETE__') rmSync(target, { force: true })
     else {
@@ -166,7 +167,7 @@ function buildRepo(caseDir, parent, identity, basePath = 'base', vars = {}) {
   git(repo, 'config', 'user.email', identity.email)
   git(repo, 'config', 'user.name', identity.user)
   git(repo, 'config', 'commit.gpgsign', 'false')
-  cpSync(join(caseDir, basePath), repo, { recursive: true })
+  cpSync(join(caseDir, basePath), repo, { recursive: true, filter: (src) => !src.endsWith('.DS_Store') })
   fillVars(repo, vars)
   git(repo, 'add', '-A')
   commit(identity.commits.base, 0)

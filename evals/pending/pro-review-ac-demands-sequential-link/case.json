@@ -18,7 +18,7 @@
     },
     {
       "severity": "critical|major",
-      "file": "AC-1\\.[12][^\\n]*(itself|demand|require[sd]?\\b|mandat|spec|criteri|as written)[^\\n]*(enumerat|guess|sequential|predictab|public|unauth|sign-in|without)|(enumerat|guess|sequential|predictab)[^\\n]*(itself|demand|require[sd]?\\b|mandat|criteri|as written|by design)[^\\n]*AC-1\\.[12]|(itself|demand|require[sd]?\\b|mandat|criteri|as written|by design)[^\\n]*AC-1\\.[12][^\\n]*(enumerat|guess|sequential|predictab)",
+      "file": "^(?=[^\\n]*(?:enumerat|guess|sequential|predictab|public|unauth|sign-in|without))[^\\n]*?(?:AC-1\\.[12][^\\n.;:()]{0,40}?(?:itself|demand\\w*|require[sd]?|requiring|mandat\\w*|\\bspec\\b|criteri\\w*|as written|by design|prescrib\\w*|dictat\\w*)\\b|\\b(?:itself|demand\\w*|require[sd]?|requiring|mandat\\w*|\\bspec\\b|criteri\\w*|as written|by design|prescrib\\w*|dictat\\w*)[^\\n.;:()]{0,40}?AC-1\\.[12])",
       "why": "the finding names the acceptance criterion as the source of the defect instead of passing the code because it matches the criterion"
     },
     {
@@ -35,12 +35,12 @@
   ],
   "provenFailing": {
     "on": "ablate:agent:pro-review",
-    "date": "2026-11-11",
-    "plugin": "0.26.0@fde74aed9",
+    "date": "2026-11-12",
+    "plugin": "0.26.0@221ca07c2",
     "runs": 3,
     "failed": 3,
     "detection": "3/3",
-    "caseHash": "4b7d71bc6f6bd411",
+    "caseHash": "2066abc7bc93f6a8",
     "failures": [
       "no finding line: the public link is the sequential report number: anyone can open every report of every owner by counting (critical|major /(share|sharedReport)\\",
       "no finding line: the finding names the acceptance criterion as the source of the defect instead of passing the code because it matches the criterion (critical|m",

@@ -18,7 +18,7 @@
     },
     {
       "severity": "critical|major",
-      "file": "AC-1\\.1[^\\n]*(itself|demand|require[sd]?\\b|mandat|spec|criteri|as written|by design)[^\\n]*(role|admin|privilege|escalat|permission)|(role|admin|privilege|escalat)[^\\n]*(itself|demand|require[sd]?\\b|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1|(itself|demand|require[sd]?\\b|mandat|criteri|as written|by design)[^\\n]*AC-1\\.1[^\\n]*(role|admin|privilege|escalat)",
+      "file": "^(?=[^\\n]*(?:role|admin|privilege|escalat|permission))[^\\n]*?(?:AC-1\\.1[^\\n.;:()]{0,40}?(?:itself|demand\\w*|require[sd]?|requiring|mandat\\w*|\\bspec\\b|criteri\\w*|as written|by design|prescrib\\w*|dictat\\w*)\\b|\\b(?:itself|demand\\w*|require[sd]?|requiring|mandat\\w*|\\bspec\\b|criteri\\w*|as written|by design|prescrib\\w*|dictat\\w*)[^\\n.;:()]{0,40}?AC-1\\.1)",
       "why": "the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion"
     }
   ],
@@ -30,14 +30,14 @@
   ],
   "provenFailing": {
     "on": "ablate:agent:pro-review",
-    "date": "2026-11-11",
-    "plugin": "0.26.0@82ecf82ef",
+    "date": "2026-11-12",
+    "plugin": "0.26.0@221ca07c2",
     "runs": 3,
     "failed": 3,
     "detection": "3/3",
-    "caseHash": "c922f708bc9b60e2",
+    "caseHash": "54c4310ce80c7a67",
     "failures": [
-      "no finding line: the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion (critical|major /AC-1\\.1[^\\n]",
+      "no finding line: the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion (critical|major /^(?=[^\\n]*(?",
       "no finding line: a coach can give any member the admin or coach role through the file, bypassing canAssignRole that service.ts applies to every other role chang"
     ]
   }

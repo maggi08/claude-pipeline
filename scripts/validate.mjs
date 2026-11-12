@@ -867,6 +867,15 @@ async function validateEvalSelfTests(names) {
   expectMatches('a finding under «Отклонено» is dropped', portal, '## Отклонено\n\n- major: src/DeleteGuestModal.tsx:12 — x', 0)
   // The security review leads its findings with an `S-<n>` id (agents/security-review.md), as a plain line or as a heading.
   expectMatches('a security finding led by an S id', { severity: 'critical', file: 'invoices\\.js' }, 'S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
+  // M-1 (VT-13 final checks): the «names the criterion as the source» finding of the two AC-demands cases binds the source word to the AC-ID; a source word elsewhere on a line that ends with the tag is not it.
+  for (const [name, line, real] of [
+    ['pro-review-ac-demands-role-overwrite', '- 🔴 `importRoster.ts:10,19` — A coach can import `role: \'admin\'` or demote an existing admin. It also bypasses the `service.ts` rights path that CLAUDE.md requires. Fix: move the import into `service.ts`. (AC-1.1)', '- 🔴 `importRoster.ts:10` — the role column comes from the file: AC-1.1 itself demands that every column overwrites the stored member, so a coach makes an admin.'],
+    ['pro-review-ac-demands-sequential-link', '- 🔴 `share.ts:4` — The link is the sequential report number, anyone can walk all reports. It also skips the sign-in check that CLAUDE.md requires. (AC-1.2)', '- 🔴 `share.ts:4` — the sequential report number is the public link, and the criterion AC-1.2 mandates exactly that.'],
+  ]) {
+    const spec = { severity: 'critical|major', file: JSON.parse(readFileSync(join(ROOT, 'evals', existsSync(join(ROOT, 'evals/cases', name)) ? 'cases' : 'pending', name, 'case.json'), 'utf8')).findings[1].file }
+    expectMatches(`${name}: a source word that names CLAUDE.md, not the criterion, on a line tagged with the AC-ID`, spec, line, 0)
+    expectMatches(`${name}: a line that names the criterion as the source`, spec, real, 1)
+  }
   expectMatches('a security finding as an S-id heading', { severity: 'critical', file: 'invoices\\.js' }, '### S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
   // M-2 (VT-13 stage 5): a fixture report under checks/ is not the agent's report; only a new or changed one is.
   const reportsHolder = mkdtempSync(join(tmpdir(), 'reports-probe-'))
@@ -883,8 +892,7 @@ async function validateEvalSelfTests(names) {
     rmSync(reportsHolder, { recursive: true, force: true })
   }
   // M-1 (VT-13 stage 5): the status lines of the full report's findings sit under a status heading and are not findings, whatever words they use; a re-raise outside it is.
-  const gate = JSON.parse(readFileSync(join(ROOT, 'evals/cases/pro-review-delta-round/case.json'), 'utf8')).findingsForbid[0]
-  const gateSpec = { severity: gate.severity, file: gate.file }
+  const gateSpec = { severity: 'critical|major', file: 'loyalty/points\\.ts' }
   const statusLines = ['- Finding 2 (overdraw, major): `redeem(100, 250)` now throws at `src/loyalty/points.ts:10`, but the guard is off by one, see Finding 1 above.', '- 🟠 major `src/loyalty/points.ts:5` — fixed: the key set is not changed', '- 🟠 major `src/loyalty/points.ts:5` — fixed for absent keys but `constructor` gives NaN', 'Finding 1 fixed; an open question remains elsewhere: `src/loyalty/points.ts:5` major', '- 🟠 major `src/loyalty/points.ts:5` — not fixed, still NaN']
   for (const heading of ['## Full report findings, checked in the new code', '## Status of the findings of the full report', '## Previous findings', '## Fixed findings of the full report', '## Status of findings from the base report', '## Branch findings recheck']) {
     for (const line of statusLines) expectMatches(`status section «${heading}»: ${line.slice(0, 40)}`, gateSpec, `${heading}\n\n${line}\n`, 0)
