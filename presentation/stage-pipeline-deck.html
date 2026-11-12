@@ -441,7 +441,7 @@
       <span class="pill">16 tasks</span>
       <span class="pill">161 checker reports</span>
       <span class="pill">21 skills · 15 agents</span>
-      <span class="pill">v0.26.0</span>
+      <span class="pill">v0.27.0</span>
     </div>
     <div class="sig">Magzhan Mussaiyn · 21 Jul → 21 Aug 2026 · plugin <b>stage-pipeline@magzhan</b></div>
   </section>
@@ -977,7 +977,6 @@ claude plugin details stage-pipeline
             <li>Whatever is left is written up as an assumption: "accepted X because Y, reversible via Z"</li>
             <li>Then implementation, checkers, fixes, commits — to the end of the task</li>
             <li><b>Always forbidden:</b> <code>git push</code>, creating a PR, deploy</li>
-            <li><b>Night queue:</b> interview in the evening (<code>--interview-only</code>), <code>force-queue.mjs run</code> by night: waits for the 5-hour reset, stops on the weekly limit, a morning summary per task</li>
             <li><b>Silent:</b> decides the reversible itself; parks an irreversible fork, an exhausted fix-loop, a red build and a conflict of sources as a blocker and finishes the rest; blockers and accepted decisions go in the summary at the end</li>
           </ul>
           <p style="margin-top:.5em;color:var(--muted)">The first real run: 7 decisions collected in two batches, 6 assumptions with a rollback, 6 commits.</p>
@@ -1354,9 +1353,7 @@ claude plugin install stage-pipeline@magzhan
           <span class="kicker">Autonomous</span>
           <pre style="font-size:.82em">/stage-force   <span class="cm">questions in a batch,</span>
                <span class="cm">then no stops</span>
-               <span class="cm">push and PR forbidden</span>
-/stage-force T --interview-only
-force-queue.mjs <span class="cm">night queue</span></pre>
+               <span class="cm">push and PR forbidden</span></pre>
           <span class="kicker">Before the MR</span>
           <pre style="font-size:.82em">/pro-review     <span class="cm">whole branch</span>
 /ds-parity      <span class="cm">duplicates with the kit</span>

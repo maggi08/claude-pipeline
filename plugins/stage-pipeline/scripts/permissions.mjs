@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { generatedEntries, loadProfile, wantedFor } from './permission-profile.mjs'
+import { generatedEntries, loadProfile, narrowedAsk, overriddenBy, wantedFor } from './permission-profile.mjs'
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -74,19 +74,32 @@ const current = settings.permissions ?? {}
 const listOf = (key) => (Array.isArray(current[key]) ? current[key] : [])
 
 const report = { allow: [], ask: [], deny: [] }
-const conflicts = []
+// `deny|ask rule` → the profile's allow entries it beats
+const conflicts = new Map()
 const notes = []
 
 for (const key of ['allow', 'ask', 'deny']) {
   const existing = new Set(listOf(key))
   for (const entry of wanted[key]) {
-    if (existing.has(entry)) continue
-    // the user's strict choice is not weakened: allow does not override deny/ask already in place
-    if (key === 'allow' && (listOf('deny').includes(entry) || listOf('ask').includes(entry))) {
-      conflicts.push(`${entry} — is in ${listOf('deny').includes(entry) ? 'deny' : 'ask'}, left as is`)
+    // the user's strict choice is not weakened: allow does not override deny/ask already in place — an allow in the file that one of them beats is not in place either
+    const beaten = key === 'allow' ? overriddenBy(entry, { deny: listOf('deny'), ask: listOf('ask') }) : null
+    if (beaten) {
+      const label = `${beaten.key} "${beaten.rule}"`
+      if (!conflicts.has(label)) conflicts.set(label, [])
+      if (!conflicts.get(label).includes(entry)) conflicts.get(label).push(entry)
       continue
     }
+    if (existing.has(entry)) continue
     if (!report[key].includes(entry)) report[key].push(entry)
+  }
+}
+
+// a group that narrows a wide ask entry (pr: `Bash(git push *)`) does nothing while the wide one stays: ask beats the group's allow
+for (const [wide, narrow] of narrowedAsk(groups, profile)) {
+  if (listOf('ask').includes(wide)) {
+    notes.push(
+      `ask has "${wide}" — the chosen groups put ${narrow.length ? `${narrow.length} narrower entries` : 'an allow'} in its place; remove it by hand and run --apply again, otherwise it beats their allow`,
+    )
   }
 }
 
@@ -113,7 +126,7 @@ if (staleSkills.length) {
 // the profile used to hand these entries out; the script has no right to remove foreign settings, but being silent about them is wrong too
 const retired = Object.entries(profile.retired ?? {}).filter(([entry]) => entry !== '$comment')
 for (const [entry, why] of retired) {
-  if (listOf('allow').includes(entry)) notes.push(`obsolete entry "${entry}" — ${why}; remove it by hand`)
+  for (const key of ['allow', 'ask']) if (listOf(key).includes(entry)) notes.push(`obsolete entry "${entry}" in ${key} — ${why}; remove it by hand`)
 }
 
 const dirsRaw = valueOf('--dirs')
@@ -125,7 +138,7 @@ const missingTotal = report.allow.length + report.ask.length + report.deny.lengt
 // a conflict is also a missing permission: it cannot be appended, and it will be asked about.
 // Counting as "in place" an environment where the needed entry is overridden by its own deny is exactly the false green
 // for which /pipeline-doctor calls --check.
-const blockedTotal = conflicts.length
+const blockedTotal = [...conflicts.values()].reduce((sum, entries) => sum + entries.length, 0)
 const notReadyTotal = missingTotal + blockedTotal
 
 console.log(`stage-pipeline permissions → ${target} (scope ${scope})`)
@@ -140,7 +153,10 @@ if (wantedDirs.length) {
   console.log(`additionalDirectories: ${missingDirs.length} of ${wantedDirs.length} missing`)
   for (const dir of missingDirs) console.log(`  + ${dir}`)
 }
-for (const conflict of conflicts) console.log(`⚠ conflict: ${conflict}`)
+for (const [label, entries] of conflicts) {
+  const shown = entries.slice(0, 4).join(', ') + (entries.length > 4 ? ` (+${entries.length - 4})` : '')
+  console.log(`⚠ conflict: ${label} beats ${entries.length === 1 ? 'the profile entry' : `${entries.length} profile entries`} ${shown} — left as is`)
+}
 for (const note of notes) console.log(`⚠ ${note}`)
 for (const dir of notOnDisk) console.log(`⚠ path not on disk: ${dir}`)
 

@@ -1,6 +1,6 @@
 # Stage Pipeline · cheatsheet
 
-A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.26.0 — 21 skills, 15 agents.
+A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.27.0 — 21 skills, 15 agents.
 
 ---
 
@@ -57,9 +57,6 @@ If you do not need a broad Bash allowlist, `--minimal` allows only skills and MC
                    asks nothing mid-run: decides the reversible itself, parks an
                    irreversible fork, an exhausted fix-loop and a conflict of sources
                    as a blocker and finishes the rest — all in the summary at the end
-/stage-force T --interview-only   the evening: interview only, no run
-force-queue.mjs add|list|remove|check|run   the night queue: waits for the 5h
-                   reset, stops on the weekly limit, summary in force-queue-summary.md
 ```
 
 **Hooks** look only at the task of the current branch: in normal mode the agent's `git add`/`commit` are rejected — you commit from its text; an auto-commit happens only in `/stage-force`, through `floor-guard`. A whole-branch review runs only on `review_model`, and a force run's fix round after it is re-reviewed by a delta review (the change since the full review, up to 400 lines) instead of a second full one, the maker in force starts only after the line `Confirmed:`, and a criterion in the journal is closed by the checker named in its tag.
