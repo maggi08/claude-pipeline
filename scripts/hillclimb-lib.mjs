@@ -444,8 +444,9 @@ let exitHookInstalled = false
  * case are read back by that id, never by text the child printed (the agent's own words reach its output). A case that is not under evals/cases/ but under evals/pending/ of the worktree
  * is run with `--pending`. Before each case starts, the estimates of the cases already running (what they have not spent yet) are reserved: the run's cap `capUsd` and the lane budget are
  * checked against the ledger spend + that reserve + this case's estimate, and the child gets the tighter of the lane budget and what remains under the cap, so its runs 2 and 3 are
- * checked too. A case that does not fit is not started (`capped` names it). Every child has an in-flight mark (see markInflight) from before its spawn to after its rows. Scores come from the
- * ledger rows of the invocation; a case with fewer graded runs than `runs` (a harness failure, a budget exit, a crash) is `failed`, never scored on what is left.
+ * checked too (the reserve is not taken off the child's limit: the child sees the others' actual spend in the ledger itself). A case that does not fit is not started (`capped` names it); a child that exits 1 or 3, wrote
+ * only graded rows (fewer than `runs`) and printed a budget-skip line (`⏭ … skipped`) is `capped` too, never `failed` (eval.mjs exits 1 when a run it made failed a grader, even if later runs were skipped). Every child has an in-flight mark (see markInflight) from before its spawn to after its rows. Scores come from the
+ * ledger rows of the invocation; a case with fewer graded runs than `runs` (a harness failure, an ungraded row, a crash) is `failed`, never scored on what is left.
  * `killAll()` sends SIGTERM to the process group of every child that runs.
  */
 export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSince, capUsd, ledgerPath, resultsDir, nodeBin = process.execPath }) {
@@ -503,9 +504,10 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
           else if (budgetUsd && lane + reserved + estimate > budgetUsd + EPS) capped = `${name} not started: lane spend $${lane.toFixed(2)} + $${reserved.toFixed(2)} reserved + ~$${estimate.toFixed(2)} would pass the lane budget $${budgetUsd}`
           if (capped) break
           // The child's own budget check (before each of its runs) gets the tighter limit: the lane's, or what is left under the run's cap, in the lane's terms (spent since its start).
-          const capLeft = capUsd ? capUsd - spent - reserved : null
+          // The reserve of the cases running is not taken off here: the child counts their actual spend itself (the ledger since its `since`), so subtracting it too would count them twice; the reserve stays in the pre-start check above.
+          const capLeft = capUsd ? capUsd - spent : null
           let limit = { budget: undefined, since: undefined }
-          if (budgetUsd) limit = { budget: Math.max(0.01, Math.min(budgetUsd - reserved, capLeft === null ? Infinity : lane + capLeft)), since: budgetSince }
+          if (budgetUsd) limit = { budget: Math.max(0.01, Math.min(budgetUsd, capLeft === null ? Infinity : lane + capLeft)), since: budgetSince }
           else if (capLeft !== null) limit = { budget: Math.max(0.01, capLeft), since: new Date().toISOString() }
           const before = spentByRun(ledger, run, name)
           inflight.set(name, { estimate, before })
@@ -529,6 +531,12 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
         const rows = ledger.filter((row) => row.invocation === invocation && row.case === name)
         cost += rows.reduce((sum, row) => sum + Number(row.cost_usd || 0), 0)
         const scores = rows.map((row) => runScore(row.marks)).filter((score) => score !== null)
+        // A child that skipped runs by its own budget check (a `⏭ … skipped` line; exit 3, or 1 when a run it made failed a grader) with every row it wrote graded: the money, not a harness failure, ended the case.
+        const skipLine = result.out.trim().split('\n').filter((line) => line.startsWith('⏭') && line.includes('skipped')).slice(-1)[0]
+        if ((result.status === 3 || result.status === 1) && skipLine && scores.length === rows.length && rows.length < runs) {
+          capped ??= `${name}: ${rows.length} of ${runs} runs made, the rest skipped by the eval's own budget check (${skipLine})`.slice(0, 300)
+          continue
+        }
         if (!rows.length || scores.length < runs || result.status === 2 || result.status === -1) {
           const what = !rows.length ? 'no run recorded' : `${scores.length} of ${runs} runs graded (${rows.length - scores.length} harness failure or ungraded, ${runs - rows.length} not run)`
           failed.push(`${name}: ${what} (exit ${result.status}) ${result.out.trim().split('\n').slice(-2).join(' | ').slice(0, 200)}`)

@@ -453,7 +453,7 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: ' + runs + ', i
       const sent = JSON.parse(readFileSync(`${ledgerPath}.args-c2`, 'utf8'))
       check(sent.args.includes('--budget-usd') && sent.args.includes('--budget-since') && sent.args.includes('2026-10-30T07:42:03Z'), 'evaluator: --budget-usd/--budget-since were not passed through')
       const budgetOf = (name) => Number(JSON.parse(readFileSync(`${ledgerPath}.args-${name}`, 'utf8')).args.at(JSON.parse(readFileSync(`${ledgerPath}.args-${name}`, 'utf8')).args.indexOf('--budget-usd') + 1))
-      check(budgetOf('c1') === 40 && budgetOf('c2') < 40, `evaluator: a case started while another runs gets a lane budget less its reserve (c1 ${budgetOf('c1')}, c2 ${budgetOf('c2')})`)
+      check(budgetOf('c1') === 40 && budgetOf('c2') === 40, `evaluator: a case started while another runs gets the whole lane budget, the reserve is not taken off twice (c1 ${budgetOf('c1')}, c2 ${budgetOf('c2')})`)
       check(sent.args.includes('--label') && sent.args.includes('hillclimb:t9') && readLedger(ledgerPath).filter((row) => row.case === 'c2').every((row) => row.plugin_ref === 'working-tree+hillclimb:t9'), 'evaluator: its eval runs must carry the label hillclimb:<run> in the ledger')
       check(Math.abs(spentByRun(readLedger(ledgerPath), 't9') - 0.9) < 1e-9, 'evaluator: the spend of the run is the sum of its labelled rows')
       // --pending: only for a name that is under evals/pending/ and not under evals/cases/
@@ -472,6 +472,53 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: ' + runs + ', i
       appendLedger({ ts: 't', invocation: 'x', case: 'seed' }, ledger2)
       const capped = await makeEvaluator({ repo: repo2, run: 'cap', runs: 3, jobs: 3, capUsd: 2, ledgerPath: ledger2, resultsDir: join(repo2, 'evals/.results') }).evaluate(repo2, ['c1', 'c2', 'c3'])
       check(Boolean(capped.capped) && /c2 not started/.test(capped.capped) && Object.keys(capped.perCase).join() === 'c1' && readLedger(ledger2).filter((row) => row.case !== 'seed').every((row) => row.case === 'c1'), `evaluator: with a cap of $2 and $1.50 reserved by the first case the second must not start; got ${capped.capped} ${Object.keys(capped.perCase)}`)
+    }
+
+    // M-1 (VT-13 8a): cases in parallel under a cap with headroom all make every run (the child sees the others' spend in the ledger, the driver must not subtract their reserve too);
+    // a child that skips by its own budget is `capped`, not `failed`
+    {
+      const budgetStub = `import { appendFileSync, readFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+const name = args.at(-1)
+const at = (flag) => args[args.indexOf(flag) + 1]
+const runs = Number(at('--runs'))
+const budget = Number(at('--budget-usd'))
+const since = args.includes('--budget-since') ? at('--budget-since') : ''
+let skipped = 0
+for (let i = 1; i <= runs; i++) {
+  const rows = readFileSync(process.env.EVAL_LEDGER, 'utf8').split('\\n').slice(1).filter(Boolean).map((line) => line.split('\\t'))
+  const spent = rows.filter((row) => row[0] >= since).reduce((sum, row) => sum + Number(row[11] || 0), 0)
+  if (spent + 2 > budget) {
+    console.log('⏭ ' + name + ' #' + i + ' — skipped: $' + spent.toFixed(2) + ' spent + ~$2.00 would pass $' + budget)
+    skipped++
+    continue
+  }
+  await new Promise((done) => setTimeout(done, 250))
+  appendFileSync(process.env.EVAL_LEDGER, [new Date().toISOString(), at('--invocation'), name, i, 'working-tree+' + at('--label'), '0', 'sha', 'v', 'm', 'E1+ N1+ F1+', '1', '2.0000', '1'].join('\\t') + '\\n')
+}
+process.exit(skipped ? 3 : 0)
+`
+      const setup = (capUsd, pastCost = '2.0000') => {
+        const repo = repoFor()
+        put(repo, 'scripts/eval.mjs', budgetStub)
+        const ledgerPath = join(repo, 'evals/ledger.tsv')
+        appendLedger({ ts: '2020-01-01T00:00:00Z', invocation: 'x', case: 'seed' }, ledgerPath)
+        for (const name of ['c1', 'c2', 'c3']) appendLedger({ ts: '2020-01-01T00:00:00Z', invocation: 'x', case: name, cost_usd: pastCost }, ledgerPath)
+        return { repo, ledgerPath, evaluator: makeEvaluator({ repo, run: 'm1', runs: 3, jobs: 3, capUsd, ledgerPath, resultsDir: join(repo, 'evals/.results') }) }
+      }
+      // estimate $6 per case (3 runs x the $2 past mean), actual $2 per run: $18 in all under the $20 cap. The old limit of the third case was 20 − 12 reserved = 8: its third run was skipped.
+      const roomy = setup(20)
+      const done = await roomy.evaluator.evaluate(roomy.repo, ['c1', 'c2', 'c3'])
+      check(!done.capped && done.failed.length === 0 && Object.keys(done.perCase).length === 3 && readLedger(roomy.ledgerPath).filter((row) => row.plugin_ref === 'working-tree+hillclimb:m1').length === 9, `M-1: three parallel cases with cap headroom must make all 9 runs; got capped ${done.capped}, failed ${JSON.stringify(done.failed)}, ${readLedger(roomy.ledgerPath).filter((row) => row.plugin_ref === 'working-tree+hillclimb:m1').length} rows`)
+      // a child that skips by its own budget (a past mean of $1 estimates $3, the runs cost $2 each: the start fits the $5 cap, the third run does not): capped with the reason, not failed
+      const tight = setup(5, '1.0000')
+      const stopped = await tight.evaluator.evaluate(tight.repo, ['c1'])
+      check(Boolean(stopped.capped) && /c1: \d of 3 runs made/.test(stopped.capped) && stopped.failed.length === 0 && stopped.mean === null && !stopped.perCase.c1, `M-1: a child that exits 3 on its budget skip must be capped, not failed; got capped ${stopped.capped}, failed ${JSON.stringify(stopped.failed)}`)
+      // m-1 (round 2): run 1 fails a grader, the rest are skipped by the budget, the child exits 1 (as eval.mjs does): still capped, not failed
+      const gradeFail = setup(5, '1.0000')
+      put(gradeFail.repo, 'scripts/eval.mjs', budgetStub.replace("'E1+ N1+ F1+'", "'E1- N1+ F1+'").replace('process.exit(skipped ? 3 : 0)', 'process.exit(1)'))
+      const failedThenSkipped = await gradeFail.evaluator.evaluate(gradeFail.repo, ['c1'])
+      check(Boolean(failedThenSkipped.capped) && /c1: \d of 3 runs made/.test(failedThenSkipped.capped) && failedThenSkipped.failed.length === 0, `m-1: a child that exits 1 (a grader failed) and skipped the rest by the budget must be capped, not failed; got capped ${failedThenSkipped.capped}, failed ${JSON.stringify(failedThenSkipped.failed)}`)
     }
     // ── the 14b fixes: each with an incident form (fails without the fix) and a legitimate form ────────────────────────────────────────────────────────────────────────────
 
