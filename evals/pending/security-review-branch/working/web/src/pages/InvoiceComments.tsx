@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { t } from '../i18n'
+import { formatComment } from '../shared/richText'
 
 type Comment = { id: string; author: string; body: string }
 type Invoice = { id: string; amount: number; currency: string; comments: Comment[] }
@@ -28,7 +29,7 @@ export function InvoiceComments({ invoiceId }: { invoiceId: string }) {
           <li key={comment.id}>
             <strong>{comment.author}</strong>
             {/* keeps the links and line breaks people paste */}
-            <div className="comment-body" dangerouslySetInnerHTML={{ __html: comment.body }} />
+            <div className="comment-body" dangerouslySetInnerHTML={{ __html: formatComment(comment.body) }} />
           </li>
         ))}
       </ul>

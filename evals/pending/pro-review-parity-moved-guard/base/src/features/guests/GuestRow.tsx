@@ -1,7 +1,7 @@
-import { removeGuest, type Guest } from '../../api/guests'
+import type { Guest } from '../../api/guests'
 import { t } from '../../i18n'
 import { ConfirmButton } from '../../ui/ConfirmButton'
-import { refreshGuests } from './guestStore'
+import { deleteGuest } from './guestStore'
 
 export function GuestRow({ guest }: { guest: Guest }) {
   return (
@@ -12,10 +12,7 @@ export function GuestRow({ guest }: { guest: Guest }) {
         <ConfirmButton
           label={t('guests.row.delete')}
           confirmLabel={t('guests.row.deleteConfirm')}
-          onConfirm={async () => {
-            await removeGuest(guest.id)
-            await refreshGuests()
-          }}
+          onConfirm={() => deleteGuest(guest.id)}
         />
       )}
     </li>

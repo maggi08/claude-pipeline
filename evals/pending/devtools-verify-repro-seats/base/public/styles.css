@@ -1,0 +1,4 @@
+body { font-family: system-ui, sans-serif; margin: 0; }
+.top { padding: 16px 32px; border-bottom: 1px solid #ddd; }
+main { padding: 32px; }
+.event { width: 320px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }

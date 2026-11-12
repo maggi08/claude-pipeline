@@ -53,7 +53,7 @@
  *
  * Expectations in case.json (deterministic graders are the floor):
  *   expect / forbid       regexps over the report in checks/ (plus the final message for expect)
- *   forbidSummary         regexps that must not appear in the final message
+ *   forbidSummary         regexps that must not appear in the final message (in a decision case: in everything the orchestrator said at the top level)
  *   findings              [{ severity: "major|critical|minor|any", file: <regex>, line?: <n or regex>, why }] — one report line in the ledger form
  *                         (a list item, a table row or an id/severity-led line) with the severity and the file (and `:line`); a negated mention
  *                         («formatTime — no duplicates found») is not a finding, and neither is a line under «Deliberately kept» / «Could not verify»
@@ -109,8 +109,8 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { wantedFor, loadProfile } from '../plugins/stage-pipeline/scripts/permission-profile.mjs'
 import {
-  CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, STATIC_SERVER, agentModelsOf, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
-  INVOCATION_RE, newInvocationId, sessionEnv, spentSince, subagentRun, toolCalls, validEffort, walk, withEffort,
+  CASES, LEDGER, RESULTS_DIR, ROOT, SOURCE_PLUGIN, STATIC_SERVER, agentModelsOf, agentReports, appendLedger, applyVariantEdits, buildWorld, caseHash, decisionSettings, git, gradeAgent, gradeDecision, harnessProblems, hookEvents, lintCase, lintWorld, meanCost, missingServers, parseStream, patchDataDirOverride, readCase, readLedger,
+  INVOCATION_RE, newInvocationId, sessionEnv, spentSince, subagentRun, tempDir, toolCalls, topLevelText, validEffort, withEffort,
 } from './eval-lib.mjs'
 import { agentCases, agentTreeAt, buildReleaseRows, mergeReleases, modelDrift, ownModels, readModels, readReleases, releaseWarnings, seedModels, shaProblem, writeModels, writeReleases } from './release-lib.mjs'
 
@@ -211,7 +211,7 @@ function applyVariant(dir, caseName, variant) {
  * the working tree, a git tag (`git archive`, never a worktree of this checkout), or either without a skill/agent; `--model` rewrites `model:`.
  */
 function preparePlugin({ overrides, efforts, ref, ablate, variant, label }) {
-  const base = mkdtempSync(join(tmpdir(), 'pl-'))
+  const base = tempDir('pl-')
   const dir = join(base, 'stage-pipeline')
   let sha
   if (ref) {
@@ -455,6 +455,7 @@ function runDecision(name, attempt, spec, world, dataDir) {
   const read = (path) => (existsSync(join(world.repo, path)) ? readFileSync(join(world.repo, path), 'utf8') : '')
   const graded = gradeDecision(spec, {
     repo: world.repo, calls, hooks, final: String(final.result ?? ''),
+    assistantText: topLevelText(events),
     stagesText: read(`tasks/${world.identity.ticket}/STAGES.md`), configText: read('.claude/pipeline.config.md'),
   })
   failures.push(...graded.failures)
@@ -524,7 +525,8 @@ function runAgent(name, attempt, spec, world, dataDir) {
 
   // The file name is the skill convention's business; the case only checks that a report was saved at all.
   const checksDir = join(world.repo, world.checks)
-  const report = existsSync(checksDir) ? walk(checksDir).filter((file) => file.endsWith('.md')).map((file) => readFileSync(file, 'utf8')).join('\n') : ''
+  // Only what the agent wrote: a fixture report that a case layer committed to checks/ is neither the agent's output nor a saved report.
+  const report = agentReports(checksDir, world.checksBefore)
   const graded = gradeAgent(spec, {
     repo: world.repo, report, summary: sub.summary, calls: sub.calls, hooks, snapshot, commitsBefore, commitsAfter: git(world.repo, 'rev-list', '--count', 'HEAD').trim(),
   })

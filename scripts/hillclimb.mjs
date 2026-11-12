@@ -25,10 +25,10 @@
  *                            that times out or reports no cost is charged its budget), so a resumed run re-reads it; with --jobs the estimates of the cases already running are reserved
  *   --editor-model opus  --editor-budget-usd 1.5     per editor call (--max-budget-usd of the call)
  *   --jobs 3                 cases run in parallel inside one evaluation (4 train + 2 holdout cases x 3 runs one after another is ~12 minutes)
- *   --budget-usd/--budget-since   passed to every eval.mjs call (less what the cases running in parallel have reserved) and checked here too (the whole ledger since that time, editor rows included)
+ *   --budget-usd/--budget-since   passed to every eval.mjs call (the child counts the cases running in parallel itself) and checked here too, the estimates of those cases reserved (the whole ledger since that time, editor rows included)
  *
  * A run stops with a row of its own: stopped-no-headroom (the baseline train mean + 0.1 passes 1: no edit could be kept; train on cases with headroom), stopped-eval-failed (a case with a
- * harness failure or fewer graded runs than --runs, named in the row), stopped-cap, stopped-target, stopped-max-iterations, stopped-checkout-touched (the editor call changed the starting checkout's tracked files or rewrote its ledger).
+ * harness failure or fewer graded runs than --runs, named in the row), stopped-cap (an eval that skips runs by its own budget check is this, not eval-failed), stopped-target, stopped-max-iterations, stopped-checkout-touched (the editor call changed the starting checkout's tracked files or rewrote its ledger).
  * A signal charges the editor call and the eval children in flight into the ledger before the run exits (evals/hillclimb/<run>/inflight/ marks; a SIGKILL's are charged by the next --resume); --resume refuses while the
  * previous process of the run is alive (the worktree lock names its pid) and never prunes or removes any worktree but the run's own. --resume refuses a run whose baseline row is not `baseline`.
  *   --run <id>  --resume <id>

@@ -1,0 +1,67 @@
+{
+  "agent": "devtools-verify",
+  "why": "a runtime defect handed over for reproduction: the checker reaches the broken state by the user path, resets, reaches it again, and only then reports; the cause stays with the caller. PENDING (VT-13): v0.19.0 already observes twice whenever it reaches the browser, so the trace does not tell the versions apart; the only rule that separates the tree from v0.19.0 is \"the cause stays with the caller\" (effects-and-repro.md), and the tree breaks it too (it reads the source and names the cause)",
+  "identity": {
+    "repo": "ticket-desk",
+    "ticket": "TIX-18",
+    "user": "Oskar Lindgren",
+    "email": "oskar.lindgren@ticket-desk.dev"
+  },
+  "serve": {
+    "dir": "public"
+  },
+  "mcp": [
+    "chrome-devtools"
+  ],
+  "mcpServers": {
+    "chrome-devtools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@1.6.0",
+        "--isolated",
+        "--headless"
+      ],
+      "env": {}
+    }
+  },
+  "prompt": "Ticket TIX-18, stage 1. Language: en. Repro mode for the finding on `AC-1.1`. Route: http://127.0.0.1:{port}/ , width 1440, light theme. State: the page freshly loaded, nothing reserved. Correct final state: after one click on `Reserve seat` the text of `#seats-left` is `Seats left: 4`. Broken final state: it still reads `Seats left: 5`. Reset between attempts: reload the page. Report path: tasks/TIX-18/checks/devtools-verify-1-repro.md.",
+  "budgetUsd": 1.5,
+  "timeoutSec": 900,
+  "trace": [
+    {
+      "tool": "mcp__plugin_stage-pipeline_chrome-devtools__click",
+      "min": 2,
+      "before": "^Write$",
+      "why": "the broken state was reached twice before the report was written: two clicks on the reserve button"
+    },
+    {
+      "tool": "mcp__plugin_stage-pipeline_chrome-devtools__(new_page|navigate_page)",
+      "min": 2,
+      "before": "^Write$",
+      "why": "the page was opened and then reset (a reload or a fresh page) before the report was written"
+    }
+  ],
+  "traceForbid": [
+    {
+      "tool": "mcp__chrome-devtools__.*",
+      "why": "never a project's own chrome-devtools server"
+    },
+    {
+      "tool": "Edit",
+      "why": "the checker observes and reports, the edit stays with the caller"
+    },
+    {
+      "tool": "Read|Bash",
+      "input": "public/(app\\.js|index\\.html)|cat [^\\n]*\\bapp\\.js|(head|sed|grep)[^\\n]*\\bapp\\.js",
+      "why": "the checker reaches the broken state by the user path and does not read the page source to build a cause"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "discards? (the )?return value|return value[^\\n]{0,40}(discard|ignor|unused)|never mutat|does not mutate|reserve\\(state\\)[^\\n]{0,60}returns",
+      "why": "the report names a cause: the checker observes and reports, the cause stays with the caller"
+    }
+  ]
+}

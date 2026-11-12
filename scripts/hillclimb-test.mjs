@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { alive } from '../plugins/stage-pipeline/scripts/processes.mjs'
 import { INVOCATION_RE, appendLedger, readLedger, sessionEnv } from './eval-lib.mjs'
-import { assertNoLiveEvalChildren, caseLedgerSummary, chargeInflight, climb, climbLabel, DEFAULT_HOLDOUT, DEFAULT_TRAIN, identityArgs, decisionPath, editorArgs, inflightDir, makeEditor, markInflight, makeEvaluator, median, missExcerpts, parseDecision, resumedTrain, runScore, spentByRun, splitMean } from './hillclimb-lib.mjs'
+import { assertNoLiveEvalChildren, caseLedgerSummary, chargeInflight, climb, climbLabel, DEFAULT_HOLDOUT, DEFAULT_TRAIN, identityArgs, decisionPath, editorArgs, editorEnv, inflightDir, makeEditor, markInflight, makeEvaluator, median, missExcerpts, parseDecision, resumedHoldout, resumedTrain, runScore, spentByRun, splitMean } from './hillclimb-lib.mjs'
 
 const INV = '20261030T000000'
 const AGENT = 'pro-review'
@@ -234,7 +234,7 @@ export async function selfTest() {
       const repo = repoFor()
       const stub = join(repo, 'stub-claude.mjs')
       writeFileSync(stub, `import { writeFileSync, appendFileSync } from 'node:fs'
-writeFileSync(${JSON.stringify(join(repo, 'argv.json'))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }))
+writeFileSync(${JSON.stringify(join(repo, 'argv.json'))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }))
 appendFileSync('${REF}', 'T+\\n')
 process.stdout.write(JSON.stringify({ type: 'result', is_error: false, total_cost_usd: 0.42, result: 'I edited the lens.\\nEDIT: lens for stale state' }))
 `)
@@ -246,7 +246,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, total_cos
       await climb(cfgFor(repo, 'ed', { maxIterations: 1 }), { evaluator: scripted(log), editor })
       const seen = JSON.parse(readFileSync(join(repo, 'argv.json'), 'utf8'))
       const has = (...tokens) => tokens.every((token) => seen.argv.includes(token))
-      check(has('--model', 'opus', '--max-budget-usd', '0.9', '--output-format', 'json', '--setting-sources', 'project', '--strict-mcp-config', '--no-session-persistence', 'dontAsk'), `editor: argv misses an isolation flag: ${seen.argv.filter((x) => x.startsWith('--')).join(' ')}`)
+      check(has('--model', 'opus', '--max-budget-usd', '0.9', '--output-format', 'json', '--restricted', '--strict-mcp-config', '--no-session-persistence', 'dontAsk'), `editor: argv misses an isolation flag: ${seen.argv.filter((x) => x.startsWith('--')).join(' ')}`)
       const tools = seen.argv[seen.argv.indexOf('--tools') + 1]
       const allowed = seen.argv.slice(seen.argv.indexOf('--allowedTools') + 1, seen.argv.indexOf('--disallowedTools'))
       check(tools === 'Read,Edit,Write,Glob,Grep', `S-1: the toolset (--tools) should be exactly Read,Edit,Write,Glob,Grep; got ${tools}`)
@@ -257,6 +257,10 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, total_cos
       const rows = decisions(repo, 'ed')
       check(rows[1]?.summary === 'lens for stale state' && Number(rows[1].cost_usd) >= 0.42, `editor: the EDIT line and the cost should reach the row; got ${rows[1]?.summary} ${rows[1]?.cost_usd}`)
       check(editorArgs({ prompt: 'p', model: 'opus', budget: 1 }).includes('--no-session-persistence'), 'editor: editorArgs')
+      // S-1 (VT-13): --restricted ends the auto-memory exemption of the working-directory blocks; project settings are not read under it, so nothing may depend on --setting-sources; the env switches auto-memory off
+      check(seen.argv.includes('--restricted') && !seen.argv.includes('--setting-sources'), `S-1: the editor argv needs --restricted and no --setting-sources; got ${seen.argv.filter((x) => x.startsWith('--')).join(' ')}`)
+      check(seen.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1' && seen.env?.PATH === process.env.PATH, `S-1: the editor process must get CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 on top of the driver's env; got ${seen.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY} PATH ${seen.env?.PATH === process.env.PATH}`)
+      check(editorEnv({ A: 'b', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' }).CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1' && editorEnv({ A: 'b' }).A === 'b', 'S-1: editorEnv forces the switch on and keeps the rest')
     }
 
     // 10. a failed baseline: the row names the case, no editor call is made, and --resume refuses it (its empty scores would read as 0)
@@ -449,7 +453,7 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: ' + runs + ', i
       const sent = JSON.parse(readFileSync(`${ledgerPath}.args-c2`, 'utf8'))
       check(sent.args.includes('--budget-usd') && sent.args.includes('--budget-since') && sent.args.includes('2026-10-30T07:42:03Z'), 'evaluator: --budget-usd/--budget-since were not passed through')
       const budgetOf = (name) => Number(JSON.parse(readFileSync(`${ledgerPath}.args-${name}`, 'utf8')).args.at(JSON.parse(readFileSync(`${ledgerPath}.args-${name}`, 'utf8')).args.indexOf('--budget-usd') + 1))
-      check(budgetOf('c1') === 40 && budgetOf('c2') < 40, `evaluator: a case started while another runs gets a lane budget less its reserve (c1 ${budgetOf('c1')}, c2 ${budgetOf('c2')})`)
+      check(budgetOf('c1') === 40 && budgetOf('c2') === 40, `evaluator: a case started while another runs gets the whole lane budget, the reserve is not taken off twice (c1 ${budgetOf('c1')}, c2 ${budgetOf('c2')})`)
       check(sent.args.includes('--label') && sent.args.includes('hillclimb:t9') && readLedger(ledgerPath).filter((row) => row.case === 'c2').every((row) => row.plugin_ref === 'working-tree+hillclimb:t9'), 'evaluator: its eval runs must carry the label hillclimb:<run> in the ledger')
       check(Math.abs(spentByRun(readLedger(ledgerPath), 't9') - 0.9) < 1e-9, 'evaluator: the spend of the run is the sum of its labelled rows')
       // --pending: only for a name that is under evals/pending/ and not under evals/cases/
@@ -468,6 +472,53 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: ' + runs + ', i
       appendLedger({ ts: 't', invocation: 'x', case: 'seed' }, ledger2)
       const capped = await makeEvaluator({ repo: repo2, run: 'cap', runs: 3, jobs: 3, capUsd: 2, ledgerPath: ledger2, resultsDir: join(repo2, 'evals/.results') }).evaluate(repo2, ['c1', 'c2', 'c3'])
       check(Boolean(capped.capped) && /c2 not started/.test(capped.capped) && Object.keys(capped.perCase).join() === 'c1' && readLedger(ledger2).filter((row) => row.case !== 'seed').every((row) => row.case === 'c1'), `evaluator: with a cap of $2 and $1.50 reserved by the first case the second must not start; got ${capped.capped} ${Object.keys(capped.perCase)}`)
+    }
+
+    // M-1 (VT-13 8a): cases in parallel under a cap with headroom all make every run (the child sees the others' spend in the ledger, the driver must not subtract their reserve too);
+    // a child that skips by its own budget is `capped`, not `failed`
+    {
+      const budgetStub = `import { appendFileSync, readFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+const name = args.at(-1)
+const at = (flag) => args[args.indexOf(flag) + 1]
+const runs = Number(at('--runs'))
+const budget = Number(at('--budget-usd'))
+const since = args.includes('--budget-since') ? at('--budget-since') : ''
+let skipped = 0
+for (let i = 1; i <= runs; i++) {
+  const rows = readFileSync(process.env.EVAL_LEDGER, 'utf8').split('\\n').slice(1).filter(Boolean).map((line) => line.split('\\t'))
+  const spent = rows.filter((row) => row[0] >= since).reduce((sum, row) => sum + Number(row[11] || 0), 0)
+  if (spent + 2 > budget) {
+    console.log('⏭ ' + name + ' #' + i + ' — skipped: $' + spent.toFixed(2) + ' spent + ~$2.00 would pass $' + budget)
+    skipped++
+    continue
+  }
+  await new Promise((done) => setTimeout(done, 250))
+  appendFileSync(process.env.EVAL_LEDGER, [new Date().toISOString(), at('--invocation'), name, i, 'working-tree+' + at('--label'), '0', 'sha', 'v', 'm', 'E1+ N1+ F1+', '1', '2.0000', '1'].join('\\t') + '\\n')
+}
+process.exit(skipped ? 3 : 0)
+`
+      const setup = (capUsd, pastCost = '2.0000') => {
+        const repo = repoFor()
+        put(repo, 'scripts/eval.mjs', budgetStub)
+        const ledgerPath = join(repo, 'evals/ledger.tsv')
+        appendLedger({ ts: '2020-01-01T00:00:00Z', invocation: 'x', case: 'seed' }, ledgerPath)
+        for (const name of ['c1', 'c2', 'c3']) appendLedger({ ts: '2020-01-01T00:00:00Z', invocation: 'x', case: name, cost_usd: pastCost }, ledgerPath)
+        return { repo, ledgerPath, evaluator: makeEvaluator({ repo, run: 'm1', runs: 3, jobs: 3, capUsd, ledgerPath, resultsDir: join(repo, 'evals/.results') }) }
+      }
+      // estimate $6 per case (3 runs x the $2 past mean), actual $2 per run: $18 in all under the $20 cap. The old limit of the third case was 20 − 12 reserved = 8: its third run was skipped.
+      const roomy = setup(20)
+      const done = await roomy.evaluator.evaluate(roomy.repo, ['c1', 'c2', 'c3'])
+      check(!done.capped && done.failed.length === 0 && Object.keys(done.perCase).length === 3 && readLedger(roomy.ledgerPath).filter((row) => row.plugin_ref === 'working-tree+hillclimb:m1').length === 9, `M-1: three parallel cases with cap headroom must make all 9 runs; got capped ${done.capped}, failed ${JSON.stringify(done.failed)}, ${readLedger(roomy.ledgerPath).filter((row) => row.plugin_ref === 'working-tree+hillclimb:m1').length} rows`)
+      // a child that skips by its own budget (a past mean of $1 estimates $3, the runs cost $2 each: the start fits the $5 cap, the third run does not): capped with the reason, not failed
+      const tight = setup(5, '1.0000')
+      const stopped = await tight.evaluator.evaluate(tight.repo, ['c1'])
+      check(Boolean(stopped.capped) && /c1: \d of 3 runs made/.test(stopped.capped) && stopped.failed.length === 0 && stopped.mean === null && !stopped.perCase.c1, `M-1: a child that exits 3 on its budget skip must be capped, not failed; got capped ${stopped.capped}, failed ${JSON.stringify(stopped.failed)}`)
+      // m-1 (round 2): run 1 fails a grader, the rest are skipped by the budget, the child exits 1 (as eval.mjs does): still capped, not failed
+      const gradeFail = setup(5, '1.0000')
+      put(gradeFail.repo, 'scripts/eval.mjs', budgetStub.replace("'E1+ N1+ F1+'", "'E1- N1+ F1+'").replace('process.exit(skipped ? 3 : 0)', 'process.exit(1)'))
+      const failedThenSkipped = await gradeFail.evaluator.evaluate(gradeFail.repo, ['c1'])
+      check(Boolean(failedThenSkipped.capped) && /c1: \d of 3 runs made/.test(failedThenSkipped.capped) && failedThenSkipped.failed.length === 0, `m-1: a child that exits 1 (a grader failed) and skipped the rest by the budget must be capped, not failed; got capped ${failedThenSkipped.capped}, failed ${JSON.stringify(failedThenSkipped.failed)}`)
     }
     // ── the 14b fixes: each with an incident form (fails without the fix) and a legitimate form ────────────────────────────────────────────────────────────────────────────
 
@@ -526,6 +577,60 @@ console.log('## working-tree (plugin 0 @ sha, v), runs per case: ' + runs + ', i
       const none = await climbWith('m6d', (text, name) => (name.startsWith('t') ? (text.includes('FIXF') ? [GOOD, GOOD, GOOD] : [BAD, BAD, BAD]) : holdMarks(text)), 'FIXF\n')
       check(none.rows[1]?.decision === 'kept', `M-6 legitimate: an edit with no failed run before or after is kept; got ${none.rows[1]?.decision}`)
       check(/^# no new failures:.*rejected \(rejected-failures\)/m.test(readFileSync(decisionPath(incident.repo, 'm6a'), 'utf8')), 'M-6: the decision.tsv header names the rule')
+    }
+
+    // M-1 (VT-13): after --resume the failure counts of BOTH splits come back from the decision row's invocation ids (the ledger rows of those invocations), so an edit that adds a holdout (or train) run without its report
+    // is rejected-failures as without a resume; a log written before the holdout_invocations column cannot restore the holdout's failure counts: --resume refuses it
+    {
+      const GOOD = 'D1+ F1+ N1+ N2+'
+      const BAD = 'D1+ F1- N1+ N2+'
+      const DROP = 'D1- F1+ N1+ N2+'
+      const HGOOD = 'D1+ E1+ F1+'
+      const HDROP = 'D1- E1+ F1+'
+      const makeEvaluator = () => {
+        let n = 0
+        return {
+          async evaluate(worktree, cases, ctx = {}) {
+            const text = readFileSync(join(worktree, REF), 'utf8')
+            n++
+            const perCase = {}
+            for (const name of cases) {
+              const marks = name.startsWith('t')
+                ? (text.includes('TFIX') ? [GOOD, GOOD, GOOD] : text.includes('TDROP') ? [GOOD, GOOD, DROP] : [BAD, BAD, BAD])
+                : (text.includes('HDROP') ? [HGOOD, HGOOD, HDROP] : [HGOOD, HGOOD, HGOOD])
+              const invocation = `${INV}-x${n}${name}`
+              for (const mark of marks) appendLedger({ ts: new Date().toISOString(), invocation, case: name, marks: mark, pass: 1, cost_usd: '0' }, ctx.ledgerPath)
+              perCase[name] = { scores: marks.map(runScore), score: median(marks.map(runScore)), marks, invocation }
+            }
+            return { perCase, mean: splitMean(perCase), cost: 0, failed: [] }
+          },
+        }
+      }
+      const resumeWith = async (run, edit, { oldLog = false } = {}) => {
+        const repo = repoFor()
+        const evaluator = makeEvaluator()
+        await climb(cfgFor(repo, run, { maxIterations: 0 }), { evaluator, editor: editorWith([], { edits: [] }) })
+        const path = decisionPath(repo, run)
+        if (oldLog) {
+          const lines = readFileSync(path, 'utf8').split('\n')
+          const header = lines.findIndex((line) => line.startsWith('attempt\t'))
+          const drop = lines[header].split('\t').indexOf('holdout_invocations')
+          writeFileSync(path, lines.map((line, i) => (i >= header && line ? line.split('\t').filter((_, col) => col !== drop).join('\t') : line)).join('\n'))
+        }
+        await climb(cfgFor(repo, run, { maxIterations: 1, resume: true }), { evaluator, editor: editorWith([step('the edit', append(REF, edit))], { edits: [] }) })
+        return { repo, rows: decisions(repo, run).filter((row) => row.kind !== 'stop') }
+      }
+      const base = await resumeWith('m1base', 'TFIX\n')
+      check(base.rows[0].kind === 'baseline' && /^h1=/.test(base.rows[0].holdout_invocations) && base.rows[0].holdout_invocations.split(';').length === HOLD.length, `M-1: the baseline row stores the holdout invocation ids; got «${base.rows[0].holdout_invocations}»`)
+      check(base.rows[1]?.decision === 'kept' && /^h1=/.test(base.rows[1].holdout_invocations), `M-1: a clean edit after a resume is kept and its row stores the holdout ids; got ${base.rows[1]?.decision} «${base.rows[1]?.holdout_invocations}»`)
+      const hold = await resumeWith('m1hold', 'TFIX\nHDROP\n')
+      check(hold.rows[1]?.decision === 'rejected-failures' && /holdout: h1 0 → 1/.test(hold.rows[1].summary), `M-1 incident (AC-2.1): after --resume an edit that makes one holdout run drop its report must be rejected-failures; got ${hold.rows[1]?.decision} ${hold.rows[1]?.summary}`)
+      const train = await resumeWith('m1train', 'TDROP\n')
+      check(train.rows[1]?.decision === 'rejected-failures' && /t1 0 → 1/.test(train.rows[1].summary), `M-1 (train after resume): got ${train.rows[1]?.decision} ${train.rows[1]?.summary}`)
+      const oldError = await resumeWith('m1old', 'TFIX\nHDROP\n', { oldLog: true }).then(() => '', (error) => error.message)
+      check(/m1old.*holdout_invocations.*start a new run/.test(oldError), `M-1 compat: --resume of a log without holdout_invocations is refused with a clear message; got «${oldError}»`)
+      const split = resumedHoldout([{ invocation: `${INV}-a`, case: 'h1', marks: 'D1- E1+ F1+' }], { holdout_cases: 'h1=0.500', holdout_invocations: `h1=${INV}-a` })
+      check(split.h1.marks[0] === 'D1- E1+ F1+' && split.h1.resumed === true, `M-1: resumedHoldout rebuilds marks from the ledger; got ${JSON.stringify(split)}`)
     }
 
     // m-16: the cleanup never prunes the registrations of a repo that encloses a scratch dir (TMPDIR inside a git work tree); a repo's own are pruned through its own .git

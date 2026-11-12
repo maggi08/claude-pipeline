@@ -111,13 +111,14 @@ export const splitMean = (perCase) => mean(Object.values(perCase).map((entry) =>
 
 // ── decision.tsv ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export const DECISION_COLUMNS = ['attempt', 'ts', 'kind', 'files', 'summary', 'train_cases', 'train_invocations', 'train_mean', 'holdout_cases', 'holdout_mean', 'decision', 'cost_usd', 'cumulative_usd', 'commit']
+export const DECISION_COLUMNS = ['attempt', 'ts', 'kind', 'files', 'summary', 'train_cases', 'train_invocations', 'train_mean', 'holdout_cases', 'holdout_invocations', 'holdout_mean', 'decision', 'cost_usd', 'cumulative_usd', 'commit']
 const cell = (value) => String(value ?? '').replace(/[\t\r\n]+/g, ' ')
 const num = (value) => (value === null || value === undefined ? '' : Number(value).toFixed(3))
 export const casesCell = (perCase) => Object.entries(perCase ?? {}).map(([name, entry]) => `${name}=${num(entry.score)}`).join(';')
 /** `name=<eval invocation id>;…` — the id names the evals/.results/<id>/ directory the editor's miss excerpts are rebuilt from after a resume. */
 export const invocationsCell = (perCase) => Object.entries(perCase ?? {}).filter(([, entry]) => entry.invocation).map(([name, entry]) => `${name}=${entry.invocation}`).join(';')
 const trainCells = (perCase) => ({ train_cases: casesCell(perCase), train_invocations: invocationsCell(perCase) })
+const holdoutCells = (perCase) => ({ holdout_cases: casesCell(perCase), holdout_invocations: invocationsCell(perCase) })
 
 export const decisionPath = (repo, run) => join(repo, 'evals/hillclimb', run, 'decision.tsv')
 
@@ -137,7 +138,7 @@ export function decisionHeader({ run, agent, base, train, holdout, runs, target,
   ].join('\n')
 }
 
-export const formatRow = (row) => DECISION_COLUMNS.map((column) => cell(row[column])).join('\t')
+export const formatRow = (row, columns = DECISION_COLUMNS) => columns.map((column) => cell(row[column])).join('\t')
 
 export function parseDecision(text) {
   const meta = {}
@@ -162,7 +163,9 @@ export function parseDecision(text) {
 export function appendDecision(path, row, headerText) {
   mkdirSync(dirname(path), { recursive: true })
   if (!existsSync(path)) writeFileSync(path, `${headerText}\n`)
-  appendFileSync(path, `${formatRow(row)}\n`)
+  // A log started before a column existed keeps its own header: rows are appended in the columns the file has (the plugin adapts to existing state).
+  const header = readFileSync(path, 'utf8').split('\n').find((line) => line.trim() && !line.startsWith('#'))
+  appendFileSync(path, `${formatRow(row, header ? header.split('\t') : DECISION_COLUMNS)}\n`)
 }
 
 // ── the bounds of an edit and its undo ──────────────────────────────────────────────────────────────────────────────
@@ -441,8 +444,9 @@ let exitHookInstalled = false
  * case are read back by that id, never by text the child printed (the agent's own words reach its output). A case that is not under evals/cases/ but under evals/pending/ of the worktree
  * is run with `--pending`. Before each case starts, the estimates of the cases already running (what they have not spent yet) are reserved: the run's cap `capUsd` and the lane budget are
  * checked against the ledger spend + that reserve + this case's estimate, and the child gets the tighter of the lane budget and what remains under the cap, so its runs 2 and 3 are
- * checked too. A case that does not fit is not started (`capped` names it). Every child has an in-flight mark (see markInflight) from before its spawn to after its rows. Scores come from the
- * ledger rows of the invocation; a case with fewer graded runs than `runs` (a harness failure, a budget exit, a crash) is `failed`, never scored on what is left.
+ * checked too (the reserve is not taken off the child's limit: the child sees the others' actual spend in the ledger itself). A case that does not fit is not started (`capped` names it); a child that exits 1 or 3, wrote
+ * only graded rows (fewer than `runs`) and printed a budget-skip line (`⏭ … skipped`) is `capped` too, never `failed` (eval.mjs exits 1 when a run it made failed a grader, even if later runs were skipped). Every child has an in-flight mark (see markInflight) from before its spawn to after its rows. Scores come from the
+ * ledger rows of the invocation; a case with fewer graded runs than `runs` (a harness failure, an ungraded row, a crash) is `failed`, never scored on what is left.
  * `killAll()` sends SIGTERM to the process group of every child that runs.
  */
 export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSince, capUsd, ledgerPath, resultsDir, nodeBin = process.execPath }) {
@@ -500,9 +504,10 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
           else if (budgetUsd && lane + reserved + estimate > budgetUsd + EPS) capped = `${name} not started: lane spend $${lane.toFixed(2)} + $${reserved.toFixed(2)} reserved + ~$${estimate.toFixed(2)} would pass the lane budget $${budgetUsd}`
           if (capped) break
           // The child's own budget check (before each of its runs) gets the tighter limit: the lane's, or what is left under the run's cap, in the lane's terms (spent since its start).
-          const capLeft = capUsd ? capUsd - spent - reserved : null
+          // The reserve of the cases running is not taken off here: the child counts their actual spend itself (the ledger since its `since`), so subtracting it too would count them twice; the reserve stays in the pre-start check above.
+          const capLeft = capUsd ? capUsd - spent : null
           let limit = { budget: undefined, since: undefined }
-          if (budgetUsd) limit = { budget: Math.max(0.01, Math.min(budgetUsd - reserved, capLeft === null ? Infinity : lane + capLeft)), since: budgetSince }
+          if (budgetUsd) limit = { budget: Math.max(0.01, Math.min(budgetUsd, capLeft === null ? Infinity : lane + capLeft)), since: budgetSince }
           else if (capLeft !== null) limit = { budget: Math.max(0.01, capLeft), since: new Date().toISOString() }
           const before = spentByRun(ledger, run, name)
           inflight.set(name, { estimate, before })
@@ -526,6 +531,12 @@ export function makeEvaluator({ repo, run, runs, jobs = 1, budgetUsd, budgetSinc
         const rows = ledger.filter((row) => row.invocation === invocation && row.case === name)
         cost += rows.reduce((sum, row) => sum + Number(row.cost_usd || 0), 0)
         const scores = rows.map((row) => runScore(row.marks)).filter((score) => score !== null)
+        // A child that skipped runs by its own budget check (a `⏭ … skipped` line; exit 3, or 1 when a run it made failed a grader) with every row it wrote graded: the money, not a harness failure, ended the case.
+        const skipLine = result.out.trim().split('\n').filter((line) => line.startsWith('⏭') && line.includes('skipped')).slice(-1)[0]
+        if ((result.status === 3 || result.status === 1) && skipLine && scores.length === rows.length && rows.length < runs) {
+          capped ??= `${name}: ${rows.length} of ${runs} runs made, the rest skipped by the eval's own budget check (${skipLine})`.slice(0, 300)
+          continue
+        }
         if (!rows.length || scores.length < runs || result.status === 2 || result.status === -1) {
           const what = !rows.length ? 'no run recorded' : `${scores.length} of ${runs} runs graded (${rows.length - scores.length} harness failure or ungraded, ${runs - rows.length} not run)`
           failed.push(`${name}: ${what} (exit ${result.status}) ${result.out.trim().split('\n').slice(-2).join(' | ').slice(0, 200)}`)
@@ -545,7 +556,7 @@ const absRule = (path) => `//${resolve(path).replace(/^\//, '')}`
 export const EDITOR_TOOLS = 'Read,Edit,Write,Glob,Grep'
 
 /**
- * The `claude -p` argv of the editor, settings isolated the way scripts/eval.mjs isolates a run: only project settings, no MCP, no session, dontAsk.
+ * The `claude -p` argv of the editor, `--restricted` (no settings files are read, the file tools stay in the working directory, and the auto-memory exemption of the blocks below is closed), no MCP, no session, dontAsk. The repo has no project settings file the editor needs.
  * - `--tools` names the toolset: exactly Read Edit Write Glob Grep, no Bash, no Agent, no WebFetch (`--allowedTools` only pre-approves, it removes nothing).
  * - the allow rules are path-scoped: reads anywhere in the worktree, writes only in `skills/<agent>/references/` and the one `agents/<agent>.md`; under dontAsk anything else is denied.
  * - `--settings` sets `blockWritesOutsideWorkingDirectories` and `blockReadsOutsideWorkingDirectories`: no allow rule lifts them, so nothing outside the temp worktree (the starting checkout,
@@ -558,7 +569,7 @@ export function editorArgs({ prompt, model, budget, agent = '<agent>', repo = nu
   const evals = ['./evals/**', ...(repo ? [`${absRule(repo)}/evals/**`] : []), ...(resultsDir ? [`${absRule(resultsDir)}/**`] : [])]
   return [
     '-p', prompt, '--model', model,
-    '--setting-sources', 'project', '--strict-mcp-config', '--no-session-persistence', '--permission-mode', 'dontAsk',
+    '--restricted', '--strict-mcp-config', '--no-session-persistence', '--permission-mode', 'dontAsk',
     '--settings', JSON.stringify({ permissions: { blockWritesOutsideWorkingDirectories: true, blockReadsOutsideWorkingDirectories: true } }),
     '--tools', EDITOR_TOOLS,
     '--allowedTools', 'Read(./**)', 'Glob(./**)', 'Grep(./**)', `Edit(${references})`, `Write(${references})`, `Edit(${agentFile})`,
@@ -567,6 +578,9 @@ export function editorArgs({ prompt, model, budget, agent = '<agent>', repo = nu
     '--max-budget-usd', String(budget), '--output-format', 'json',
   ]
 }
+
+/** The editor's environment: the driver's, and Claude Code's auto-memory off (its folder is keyed by the repo, outside every working-directory block; --restricted closes the exemption too). */
+export const editorEnv = (base = process.env) => ({ ...base, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' })
 
 const excerpt = (text, max) => (text.length > max ? `${text.slice(0, max)}\n… (cut)` : text)
 
@@ -622,7 +636,7 @@ function parseEditorOutput(stdout) {
 
 function runEditor(bin, args, cwd, timeoutMs, live) {
   return new Promise((resolveRun) => {
-    const child = spawn(bin, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(bin, args, { cwd, env: editorEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
     live.add(child)
     let stdout = ''
     let stderr = ''
@@ -688,15 +702,19 @@ export function makeEditor({ repo, run, model = 'opus', budget = 1.5, ledgerPath
  * The last kept train evaluation from its decision row after a resume: scores from `train_cases`, and, for each case whose invocation id is in `train_invocations`, its runs' scores and
  * marks from that invocation's ledger rows, so the editor's miss excerpts can be rebuilt from evals/.results/<id>/. A row without the ids (an older log) has no details: the prompt says so.
  */
-export function resumedTrain(ledger, row) {
-  const invocations = Object.fromEntries(String(row.train_invocations ?? '').split(';').filter(Boolean).map((part) => [part.split('=')[0], part.slice(part.indexOf('=') + 1)]))
-  return Object.fromEntries(String(row.train_cases ?? '').split(';').filter(Boolean).map((part) => {
+export function resumedSplit(ledger, casesText, invocationsText) {
+  const invocations = Object.fromEntries(String(invocationsText ?? '').split(';').filter(Boolean).map((part) => [part.split('=')[0], part.slice(part.indexOf('=') + 1)]))
+  return Object.fromEntries(String(casesText ?? '').split(';').filter(Boolean).map((part) => {
     const name = part.split('=')[0]
     const invocation = INVOCATION_RE.test(invocations[name] ?? '') ? invocations[name] : undefined
     const rows = invocation ? ledger.filter((entry) => entry.invocation === invocation && entry.case === name) : []
     return [name, { score: Number(part.split('=')[1]), scores: rows.map((entry) => runScore(entry.marks)).filter((score) => score !== null), marks: rows.map((entry) => entry.marks), invocation, resumed: true }]
   }))
 }
+/** `resumedSplit` for the train columns of a decision row. */
+export const resumedTrain = (ledger, row) => resumedSplit(ledger, row.train_cases, row.train_invocations)
+/** … and for the holdout columns (a log written before `holdout_invocations` has the scores only: those cases have no marks and are not compared). */
+export const resumedHoldout = (ledger, row) => resumedSplit(ledger, row.holdout_cases, row.holdout_invocations)
 
 /**
  * Per case, what the ledger says about the CURRENT agent (the dry run prints it): runs, harness failures (`W-`), and the last invocation's median score and marks. Only rows of the
@@ -740,6 +758,7 @@ export async function climb(cfg, deps) {
     const baselineRow = prior.rows.find((row) => row.kind === 'baseline')
     if (!baselineRow) throw new Error(`--resume ${run}: ${relative(repo, path)} has no baseline row: start the run again`)
     if (baselineRow.decision !== 'baseline') throw new Error(`--resume ${run}: the baseline failed (${baselineRow.decision}: ${baselineRow.summary}): start a new run, a resume would take its empty scores for 0`)
+    if (!('holdout_invocations' in baselineRow)) throw new Error(`--resume ${run}: ${relative(repo, path)} was written before the holdout_invocations column, the failure counts of its holdout cannot be restored: start a new run (this log stays as it is)`)
     train = prior.meta.train.split(', ')
     holdout = prior.meta.holdout.split(', ')
   } else if (existsSync(path)) {
@@ -827,7 +846,7 @@ export async function climb(cfg, deps) {
         write({ attempt: 0, ts: stamp(), kind: 'baseline', summary: `eval failed: ${base.failed.join('; ').slice(0, 300)}`, decision: 'stopped-eval-failed', cost_usd: baseCost(), cumulative_usd: spent().toFixed(4), commit: startSha })
         return { rows, branch: wt.branch, stopped: 'stopped-eval-failed' }
       }
-      write({ attempt: 0, ts: stamp(), kind: 'baseline', summary: 'unedited HEAD', ...trainCells(base.train.perCase), train_mean: num(base.train.mean), holdout_cases: casesCell(base.holdout.perCase), holdout_mean: num(base.holdout.mean), decision: 'baseline', cost_usd: baseCost(), cumulative_usd: spent().toFixed(4), commit: startSha })
+      write({ attempt: 0, ts: stamp(), kind: 'baseline', summary: 'unedited HEAD', ...trainCells(base.train.perCase), train_mean: num(base.train.mean), ...holdoutCells(base.holdout.perCase), holdout_mean: num(base.holdout.mean), decision: 'baseline', cost_usd: baseCost(), cumulative_usd: spent().toFixed(4), commit: startSha })
       baseline = { train: base.train.mean, holdout: base.holdout.mean }
       best = base.train.mean
       lastTrain = base.train
@@ -836,9 +855,10 @@ export async function climb(cfg, deps) {
       const baseRow = rows.find((row) => row.kind === 'baseline')
       baseline = { train: Number(baseRow.train_mean), holdout: Number(baseRow.holdout_mean) }
       best = Math.max(baseline.train, ...rows.filter((row) => row.decision === 'kept').map((row) => Number(row.train_mean)))
-      lastTrain = { perCase: resumedTrain(ledgerNow(), (rows.filter((row) => row.decision === 'kept').at(-1) ?? baseRow)), mean: best }
-      // The decision rows keep the invocation ids of the train split only: the holdout counts are not known after a resume, and those cases are not compared.
-      failRef = { train: failureCounts(lastTrain.perCase), holdout: {} }
+      const lastKept = rows.filter((row) => row.decision === 'kept').at(-1) ?? baseRow
+      lastTrain = { perCase: resumedTrain(ledgerNow(), lastKept), mean: best }
+      // Both splits' invocation ids are in the row: the failure counts of the last kept state come back from the ledger (a log without the holdout column is refused above).
+      failRef = { train: failureCounts(lastTrain.perCase), holdout: failureCounts(resumedHoldout(ledgerNow(), lastKept)) }
     }
 
     for (;;) {
@@ -933,7 +953,7 @@ export async function climb(cfg, deps) {
         return { rows, branch: wt.branch, stopped: 'stopped-eval-failed' }
       }
       const holdoutMean = splitMean(holdoutResult.perCase)
-      const scored = { ...trainCells(trainResult.perCase), train_mean: num(trainMean), holdout_cases: casesCell(holdoutResult.perCase), holdout_mean: num(holdoutMean) }
+      const scored = { ...trainCells(trainResult.perCase), train_mean: num(trainMean), ...holdoutCells(holdoutResult.perCase), holdout_mean: num(holdoutMean) }
       const holdoutFailures = failureCounts(holdoutResult.perCase)
       const holdoutGrew = grewFailures(holdoutFailures, failRef.holdout)
       if (holdoutGrew.length) {

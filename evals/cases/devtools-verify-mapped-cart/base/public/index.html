@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mugshop</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Mugshop</h1>
+    <nav><a href="#" id="cart-link">Cart (0)</a> <a href="/account/">Account</a></nav>
+  </header>
+  <main>
+    <article class="card"><h2>Stone mug</h2><p class="price">12.90 EUR</p><button id="add">Add to cart</button></article>
+    <aside id="drawer" class="drawer" hidden>
+      <h2>Your cart</h2>
+      <ul id="lines"></ul>
+      <label>Promo code <input id="promo" type="text" aria-label="Promo code"></label>
+      <button id="apply">Apply</button>
+      <p id="total">Total: 0.00 EUR</p>
+    </aside>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

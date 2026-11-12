@@ -3,3 +3,4 @@
 .product-denylist
 evals/.results/
 evals/ledger.tsv
+evals/hillclimb/

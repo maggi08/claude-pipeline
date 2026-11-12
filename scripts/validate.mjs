@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync, utimesSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync, utimesSync, symlinkSync } from 'node:fs'
 import { join, dirname, basename, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -749,7 +749,7 @@ async function validateEvals() {
 
 async function validateEvalSelfTests(names) {
   // Loaded here, not at the top: scripts/hooks-test.mjs runs copies of this file in directories that have no eval harness.
-  const { acIdsFor, applyVariantEdits, caseHash, decisionSettings, questionLines, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, unreadScreenshots } = await import('./eval-lib.mjs')
+  const { acIdsFor, agentReports, applyVariantEdits, checksSnapshot, caseHash, decisionSettings, questionLines, findingMatches, gradeAgent, gradeDecision, lintCase, matchScreenshotReads, patchDataDirOverride, tempDir, topLevelText, unreadScreenshots } = await import('./eval-lib.mjs')
   const here = 'scripts/eval-lib.mjs'
   // AC-6.1: a copy of a case with a planted word is aborted, and the original passes.
   const probe = names.find((name) => existsSync(join(ROOT, 'evals/cases', name, 'base/CLAUDE.md'))) ?? names[0]
@@ -890,9 +890,74 @@ async function validateEvalSelfTests(names) {
   expectMatches('a finding under «Отклонено» is dropped', portal, '## Отклонено\n\n- major: src/DeleteGuestModal.tsx:12 — x', 0)
   // The security review leads its findings with an `S-<n>` id (agents/security-review.md), as a plain line or as a heading.
   expectMatches('a security finding led by an S id', { severity: 'critical', file: 'invoices\\.js' }, 'S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
+  // M-1 (VT-13 final checks): the «names the criterion as the source» finding of the two AC-demands cases binds the source word to the AC-ID; a source word elsewhere on a line that ends with the tag is not it.
+  for (const [name, line, real] of [
+    ['pro-review-ac-demands-role-overwrite', '- 🔴 `importRoster.ts:10,19` — A coach can import `role: \'admin\'` or demote an existing admin. It also bypasses the `service.ts` rights path that CLAUDE.md requires. Fix: move the import into `service.ts`. (AC-1.1)', '- 🔴 `importRoster.ts:10` — the role column comes from the file: AC-1.1 itself demands that every column overwrites the stored member, so a coach makes an admin.'],
+    ['pro-review-ac-demands-sequential-link', '- 🔴 `share.ts:4` — The link is the sequential report number, anyone can walk all reports. It also skips the sign-in check that CLAUDE.md requires. (AC-1.2)', '- 🔴 `share.ts:4` — the sequential report number is the public link, and the criterion AC-1.2 mandates exactly that.'],
+  ]) {
+    const spec = { severity: 'critical|major', file: JSON.parse(readFileSync(join(ROOT, 'evals', existsSync(join(ROOT, 'evals/cases', name)) ? 'cases' : 'pending', name, 'case.json'), 'utf8')).findings[1].file }
+    expectMatches(`${name}: a source word that names CLAUDE.md, not the criterion, on a line tagged with the AC-ID`, spec, line, 0)
+    expectMatches(`${name}: a line that names the criterion as the source`, spec, real, 1)
+  }
   expectMatches('a security finding as an S-id heading', { severity: 'critical', file: 'invoices\\.js' }, '### S-1 — critical — server/routes/invoices.js:11 — IDOR', 1)
+  // M-2 (VT-13 stage 5): a fixture report under checks/ is not the agent's report; only a new or changed one is.
+  const reportsHolder = mkdtempSync(join(tmpdir(), 'reports-probe-'))
+  try {
+    mkdirSync(reportsHolder, { recursive: true })
+    writeFileSync(join(reportsHolder, 'fixture.md'), '- 🟠 major: src/a.ts:1 fixture finding\n')
+    const before = checksSnapshot(reportsHolder)
+    if (agentReports(reportsHolder, before) !== '') fail(here, 'report reader self-test: a fixture checks/*.md was read as the agent report')
+    writeFileSync(join(reportsHolder, 'agent.md'), 'agent report\n')
+    if (agentReports(reportsHolder, before) !== 'agent report\n') fail(here, 'report reader self-test: a report the agent wrote is missing, or the fixture one leaked in')
+    writeFileSync(join(reportsHolder, 'fixture.md'), 'rewritten by the agent\n')
+    if (!agentReports(reportsHolder, before).includes('rewritten by the agent')) fail(here, 'report reader self-test: a fixture report the agent rewrote was not read')
+  } finally {
+    rmSync(reportsHolder, { recursive: true, force: true })
+  }
+  // M-1 (VT-13 stage 5): the status lines of the full report's findings sit under a status heading and are not findings, whatever words they use; a re-raise outside it is.
+  const gateSpec = { severity: 'critical|major', file: 'loyalty/points\\.ts' }
+  const statusLines = ['- Finding 2 (overdraw, major): `redeem(100, 250)` now throws at `src/loyalty/points.ts:10`, but the guard is off by one, see Finding 1 above.', '- 🟠 major `src/loyalty/points.ts:5` — fixed: the key set is not changed', '- 🟠 major `src/loyalty/points.ts:5` — fixed for absent keys but `constructor` gives NaN', 'Finding 1 fixed; an open question remains elsewhere: `src/loyalty/points.ts:5` major', '- 🟠 major `src/loyalty/points.ts:5` — not fixed, still NaN']
+  for (const heading of ['## Full report findings, checked in the new code', '## Status of the findings of the full report', '## Previous findings', '## Fixed findings of the full report', '## Status of findings from the base report', '## Branch findings recheck']) {
+    for (const line of statusLines) expectMatches(`status section «${heading}»: ${line.slice(0, 40)}`, gateSpec, `${heading}\n\n${line}\n`, 0)
+  }
+  for (const line of statusLines.slice(2)) expectMatches(`re-raise under Findings: ${line.slice(0, 40)}`, gateSpec, `## Findings\n\n${line}\n`, line.startsWith('Finding 1') ? 0 : 1)
+  expectMatches('a re-raise after the status section, under Findings', gateSpec, `## Previous findings\n\n- fine\n\n## Findings\n\n- 🟠 major \`src/loyalty/points.ts:5\` — NaN again\n`, 1)
+  for (const heading of ['## Findings', '## Major', '## Review summary', '## Report', '### Finding 1 — NaN (severity: major)']) {
+    if (/^#{3}/.test(heading)) expectMatches(`ordinary heading «${heading}» is a finding heading`, gateSpec, `${heading}\n\n- \`src/loyalty/points.ts:5\` major\n`, 1)
+    else expectMatches(`ordinary heading «${heading}» is not a kept section`, gateSpec, `${heading}\n\n- 🟠 major \`src/loyalty/points.ts:5\` — NaN\n`, 1)
+  }
+  for (const heading of ['## Whole-branch findings', '## Branch findings', '## Findings (full report)', '## Whole-branch report']) expectMatches(`ordinary heading «${heading}» is not a kept section`, gateSpec, `${heading}\n\n- 🟠 major \`src/loyalty/points.ts:5\` — NaN\n`, 1)
   const graded = gradeAgent({ findings: [{ ...asks, why: 'x' }] }, { repo: ROOT, report: negated, summary: '', calls: [] })
   if (!graded.failures.length) fail(here, 'finding grader self-test: gradeAgent passed the negation example')
+  // forbidSummary of a decision case reads the text said before the spawn, not only the (empty) final message.
+  const saidBefore = (said, final) => gradeDecision({ forbidSummary: [{ pattern: 'cause\\s*:', why: 'x' }] }, { repo: ROOT, calls: [], hooks: [], final, assistantText: said }).failures.length
+  if (!saidBefore('Cause: renderBadge is never subscribed', '')) fail(here, 'decision grader self-test: forbidSummary did not see the text said before the spawn')
+  if (!gradeAgent({ forbidSummary: [{ pattern: 'cause\\s*:', why: 'x' }] }, { repo: ROOT, report: '', summary: 'Cause: x', calls: [] }).failures.length) fail(here, 'finding grader self-test: forbidSummary of an agent case did not read the summary when nothing was said')
+  if (saidBefore('Reproducing first', '')) fail(here, 'decision grader self-test: forbidSummary failed a clean text')
+  // The extraction of the text the decision session said: top-level text parts only (no subagent events, no thinking or tool calls), and temp directories under their real path.
+  const said = topLevelText([
+    { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'secret' }, { type: 'text', text: 'before spawn' }, { type: 'tool_use', id: 't1', name: 'Agent', input: {} }] } },
+    { type: 'assistant', parent_tool_use_id: 't1', message: { content: [{ type: 'text', text: 'from the subagent' }] } },
+    { type: 'user', message: { content: [{ type: 'text', text: 'a user part' }] } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'after' }] } },
+  ])
+  if (said !== 'before spawn\nafter') fail(here, `topLevelText self-test: got ${JSON.stringify(said)}, wanted the top-level text parts only`)
+  // tempDir resolves symlinks: point TMPDIR at a symlink to a real directory, so the check bites where tmpdir() is not under one (Linux CI).
+  const realTmp = mkdtempSync(join(tmpdir(), 'vt-real-'))
+  const linkTmp = `${realTmp}-link`
+  const savedTmp = process.env.TMPDIR
+  let dir
+  try {
+    symlinkSync(realTmp, linkTmp)
+    process.env.TMPDIR = linkTmp
+    dir = tempDir('vt-')
+    if (dirname(dir) !== realpathSync(realTmp)) fail(here, `tempDir self-test: ${dir} is not under the real path of the symlinked TMPDIR`)
+  } finally {
+    if (savedTmp === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = savedTmp
+    rmSync(linkTmp, { force: true })
+    rmSync(realTmp, { recursive: true, force: true })
+  }
   // Trace graders: a denied call does not count; every screenshot must be opened.
   const call = (name, input, extra = {}) => ({ name, input, result: '', isError: false, denied: false, ...extra })
   const traced = (calls) => gradeAgent({ trace: [{ tool: 'Bash', input: 'floor-guard\\.mjs', why: 'floor-guard ran' }] }, { repo: ROOT, report: '', summary: '', calls }).failures.length

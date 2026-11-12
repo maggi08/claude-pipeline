@@ -22,6 +22,20 @@
   "agentPrompts": [
     {
       "agent": "pro-review",
+      "acs": {
+        "tag": "pro-review",
+        "stage": 1
+      }
+    },
+    {
+      "agent": "pro-review",
+      "acs": {
+        "tag": "pro-review",
+        "stage": 2
+      }
+    },
+    {
+      "agent": "pro-review",
       "contains": [
         {
           "pattern": "whole[- ]branch",
@@ -34,6 +48,23 @@
         {
           "pattern": "Language:\\s*en",
           "why": "the task language"
+        }
+      ]
+    },
+    {
+      "agent": "pro-review",
+      "contains": [
+        {
+          "pattern": "newest PAGE_SIZE orders|newest .{0,40}orders come back",
+          "why": "...with the criterion text of AC-1.1, not only the ID"
+        },
+        {
+          "pattern": "page past the end|past the end",
+          "why": "...with the criterion text of AC-1.2"
+        },
+        {
+          "pattern": "pageCount[^\\n]{0,80}(number of pages|holds them all)|number of pages that holds",
+          "why": "...with the criterion text of AC-2.1"
         }
       ]
     }
@@ -53,13 +84,16 @@
   ],
   "provenFailing": {
     "on": "ref:stage-pipeline--v0.18.0",
-    "date": "2026-10-27",
+    "date": "2026-11-11",
     "plugin": "0.18.0@6d7388eac",
-    "runs": 2,
-    "failed": 2,
-    "detection": "2/2",
-    "caseHash": "87f1c4b92a3ea11d",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "2f2b10315c09adc4",
     "failures": [
+      "pro-review prompt: AC-1.1 missing; AC-1.2 missing",
+      "pro-review prompt: AC-2.1 missing",
+      "pro-review prompt: ...with the criterion text of AC-1.1, not only the ID (/newest PAGE_SIZE orders|newest .{0,40}orders come back/); ...with the criterion text ",
       "pro-review model: the whole-branch review runs on review_model wanted opus, got none"
     ]
   }

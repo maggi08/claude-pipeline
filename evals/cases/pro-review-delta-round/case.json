@@ -1,0 +1,69 @@
+{
+  "agent": "pro-review",
+  "why": "delta mode on a fix round: the round fixes the three findings of the full whole-branch report and its new guard rejects redeeming the whole balance (>= instead of >), which redeemAll outside the diff depends on; the delta report must name that one, not raise the fixed ones again, and carry the `delta:` line",
+  "identity": {
+    "repo": "loyalty-web",
+    "ticket": "LOY-27",
+    "user": "Mara Lindqvist",
+    "email": "mara.lindqvist@loyalty-web.dev",
+    "branch": "feature/loyalty-points",
+    "commits": {
+      "base": "chore: initial import",
+      "stages": {
+        "1": "LOY-27: loyalty points earn, redeem and format",
+        "2": "LOY-27: whole-branch review report"
+      }
+    }
+  },
+  "prompt": "Ticket LOY-27. Language: en. Mode: delta review of the fix round, `--delta tasks/LOY-27/checks/pro-review-branch.md` (the whole-branch report of this task). The round fixed its findings and is not committed yet. Comparison base: main. Report: tasks/LOY-27/checks/pro-review-branch-delta-1.md.",
+  "budgetUsd": 1.5,
+  "timeoutSec": 600,
+  "expect": [
+    {
+      "pattern": "delta:[^\\n]*6c8eb5b[0-9a-f]*\\.\\.[0-9a-f]{7,40}",
+      "why": "the delta report writes its `delta: <full report> <base sha>..<head sha>` line, anchored on the `head:` of the full report"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "guards\\.ts|redeemAll\\.ts",
+      "why": "assertCanRedeem rejects requested === balance, so redeemAll (outside the diff) always throws and the whole balance can never be redeemed (AC-1.3)"
+    }
+  ],
+  "findingsForbid": [
+    {
+      "severity": "critical|major",
+      "file": "loyalty/points\\.ts",
+      "why": "the unknown-tier NaN of the full report (M-1) is fixed in the round (its status line sits in the full-report status section, which the grader does not read as a finding)"
+    },
+    {
+      "severity": "critical|major",
+      "file": "loyalty/redeem\\.ts",
+      "why": "the overdraw of the full report (M-2) is fixed in the round (its status line sits in the full-report status section, which the grader does not read as a finding)"
+    },
+    {
+      "severity": "minor",
+      "file": "loyalty/format\\.ts",
+      "why": "the hard-coded label of the full report (m-3) is fixed in the round (its status line sits in the full-report status section, which the grader does not read as a finding)"
+    }
+  ],
+  "forbid": [
+    {
+      "pattern": "Approve\\*{0,2}\\s*$",
+      "why": "a plain Approve on a round whose new guard breaks redeeming the whole balance"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.23.0",
+    "date": "2026-11-11",
+    "plugin": "0.23.0@5c7584e57",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "f99d0b472e44fdb1",
+    "failures": [
+      "not found: the delta report writes its `delta: <full report> <base sha>..<head sha>` line, anchored on the `head:` of the full report (/delta:[^\\n]*6c8eb5b[0-9a"
+    ]
+  }
+}

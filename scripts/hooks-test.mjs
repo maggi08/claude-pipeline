@@ -173,6 +173,7 @@ const UNITS = [
   { id: 'vt6s13', weight: 3 }, // Stage 13 of VT-6: the project’s `## Repo rules` on a force commit
   { id: 'vt6findings', weight: 2 }, // Stage 13 of VT-6: `retro.mjs --findings`, the input of /promote
   { id: 'vt6kit', weight: 3 }, // Stage 13 of VT-6: kit-overrides false-positive patterns (`skills/stage-check/references/k…
+  { id: 'vt13kit', weight: 1 }, // VT-13 stage 7: kit-override-scan.mjs of the v0.21.0 tag against HEAD on one tree (false positives and one planted override)
   { id: 'vt6promote', weight: 4 }, // /promote proof runner (stage 13): a fake project ESLint, no real one needed
   { id: 'vt6s13f1', weight: 4 }, // Stage 13 of VT-6, fix round 1: pro-review findings M-2 (a backtracking row), M-3 (moved-l…
   { id: 'vt6retro', weight: 2 }, // Stage 13 of VT-6, fix round 1: `retro --findings` (m-1 author date, m-4 registry tasks, f…
@@ -8846,6 +8847,63 @@ if (unit('vt6kit')) {
   const fpDoc = readFileSync(join(PLUGIN, '../skills/stage-check/references/kit-overrides-false-positives.md'), 'utf8')
   check('kit-overrides skip: the patterns the scan applies are the sections of the false-positives reference headed by their id, and the reverse', same([...fpDoc.matchAll(/^### `([a-z-]+)`\s*$/gm)].map((m) => m[1]).sort(), [...kits.SKIP_PATTERNS].sort()), JSON.stringify([...fpDoc.matchAll(/^### `([a-z-]+)`\s*$/gm)].map((m) => m[1])))
   rmSync(fp, { recursive: true, force: true })
+}
+
+
+// ── VT-13 stage 7 (VT-6 AC-13.4, eval half): the scanner of the v0.21.0 tag against HEAD's on one tree ───────────────────
+if (unit('vt13kit')) {
+  const TAG = 'stage-pipeline--v0.21.0'
+  const repoRoot = join(dirname(SELF), '..')
+  let tagReady = true
+  try {
+    git(repoRoot, 'rev-parse', '--verify', `${TAG}^{commit}`)
+  } catch {
+    tagReady = false
+  }
+  check(`kit-overrides tag vs HEAD: the tag ${TAG} is in the clone (CI clones with fetch-depth: 0; locally: git fetch --tags)`, tagReady)
+  if (tagReady) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'kit-tag-test-')))
+    // the tag's scanner imports siblings (hooks/, markers.mjs): materialise the whole scripts directory of the tag
+    const tagDir = join(root, 'tag')
+    mkdirSync(tagDir)
+    const archive = execFileSync('git', ['archive', TAG, 'plugins/stage-pipeline/scripts'], { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 })
+    execFileSync('tar', ['-x', '-C', tagDir], { input: archive })
+    const tagScan = join(tagDir, 'plugins/stage-pipeline/scripts/kit-override-scan.mjs')
+    const headScan = join(PLUGIN, 'kit-override-scan.mjs')
+    const app = join(root, 'app')
+    repoAt(app, 'main')
+    const CARD = '    <h3 className="font-semibold uppercase">title</h3>'
+    write(app, {
+      'src/Old.tsx': `export const Old = () => (\n  <div>\n${CARD}\n  </div>\n)\n`,
+      // the reference file of --reference: its values are the design's own (the third SKIP pattern, reference-line)
+      'src/Ref.tsx': 'export const Ref = () => <div className="rounded-[20px] pb-2" />\n',
+    })
+    git(app, 'add', '-A')
+    git(app, 'commit', '-qm', 'base')
+    // false positives of HEAD's SKIP_PATTERNS: a moved line (Old.tsx is deleted), a token shorthand, a value of the reference file
+    rmSync(join(app, 'src/Old.tsx'))
+    write(app, {
+      'src/Moved.tsx': `export const Moved = () => (\n  <section>\n      <h3 className="font-semibold uppercase">title</h3>\n  </section>\n)\n`,
+      'src/Tok.tsx': 'export const T = () => <div className="rounded-[--radius-md] p-4" />\n',
+      'src/Card.tsx': 'export const Card = () => <div className="rounded-[20px]" />\n',
+      // the planted genuine override: a new line with an arbitrary font size and a hand-set weight
+      'src/Real.tsx': 'export const Real = () => <p className="text-[13px] font-extrabold">x</p>\n',
+    })
+    const run = (script) => {
+      // the tag's main() reads only --base and --out: the flag is ignored there, not an error
+      const out = spawnSync(process.execPath, [script, '--reference', 'src/Ref.tsx'], { cwd: app, encoding: 'utf8' })
+      const found = out.stdout.split('\n').filter((line) => line.startsWith('- ') && !line.startsWith('- skipped ')).map((line) => line.slice(2).split(':')[0])
+      return { status: out.status, found, text: out.stdout + out.stderr }
+    }
+    const tagRun = run(tagScan)
+    const headRun = run(headScan)
+    const falseOf = (r) => r.found.filter((file) => file !== 'src/Real.tsx')
+    const detail = JSON.stringify({ tag: tagRun, head: headRun })
+    check('kit-overrides tag vs HEAD: both scanners ran on the tree and reported findings (exit 1)', tagRun.status === 1 && headRun.status === 1, detail)
+    check('kit-overrides tag vs HEAD: the planted genuine override is found by both', tagRun.found.includes('src/Real.tsx') && headRun.found.includes('src/Real.tsx'), detail)
+    check('kit-overrides tag vs HEAD: the tag flags all three false positives, HEAD none (moved-line, token-shorthand, reference-line)', falseOf(tagRun).length === 3 && falseOf(headRun).length === 0, detail)
+    rmSync(root, { recursive: true, force: true })
+  }
 }
 
 
