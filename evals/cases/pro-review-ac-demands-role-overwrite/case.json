@@ -31,14 +31,14 @@
   "provenFailing": {
     "on": "ablate:agent:pro-review",
     "date": "2026-11-11",
-    "plugin": "0.26.0@0e62b881f",
+    "plugin": "0.26.0@82ecf82ef",
     "runs": 3,
     "failed": 3,
     "detection": "3/3",
-    "caseHash": "77e45cf723a849c3",
+    "caseHash": "c922f708bc9b60e2",
     "failures": [
-      "no finding line: a coach can give any member the admin or coach role through the file, bypassing canAssignRole that service.ts applies to every other role chang",
-      "no finding line: the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion (critical|major /AC-1\\.1[^\\n]"
+      "no finding line: the finding names AC-1.1 as the source of the defect instead of passing the code because it matches the criterion (critical|major /AC-1\\.1[^\\n]",
+      "no finding line: a coach can give any member the admin or coach role through the file, bypassing canAssignRole that service.ts applies to every other role chang"
     ]
   }
 }
