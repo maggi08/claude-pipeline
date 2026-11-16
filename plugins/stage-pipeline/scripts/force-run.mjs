@@ -16,7 +16,7 @@
  *   error      a non-zero exit code, an error `result` or another API error, with the text
  *
  * `runLoop` is the one-task loop (the default of the CLI; `--once` runs one session): after `limit` of the `five_hour` window it waits until `resetsAt` plus a margin (holding
- * `caffeinate -i -w <launcher pid>`) and starts a NEW session of the same task in the same worktree (never `--resume`); the weekly limit, an organization spend limit whose reset is more than five hours away (the monthly cap; with the five-hour window resetting within five hours the same text is a wait),
+ * `caffeinate -i -w <launcher pid>`) and starts a NEW session of the same task in the same worktree (never `--resume`); the weekly limit, an organization spend limit whose reset is more than five hours (and a quarter hour) away (the monthly cap; with the five-hour window resetting within five hours the same text is a wait),
  * a second short failure in a row (`computer_slept`, `connection_failed`), any other error and N new sessions in a row without a newly closed stage stop the task with a status.
  *
  *   node force-run.mjs <repo> <TICKET> [--once] [--margin-min 5] [--max-sessions 3] [--retries 1]
