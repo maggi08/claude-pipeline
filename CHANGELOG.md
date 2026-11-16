@@ -5,6 +5,18 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.27.1 — 2026-11-16
+
+### A force run that hits its org's monthly spend text while the 5-hour window resets within hours now waits for the reset instead of stopping with `spend_limit`
+
+What changes against 0.27.0: the kind of a usage limit is decided by its window and reset time, and the launcher reads the error fields of the live `claude -p` stream.
+
+- **Window first, text second (`force-run.mjs`, `limitKind`).** A `five_hour` window that resets within five hours and a quarter hour is a wait, even when the text says "org's monthly spend limit" or the reason is `org_level_disabled_until`. A `five_hour` window that resets further away is still `spend_limit` (exit 6). A `seven_day` window is the weekly stop (exit 5) whatever the text says. A spend text or an `org_level_disabled…` reason with no window, or with `five_hour` and no reset time, is `spend_limit`: there is nothing to wait until. Before, both VT-13 stops of 2026-11-11 were `spend_limit` with the window resetting in about an hour.
+- **Both shapes of the error fields.** The live `claude -p --output-format stream-json` writes `api_error` and `api_error_params` in snake_case; transcripts write `apiError` and `apiErrorParams`. One accessor reads both for the usage limit, for `computer_slept` / `connection_failed` and for the "later clean assistant message" check. Before, the outcome record had `reason: null` and the window came from the text.
+- No new flags, exit codes or statuses. The README paragraphs of the 5-hour limit and `spend_limit` say the new rule.
+
+**Dev repo only:** the `vt12s2` unit of `scripts/hooks-test.mjs` has fake `claude` scenarios in the live stream shape (copied from the VT-13 log) for the five-hour wait, the weekly stop, the spend stops and the snake_case short failures.
+
 ## 0.27.0 — 2026-11-10
 
 ### Reading GitHub through gh asks nothing; pushing your branch and opening the PR can stop asking too, and a force run still never publishes

@@ -11,12 +11,12 @@
  *
  * Outcomes (the record's `outcome`, the exit code): completed 0 · error 1 · not ready or no binary 2 · limit 3 · stopped 4.  The loop adds: weekly limit 5 · spend limit 6 · gave up 7.
  *   completed  the session ended and the Force block heading is closed
- *   limit      `usage_limit_reached` (an assistant message with `apiError`, or an error `result`): the window and `resetsAt` come with it
+ *   limit      `usage_limit_reached` (an assistant message with `api_error`, or an error `result`): the window and `resetsAt` come with it. The live `claude -p` stream writes the error fields in snake_case (`api_error`, `api_error_params`), transcripts in camelCase (`apiError`, `apiErrorParams`): both are read
  *   stopped    the session ended (or was interrupted) and the block is still open
  *   error      a non-zero exit code, an error `result` or another API error, with the text
  *
  * `runLoop` is the one-task loop (the default of the CLI; `--once` runs one session): after `limit` of the `five_hour` window it waits until `resetsAt` plus a margin (holding
- * `caffeinate -i -w <launcher pid>`) and starts a NEW session of the same task in the same worktree (never `--resume`); the weekly limit, a monthly spend limit of the organization,
+ * `caffeinate -i -w <launcher pid>`) and starts a NEW session of the same task in the same worktree (never `--resume`); the weekly limit, an organization spend limit whose reset is more than five hours away (the monthly cap; with the five-hour window resetting within five hours the same text is a wait),
  * a second short failure in a row (`computer_slept`, `connection_failed`), any other error and N new sessions in a row without a newly closed stage stop the task with a status.
  *
  *   node force-run.mjs <repo> <TICKET> [--once] [--margin-min 5] [--max-sessions 3] [--retries 1]
@@ -78,20 +78,31 @@ const WINDOW_NAMES = { five_hour: /session|5.?hour|five/i, seven_day: /week|7.?d
 const windowFromText = (text) => WINDOWS.find((name) => WINDOW_NAMES[name].test(text ?? '')) ?? null
 
 /**
- * A usage limit in an event: the assistant message with `apiError: "usage_limit_reached"` (`apiErrorParams.rate_limit_info`), or an error `result` that says so
- * (`apiError` / `api_error_status` 429 / the "hit your … limit" text). `{ window, resetsAt, reason, spend, text }` — the window and `resetsAt` are null when the event does not carry them;
+ * The API-error fields of an event in either shape: snake_case of the live `claude -p` stream-json (`api_error`, `api_error_params`) or camelCase of transcripts
+ * (`apiError`, `apiErrorParams`, on the event or on its `message`). `{ error, params }`, each null when absent.
+ */
+function apiErrorOf(event) {
+  return {
+    error: event?.api_error ?? event?.apiError ?? event?.message?.apiError ?? null,
+    params: event?.api_error_params ?? event?.apiErrorParams ?? event?.message?.apiErrorParams ?? null,
+  }
+}
+
+/**
+ * A usage limit in an event: the assistant message with `api_error: "usage_limit_reached"` (`api_error_params.rate_limit_info`), or an error `result` that says so
+ * (`api_error` / `api_error_status` 429 / the "hit your … limit" text); both field shapes are read (`apiErrorOf`). `{ window, resetsAt, reason, spend, text }` — the window and `resetsAt` are null when the event does not carry them;
  * `reason` is `overageDisabledReason`, `spend` says the text is about a spend limit.
  */
 function limitInfo(event) {
   if (!event || typeof event !== 'object') return null
-  const apiError = event.apiError ?? event.message?.apiError
+  const { error: apiError, params } = apiErrorOf(event)
   const text = textOf(event)
   const hitLimit = /hit your .*limit|usage limit reached|usage_limit_reached/i.test(text)
   const isLimit =
     (event.type === 'assistant' && apiError === 'usage_limit_reached') ||
     (event.type === 'result' && event.is_error === true && (apiError === 'usage_limit_reached' || hitLimit || (event.api_error_status === 429 && /limit/i.test(text))))
   if (!isLimit) return null
-  const info = event.apiErrorParams?.rate_limit_info ?? event.message?.apiErrorParams?.rate_limit_info ?? {}
+  const info = params?.rate_limit_info ?? {}
   return {
     window: WINDOWS.includes(info.rateLimitType) ? info.rateLimitType : windowFromText(text),
     resetsAt: num(info.resetsAt),
@@ -102,24 +113,27 @@ function limitInfo(event) {
 }
 
 /**
- * What a `limit` outcome is for the loop: `five_hour` (wait), `seven_day` (stop), `spend` (a monthly spend limit of the organization: stop) or `unknown` (stop).
- * A real five-hour limit can carry `overageDisabledReason: "out_of_credits"` too, so the reason alone is not a sign: the text, an `org_level_disabled…` reason, or a `resetsAt`
- * further than the five hours (and a quarter hour) from `nowS` decide.
+ * What a `limit` outcome is for the loop: `five_hour` (wait), `seven_day` (stop), `spend` (an organization spend limit: stop) or `unknown` (stop).
+ * The window and `resetsAt` decide, not the text: `seven_day` is a weekly stop; `five_hour` with `resetsAt` within the five hours (and a quarter hour) of `nowS` is a wait even when the
+ * text says "monthly spend limit" or the reason is `org_level_disabled…` (a team seat at its org's cap that still resets its five-hour window); `five_hour` with `resetsAt` further is `spend`.
+ * A spend signal (the text or an `org_level_disabled…` reason) with no window, or with `five_hour` and no `resetsAt`, is `spend`: there is nothing to wait for and no time to wait until.
+ * A real five-hour limit can carry `overageDisabledReason: "out_of_credits"` too, so that reason alone is not a sign.
  */
 function limitKind({ window, resetsAt, reason, spend }, nowS = Date.now() / 1000) {
+  if (window === 'seven_day') return 'seven_day'
+  if (window === 'five_hour' && resetsAt !== null) return resetsAt - nowS > FIVE_HOURS_S + 900 ? 'spend' : 'five_hour'
   if (spend || /^org_level_disabled/.test(reason ?? '')) return 'spend'
-  if (window === 'five_hour' && resetsAt !== null && resetsAt - nowS > FIVE_HOURS_S + 900) return 'spend'
   return window ?? 'unknown'
 }
 
 const TRANSIENT = /computer[_ ]slept|connection[_ ]failed/i
 /**
- * A short failure that a new session may survive: `computer_slept` or `connection_failed`, as `apiError` of an assistant message or in the text of an error `result`.
+ * A short failure that a new session may survive: `computer_slept` or `connection_failed`, as `api_error` / `apiError` of an assistant message or in the text of an error `result`.
  * `{ name, source: 'apiError' | 'result' }` or null.
  */
 function transientInfo(event) {
   if (!event || typeof event !== 'object') return null
-  const apiError = event.apiError ?? event.message?.apiError
+  const { error: apiError } = apiErrorOf(event)
   if (event.type === 'assistant' && TRANSIENT.test(apiError ?? '')) return { name: apiError.toLowerCase().replace(' ', '_'), source: 'apiError' }
   if (event.type === 'result' && event.is_error === true) {
     const found = TRANSIENT.exec(`${apiError ?? ''} ${textOf(event)}`)
@@ -519,7 +533,7 @@ function runSession(ctx, { dataDir = pluginDataDir(), previous = null } = {}) {
       const short = transientInfo(event)
       if (short && (!transient || short.source === 'apiError')) transient = short
       // A later clean assistant message: the session survived the short failure, so it is no longer the cause of the end.
-      else if (!short && transient && event.type === 'assistant' && !(event.apiError ?? event.message?.apiError)) transient = null
+      else if (!short && transient && event.type === 'assistant' && !apiErrorOf(event).error) transient = null
       if (event.type === 'result') result = event
     }
     const out8 = new StringDecoder('utf8')
