@@ -9766,6 +9766,14 @@ const limit = (type, resetsAt, text, reason) => {
   limitEvents(type, resetsAt, text, reason)
   process.exit(1)
 }
+// VT-14: the shape of the live \`claude -p\` stream (snake_case api_error / api_error_params), keys as in the VT-13 log force-run-7f075f95-….log lines 2974-2975.
+const liveLimit = (type, resetsAt, text, reason) => {
+  const info = { status: 'rejected', ...(resetsAt === null ? {} : { resetsAt }), ...(type ? { rateLimitType: type } : {}), overageStatus: 'rejected', ...(reason ? { overageDisabledReason: reason } : {}), isUsingOverage: false }
+  out({ type: 'assistant', message: { diagnostics: null, model: '<synthetic>', role: 'assistant', stop_reason: 'stop_sequence', type: 'message', content: [{ type: 'text', text }] }, parent_tool_use_id: null, session_id: 's', error: 'rate_limit', is_api_error_message: true, api_error_status: 429, api_error: 'usage_limit_reached', api_error_params: { rate_limit_info: info }, api_error_origin: 'first_party' })
+  out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached', result: text })
+  process.exit(1)
+}
+const ORG = "You've hit your org's monthly spend limit · run /usage-credits to ask your admin for a higher limit"
 const file = /journal of the task is (\\S+?);/.exec(process.argv[3])[1]
 const edit = (from, to) => fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(from, to))
 out({ type: 'system', subtype: 'init' })
@@ -9777,6 +9785,14 @@ else if (scenario === 'limit5credits') limit('five_hour', now + 3600, "You've hi
 else if (scenario === 'limit5hold') limit('five_hour', now + 3600, "You've hit your session limit · resets 11:30am", null)
 else if (scenario === 'progress') { edit('[status: in-progress]', '[status: done]'); limit('five_hour', now - 1000, "You've hit your session limit", null) }
 else if (scenario === 'spend') limit('five_hour', now + 20 * 86400, "You've hit your org's monthly spend limit · run /usage-credits", 'org_level_disabled_until')
+else if (scenario === 'live5') liveLimit('five_hour', now + 3600, ORG + " · your 5-hour limit resets 4pm (Asia/Almaty)", 'org_level_disabled_until')
+else if (scenario === 'live5notext') liveLimit('five_hour', now + 3600, ORG, 'org_level_disabled_until')
+else if (scenario === 'live7') liveLimit('seven_day', now + 3 * 86400, ORG, 'org_level_disabled_until')
+else if (scenario === 'livenowin') liveLimit(null, null, ORG, null)
+else if (scenario === 'live5noreset') liveLimit('five_hour', null, ORG, null)
+else if (scenario === 'livesleep') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'The computer went to sleep' }] }, api_error: 'computer_slept' }); process.exit(1) }
+else if (scenario === 'liveconn') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'blip' }] }, api_error: 'connection_failed' }); process.exit(1) }
+else if (scenario === 'connlive500') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'blip' }] }, apiError: 'connection_failed' }); out({ type: 'assistant', message: { content: [{ type: 'text', text: 'overloaded' }] }, api_error: 'overloaded' }); out({ type: 'result', subtype: 'success', is_error: true, result: 'API Error: 500 internal server error' }); process.exit(1) }
 else if (scenario === 'weekly') limit('seven_day', now + 3 * 86400, "You've hit your weekly limit · resets Fri 9:00am", null)
 else if (scenario === 'sleep') { out({ type: 'assistant', message: { content: [{ type: 'text', text: 'The computer went to sleep' }] }, apiError: 'computer_slept' }); process.exit(1) }
 else if (scenario === 'conn') { out({ type: 'result', subtype: 'error', is_error: true, result: 'API Error: connection_failed after 3 retries' }); process.exit(1) }
@@ -9852,6 +9868,25 @@ else if (scenario === 'utf8') {
   // D10: monthly spend limit (resetsAt days away, five_hour label, org reason, spend text) — stop, not a wait.
   const spend = loop('spend,completed')
   check('D10 incident: org monthly spend limit labelled five_hour with resetsAt days away — stopped (exit 6, spend_limit), not waited', spend.status === 6 && calls().length === 1 && spend.last?.status === 'spend_limit' && spend.outcomes[0].kind === 'spend' && spend.outcomes[0].reason === 'org_level_disabled_until' && !spend.statuses.some((s) => s.status === 'waiting'), `${spend.status} ${spend.stdout} ${JSON.stringify(spend.outcomes)}`)
+
+  // VT-14: the live `claude -p` shape (snake_case) and the new order of decisions of limitKind (window and resetsAt first, the spend text second).
+  const live5 = loop('live5,completed')
+  check('AC-1.1 VT-14 incident: the live-stream org-spend text with a five_hour window resetting in an hour is a wait — kind five_hour, `waiting`, a second session that completes, no spend_limit, exit 0', live5.status === 0 && calls().length === 2 && live5.outcomes[0].kind === 'five_hour' && live5.statuses.map((s) => s.status).join() === 'waiting,continuing,completed' && !live5.statuses.some((s) => s.status === 'spend_limit'), `${live5.status} ${live5.stdout} ${JSON.stringify(live5.outcomes)} ${JSON.stringify(live5.statuses)}`)
+  check('AC-1.5 VT-14: the outcome of a snake_case limit carries reason org_level_disabled_until from api_error_params', live5.outcomes[0].reason === 'org_level_disabled_until' && live5.outcomes[0].window === 'five_hour', JSON.stringify(live5.outcomes))
+  const live5nt = loop('live5notext,completed')
+  check('AC-1.5 VT-14: the window comes from rateLimitType, not from the text — a text that names no window still gives five_hour and a wait', live5nt.status === 0 && calls().length === 2 && live5nt.outcomes[0].window === 'five_hour' && live5nt.outcomes[0].kind === 'five_hour', `${live5nt.status} ${JSON.stringify(live5nt.outcomes)}`)
+  const live7 = loop('live7,completed')
+  check('AC-1.3 VT-14: a seven_day window with the spend text and the org reason is the weekly stop — one session, exit 5, weekly_limit, kind seven_day', live7.status === 5 && calls().length === 1 && live7.last?.status === 'weekly_limit' && live7.outcomes[0].kind === 'seven_day', `${live7.status} ${JSON.stringify(live7.outcomes)} ${JSON.stringify(live7.statuses)}`)
+  const liveNoWin = loop('livenowin,completed')
+  check('AC-1.4 VT-14: a spend signal with no window (no rateLimitType, no window word, no rate_limit_event) — one session, exit 6, spend_limit, no wait', liveNoWin.status === 6 && calls().length === 1 && liveNoWin.last?.status === 'spend_limit' && liveNoWin.outcomes[0].kind === 'spend' && liveNoWin.outcomes[0].window === null && liveNoWin.outcomes[0].resetsAt === null && !liveNoWin.statuses.some((s) => s.status === 'waiting'), `${liveNoWin.status} ${JSON.stringify(liveNoWin.outcomes)}`)
+  const live5nr = loop('live5noreset,completed')
+  check('AC-1.4 VT-14: a spend signal with five_hour and no resetsAt anywhere — one session, exit 6, spend_limit, no wait', live5nr.status === 6 && calls().length === 1 && live5nr.last?.status === 'spend_limit' && live5nr.outcomes[0].window === 'five_hour' && live5nr.outcomes[0].resetsAt === null && !live5nr.statuses.some((s) => s.status === 'waiting'), `${live5nr.status} ${JSON.stringify(live5nr.outcomes)}`)
+  const liveSleep = loop('livesleep,completed')
+  check('AC-1.6 VT-14: computer_slept in api_error (snake_case) of an assistant message — source apiError, one new session, completes, no wait (as the camelCase `sleep`)', liveSleep.status === 0 && calls().length === 2 && liveSleep.outcomes[0].transient === 'computer_slept' && liveSleep.outcomes[0].transientSource === 'apiError' && !liveSleep.statuses.some((s) => s.status === 'waiting'), `${liveSleep.status} ${JSON.stringify(liveSleep.outcomes)}`)
+  const liveConn = loop('liveconn,completed')
+  check('AC-1.6 VT-14: connection_failed in api_error (snake_case) — source apiError, one new session, completes', liveConn.status === 0 && calls().length === 2 && liveConn.outcomes[0].transient === 'connection_failed' && liveConn.outcomes[0].transientSource === 'apiError', `${liveConn.status} ${JSON.stringify(liveConn.outcomes)}`)
+  const connLive500 = loop('connlive500,completed')
+  check('AC-1.6 VT-14: a later assistant message that carries api_error (snake_case) is not a clean one — the transient connection_failed stays, one new session, completes', connLive500.status === 0 && calls().length === 2 && connLive500.outcomes[0].transient === 'connection_failed', `${connLive500.status} ${JSON.stringify(connLive500.outcomes)}`)
 
   // AC-2.4: a short failure → exactly one new session; a second one in a row → stop; any other error → stop with its text.
   const sleep = loop('sleep,completed')
