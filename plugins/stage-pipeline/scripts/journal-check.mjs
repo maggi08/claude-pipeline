@@ -328,7 +328,7 @@ const legacyViolation = (line) => acViolation(line) ?? skipViolation(line)
 
 // ── checker reports: summary, findings outcome ───────────────────────────────
 
-const CHECKERS = ['pro-review', 'figma-compare', 'proto-compare', 'devtools-verify', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'security-review', 'kit-overrides', 'api-verify']
+const CHECKERS = ['pro-review', 'figma-compare', 'proto-compare', 'devtools-verify', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'security-review', 'kit-overrides', 'api-verify', 'contract-compare']
 // `<skill>-branch.md` (and its re-runs `-branch-2.md`, `-branch-fresh.md`) is the whole-branch report of a repo-local team review skill the config names (`team_review:`): its findings get the ledger like any checker's.
 // The classifier does not read the config (its callers hold no repo root): any `checks/<name>-branch*.md` is read as a checker report, with or without the config line.
 export const reportChecker = (name) => CHECKERS.find((checker) => name.includes(checker)) ?? /^([a-z][\w.-]*?)-branch(?:-[\w.-]+)?\.md$/i.exec(name)?.[1].toLowerCase() ?? null

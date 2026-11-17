@@ -40,7 +40,7 @@ Update: `claude plugin update stage-pipeline` (pulls the fresh `main`). After an
 
 Rollout to a team is a catalog in GitLab that points to this repository: [ROLLOUT.md](ROLLOUT.md).
 
-Check that it arrived: `claude plugin details stage-pipeline` — it must show 22 skills, 16 agents, 2 MCP servers. Then `/pipeline-doctor` in the target repository checks the environment (MCP, dev server, baseline).
+Check that it arrived: `claude plugin details stage-pipeline` — it must show 23 skills, 17 agents, 2 MCP servers. Then `/pipeline-doctor` in the target repository checks the environment (MCP, dev server, baseline).
 
 ### Development mode — a marketplace from a local clone
 

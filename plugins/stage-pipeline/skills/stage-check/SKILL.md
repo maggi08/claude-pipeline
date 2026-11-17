@@ -44,9 +44,10 @@ Available checkers:
 |---|---|---|
 | figma-compare | design: tokens/sizes/structure vs Figma | active — agent `figma-compare` |
 | proto-compare | design vs HTML prototype + SPEC.md, if the task's source is a prototype | active — agent `proto-compare`, static |
-| devtools-verify | runtime: console/screenshots/live state | active — agent `devtools-verify` (the orchestrator holds the dev server) |
+| devtools-verify | runtime: console, screenshots | active — agent `devtools-verify` |
 | api-verify | backend API by probes in the repo's test setup | active — agent `api-verify` (agent-guard denies a general-purpose one); runs on a `[verify: api-verify]` criterion or a diff in the `api_files` masks of `## Backend`; a recheck writes `checks/api-verify-<stage>-r<k>.md` |
-| pro-review | code quality: correctness/conventions/duplicates/naming/comments/patterns | active — agent `pro-review` (stage diff, `--stage`) |
+| contract-compare | types, mocks, serializers vs contract | agent `contract-compare`; diff in `api_layer`/mocks/`api_files` + `contractPath`, else `[skip: no trigger]` |
+| pro-review | code quality: correctness, conventions, duplicates | active — agent `pro-review` (stage diff, `--stage`) |
 | ds-parity | duplicates with the design system: replace with a kit component / move INTO the kit | active — agent `ds-parity` (sonnet; never a general-purpose agent, agent-guard denies it); run on stages with new UI and always before the PR (on a redesign this is the main source of repeated edits at manual review) |
 | dead-code | what became orphaned BECAUSE of this diff: symbols, files, locale keys, assets | active — agent `dead-code`; run from stage 2 (nothing to orphan on the first) and before the PR |
 | i18n-sweep | hardcoded copy, incomplete locales, dynamic keys, formatting without a locale | active — agent `i18n-sweep`; only in projects with an `i18n` field in the config, on stages with new user-facing text |

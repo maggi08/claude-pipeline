@@ -185,6 +185,7 @@ const UNITS = [
   { id: 'vt15s1', weight: 2 }, // VT-15 stage 1: the `## Backend` config section (backendConfig, backendFileMatcher) and `{files:rel}` in run-check.mjs
   { id: 'vt15s2', weight: 3 }, // VT-15 stage 2: backend-detect.mjs — detection on poetry / pip / uv fixtures, --init (never overwrites, exclude without duplicates), --doctor with a dead docker, a frontend repo
   { id: 'vt15s4', weight: 1 }, // VT-15 stage 4: agent-guard sends a general-purpose api-verify job to stage-pipeline:api-verify; the agent and the skill exist with their frontmatter
+  { id: 'vt15s6', weight: 1 }, // VT-15 stage 6: contract-compare agent and skill, agent-guard for it, the pending case reads and passes the leak lint, the counts
   { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
@@ -10702,6 +10703,37 @@ if (unit('vt15s5')) {
   check('vt15s5 AC-5.4: a sibling backend repo in the config of the task repo — the backend dismissal is weak there (ledger-weak)', withSib.decision === 'block' && /ledger|weak|backend/i.test(withSib.text), withSib.text)
   check('vt15s5 AC-5.4: a sibling repo without `## Backend` — no backend rule', sibGate(false).decision === 'allow')
   rmSync(bRoot, { recursive: true, force: true })
+}
+
+if (unit('vt15s6')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s6-')))
+  const app = join(root, 'app')
+  repoAt(app, 'main')
+  write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': journal() })
+  git(app, 'checkout', '-qb', 'T-7/feat/g')
+  runHook('session-start.mjs', { cwd: app })
+  const call = (subagent_type, description, prompt) => runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type, description, prompt } })
+  const byName = call('general-purpose', 'contract-compare of stage 2', 'Language: en. Compare the types with the contract.')
+  check('vt15s6 agent-guard: a general-purpose call whose description names contract-compare — denied, stage-pipeline:contract-compare named', byName.decision === 'deny' && byName.text.includes('subagent_type: "stage-pipeline:contract-compare"'), byName.text)
+  const bySkill = call('general-purpose', 'Front vs contract', `Follow ${join(PLUGIN, '..', 'skills/contract-compare/SKILL.md')} for stage 2.`)
+  check('vt15s6 agent-guard: a general-purpose call following the contract-compare skill — denied', bySkill.decision === 'deny' && bySkill.text.includes('stage-pipeline:contract-compare'), bySkill.text)
+  check('vt15s6 agent-guard: stage-pipeline:contract-compare itself — allowed', call('stage-pipeline:contract-compare', 'contract-compare of stage 2', 'Ticket T-7, stage 2.').decision === 'allow')
+  check('vt15s6 agent-guard: a general-purpose call that only mentions a contract — allowed', call('general-purpose', 'Read the contract', 'Summarize the contract file.').decision === 'allow')
+  const agentText = readFileSync(join(PLUGIN, '..', 'agents/contract-compare.md'), 'utf8')
+  const skillText = readFileSync(join(PLUGIN, '..', 'skills/contract-compare/SKILL.md'), 'utf8')
+  check('vt15s6 contract-compare agent: name, model sonnet, points at its skill', /^name: contract-compare$/m.test(agentText) && /^model: sonnet$/m.test(agentText) && agentText.includes('skills/contract-compare/SKILL.md'))
+  check('vt15s6 contract-compare skill: name, the three anchors, Could not verify, the severities', /^name: contract-compare$/m.test(skillText) && ['three anchors', 'Could not verify', '**major**', '**minor**', 'checks/contract-compare-<stage>.md'].every((part) => skillText.includes(part)))
+  const stageCheck = readFileSync(join(PLUGIN, '..', 'skills/stage-check/SKILL.md'), 'utf8')
+  check('vt15s6 journal-check: a contract-compare report is read as that checker\'s', (await import(join(PLUGIN, 'journal-check.mjs'))).reportChecker('contract-compare-3.md') === 'contract-compare')
+  check('vt15s6 AC-6.3: stage-check names the trigger and the skip line', /\| contract-compare \|[^\n]*api_layer[^\n]*contractPath[^\n]*\[skip: no trigger\]/.test(stageCheck))
+  const { readCase, lintCase } = await import(join(PLUGIN, '..', '..', '..', 'scripts/eval-lib.mjs'))
+  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/pending/contract-compare-enum-drift')
+  const spec = readCase(caseDir)
+  check('vt15s6 case: case.json reads, agent contract-compare, three findings entries that compile', spec.agent === 'contract-compare' && spec.findings?.length === 3 && spec.findings.every((e) => new RegExp(e.file) && e.why) && spec.findingsForbid?.length === 1)
+  check('vt15s6 case: the planted drift is in working/ (no `expired` in the type, price not nullable, a discount in the mock) and the contract has all four values', !/expired/.test(readFileSync(join(caseDir, 'working/src/api/deals.ts'), 'utf8')) && /price: number\n/.test(readFileSync(join(caseDir, 'working/src/api/deals.ts'), 'utf8')) && /discount/.test(readFileSync(join(caseDir, 'working/src/mocks/handlers.ts'), 'utf8')) && /`requested`, `approved`, `rejected`, `expired`/.test(readFileSync(join(caseDir, 'base/tasks/DLS-4/CONTRACT.md'), 'utf8')))
+  const hits = lintCase(caseDir)
+  check('vt15s6 case: the leak lint finds nothing', hits.length === 0, JSON.stringify(hits).slice(0, 300))
+  rmSync(root, { recursive: true, force: true })
 }
 
 if (unit('vt15s4')) {

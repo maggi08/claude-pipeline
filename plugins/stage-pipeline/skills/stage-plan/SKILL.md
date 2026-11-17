@@ -120,6 +120,7 @@ Pipeline:
 - [ ] figma-compare
 - [ ] devtools-verify   (skip — MCP not connected)
 - [ ] api-verify        (backend stage; otherwise skip: no backend files)
+- [ ] contract-compare  (skip: no trigger — API layer and serializers untouched)
 - [ ] pro-review        (code review of the stage diff)
 - [ ] kit-overrides     (scan for kit overrides — UI stage; logic-only — skip)
 - [ ] dead-code         (skip: no trigger — nothing was removed or replaced)

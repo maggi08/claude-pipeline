@@ -41,6 +41,7 @@ const SECURITY_JOB = /\bsecurity\b[^\n]*\b(?:review|re-review|audit|check|pass|s
 const CHECKER_JOBS = [
   { agent: 'security-review', job: 'the security review', matches: (description) => SECURITY_JOB.test(description) },
   { agent: 'api-verify', job: 'the api-verify check', matches: (description, prompt) => /\bapi[-\s]?verify\b/i.test(description) || /skills\/api-verify\b/.test(prompt) },
+  { agent: 'contract-compare', job: 'the contract-compare check', matches: (description, prompt) => /\bcontract[-\s]?compare\b/i.test(description) || /skills\/contract-compare\b/.test(prompt) },
   {
     agent: 'ds-parity',
     job: 'the ds-parity pass',

@@ -1,0 +1,36 @@
+{
+  "agent": "contract-compare",
+  "why": "the frontend type lacks an enum value the contract and the serializer return, price is typed non-nullable although the contract and the serializer allow null, and the mock returns a field the contract does not have. The report must name each, with the contract row, the frontend path:line and the backend path:line, and must not flag the fields that match. PENDING: awaits a live run of the new agent before it moves to evals/cases/.",
+  "identity": {
+    "repo": "deals-board",
+    "ticket": "DLS-4",
+    "user": "Ingrid Solheim",
+    "email": "ingrid.solheim@deals-board.dev"
+  },
+  "prompt": "Ticket DLS-4, stage 2. Language: en. Contract: tasks/DLS-4/CONTRACT.md. Frontend repo: this repo, API layer src/api/. Backend repo: this repo, backend/. Comparison base: uncommitted changes (git diff HEAD + git status). Stage criteria tagged contract-compare:\n- `AC-2.1` WHEN the frontend reads the deals list THEN its types and mocks match the contract",
+  "budgetUsd": 1,
+  "findingsForbid": [
+    {
+      "severity": "critical|major|minor",
+      "file": "\\b(title|currency)\\b[^\\n]*(mismatch|differs|missing|unknown|not in|wrong)",
+      "why": "title and currency match in the contract, the type, the mock and the serializer"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "major",
+      "file": "expired",
+      "why": "the frontend status type does not know `expired`, which the contract and the serializer return"
+    },
+    {
+      "severity": "major",
+      "file": "price",
+      "why": "price is nullable in the contract and the serializer, not in the frontend type"
+    },
+    {
+      "severity": "minor|major",
+      "file": "discount",
+      "why": "the mock returns a field the contract does not have"
+    }
+  ]
+}
