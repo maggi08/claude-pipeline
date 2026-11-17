@@ -27,6 +27,19 @@
         "repo": "maggi08/human-text",
         "ref": "v0.1.0"
       }
+    },
+    {
+      "name": "design-pipeline",
+      "description": "Design before code for projects without a designer: an interview that turns an order into a brief, a design system picked from rendered directions, clickable HTML prototypes per flow, a clean-context design review, and a handoff that stage-pipeline reads as its prototype design source",
+      "category": "design",
+      "author": {
+        "name": "Magzhan Mussaiyn"
+      },
+      "source": {
+        "source": "github",
+        "repo": "maggi08/design-pipeline",
+        "ref": "v0.1.0"
+      }
     }
   ]
 }
