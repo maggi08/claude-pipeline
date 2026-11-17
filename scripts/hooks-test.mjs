@@ -184,6 +184,7 @@ const UNITS = [
   { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
   { id: 'vt15s1', weight: 2 }, // VT-15 stage 1: the `## Backend` config section (backendConfig, backendFileMatcher) and `{files:rel}` in run-check.mjs
   { id: 'vt15s2', weight: 3 }, // VT-15 stage 2: backend-detect.mjs — detection on poetry / pip / uv fixtures, --init (never overwrites, exclude without duplicates), --doctor with a dead docker, a frontend repo
+  { id: 'vt15s4', weight: 1 }, // VT-15 stage 4: agent-guard sends a general-purpose api-verify job to stage-pipeline:api-verify; the agent and the skill exist with their frontmatter
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
@@ -10550,6 +10551,30 @@ if (unit('vt15s3')) {
   check('contractPath: without `contracts:` — <task_dir>/<TICKET>/CONTRACT.md', contractPath(cfg(''), '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md' && contractPath('', '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md')
   check('contractPath: with `contracts: docs/contracts` — <repo>/docs/contracts/<TICKET>.md', contractPath(cfg('- contracts: docs/contracts\n'), '/t/tasks', 'VT-9', '/r') === '/r/docs/contracts/VT-9.md')
   check('contractPath: the first repo with the key wins', contractPath('## Backend\n### a\n- path: a\n### b\n- path: b\n- contracts: c\n### c\n- path: c\n- contracts: d\n', '/t', 'X-1', '/r') === '/r/b/c/X-1.md')
+}
+
+if (unit('vt15s4')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s4-')))
+  const app = join(root, 'app')
+  repoAt(app, 'main')
+  write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': journal() })
+  git(app, 'checkout', '-qb', 'T-7/feat/g')
+  runHook('session-start.mjs', { cwd: app })
+  const call = (subagent_type, description, prompt) => runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type, description, prompt } })
+  const byName = call('general-purpose', 'api-verify of stage 2', 'Language: en. Check the endpoint against the criteria.')
+  check('agent-guard: a general-purpose call whose description names api-verify — denied, stage-pipeline:api-verify named', byName.decision === 'deny' && byName.text.includes('subagent_type: "stage-pipeline:api-verify"'), byName.text)
+  const bySkill = call('general-purpose', 'Backend probes', `Follow ${join(PLUGIN, '..', 'skills/api-verify/SKILL.md')} for stage 2.`)
+  check('agent-guard: a general-purpose call following the api-verify skill — denied', bySkill.decision === 'deny' && bySkill.text.includes('stage-pipeline:api-verify'), bySkill.text)
+  check('agent-guard: no subagent_type (the catch-all) with an api-verify description — denied', call(null, 'API verify, stage 3', 'Check it.').decision === 'deny')
+  check('agent-guard: stage-pipeline:api-verify itself — allowed', call('stage-pipeline:api-verify', 'api-verify of stage 2', 'Ticket T-7, stage 2.').decision === 'allow')
+  check('agent-guard: a general-purpose call that does not name api-verify (an "API" word alone) — allowed', call('general-purpose', 'Explore the API client', 'Find where the API client is built.').decision === 'allow')
+  const agentText = readFileSync(join(PLUGIN, '..', 'agents/api-verify.md'), 'utf8')
+  const skillText = readFileSync(join(PLUGIN, '..', 'skills/api-verify/SKILL.md'), 'utf8')
+  check('api-verify agent: frontmatter name, model sonnet, points at its skill', /^name: api-verify$/m.test(agentText) && /^model: sonnet$/m.test(agentText) && agentText.includes('skills/api-verify/SKILL.md'))
+  check('api-verify skill: frontmatter name and the report parts (Stage criteria, Could not verify, read-back, role matrix, migration)', /^name: api-verify$/m.test(skillText) && ['## Stage criteria', '## Could not verify', 'read-back', 'Role matrix', 'Migration'].every((part) => skillText.includes(part)))
+  check('api-verify skill: the faulthandler substitution rule (tail replaced, prefix kept, -p no:faulthandler, -p no:cacheprovider, --reuse-db)', ['replaced by `python -c', '-p no:faulthandler', '-p no:cacheprovider', '--reuse-db', 'the prefix'].every((part) => skillText.includes(part)))
+  check('api-verify skill: the cleanup rule (clear first, ls .api-verify, absolute path and cleanup command when deletion is refused)', ['Clear it first', 'empty file', 'leftover', 'PYTHONDONTWRITEBYTECODE', 'ls <abs repo>/.api-verify', 'cleanup command'].every((part) => skillText.includes(part)))
+  rmSync(root, { recursive: true, force: true })
 }
 
 if (MODE === 'serial') for (const late of lateChecks) late(DATA)

@@ -211,6 +211,7 @@ Exit codes of `run`: `0` every task completed · `1` some task did not · `2` re
 | `docs-lookup` (agent) | a reference on a library API for the version from the lockfile — the types, CHANGELOG and source of the installed package, and when that is not enough, the official docs of that version; used when unsure about an API during implementation, in the fix-loop and in `/root-cause` |
 | `proto-compare` (agent) | like figma-compare, but against an HTML prototype + SPEC.md |
 | `devtools-verify` (agent) | runtime check through Chrome DevTools |
+| `api-verify` (agent + skill) | backend API check: probes written from the criteria and the contract, run in the repo's test setup — codes, body, role matrix, read-back, a sent event, a migration forward and back |
 | `pro-review` (agent) | senior code review in two modes: the stage diff (stage) or the whole branch before a PR (whole-branch) |
 | `ds-parity` (agent + skill) | duplicates with the design system: what to replace with a kit component, what to move INTO the kit |
 | `security-review` (agent) | the security review of the branch: untrusted input traced to its sinks, access checks, secrets, redirects, payment and session state; every finding carries an attack scenario |
@@ -234,7 +235,7 @@ Exit codes of `run`: `0` every task completed · `1` some task did not · `2` re
 | `haiku` | `deps-audit` | **measured**: on the eval case not worse than Sonnet at a 2.5 times lower price (CHANGELOG 0.9.0) |
 | `sonnet` | `docs-lookup`, `i18n-sweep` | **measured** against Haiku in the same run (CHANGELOG 0.9.0): Haiku looked better on one branch of `docs-lookup`, but with a key it did not hold, and `i18n-sweep` on Haiku did not quote the string it found |
 | `sonnet` | `security-review`, `ds-parity` | **measured** against Opus, one run on one case each (CHANGELOG 0.25.0): the same findings and no false ones, about 1.6–1.9 times faster and 2.5–2.7 times cheaper. Before 0.25.0 both ran as general-purpose agents on the session's model; agent-guard now rejects that |
-| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-compare`, `figma-spec`, `proto-compare`, `proto-spec`, `devtools-verify`, `dead-code`, `human-text-check` | **by role**, not measured against another model: judgment and accuracy, a false green from a checker is worse than a red one, and noise is refuted by the expensive orchestrator |
+| `sonnet` | `stage-implement`, `pro-review`, `task-converge`, `figma-compare`, `figma-spec`, `proto-compare`, `proto-spec`, `devtools-verify`, `api-verify`, `dead-code`, `human-text-check` | **by role**, not measured against another model: judgment and accuracy, a false green from a checker is worse than a red one, and noise is refuted by the expensive orchestrator |
 
 The 0.9.0 measurement ran on Sonnet 4.6, before the `sonnet` alias moved to Sonnet 5, and was not repeated. The exception to the table is the whole-branch pro-review and the fresh checker run in the fix-loop: they go on `review_model` from the config (`opus` by default) through the `model` parameter: the last check by the strongest model, and in force also not the one that wrote the code (`/stage-check`, Step 3.3). For whole-branch the agent-guard hook enforces this: in live runs 5 of 14 such reviews went to sonnet because the parameter was forgotten.
 

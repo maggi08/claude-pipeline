@@ -40,6 +40,7 @@ const GENERIC_AGENTS = new Set(['', 'general-purpose', 'claude'])
 const SECURITY_JOB = /\bsecurity\b[^\n]*\b(?:review|re-review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b|\b(?:review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b[^\n]*\bsecurity\b|\bsecurity\b[^\n]*\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b|\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b[^\n]*\bsecurity\b|(?:ревью|провер\S*|аудит)\s+безопасност|безопасност\S*\s+(?:ревью|провер|аудит)/i
 const CHECKER_JOBS = [
   { agent: 'security-review', job: 'the security review', matches: (description) => SECURITY_JOB.test(description) },
+  { agent: 'api-verify', job: 'the api-verify check', matches: (description, prompt) => /\bapi[-\s]?verify\b/i.test(description) || /skills\/api-verify\b/.test(prompt) },
   {
     agent: 'ds-parity',
     job: 'the ds-parity pass',
