@@ -153,7 +153,7 @@ All stages `done` or `todo — blocked` → the final checks from STAGES.md (pro
 
 **A repo-local team review skill** (`- team_review: <skill>` in the config; opt-in) is one more final check: a `general-purpose` subagent follows the repo's skill on the whole branch and writes `checks/<skill>-branch.md` under the checker-report contract (`${CLAUDE_PLUGIN_ROOT}/references/checker-report.md`). The hook will not accept "completed" without that report newer than the last tree change; the way out is "completed with blockers" with the open blocker marker `[final: <skill> — not run | stale]`. The config-less case, the ledger, the re-run names and the `ru` state word: `references/final-checks-notes.md`.
 
-**A task of several repos**: the final checks run per repo (`taskRepos`) and "completed" needs `pro-review-branch-<repo>.md` per other repo, else `[final: pro-review-<repo> — not run | stale]`; details: `references/final-checks-notes.md`.
+**Many repos + `## Backend` (own or sibling's)**: per-repo final checks (`taskRepos`); "completed" needs `pro-review-branch-<repo>.md` per other repo, else `[final: pro-review-<repo> — not run | stale]`; `references/final-checks-notes.md`.
 
 Force does not write the PR/MR description (`/task-wrapup` is the user's). Skip the `wrapup` line in the "Final checks" of old STAGES.md — do not mark it or run it by the path to the skill.
 

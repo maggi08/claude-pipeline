@@ -3,10 +3,10 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
 import { backendConfig } from './hooks/pipeline-state.mjs'
 import { globToRegExp } from './markers.mjs'
-import { bashRulePattern } from './hooks/permission-rules.mjs'
+import { bashRulePattern, permissionRules, settingsFiles, subcommands } from './hooks/permission-rules.mjs'
+import { shellQuote } from './ci-gates.mjs'
 import { loadProfile, overriddenBy } from './permission-profile.mjs'
 
 /**
@@ -85,8 +85,20 @@ function parseMakefile(text) {
   return { targets, vars }
 }
 
-/** What is printed (detection, `--json`, `--doctor` rows and the tail of the test output) never carries a secret of the repo: the userinfo of a URL and the value of a `*TOKEN*|*SECRET*|*PASSWORD*|*KEY*=` assignment are masked. */
-export const maskSecrets = (text) => String(text).replace(/(\/\/)[^/@\s]+@/g, '$1***@').replace(/((?:^|[^A-Za-z0-9])[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY)=)\S+/g, '$1***')
+const SECRET_SEGMENTS = new Set(['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'KEY', 'SK'])
+const secretName = (name) => name.split('_').some((part) => SECRET_SEGMENTS.has(part.toUpperCase())) || /KEY$/.test(name)
+const VALUE = '"[^"]*"|\'[^\']*\'|\\S+'
+
+/**
+ * What is printed (detection, `--json`, `--doctor` rows and the tail of the test output) never carries a secret of the repo: the userinfo of a URL, the value of a
+ * `NAME=value` whose name has a segment (split on `_`) TOKEN, SECRET, PASSWORD, PASSWD, PASS, KEY or SK, or ends with KEY, and the value of `--password x` / `--token x`.
+ * The masking affects printed text only, so it errs toward too much (`primary_key=1` is masked); a quoted value is masked whole, with its spaces.
+ */
+export const maskSecrets = (text) =>
+  String(text)
+    .replace(/(\/\/)[^/@\s]+@/g, '$1***@')
+    .replace(new RegExp(`((?:^|[^A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)=)(?:${VALUE})`, 'g'), (whole, head, name) => (secretName(name) ? `${head}***` : whole))
+    .replace(new RegExp(`(--(?:password|passwd|pass|token|secret|api-key|access-key|private-key)(?:=|\\s+))(?:${VALUE})`, 'gi'), '$1***')
 const expandVars = (text, vars) => text.replace(/\$\(([A-Za-z_]\w*)\)/g, (whole, name) => vars[name] ?? whole)
 
 /** The compose file read by indentation: service names (which have `build:`) and external networks. */
@@ -380,19 +392,11 @@ function collectCommand(d, cfgTestFull) {
   return { command: `${base} --collect-only -q`, needsDocker: /docker/.test(base) }
 }
 
-/** Claude settings files the doctor reads: user scope (settings, settings.local) and the repo's. `files` replaces them (the unit points it at temp files). */
+/** The allow/ask/deny lists of the settings the session sees (`settingsFiles`, the set force-guard reads too). `files` replaces them (the unit points it at temp files). */
 function settingsLists(repo, files) {
-  const sources = files ?? [join(homedir(), '.claude/settings.json'), join(homedir(), '.claude/settings.local.json'), join(repo, '.claude/settings.json'), join(repo, '.claude/settings.local.json')]
-  const lists = { allow: [], ask: [], deny: [] }
-  for (const source of sources) {
-    try {
-      const permissions = JSON.parse(readFileSync(source, 'utf8'))?.permissions
-      for (const key of Object.keys(lists)) if (Array.isArray(permissions?.[key])) lists[key].push(...permissions[key])
-    } catch {
-      // a missing or broken file adds nothing
-    }
-  }
-  return lists
+  const sources = files ?? settingsFiles(repo)
+  const list = (kind) => permissionRules(kind, sources).map(({ rule }) => rule)
+  return { allow: list('allow'), ask: list('ask'), deny: list('deny') }
 }
 
 /** Is `command` allowed by the settings: some allow rule covers it (`Bash(*)` too) and no ask/deny rule beats it. Returns `{ ok }` or `{ ok: false, beatenBy }`. */
@@ -404,14 +408,24 @@ function commandAllowed(command, lists) {
   return { ok: true }
 }
 
-export const shellQuote = (text) => (/^[\w./:=@%+-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`)
+const FILES_TOKEN = /\{files[^}]*\}/g
+const dockerWords = (words) => (words[0] === 'docker' || words[0] === 'docker-compose' ? words : null)
 
-/** The docker command the repo's tests start, which api-verify must be allowed to run, or null when the tests run on the host. */
+/**
+ * The docker command the repo's tests start, which api-verify must be allowed to run, or null when the tests run on the host.
+ * api-verify runs the config's `test` (its `{files…}` placeholder replaced by a path): that line decides, a host one gives no row.
+ * Only a repo without `test` falls back to what the detection reads: `test_full`, the Makefile recipe, `./pytest.sh`.
+ */
 function dockerProbe(d, cfg, plan) {
-  const text = [cfg?.testFull, cfg?.test, d.testFull, d.makeRecipe].filter(Boolean).join('\n')
+  if (cfg?.test) {
+    const words = subcommands(cfg.test.replace(FILES_TOKEN, 'app/models.py')).map(dockerWords).find(Boolean)
+    if (!words) return null
+    return { command: words.join(' '), note: 'the tests run in docker', compose1: words[0] === 'docker-compose' }
+  }
+  const text = [cfg?.testFull, d.testFull, d.makeRecipe].filter(Boolean).join('\n')
   if ((cfg?.testFull ?? d.testFull) === './pytest.sh') return { command: 'docker build', note: '`./pytest.sh` builds an image and runs it' }
-  const found = text.match(/\bdocker\s+(?:compose\s+)?(?:run|exec|build)\b/)?.[0]?.replace(/\s+/g, ' ')
-  if (found) return { command: found, note: 'the tests run in docker' }
+  const found = text.match(/\bdocker(?:-compose|\s+compose)?\s+(?:run|exec|build)\b/)?.[0]?.replace(/\s+/g, ' ')
+  if (found) return { command: found, note: 'the tests run in docker', compose1: found.startsWith('docker-compose') }
   if (d.testInDocker || plan.needsDocker || /\bdocker\b/.test(text)) return { command: 'docker compose run', note: 'the tests run in docker' }
   return null
 }
@@ -444,7 +458,7 @@ export function doctor(repoArg, { settingsFiles } = {}) {
     if (verdict.ok) row('ok', 'permissions', `\`${probe.command}\` is allowed in the Claude settings`)
     else {
       const why = verdict.beatenBy ? `the ${verdict.beatenBy.key} rule \`${verdict.beatenBy.rule}\` beats the allow entry (remove it or keep the question knowingly)` : `no allow entry covers \`${probe.command}\``
-      const fix = verdict.beatenBy ? '' : `: node ${shellQuote(fileURLToPath(new URL('./permissions.mjs', import.meta.url)))} --apply --groups ${[...loadProfile(resolve(dirname(fileURLToPath(import.meta.url)), '..')).defaultGroups, 'docker'].join(',')}`
+      const fix = verdict.beatenBy ? '' : probe.compose1 ? ': add `Bash(docker-compose *)` to the allow list by hand (the docker group covers only `docker compose`)' : `: node ${shellQuote(fileURLToPath(new URL('./permissions.mjs', import.meta.url)))} --apply --groups ${[...loadProfile(resolve(dirname(fileURLToPath(import.meta.url)), '..')).defaultGroups, 'docker'].join(',')}`
       row('fail', 'permissions', `${probe.note} and ${why}, so api-verify stops on a permission question${fix}`)
     }
   }

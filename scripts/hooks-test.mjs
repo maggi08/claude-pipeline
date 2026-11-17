@@ -10934,8 +10934,10 @@ if (unit('vt15f1')) {
   const masked = maskSecrets('PIP_INDEX_URL=https://user:TOKEN123@host/simple API_KEY=abc DB_PASSWORD=pw pytest')
   check('vt15f1 S-1: URL userinfo and *KEY/*PASSWORD values are masked', !/TOKEN123|abc|=pw/.test(masked) && /\/\/\*\*\*@host/.test(masked) && /API_KEY=\*\*\*/.test(masked) && /DB_PASSWORD=\*\*\*/.test(masked), masked)
   check('vt15f1 S-1: the masked text keeps the command', /pytest$/.test(masked))
-  const unmasked = maskSecrets('KEYCLOAK_URL=http://kc primary_key=1 sort_keys=2 monkey=3 pytest')
-  check('vt15r2 d-1: KEYCLOAK_URL / primary_key / sort_keys / monkey stay unmasked', unmasked === 'KEYCLOAK_URL=http://kc primary_key=1 sort_keys=2 monkey=3 pytest', unmasked)
+  const unmasked = maskSecrets('KEYCLOAK_URL=http://kc sort_keys=2 monkey=3 pytest')
+  check('vt15r2 d-1: KEYCLOAK_URL / sort_keys / monkey stay unmasked', unmasked === 'KEYCLOAK_URL=http://kc sort_keys=2 monkey=3 pytest', unmasked)
+  const wide = maskSecrets('SECRET_KEY=a1 DJANGO_SECRET_KEY=a2 AUTH_KEY=a3 STRIPE_SK=a4 pip_token=a5 docker run -e DB_PASS=a6 x --password a7 --token=a8 PASSWD="two words" APIKEY=a9 pytest')
+  check('vt15f2 S-4: SECRET_KEY / DJANGO_SECRET_KEY / AUTH_KEY / STRIPE_SK / pip_token / -e DB_PASS / --password x / --token=x / a quoted value / APIKEY are masked', !/a[1-9]|two|words/.test(wide) && /pytest$/.test(wide) && /PASSWD=\*\*\*/.test(wide), wide)
   {
     const { spawnSync: sp } = await import('node:child_process')
     const fx = realpathSync(mkdtempSync(join(tmpdir(), 'vt15r2-')))
@@ -10956,7 +10958,8 @@ if (unit('vt15s8a')) {
   const profile = JSON.parse(readFileSync(join(PLUGIN, '..', 'permissions', 'base.json'), 'utf8'))
   const toolchain = profile.groups['js-toolchain'].allow
   check('vt15s8a AC-8a.1: js-toolchain (a default group) allows uv run and poetry run', profile.defaultGroups.includes('js-toolchain') && toolchain.includes('Bash(uv run *)') && toolchain.includes('Bash(poetry run *)'), JSON.stringify(toolchain))
-  const { doctor, shellQuote } = await import(join(PLUGIN, 'backend-detect.mjs'))
+  const { doctor } = await import(join(PLUGIN, 'backend-detect.mjs'))
+  const { shellQuote } = await import(join(PLUGIN, 'ci-gates.mjs'))
   const repo = join(root, 'repo')
   mkdirSync(join(repo, '.claude'), { recursive: true })
   writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: docker compose run -T --rm api python -m pytest\n')
@@ -10974,7 +10977,7 @@ if (unit('vt15s8a')) {
   process.env.PATH = `${stubs}:${prevPath}`
   const rowOf = (files) => doctor(repo, { settingsFiles: files }).rows.find((r) => / — permissions — /.test(r))
   const none = rowOf([join(root, 'missing.json'), put('other.json', ['Bash(node *)'])])
-  check('vt15s8a AC-8a.2: docker test command and no allow for docker compose run — fail with the permissions command', /^fail — permissions — .*permissions\.mjs --apply --groups .*js-toolchain.*,docker$/.test(none ?? ''), none)
+  check('vt15s8a AC-8a.2: docker test command and no allow for docker compose run — fail with the permissions command', /^fail — permissions — .*permissions\.mjs' --apply --groups .*js-toolchain.*,docker$/.test(none ?? ''), none)
   check('vt15s8a AC-8a.2: Bash(docker compose *) in one of the settings files — ok', /^ok — permissions/.test(rowOf([put('a.json', []), put('b.json', ['Bash(docker compose *)'])]) ?? ''))
   check('vt15s8a AC-8a.2: Bash(docker *) — ok', /^ok — permissions/.test(rowOf([put('c.json', ['Bash(docker *)'])]) ?? ''))
   const putSettings = (name, permissions) => {
@@ -10985,7 +10988,7 @@ if (unit('vt15s8a')) {
   const askRow = rowOf([putSettings('d.json', { allow: ['Bash(docker compose *)'], ask: ['Bash(docker *)'] })])
   check('vt15s8a F-8a-2: an ask rule beats the allow — fail naming the ask rule', /^fail — permissions — .*ask rule `Bash\(docker \*\)`/.test(askRow ?? ''), askRow)
   check('vt15s8a F-8a-2: Bash(*) covers docker — ok', /^ok — permissions/.test(rowOf([putSettings('e.json', { allow: ['Bash(*)'] })]) ?? ''))
-  check('vt15s8a F-8a-3: shellQuote wraps a path with spaces and leaves a plain one', shellQuote('/a b/it\'s.mjs') === "'/a b/it'\\''s.mjs'" && shellQuote('/a/b.mjs') === '/a/b.mjs', shellQuote('/a b/it\'s.mjs'))
+  check('vt15s8a F-8a-3: shellQuote (ci-gates, the one copy) wraps a path with spaces', shellQuote('/a b/it\'s.mjs') === "'/a b/it'\\''s.mjs'" && shellQuote('/a/b.mjs') === "'/a/b.mjs'", shellQuote('/a b/it\'s.mjs'))
   writeFileSync(join(repo, 'Makefile'), 'run-tests:\n\tdocker exec -it core pytest\n')
   writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: make run-tests\n')
   const makeRow = rowOf([join(root, 'missing.json')])
@@ -10996,9 +10999,41 @@ if (unit('vt15s8a')) {
   writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: ./pytest.sh\n')
   const shRow = rowOf([join(root, 'missing.json')])
   check('vt15s8a F-8a-1: ./pytest.sh — its own wording (builds an image)', /^fail — permissions — .*builds an image/.test(shRow ?? ''), shRow)
+  // m-1: api-verify runs `test`; the pms/worker-pms shape has test_full: ./pytest.sh next to a docker compose test
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker compose run -T --rm --no-deps api python -m pytest {files:rel+py}\n- test_full: ./pytest.sh\n')
+  const buildOnly = rowOf([put('f.json', ['Bash(docker build *)'])])
+  check('vt15f2 m-1: test = docker compose run, allow only docker build — fail naming docker compose run', /^fail — permissions — .*`docker compose run -T --rm --no-deps api python -m pytest app\/models\.py`/.test(buildOnly ?? ''), buildOnly)
+  check('vt15f2 m-1: Bash(docker compose *) — ok', /^ok — permissions/.test(rowOf([put('g.json', ['Bash(docker compose *)'])]) ?? ''))
+  check('vt15f2 m-1: Bash(docker compose run -T *) — ok (the whole command is checked, not three words)', /^ok — permissions/.test(rowOf([put('h.json', ['Bash(docker compose run -T *)'])]) ?? ''))
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker-compose run --rm api pytest {files:rel+py}\n')
+  const v1 = rowOf([put('i.json', ['Bash(docker compose *)'])])
+  check('vt15f2 m-1: docker-compose (v1) is its own command — docker compose allow does not cover it', /^fail — permissions — .*`docker-compose run/.test(v1 ?? '') && /docker-compose \*/.test(v1), v1)
+  writeFileSync(join(repo, 'Makefile'), 'run-tests:\n\tdocker exec -it core pytest\n')
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: uv run pytest {files:rel+py}\n- test_full: make run-tests\n')
+  check('vt15f2 m-1: a host test with a docker Makefile — no permissions row', rowOf([join(root, 'missing.json')]) === undefined)
   writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: uv run pytest\n')
   rmSync(join(repo, 'Makefile'))
   check('vt15s8a AC-8a.2: a host test command — no permissions row', rowOf([join(root, 'missing.json')]) === undefined)
+  // m-4: force-guard and the doctor read one set of files, the user's settings.local.json among them
+  {
+    const { settingsFiles, askRules } = await import(join(PLUGIN, 'hooks', 'permission-rules.mjs'))
+    const home = join(root, 'home')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(repo, '.claude/settings.local.json'), JSON.stringify({ permissions: { ask: ['Bash(docker compose *)'] } }))
+    writeFileSync(join(home, '.claude/settings.local.json'), JSON.stringify({ permissions: { ask: ['Bash(docker exec *)'] } }))
+    const prevHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      check('vt15f2 m-4: settingsFiles = user settings, project settings, project settings.local (as force-guard always read)', settingsFiles('/p').map((f) => f.replace(home, '~')).join(' ') === '~/.claude/settings.json /p/.claude/settings.json /p/.claude/settings.local.json', settingsFiles('/p').join(' '))
+      check('vt15f2 m-4: askRules (force-guard) sees the project settings.local.json and not a user settings.local.json', askRules(repo).some(({ rule }) => rule === 'Bash(docker compose *)') && !askRules(repo).some(({ rule }) => rule === 'Bash(docker exec *)'))
+      writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker compose run api pytest {files:rel+py}\n')
+      writeFileSync(join(repo, '.claude/settings.json'), JSON.stringify({ permissions: { allow: ['Bash(docker compose *)'] } }))
+      const localAsk = doctor(repo).rows.find((r) => / — permissions — /.test(r))
+      check('vt15f2 m-4: the doctor reads the same project settings.local.json — the ask rule beats the allow', /^fail — permissions — .*ask rule/.test(localAsk ?? ''), localAsk)
+    } finally {
+      process.env.HOME = prevHome
+    }
+  }
   process.env.PATH = prevPath
   rmSync(root, { recursive: true, force: true })
 }

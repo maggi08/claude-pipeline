@@ -41,7 +41,7 @@ The `Skill(stage-pipeline:*)` and `mcp__*` entries are generated from the plugin
 
 The default `js-toolchain` group also allows `uv run` and `poetry run` (a Python backend's tests and linters), and the optional `docker` group (`--groups <defaults>,docker`) allows `docker compose` for a backend whose tests run in a container; `backend-detect.mjs --doctor` names the exact command when it is missing.
 
-The `deny` list in the profile protects against an accidental agent command; it is not a security boundary: the profile allows `node`/`npx`/`python3`, that is, arbitrary execution, and getting around any prohibition from it is trivial. Whoever needs a real boundary needs a sandbox, not an allowlist.
+The `deny` list in the profile protects against an accidental agent command; it is not a security boundary: the profile allows `node`/`npx`/`python3`/`uv run`/`poetry run`, that is, arbitrary execution, and getting around any prohibition from it is trivial. Whoever needs a real boundary needs a sandbox, not an allowlist.
 
 `/pipeline-init` does the same when it initializes a project (showing the list and asking for confirmation), and `/pipeline-doctor` checks it through `--check`.
 
