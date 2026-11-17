@@ -687,7 +687,14 @@ export function parseRepoRules(configText) {
       fail(`the pattern does not compile — ${error.message}`)
       continue
     }
-    if (regex.test('')) {
+    let matchesEmpty
+    try {
+      matchesEmpty = regex.test('')
+    } catch (error) {
+      fail(`the pattern fails when checked — ${String(error?.message ?? error).slice(0, 200)}`)
+      continue
+    }
+    if (matchesEmpty) {
       fail('the pattern matches an empty string, so it would flag every line')
       continue
     }

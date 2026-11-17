@@ -6,7 +6,7 @@
  * A guard that silently stopped seeing its class is worse than none: it reports green.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -525,6 +525,54 @@ for (const spec of CASES) {
   guarded('repo rule incident (13c): a ../ glob is a config problem naming the row', withConfig('| up | `resolveComponent\\(` | `../x/**` | import it statically |'), hit, named('up', '../x/**'))
   guarded('repo rule incident (13c): a backtick inside a glob is a config problem naming the row and the glob', withConfig('| bt | `resolveComponent\\(` | `src/**/*.vue`, !`**/*.test.*` | m |'), hit, named('bt', '!`**/*.test.*'))
   guarded('repo rule incident (13c): a trailing-slash directory glob is a config problem naming the row', withConfig('| dir | `resolveComponent\\(` | `src/components/` | import it statically |'), hit, named('dir', 'src/components/'))
+}
+
+// VT-16 stage 1 (D4): a row whose pattern throws when checked, a table that cannot be parsed, a config that cannot be read.
+// Incident: one row that overflows the stack on `test('')` took the whole table (and floor-guard's exit code) down. Legitimate: the good rows keep working, an unreadable config stays "no config".
+{
+  const withConfig = (rows) => `- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n${rows}\n`
+  const run16 = (name, { files, change, guard = GUARD, prepare }, verify) => {
+    const repo = mkdtempSync(join(tmpdir(), 'floor-guard-vt16-'))
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    write(repo, files)
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'base')
+    write(repo, change)
+    git(repo, 'add', '-A')
+    prepare?.(repo)
+    const run = spawnSync('node', [guard, '--json'], { cwd: repo, encoding: 'utf8', timeout: 12_000 })
+    let out = null
+    try {
+      out = JSON.parse(run.stdout)
+    } catch {}
+    const problem = verify({ run, out })
+    rmSync(repo, { recursive: true, force: true })
+    console.log(`${problem ? '✘' : '✔'} ${name}${problem ? ` — ${problem} (exit ${run.status}, ${run.stderr.slice(0, 200)})` : ''}`)
+    if (problem) failed++
+  }
+  const good = '| good | `FORBIDDEN_THING` | * | no |'
+  const overflow = `| overflow | \`(${'a+'.repeat(8000)})x\` | * | no |`
+  run16('repo rule incident (VT-16 AC-1.1): a pattern that throws on the empty-string check is named by its id, the good row still reports', { files: { '.claude/pipeline.config.md': withConfig(`${good}\n${overflow}`), 'src/a.ts': 'export const a = 1\n' }, change: { 'src/a.ts': 'export const a = FORBIDDEN_THING\n' } }, ({ run, out }) =>
+    run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'repo:good' && out.configProblems?.length === 1 && out.configProblems[0].includes('"overflow"') && /fails when checked/.test(out.configProblems[0]) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  run16('repo rule incident (VT-16 AC-1.1): only the throwing row and a clean diff — code 2, not a silent pass', { files: { '.claude/pipeline.config.md': withConfig(overflow), 'src/a.ts': 'export const a = 1\n' }, change: { 'src/a.ts': 'export const a = 2\n' } }, ({ run, out }) =>
+    run.status === 2 && out?.configProblems?.length === 1 && out.configProblems[0].includes('"overflow"') ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  // AC-1.2: the fixed parser no longer throws on any table text, so the loader's branch is reached through a copy of the scripts whose `markers.mjs` is a stub that re-exports the real one but throws in `parseRepoRules`.
+  {
+    const scripts = join(dirname(GUARD))
+    const copy = mkdtempSync(join(tmpdir(), 'floor-guard-vt16-scripts-'))
+    cpSync(scripts, copy, { recursive: true })
+    renameSync(join(copy, 'markers.mjs'), join(copy, 'markers-real.mjs'))
+    writeFileSync(join(copy, 'markers.mjs'), "export * from './markers-real.mjs'\nexport const parseRepoRules = () => {\n  throw new Error('boom from the parser')\n}\n")
+    const stubbed = join(copy, 'floor-guard.mjs')
+    run16('repo rule incident (VT-16 AC-1.2, parser stubbed to throw): the table that cannot be parsed is a config problem and code 2, not 0', { guard: stubbed, files: { '.claude/pipeline.config.md': withConfig(good), 'src/a.ts': 'export const a = 1\n' }, change: { 'src/a.ts': 'export const a = 2\n' } }, ({ run, out }) =>
+      run.status === 2 && out?.configProblems?.some((line) => /Repo rules: the table could not be parsed — boom from the parser/.test(line)) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+    rmSync(copy, { recursive: true, force: true })
+  }
+  // AC-1.3: a config that cannot be read is no config: no repo rules, no problem, the built-in rules still run.
+  run16('repo rule legitimate (VT-16 AC-1.3): an unreadable config (a directory) means no repo rules, no problem, built-in rules still run', { files: { 'src/a.ts': 'export const a = 1\n' }, change: { 'src/a.ts': 'export const a = 2 as any\n' }, prepare: (repo) => mkdirSync(join(repo, '.claude/pipeline.config.md'), { recursive: true }) }, ({ run, out }) =>
+    run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'type-escape' && !out.configProblems ? null : `status ${run.status}, ${JSON.stringify(out)}`)
 }
 
 process.exit(failed ? 1 : 0)

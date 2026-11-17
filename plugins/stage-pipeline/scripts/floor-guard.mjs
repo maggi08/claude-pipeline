@@ -60,11 +60,18 @@ process.chdir(root)
 
 // The project's rules. A config that cannot be read is no config; a row that cannot be used is a problem to print, never a crash.
 const repoRules = (() => {
+  let text
   try {
     const configAt = configRoot(root, root)
-    return configAt ? parseRepoRules(readConfig(configAt)) : { rules: [], problems: [] }
+    if (!configAt) return { rules: [], problems: [] }
+    text = readConfig(configAt)
   } catch {
     return { rules: [], problems: [] }
+  }
+  try {
+    return parseRepoRules(text)
+  } catch (error) {
+    return { rules: [], problems: [`Repo rules: the table could not be parsed — ${String(error?.message ?? error).slice(0, 200)}`] }
   }
 })()
 // The table quotes its own patterns, so the config files are not checked against them.
