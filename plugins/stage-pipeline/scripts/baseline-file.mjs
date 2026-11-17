@@ -29,4 +29,5 @@ export const snapshotCurrent = (data) =>
   typeof data.since018 === 'string' &&
   Array.isArray(data.forceSeen) &&
   typeof data.since0182 === 'string' &&
-  Array.isArray(data.blockerSeen)
+  Array.isArray(data.blockerSeen) &&
+  Array.isArray(data.backendSeen)

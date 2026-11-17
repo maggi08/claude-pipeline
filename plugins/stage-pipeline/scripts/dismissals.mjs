@@ -50,6 +50,34 @@ const NOT_OURS_HARD = new RegExp(
   ].join('|'),
   'i',
 )
+// VT-15: in a task that has a backend repo, "the backend owns it" is no proof even with a contract line: the backend is ours.
+// Only an ownership hand-off counts (the closure says the fix belongs to the backend): "the backend returns it as a string" or "is not a backend bug" describe the symptom, not who fixes it.
+const BACKEND_OWNED = new RegExp(
+  [
+    'задач[аеи]\\s+бэкенд|бэкенд[\\wа-яё]*\\s+(?:должен|отвечает|виноват)|на\\s+стороне\\s+бэкенд|это\\s+бэкенд[а-яё]*(?![\\wа-яё-])',
+    "(?:belongs|up)\\s+to\\s+the\\s+backend",
+    "\\b(?:the\\s+)?backend\\s+owns\\b",
+    "\\b(?:the\\s+)?backend(?:'|’)s\\s+(?:job|problem|responsibility|work|concern)\\b",
+    "\\bbackend\\s+(?:limitation|issue|bug|constraint)s?\\b",
+    "\\bbackend\\s+(?:must|should|needs?\\s+to|has\\s+to)\\s+(?:fix|handle|change|add|support)\\b|\\bfor\\s+the\\s+backend\\s+to\\s+(?:fix|handle|change|add|support)\\b",
+    "\\bbackend\\s+(?:does\\s+not|doesn(?:'|’)t)\\s+(?:have|support|provide)\\b",
+  ].join('|'),
+  'gi',
+)
+const NEGATED_BEFORE = /(?:\b(?:not|no|never|isn(?:'|’)t)\b|(?<![а-яё])(?:не|нет)(?![а-яё]))\s+(?:[\wа-яё'’-]+\s+){0,2}$/i
+const CONTRACT_PATH = /openapi|swagger|schema|contract|\.ya?ml:|\.json:|(?:^|\/)docs\//i
+const HANDLES = /\b(?:handles|handled|casts|covers|guards)\b|обрабатывает|приводит|покрывает/i
+/**
+ * A clause that cites a `path:line` of the task's own code shows how our code handles it: not a hand-off. Three conditions: the path is not a contract file,
+ * not a file of a backend repo (the backend is ours too, `isBackendPath`), and the clause says our code handles it (a path merely attached to a hand-off phrase is no proof).
+ */
+const citesOwnCode = (clause, isBackendPath) =>
+  HANDLES.test(clause) &&
+  [...clause.matchAll(new RegExp(PATH_LINE.source, 'g'))].some((found) => !CONTRACT_PATH.test(found[0]) && !isBackendPath?.(found[0].replace(/(?::\d+|\s+\S+\s+\d+)$/, '').replace(/^\.\//, '')))
+/** Whether a closure hands the finding to the backend: an ownership phrase that is not negated and not backed by the task's own code line. */
+function backendHandOff(prose, isBackendPath) {
+  return prose.split(/[;\n]|\.(?=\s)/).some((clause) => !citesOwnCode(clause, isBackendPath) && [...clause.matchAll(BACKEND_OWNED)].some((found) => !NEGATED_BEFORE.test(clause.slice(0, found.index))))
+}
 const NOT_OURS_OWN = new RegExp(
   [
     "(?:can(?:'|’)?t|cannot|can\\s+not)\\s+(?:be\\s+)?(?:done|avoided)",
@@ -81,8 +109,9 @@ const UNRELATED = /ложн[\wа-яё]*\s+для\s+задачи|не\s+отно�
  * The weak form of a `false` outcome line, or null. `form` is the name above, `need` says what the line lacks (for the hook message).
  * Quoted text and code spans are identifiers and copy: the wording is looked for outside them, the proof — in the whole line.
  */
-export function weakForm(entry) {
+export function weakForm(entry, { backend = false, isBackendPath = null } = {}) {
   const prose = stripQuoted(entry)
+  if (backend && backendHandOff(prose, isBackendPath)) return { form: 'not-ours-backend', need: 'a fix in a backend stage of this task or a blocker `B<n>`: the backend is part of this task, a contract line does not hand the finding to someone else' }
   if (NOT_REPRODUCED.test(prose)) {
     if (!ATTEMPTS.test(entry) || !ROUTE.test(entry)) return { form: 'not-reproduced', need: 'two attempts and the route taken: "not reproduced (2 attempts, /root-cause)", "(3 cold loads on /orders)"' }
   }
@@ -93,9 +122,11 @@ export function weakForm(entry) {
   if (DATA_SEEN.test(prose) && !PATH_LINE.test(entry)) return { form: 'data-seen', need: 'the code path (`file:line`) that makes the claim hold for all data — a sample of the stand is not the whole' }
   if (UNRELATED.test(prose) && !BASE_PROOF.test(entry) && !PATH_LINE.test(entry)) return { form: 'unrelated', need: 'a diff command or range, a base run, or a code path outside the diff — naming the failing endpoint does not tie the symptom to the task' }
   if (BY_DESIGN.test(prose) && !PATH_LINE.test(entry) && !/https?:\/\//.test(entry) && !HAS_QUOTE.test(entry)) return { form: 'by-design', need: 'the source of the intent: a `file:line`, a URL or a quote of the spec — "by design" alone is the finding restated' }
-  const hard = NOT_OURS_HARD.test(prose)
-  const soft = !hard && (NOT_OURS_OWN.test(prose) || NOT_OURS_SOFT.test(prose))
-  const taskCodeProof = soft && PATH_LINE.test(entry) && !KIT_WORDS.test(prose)
+  // in a backend task the backend is judged above (`backendHandOff`): its name is no longer a kit word here
+  const generic = backend ? prose.replace(/\bbackend\b|бэкенд[а-яё]*/gi, 'service') : prose
+  const hard = NOT_OURS_HARD.test(generic)
+  const soft = !hard && (NOT_OURS_OWN.test(generic) || NOT_OURS_SOFT.test(generic))
+  const taskCodeProof = soft && PATH_LINE.test(entry) && !KIT_WORDS.test(generic)
   if ((hard || soft) && !taskCodeProof && !KIT_PROOF.test(entry)) return { form: 'not-ours', need: 'a `file:line` in the kit, the contract or the tool that proves it; "the fix is impossible" alone is not an outcome — the finding stands as a fix, a blocker `B<n>` or a user decision' }
   return null
 }

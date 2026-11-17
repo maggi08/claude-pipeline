@@ -25,14 +25,57 @@
  */
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
-import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, configRoot, dirtyPaths, inTaskDir, pathList, patchIds, readConfig, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
-import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
+import { basename, dirname, join, relative, resolve } from 'node:path'
+import { LEGIT_REASON, backendGate, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
+import { OPEN_STATUS, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
+import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, forceKey, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
 const NOT_UI = /\.(?:test|spec|stories|story)\.\w+$|(?:^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//
 export const uiFiles = (files) => files.filter((file) => UI_FILE.test(file) && !NOT_UI.test(file))
+
+const TEST_FILE = /(?:^|\/)(?:tests?\/|test_[^/]*\.py$|[^/]*_test\.py$|conftest\.py$)/
+
+/** The directory with `.claude/pipeline.config.md` above the task directory (the repo of the task), or null. */
+function taskRepoRoot(taskDir) {
+  for (let dir = dirname(taskDir); dir !== dirname(dir); dir = dirname(dir)) {
+    if (readConfig(dir)) return dir
+  }
+  return null
+}
+
+/**
+ * The backend files of a commit (VT-15, stage 5): the changed files that match the `api_files` masks of a `## Backend` repo, tests excluded.
+ * The config of the repo the commit is made in comes first; without `## Backend` there, the config of the task's repo is read: a `### <name>` repo whose `path` points at this
+ * worktree (or its main tree) lends its masks. `{ files, backend, front }`: `backend` — whether a `## Backend` repo describes this worktree, `front` — whether the repo has a dev server url.
+ */
+export function backendFiles(changed, { worktree, taskDir }) {
+  const top = realOr(worktree)
+  const tops = new Set([top, realOr(mainRoot(worktree) ?? worktree)])
+  const own = configRoot(worktree, worktree) ?? worktree
+  const lookups = [{ text: readConfig(own), root: realOr(own) }]
+  const taskRoot = taskDir ? taskRepoRoot(taskDir) : null
+  if (taskRoot && realOr(taskRoot) !== lookups[0].root) lookups.push({ text: readConfig(taskRoot), root: realOr(taskRoot) })
+  const front = Boolean(devServerConfig(own)?.url)
+  for (const { text, root } of lookups) {
+    const repos = (backendConfig(text, root)?.repos ?? []).filter((repo) => {
+      const base = realOr(resolve(root, repo.path))
+      return tops.has(base) || [...tops].some((candidate) => base.startsWith(`${candidate}/`))
+    })
+    if (!repos.length) continue
+    const files = changed.filter(
+      (file) =>
+        !TEST_FILE.test(file) &&
+        repos.some((repo) => {
+          const base = realOr(resolve(root, repo.path))
+          const rel = tops.has(base) ? file : relative(base, resolve(top, file))
+          return !rel.startsWith('..') && backendFileMatcher(repo)(rel)
+        }),
+    )
+    return { files, backend: true, front }
+  }
+  return { files: [], backend: false, front: true }
+}
 
 const DESIGN = ['figma-compare', 'proto-compare']
 const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
@@ -118,7 +161,7 @@ export function openStages(stagesText) {
     const heading = block.split('\n')[0]
     const skips = []
     for (const line of block.split('\n')) {
-      const found = line.match(/^\s*[-*]\s*\[[ xX]\]\s*`?(figma-compare|proto-compare|devtools-verify)`?\b/i)
+      const found = line.match(/^\s*[-*]\s*\[[ xX]\]\s*`?(figma-compare|proto-compare|devtools-verify|api-verify)`?\b/i)
       if (!found) continue
       const reason = skipReasonAfter(line, found[0].length)
       if (reason !== null) skips.push({ checker: found[1].toLowerCase(), reason: reason.replace(/[`*()]/g, '').trim() })
@@ -140,7 +183,11 @@ export function openStages(stagesText) {
 
 /** devtools-verify is a runtime check: only a stage with nothing visible may skip it. A missing mockup (a design-checker reason) is no reason. */
 const RUNTIME_SKIP_REASON = /logic-only|no\s+visual|visuals?\s+(?:are\s+)?unchanged|без\s+визуал|визуал\w*\s+не\s+меня/i
-const legitSkip = (skip) => (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_REASON : LEGIT_REASON).test(skip.reason)
+/** api-verify (VT-15, D4): only "the behaviour does not change" with the `path:line` that changed is a skip; an environment reason (docker, colima, no network, timeout) is not one. */
+const NO_BEHAVIOUR_CHANGE = /no\s+behaviou?r\s+change|без\s+изменени[яй]\s+поведения/i
+const SKIP_PATH_LINE = /(?<![\w@./-])[\w@./-]+\.[A-Za-z]{1,5}:\d+/
+const legitSkip = (skip) =>
+  skip.checker === 'api-verify' ? NO_BEHAVIOUR_CHANGE.test(skip.reason) && SKIP_PATH_LINE.test(skip.reason) : (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_REASON : LEGIT_REASON).test(skip.reason)
 
 const skipDeclared = (stages, checkers) => stages.flatMap((stage) => stage.skips).filter((skip) => checkers.includes(skip.checker))
 
@@ -176,7 +223,9 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
   const reports = window.map(({ name }) => name)
   const has = (...checkers) => reports.some((name) => checkers.includes(reportChecker(name)))
   const stages = openStages(readTaskFile(taskDir, 'STAGES.md') ?? '')
-  const ui = uiFiles(changed)
+  const backend = backendFiles(changed, { worktree, taskDir })
+  // a backend repo without a front: an `.html` is a service template, nothing to compare with a design or open in a browser (VT-15)
+  const ui = uiFiles(changed).filter((file) => backend.front || !/\.html$/i.test(file))
   const head = git(worktree, 'rev-parse', 'HEAD')
   const headFiles = last && isSameCommit(worktree, last, head) ? new Set(git(worktree, 'show', '--name-only', '--format=', '--no-renames', 'HEAD').split('\n').filter(Boolean)) : null
   const continuation = Boolean(headFiles) && changed.length > 0 && changed.every((file) => headFiles.has(file))
@@ -206,6 +255,15 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
       }
     }
   }
+  // the backend rules are for a Force block opened after this version first saw the task (`backendGate`): a run already open keeps the rules it started with
+  const backendNew = !backendGate(dataDir, taskDir).seen.has(forceKey(run.block.heading))
+  if (!continuation && backendNew && backend.files.length && !has('api-verify') && !legit(['api-verify']).length) {
+    const shown = `${backend.files.slice(0, 4).join(', ')}${backend.files.length > 4 ? ` and ${backend.files.length - 4} more` : ''}`
+    missing.push(
+      `backend files changed (${shown}) with no api-verify report in the window and no legitimate skip line: run the \`api-verify\` agent (/stage-check, Step 3) and save \`checks/api-verify-<N>.md\`, ` +
+        'or write `- [x] api-verify (skip: no behaviour change — <path:line> of what changed)` in the stage pipeline (a rename, a comment, formatting). "docker not started", "colima", "no network", "timeout" do not replace the run',
+    )
+  }
   const counts = { critical: 0, major: 0, minor: 0 }
   for (const { name, text } of window) {
     const found = findingCounts(text, name)
@@ -215,6 +273,7 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
     since,
     reports,
     ui,
+    backend: backend.files,
     continuation,
     // a continuation stands on the checks of the commit it continues: runtime and skips come from its receipt
     skips: continuation && last.skips ? last.skips : skipDeclared(stages, [...DESIGN, 'devtools-verify']).map((skip) => ({ ...skip, legit: legitSkip(skip) })),
@@ -265,6 +324,7 @@ export function finishPending(dataDir, id, worktree) {
     counts: pending.counts,
     skips: pending.skips,
     ui: pending.ui.length > 0,
+    backend: pending.backend ?? [],
     runtime: pending.runtime,
     continuation: pending.continuation,
     files: git(worktree, 'show', '--name-only', '--format=', '--no-renames', 'HEAD').split('\n').filter(Boolean).slice(0, 300),

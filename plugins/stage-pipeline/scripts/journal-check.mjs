@@ -328,7 +328,7 @@ const legacyViolation = (line) => acViolation(line) ?? skipViolation(line)
 
 // ── checker reports: summary, findings outcome ───────────────────────────────
 
-const CHECKERS = ['pro-review', 'figma-compare', 'proto-compare', 'devtools-verify', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'security-review', 'kit-overrides']
+const CHECKERS = ['pro-review', 'figma-compare', 'proto-compare', 'devtools-verify', 'dead-code', 'i18n-sweep', 'deps-audit', 'ds-parity', 'task-converge', 'security-review', 'kit-overrides', 'api-verify']
 // `<skill>-branch.md` (and its re-runs `-branch-2.md`, `-branch-fresh.md`) is the whole-branch report of a repo-local team review skill the config names (`team_review:`): its findings get the ledger like any checker's.
 // The classifier does not read the config (its callers hold no repo root): any `checks/<name>-branch*.md` is read as a checker report, with or without the config line.
 export const reportChecker = (name) => CHECKERS.find((checker) => name.includes(checker)) ?? /^([a-z][\w.-]*?)-branch(?:-[\w.-]+)?\.md$/i.exec(name)?.[1].toLowerCase() ?? null
@@ -431,7 +431,7 @@ function outcomeHead(clause) {
  * With `strict` (VT-1 stage 5, reports new on this version) a `false` whose reason is a weak form (dismissals.mjs: "the fix is impossible", "not reproduced" without
  * two attempts and the route, a plan line instead of code, ...) is `weak` — none either.
  */
-export function disposition(entry, { strict = false } = {}) {
+export function disposition(entry, { strict = false, backend = false, isBackendPath = null } = {}) {
   const proven = PRE_EXISTING.test(entry) && BASE_EVIDENCE.test(entry)
   if (PRE_EXISTING.test(entry) && !proven) return 'unproven'
   // Code and quotes are identifiers and copy; a refusal is looked for in the head of the outcome and in the clauses after ";" ("fixed: a.ts:1; fix the tests later"),
@@ -442,7 +442,7 @@ export function disposition(entry, { strict = false } = {}) {
   const fixedAt = entry.replace(NEGATED_FIXED, (found) => ' '.repeat(found.length)).search(FIXED_WORD)
   const falseAt = entry.search(FALSE_OUTCOME)
   if (fixedAt !== -1 && !(falseAt !== -1 && falseAt < fixedAt)) return 'fixed'
-  if (proven || /ложн|не\s+подтвердил|не\s+воспроизв|(?:^\s*(?:[-*]|\d+\.)?\s*|[—–]\s*|\s-\s+)false\s*[:(]|\bfalse\s+positive\b|\bnot\s+confirmed\b|\b(?:could\s+not|couldn['’]t|cannot|unable\s+to)\s+reproduce|\bnot\s+reproduc(?:ed|ible)/i.test(entry)) return strict && weakForm(entry) ? 'weak' : 'false'
+  if (proven || /ложн|не\s+подтвердил|не\s+воспроизв|(?:^\s*(?:[-*]|\d+\.)?\s*|[—–]\s*|\s-\s+)false\s*[:(]|\bfalse\s+positive\b|\bnot\s+confirmed\b|\b(?:could\s+not|couldn['’]t|cannot|unable\s+to)\s+reproduce|\bnot\s+reproduc(?:ed|ible)/i.test(entry)) return strict && weakForm(entry, { backend, isBackendPath }) ? 'weak' : 'false'
   if (/\bB\d+\b/.test(entry)) return 'blocker'
   if (/(?:решени[а-яё]*\s+пользователя|user\s+decision|user\s+decided)[^\n]{0,200}?(?:«|"|“|\d{2}\.\d{2}|\d{4}-\d{2})/i.test(entry)) return 'user'
   return 'unknown'
@@ -512,7 +512,7 @@ const onFail = (entry) => /^\**AC-\d/.test(entryHead(entry).trim()) || /\bFAIL\b
  * A violation of one line carries the `severity` of the finding it closes (`entrySeverity`, null when unknown) and `fail` (the line is on a failed criterion):
  * the digest counts a report not ready for PR by them, not by the number of outcome lines — a fixed minor does not stand in for a dismissed critical.
  */
-export function ledgerViolations(text, name, { complete = false, strict = false, taskDir = null } = {}) {
+export function ledgerViolations(text, name, { complete = false, strict = false, taskDir = null, backend = false, isBackendPath = null } = {}) {
   const entries = ledgerEntries(text) ?? []
   const shown = (entry) => entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').slice(0, 90)
   let rows = null
@@ -520,7 +520,7 @@ export function ledgerViolations(text, name, { complete = false, strict = false,
   const lineOf = (entry) => ({ shown: shown(entry), severity: severityOf(entry), fail: onFail(entry) && !NOT_A_FAIL.test(entry) })
   const found = []
   for (const entry of entries) {
-    const kind = disposition(entry, { strict })
+    const kind = disposition(entry, { strict, backend, isBackendPath })
     if (strict && kind === 'false') {
       const critical = criticalWithoutFresh(entry, severityOf(entry), name, taskDir)
       if (critical) {
@@ -533,7 +533,7 @@ export function ledgerViolations(text, name, { complete = false, strict = false,
       }
     }
     if (kind === 'weak') {
-      const { form, need } = weakForm(entry)
+      const { form, need } = weakForm(entry, { backend })
       found.push({
         rule: 'ledger-weak',
         id: name,
@@ -675,7 +675,7 @@ export function languageViolation(text, name, language) {
 }
 
 /** All violations of a report when it is written: language, bare PASS, summary, outcomes (without completeness — it is needed for the commit), runtime. */
-export function reportViolations(path, language = null, { fresh = false, strict = false, map = false, v020 = false } = {}) {
+export function reportViolations(path, language = null, { fresh = false, strict = false, map = false, v020 = false, backend = false, backendRules = true, isBackendPath = null } = {}) {
   const read = reportRead(path)
   const name = basename(path)
   if (read.problem === 'missing') return []
@@ -683,7 +683,7 @@ export function reportViolations(path, language = null, { fresh = false, strict 
   const { text } = read
   // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
   const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
-  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)) }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map), ...(v020 ? [...effectViolations(text, name, dirname(dirname(path))), ...rerunViolations(text, name, dirname(dirname(path)))] : [])].filter(Boolean)
+  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)), backend: v020 && backend && backendRules, isBackendPath }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map), ...(v020 ? [...effectViolations(text, name, dirname(dirname(path))), ...(backendRules ? apiProofViolations(text, name, dirname(dirname(path))) : []), ...rerunViolations(text, name, dirname(dirname(path)))] : [])].filter(Boolean)
 }
 
 /** The AC ids the task's STAGES.md and STAGES-ARCHIVE.md tag `[effect]` (stage 9: a criterion whose action sends something to the server). */
@@ -755,6 +755,44 @@ export function effectViolations(text, name, taskDir = null) {
         message:
           `checks/${name}: AC-${id} is tagged [effect] and gets a PASS, but the report does not name ${missing.join(' and ')}. A screen that shows the new state does not prove the server got it ` +
           '(skill devtools-verify, "Effects"; the Russian forms are in references/language.md). A criterion you could not prove is `not checked` or goes to "Could not verify", not PASS.',
+      })
+  }
+  return found
+}
+
+/** The AC ids the task tags `[verify: api-verify]` (VT-15, stage 5): a criterion definition line whose verifier tag names api-verify. */
+export function apiVerifyCriteria(taskDir) {
+  const ids = new Set()
+  for (const whole of journalText(taskDir).split(/\r?\n/)) {
+    const line = whole.slice(0, RULE_LINE_MAX)
+    const head = line.match(/^\s*[-*]\s+`?AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)`?(.*)$/)
+    if (head && /\[verify:[^\][]*\bapi-verify\b[^\][]*\]/i.test(head[2].replace(/`[^`]*`/g, ''))) ids.add(head[1])
+  }
+  return ids
+}
+
+/** The read-back or control line of an api-verify criterion (either language): the label stands with its colon. */
+const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])\s*:/i
+
+/**
+ * VT-15 (stage 5): a PASS in an api-verify report on a `[verify: api-verify]` criterion names the request (`METHOD /path → status`) and a read-back or control (`read-back:` / `control:`).
+ * A 200 alone proves nothing about what was saved. FAIL, not checked and deferred criteria are not touched. The same shape as `effectViolations`.
+ */
+export function apiProofViolations(text, name, taskDir = null) {
+  if (reportChecker(name) !== 'api-verify' || !taskDir || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
+  const wanted = apiVerifyCriteria(taskDir)
+  if (!wanted.size) return []
+  const found = []
+  for (const id of passedIds(text, wanted)) {
+    const evidence = mentionsOf(text, id)
+    const missing = [!REQUEST_PROOF.test(evidence) && 'the request and the response code (`GET /path → 200`)', !API_CONTROL.test(evidence) && 'the read-back or control (`read-back:` / `control:`)'].filter(Boolean)
+    if (missing.length)
+      found.push({
+        rule: 'no-api-proof',
+        id: name,
+        message:
+          `checks/${name}: AC-${id} is tagged [verify: api-verify] and gets a PASS, but the report does not name ${missing.join(' and ')}. ` +
+          'A 200 does not prove what was saved (skill api-verify, "Read-back"; the Russian forms are in references/language.md). A criterion you could not prove is `not checked` or goes to "Could not verify", not PASS.',
       })
   }
   return found
@@ -988,6 +1026,7 @@ export function baselineInfo(dataDir, taskDir) {
     forceSeen: new Set(snapshot.forceSeen),
     since0182: snapshot.since0182,
     blockerSeen: new Set(snapshot.blockerSeen),
+    backendSeen: new Set(snapshot.backendSeen),
   })
   if (data?.version === BASELINE_VERSION) {
     if (snapshotCurrent(data)) {
@@ -1016,6 +1055,8 @@ export function baselineInfo(dataDir, taskDir) {
       // 0.18.2 (K9, stage 5h): the day this version first read the task and every Force heading already there, open or closed, whatever its date — they keep the word matcher for blockers (`blockerGate`).
       since0182,
       blockerSeen: Array.isArray(data.blockerSeen) ? data.blockerSeen : presentKeys(text),
+      // VT-15 (stage 5): every Force heading there at the first look of the version with the backend rules (`backendGate`).
+      backendSeen: Array.isArray(data.backendSeen) ? data.backendSeen : presentKeys(text),
       lines: [
         ...new Set([
           ...data.lines,
@@ -1053,6 +1094,7 @@ export function baselineInfo(dataDir, taskDir) {
     forceSeen: forceKeysBefore(text, localDate(new Date(now))),
     since0182: localDate(new Date(now)),
     blockerSeen: presentKeys(text),
+    backendSeen: presentKeys(text),
   }
   writeBaseline(dataDir, taskDir, next)
   return info(next)
@@ -1091,6 +1133,15 @@ export function releaseGate(dataDir, taskDir) {
 export function blockerGate(dataDir, taskDir) {
   const { since0182, blockerSeen } = baselineInfo(dataDir, taskDir)
   return { since: since0182, seen: blockerSeen }
+}
+
+/**
+ * The per-task gate of the VT-15 backend rules (the api-verify demand of a commit, `no-api-proof`, the backend dismissals), the same shape as `blockerGate`: every Force heading there at the first look
+ * of a version that has them. A block in the set keeps the rules it started with; only a block written after the first look gets them (`## Backend` appearing in the config mid-run changes nothing for it).
+ */
+export function backendGate(dataDir, taskDir) {
+  const { since0182, backendSeen } = baselineInfo(dataDir, taskDir)
+  return { since: since0182, seen: backendSeen }
 }
 
 export function ensureBaseline(dataDir, taskDir) {

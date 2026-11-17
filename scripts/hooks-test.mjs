@@ -185,6 +185,7 @@ const UNITS = [
   { id: 'vt15s1', weight: 2 }, // VT-15 stage 1: the `## Backend` config section (backendConfig, backendFileMatcher) and `{files:rel}` in run-check.mjs
   { id: 'vt15s2', weight: 3 }, // VT-15 stage 2: backend-detect.mjs — detection on poetry / pip / uv fixtures, --init (never overwrites, exclude without duplicates), --doctor with a dead docker, a frontend repo
   { id: 'vt15s4', weight: 1 }, // VT-15 stage 4: agent-guard sends a general-purpose api-verify job to stage-pipeline:api-verify; the agent and the skill exist with their frontmatter
+  { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
@@ -435,10 +436,10 @@ const journal = (extra = '', force = '') =>
 const BAD_LINE = '- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ✅ pro-review по коду\n'
 const jc = await import(join(PLUGIN, 'journal-check.mjs'))
 const snapshotFile = (dataDir, taskDir) => join(dataDir, 'journal-baseline', `${createHash('sha1').update(realpathSync(taskDir)).digest('hex').slice(0, 16)}.json`)
-const setGate = (taskDir, since, seen = [], dataDir = DATA) => {
+const setGate = (taskDir, since, seen = [], dataDir = DATA, backendSeen = []) => {
   jc.baselineInfo(dataDir, taskDir)
   const file = snapshotFile(dataDir, taskDir)
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since018: since, forceSeen: seen }))
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since018: since, forceSeen: seen, backendSeen }))
 }
 const REVIEW_EN = '# pro-review, stage 1\nFindings: critical 0 · major 2 · minor 0\n\n### 🟠 M-1 a.ts:1 — duplicate\n### 🟠 M-2 b.ts:2 — race\n'
 const gates = await import(join(PLUGIN, 'ci-gates.mjs'))
@@ -10551,6 +10552,156 @@ if (unit('vt15s3')) {
   check('contractPath: without `contracts:` — <task_dir>/<TICKET>/CONTRACT.md', contractPath(cfg(''), '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md' && contractPath('', '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md')
   check('contractPath: with `contracts: docs/contracts` — <repo>/docs/contracts/<TICKET>.md', contractPath(cfg('- contracts: docs/contracts\n'), '/t/tasks', 'VT-9', '/r') === '/r/docs/contracts/VT-9.md')
   check('contractPath: the first repo with the key wins', contractPath('## Backend\n### a\n- path: a\n### b\n- path: b\n- contracts: c\n### c\n- path: c\n- contracts: d\n', '/t', 'X-1', '/r') === '/r/b/c/X-1.md')
+}
+
+if (unit('vt15s5')) {
+  const bRoot = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s5-')))
+  const T0 = Date.now()
+  const at = (hours) => (T0 + hours * 3600_000) / 1000
+  let n = 0
+  const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 0 · minor 0\n`
+  const BACKEND = '## Backend\n- framework: django\n- api_files: src/**/serializers.py, src/**/views.py\n'
+  const fixture = (name, { backend = true, stages = '', seen = false, front = false, bseen = false, extraConfig = '' } = {}) => {
+    const dir = join(bRoot, name)
+    const ticket = `B-5${n++}`
+    repoAt(dir, 'main')
+    const force = '## Force run 2026-10-22'
+    write(dir, {
+      '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${backend ? BACKEND : ''}${front ? '## Dev server\n- url: http://localhost:3000\n' : ''}${extraConfig}`,
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/b\`\n\n## Status: stage 3\n\n${force}\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 3: api  [status: in-progress]\n${stages}\n`,
+    })
+    git(dir, 'checkout', '-qb', `${ticket}/feat/b`)
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20', seen ? [markers.forceKey(force)] : [], DATA, bseen ? [markers.forceKey(force)] : [])
+    return {
+      dir,
+      tdir,
+      ticket,
+      report: (file, checker, hours) => {
+        write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: REPORT(checker) })
+        utimesSync(join(tdir, 'checks', file), at(hours), at(hours))
+      },
+      commit: (files) => {
+        write(dir, files)
+        const call = { cwd: dir, tool_name: 'Bash', tool_use_id: `toolu_b5_${n++}`, tool_input: { command: 'git add -A && git commit -m x' } }
+        return runHook('git-guard.mjs', { ...call, hook_event_name: 'PreToolUse' })
+      },
+    }
+  }
+  const SER = { 'src/x/serializers.py': 'class S: pass\n' }
+  const a = fixture('no-report')
+  a.report('pro-review-3.md', 'pro-review', 2)
+  const d1 = a.commit(SER)
+  check('vt15s5 AC-5.1: serializers.py in a backend repo, only pro-review in the window — denied, api-verify named', d1.decision === 'deny' && /api-verify/.test(d1.text) && /backend files changed/.test(d1.text), d1.text)
+  a.report('api-verify-3.md', 'api-verify', 3)
+  check('vt15s5 AC-5.1: with checks/api-verify-3.md in the window — passes', a.commit(SER).decision === 'allow')
+  const env = fixture('skip-env', { stages: '- [x] api-verify (skip: docker не запущен)\n' })
+  env.report('pro-review-3.md', 'pro-review', 2)
+  const d2 = env.commit(SER)
+  check('vt15s5 AC-5.2: a docker-not-running skip is not legitimate — denied', d2.decision === 'deny' && /api-verify/.test(d2.text) && /docker/.test(d2.text), d2.text)
+  const noBeh = fixture('skip-ok', { stages: '- [x] api-verify (skip: no behaviour change — src/x/serializers.py:12 rename)\n' })
+  noBeh.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.2: skip "no behaviour change — path:line" — passes', noBeh.commit(SER).decision === 'allow')
+  const noLine = fixture('skip-noline', { stages: '- [x] api-verify (skip: no behaviour change)\n' })
+  noLine.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.2: "no behaviour change" with no path:line — denied', noLine.commit(SER).decision === 'deny')
+  const plain = fixture('no-backend', { backend: false })
+  plain.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.3: a repo without ## Backend, a .py changes — only pro-review is needed, passes', plain.commit(SER).decision === 'allow')
+  const onlyTest = fixture('tests-only')
+  onlyTest.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5: only tests/test_x.py changed in a backend repo — api-verify not needed', onlyTest.commit({ 'tests/test_x.py': 'def test_x(): pass\n' }).decision === 'allow')
+  const html = fixture('html')
+  html.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5: an .html template in a backend repo without a front — not UI, no design or devtools-verify demand', html.commit({ 'templates/page.html': '<p>x</p>\n' }).decision === 'allow')
+  const withFront = fixture('html-front', { front: true })
+  withFront.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5: the same .html with a dev server url — still UI, denied', withFront.commit({ 'templates/page.html': '<p>x</p>\n' }).decision === 'deny')
+  const old = fixture('old-block', { seen: true })
+  old.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.5: a Force block already there at the first look (forceSeen) — the new rule is silent, passes without api-verify', old.commit(SER).decision === 'allow')
+  // P-1: the backend rules are for a Force block opened after the version first saw the task (`backendGate`), whatever the 0.18 gate says
+  const bOld = fixture('backend-seen', { bseen: true })
+  bOld.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.5: a Force block there at the first sight of the backend rules (backendSeen), `## Backend` added later — a commit touching api_files with no api-verify report is allowed', bOld.commit(SER).decision === 'allow')
+  const bNew = fixture('backend-other-block', { bseen: true })
+  write(bNew.dir, { [`.claude/tasks/${bNew.ticket}/STAGES.md`]: readFileSync(join(bNew.tdir, 'STAGES.md'), 'utf8').replace('## Stages', '## Force run 2026-10-23\nConfirmed: 23.10.2026\n\n## Stages') })
+  bNew.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.5: a new Force block after the first sight (not in backendSeen) — the same commit is refused, api-verify named', bNew.commit(SER).decision === 'deny')
+  const migrated = fixture('backend-migrate')
+  const snapFile = snapshotFile(DATA, migrated.tdir)
+  const snap = JSON.parse(readFileSync(snapFile, 'utf8'))
+  delete snap.backendSeen
+  writeFileSync(snapFile, JSON.stringify(snap))
+  const info = jc.baselineInfo(DATA, migrated.tdir)
+  check('vt15s5 AC-5.5: a snapshot without the backend mark gets it at the first look — the Force headings already there, so they keep the old rules', info.backendSeen.has(markers.forceKey('## Force run 2026-10-22')) && jc.backendGate(DATA, migrated.tdir).seen.has(markers.forceKey('## Force run 2026-10-22')))
+  const withReceipt = fixture('receipt')
+  withReceipt.report('pro-review-3.md', 'pro-review', 2)
+  withReceipt.report('api-verify-3.md', 'api-verify', 3)
+  withReceipt.commit(SER)
+  git(withReceipt.dir, 'add', '-A')
+  git(withReceipt.dir, 'commit', '-qm', 'x')
+  const stateCall = { cwd: withReceipt.dir, tool_name: 'Bash', tool_use_id: `toolu_b5_${n++}`, tool_input: { command: 'git add -A && git commit -m y' } }
+  write(withReceipt.dir, { 'src/x/views.py': 'x = 1\n' })
+  runHook('git-guard.mjs', { ...stateCall, hook_event_name: 'PreToolUse' })
+  git(withReceipt.dir, 'add', '-A')
+  git(withReceipt.dir, 'commit', '-qm', 'y')
+  runHook('git-guard.mjs', { ...stateCall, hook_event_name: 'PostToolUse' })
+  const rcpt = (await import(join(PLUGIN, 'receipts.mjs'))).readReceipts(DATA, withReceipt.ticket).at(-1)
+  check('vt15s5: the receipt carries backend: [files]', Array.isArray(rcpt?.backend) && rcpt.backend.includes('src/x/views.py'), JSON.stringify(rcpt))
+
+  // journal-gate: a PASS on [verify: api-verify] needs the request with its code and a read-back / control
+  const jt = fixture('journal')
+  write(jt.dir, { [`.claude/tasks/${jt.ticket}/STAGES.md`]: `# ${jt.ticket}: t\n\n## Stages\n\n### Stage 3: api  [status: in-progress]\nКритерии приёмки:\n- \`AC-3.1\` WHEN POST x THEN 201 [verify: api-verify]\n- \`AC-3.2\` WHEN y THEN z [verify: pro-review]\n` })
+  const bad = '# api-verify, stage 3\nFindings: critical 0 · major 0 · minor 0\n## Stage criteria\n- AC-3.1 — PASS: POST /api/v3/things/ created the row\n- AC-3.2 — PASS: ok\n'
+  const good = '# api-verify, stage 3\nFindings: critical 0 · major 0 · minor 0\n## Stage criteria\n- AC-3.1 — PASS: POST /api/v3/things/ → 201; read-back: GET /api/v3/things/1/ → 200, name equal\n'
+  const badV = jc.apiProofViolations(bad, 'api-verify-3.md', jt.tdir)
+  check('vt15s5: PASS with no response code and no read-back — no-api-proof for AC-3.1 only', badV.length === 1 && badV[0].rule === 'no-api-proof' && /AC-3\.1/.test(badV[0].message) && /response code/.test(badV[0].message) && /read-back/.test(badV[0].message), JSON.stringify(badV))
+  check('vt15s5: method, path, code and `read-back:` — clean', jc.apiProofViolations(good, 'api-verify-3.md', jt.tdir).length === 0)
+  check('vt15s5: the Russian read-back and control labels count', ['перечитывание: GET /a/ → 200', 'контроль: тот же запрос без фильтра'].every((c) => jc.apiProofViolations(good.replace(/read-back:.*/, c), 'api-verify-3.md', jt.tdir).length === 0))
+  check('vt15s5: a FAIL line is not touched', jc.apiProofViolations(bad.replace('AC-3.1 — PASS', 'AC-3.1 — FAIL'), 'api-verify-3.md', jt.tdir).length === 0)
+  write(jt.dir, { [`.claude/tasks/${jt.ticket}/checks/api-verify-3.md`]: bad })
+  const pv = join(jt.tdir, 'checks', 'api-verify-3.md')
+  check('vt15s5 AC-5.5: reportViolations reports no-api-proof for a report newer than the release (v020), not for an old one', jc.reportViolations(pv, null, { v020: true }).some((v) => v.rule === 'no-api-proof') && !jc.reportViolations(pv, null, { v020: false }).some((v) => v.rule === 'no-api-proof'))
+
+  // dismissals: "this is the backend's" is weak when the task has a backend repo
+  const entry = '- M-1 — false: это задача бэкенда (docs/openapi/schema.yaml:10)'
+  check('vt15s5 AC-5.4: a Russian backend-owns dismissal with a contract line, with a backend repo in the task — weak (not-ours-backend)', jc.disposition(entry, { strict: true, backend: true }) === 'weak' && (await import(join(PLUGIN, 'dismissals.mjs'))).weakForm(entry, { backend: true })?.form === 'not-ours-backend')
+  check('vt15s5 AC-5.4: the same without a backend in the task — as before (false: the contract line is a proof)', jc.disposition(entry, { strict: true }) === 'false')
+  check('vt15s5 AC-5.4: kit ownership with a kit proof stays as before in a backend task', jc.disposition('- M-2 — false: the kit has no such slot (node_modules/ui-kit/Button.vue:5)', { strict: true, backend: true }) === 'false')
+  check('vt15s5 AC-5.4: English "belongs to the backend (openapi.yaml:10)" in a backend task — weak', jc.disposition('- M-1 — false: belongs to the backend (docs/openapi/schema.yaml:10)', { strict: true, backend: true }) === 'weak')
+  const ledger = `# pro-review\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.py:1 — x\n## Findings outcome\n${entry}\n`
+  check('vt15s5 AC-5.4: ledgerViolations names it ledger-weak only with backend', jc.ledgerViolations(ledger, 'pro-review-3.md', { strict: true, backend: true }).some((v) => v.rule === 'ledger-weak' && v.form === 'not-ours-backend') && !jc.ledgerViolations(ledger, 'pro-review-3.md', { strict: true }).some((v) => v.rule === 'ledger-weak'))
+  // P-3: a weak backend closure is an ownership hand-off, not any mention of the backend
+  const { weakForm: weak } = await import(join(PLUGIN, 'dismissals.mjs'))
+  for (const line of ['not a backend bug, the frontend filter drops it (src/list.ts:40)', 'the backend returns it as a string and we cast at api.ts:12', 'backend does not support pagination here, the code handles the empty page (list.ts:9)', 'это бэкенд-тест'])
+    check(`vt15s5 AC-5.4: "${line.slice(0, 40)}" stays strong in a backend task`, weak(`- M-1 — false: ${line}`, { backend: true }) === null && jc.disposition(`- M-1 — false: ${line}`, { strict: true, backend: true }) === 'false')
+  for (const line of ['backend must fix the serializer (docs/openapi/schema.yaml:10)', 'for the backend to fix (docs/openapi/schema.yaml:10)', 'бэкенд должен исправить (docs/openapi/schema.yaml:10)', 'задача бэкенда (docs/openapi/schema.yaml:10)'])
+    check(`vt15s5 AC-5.4: hand-off "${line.slice(0, 40)}" is weak in a backend task`, weak(`- M-1 — false: ${line}`, { backend: true })?.form === 'not-ours-backend')
+
+  // R-1: the backend repo is task code too; a path counts as proof only when the clause says our code handles it
+  const isBack = (path) => /^orders\//.test(path)
+  for (const line of ['the backend must handle it (orders/views.py:40)', 'this is a backend issue, the guard is not ours (src/list.ts:40)'])
+    check(`vt15s5 R-1: "${line.slice(0, 40)}" is weak in a backend task`, weak(`- M-1 — false: ${line}`, { backend: true, isBackendPath: isBack })?.form === 'not-ours-backend')
+  check('vt15s5 R-1: a backend path with a "handles" phrase is no own-code proof', weak('- M-1 — false: backend owns it, though the view handles it (orders/views.py:40)', { backend: true, isBackendPath: isBack })?.form === 'not-ours-backend')
+  check('vt15s5 R-1: a frontend path with a "handled at" phrase stays strong', weak('- M-1 — false: backend must fix it, but it is handled at src/list.ts:40', { backend: true, isBackendPath: isBack }) === null)
+
+  // P-2: a frontend repo whose config names a sibling backend repo counts as having a backend
+  const sibLedger = '# pro-review\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.py:1 — x\n## Findings outcome\n- M-1 — false: belongs to the backend (docs/openapi/schema.yaml:10)\n'
+  const sibGate = (backendRepo) => {
+    const front = fixture(`sib-front-${backendRepo}`, { backend: false, extraConfig: '- backend_repo: ../sibling-back\n' })
+    const sib = join(bRoot, 'sibling-back')
+    rmSync(sib, { recursive: true, force: true })
+    mkdirSync(join(sib, '.claude'), { recursive: true })
+    writeFileSync(join(sib, '.claude/pipeline.config.md'), backendRepo ? BACKEND : '- main_branch: main\n')
+    write(front.dir, { [`.claude/tasks/${front.ticket}/checks/pro-review-3.md`]: sibLedger })
+    return runHook('journal-gate.mjs', { cwd: front.dir, tool_name: 'Write', tool_input: { file_path: join(front.tdir, 'checks', 'pro-review-3.md') } })
+  }
+  const withSib = sibGate(true)
+  check('vt15s5 AC-5.4: a sibling backend repo in the config of the task repo — the backend dismissal is weak there (ledger-weak)', withSib.decision === 'block' && /ledger|weak|backend/i.test(withSib.text), withSib.text)
+  check('vt15s5 AC-5.4: a sibling repo without `## Backend` — no backend rule', sibGate(false).decision === 'allow')
+  rmSync(bRoot, { recursive: true, force: true })
 }
 
 if (unit('vt15s4')) {

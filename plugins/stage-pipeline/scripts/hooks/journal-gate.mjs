@@ -57,7 +57,7 @@ const target = tool === 'Bash' ? '' : String(toolInput.file_path ?? '')
 const dataTarget = tool !== 'Bash' && input.hook_event_name === 'PreToolUse' && (/stage-pipeline|CLAUDE_PLUGIN_DATA/.test(target) || Boolean(process.env.CLAUDE_PLUGIN_DATA && target.includes(process.env.CLAUDE_PLUGIN_DATA)))
 if (tool !== 'Bash' && !dataTarget && !/STAGES|checks[/\\]/.test(target)) process.exit(0)
 const { denyTool, recordFiring } = await import('./firing.mjs')
-const { dataDirReason, hasPipelineConfig, namesDataDir, pluginDataDir, readBounded, readDataFiles, readPipelineState, realOr, reportNames } = await import('./pipeline-state.mjs')
+const { backendConfig, backendFileMatcher, configRoot, dataDirReason, hasPipelineConfig, namesDataDir, pluginDataDir, readBounded, readDataFiles, readConfig, readPipelineState, realOr, reportNames } = await import('./pipeline-state.mjs')
 const cwd = input.cwd ?? process.cwd()
 const pre = input.hook_event_name === 'PreToolUse'
 
@@ -241,10 +241,11 @@ const tasks = state.tasks
   .filter((task) => (filePath ? inside(task.dir, filePath) : [...changed].some((path) => inside(task.dir, path))))
 if (!tasks.length) process.exit(0)
 
-const { baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, readTaskFile, reportViolations } = await import('../journal-check.mjs')
+const { backendGate, baselineInfo, fingerprint, forceCloseViolations, lastForceBlock, newJournalViolations, readTaskFile, reportViolations } = await import('../journal-check.mjs')
 const { gateCloseViolations, taskWorktree } = await import('../ci-gates.mjs')
 const { finalReviewViolations } = await import('../receipts.mjs')
 const { CLOSED_WORD, forceHeadings, forceKey } = await import('../markers.mjs')
+const { siblingRepos } = await import('../plan-check.mjs')
 const { mapReadme, mapRoots } = await import('../verify-map.mjs')
 const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-digest.mjs')
 
@@ -255,6 +256,27 @@ const at = new Date().toISOString()
 // the same roots the verify-map CLI looks in: the worktree, the config root, the main tree
 let roots = null
 const rootsOnce = () => (roots ??= mapRoots(state.worktree))
+// "a backend in the task": a `## Backend` repo in this repo's config or in the config of a related repo it names (a frontend task with a sibling backend repo).
+let hasBackend = null
+const taskHasBackend = () => {
+  if (hasBackend !== null) return hasBackend
+  const own = configRoot(state.worktree, state.worktree) ?? state.worktree
+  hasBackend = Boolean(backendConfig(state.config)?.repos.length) || siblingRepos(state.config, own).some((sibling) => Boolean(backendConfig(readConfig(sibling))?.repos.length))
+  return hasBackend
+}
+// the matcher of the backend repos' `api_files` globs (this config and the sibling configs): a path it accepts is backend code, no proof that our code handles the finding
+let backendMatcher = null
+const taskBackendPath = () => {
+  if (backendMatcher) return backendMatcher
+  const own = configRoot(state.worktree, state.worktree) ?? state.worktree
+  const matchers = [state.config, ...siblingRepos(state.config, own).map((sibling) => readConfig(sibling))].flatMap((config) => (backendConfig(config)?.repos ?? []).map((repo) => backendFileMatcher(repo)))
+  backendMatcher = (path) => matchers.some((match) => match(path))
+  return backendMatcher
+}
+const backendRulesApply = (task) => {
+  const block = lastForceBlock(readTaskFile(task.dir, 'STAGES.md') ?? '')
+  return !block || !backendGate(pluginDataDir(), task.dir).seen.has(forceKey(block.heading))
+}
 for (const task of tasks) {
   const journal = newJournalViolations(pluginDataDir(), task.dir)
   // The report is the one written by this edit: for Write/Edit its path, for Bash the reports that changed during the call.
@@ -272,7 +294,8 @@ for (const task of tasks) {
   const reports = written.flatMap((path) => {
     const after018 = !ledgerOld.has(basename(path))
     const after020 = !runtimeOld.has(basename(path))
-    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme(rootsOnce(), state.config)), v020: after020 })
+    // VT-15: the backend rules (a backend dismissal, no-api-proof) are for a Force block opened after this version first saw the task; a backend in a sibling repo's config counts too.
+    return reportViolations(path, known.has(basename(path)) ? null : task.language, { fresh: after018, strict: after018, map: after020 && Boolean(mapReadme(rootsOnce(), state.config)), v020: after020, backend: taskHasBackend(), isBackendPath: taskBackendPath(), backendRules: backendRulesApply(task) })
   })
   // The gates and the final reviews of a task whose branch is checked out in another worktree are that worktree's (`taskWorktree`).
   const taskTree = taskWorktree(state.worktree, task)
