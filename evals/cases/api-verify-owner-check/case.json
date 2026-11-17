@@ -31,7 +31,7 @@
     "runs": 1,
     "failed": 1,
     "detection": "1/1",
-    "caseHash": "e3f8d60948d73b67",
+    "caseHash": "4f5bb685e9eaa6eb",
     "failures": [
       "report not saved to tasks/NTS-7/checks/",
       "no finding line: a PATCH of a note by a user who is not its owner is answered 200 and changes the text (critical|major /PATCH[^\\n]*(user B|other user|another us"

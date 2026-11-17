@@ -678,10 +678,21 @@ export function contractPath(config, taskDir, ticket, root = '') {
   return join(taskDir, ticket, 'CONTRACT.md')
 }
 
-/** `path → boolean` over the repo's `apiFiles` globs (repo-relative, `/`); no globs — always false. */
+/**
+ * `path → boolean` over the repo's `apiFiles` globs (repo-relative, `/`); no globs — always false. A glob `globToRegExp` refuses (too many wildcards) is skipped, not thrown:
+ * the hooks that call this must not crash on a config line. The skipped globs are in `matcher.skipped` (`[{ glob, reason }]`) for the caller that can say so.
+ */
 export function backendFileMatcher(repo) {
-  const patterns = (repo?.apiFiles ?? []).map((glob) => globToRegExp(glob))
-  return (path) => patterns.some((pattern) => pattern.test(path))
+  const skipped = []
+  const patterns = (repo?.apiFiles ?? []).flatMap((glob) => {
+    try {
+      return [globToRegExp(glob)]
+    } catch (error) {
+      skipped.push({ glob, reason: String(error?.message ?? error) })
+      return []
+    }
+  })
+  return Object.assign((path) => patterns.some((pattern) => pattern.test(path)), { skipped })
 }
 
 export function readConfig(root) {

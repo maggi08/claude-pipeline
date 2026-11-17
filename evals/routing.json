@@ -87,6 +87,12 @@
     { "prompt": "what was promised for the task that is still not done?", "expect": "task-converge" },
     { "prompt": "is the task really complete? check the code against all stages acceptance criteria", "expect": "task-converge" },
 
+    { "prompt": "проверь эндпоинт по критериям — API-пробы: коды, роли, read-back после записи", "expect": "api-verify" },
+    { "prompt": "probe the endpoint against its acceptance criteria: status codes, role matrix, read-back after a write", "expect": "api-verify" },
+
+    { "prompt": "сверь типы фронта и моки с контрактом бэкенда — enum, nullable, поля", "expect": "contract-compare" },
+    { "prompt": "does the frontend types and MSW mocks match the backend contract? fields, nullable, enum values", "expect": "contract-compare" },
+
     { "prompt": "ревью только текущего этапа перед закрытием", "not": ["deps-audit"] },
     { "prompt": "напиши функцию форматирования цены", "not": ["i18n-sweep", "root-cause", "pro-review"] },
     { "prompt": "поправь опечатку в README", "not": ["stage-check", "stage-force", "pro-review"] },

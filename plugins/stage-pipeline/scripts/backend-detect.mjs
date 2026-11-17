@@ -82,6 +82,8 @@ function parseMakefile(text) {
   return { targets, vars }
 }
 
+/** What is printed (detection, `--json`, `--doctor` rows and the tail of the test output) never carries a secret of the repo: the userinfo of a URL and the value of a `*TOKEN*|*SECRET*|*PASSWORD*|*KEY*=` assignment are masked. */
+export const maskSecrets = (text) => String(text).replace(/(\/\/)[^/@\s]+@/g, '$1***@').replace(/\b([A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|KEY)[A-Za-z_]*=)\S+/gi, '$1***')
 const expandVars = (text, vars) => text.replace(/\$\(([A-Za-z_]\w*)\)/g, (whole, name) => vars[name] ?? whole)
 
 /** The compose file read by indentation: service names (which have `build:`) and external networks. */
@@ -170,7 +172,7 @@ export function detect(repoArg) {
   const makefile = read(join(repo, 'Makefile'))
   const make = makefile ? parseMakefile(makefile) : { targets: [], vars: {} }
   const pytestTarget = make.targets.find((t) => /test/.test(t.name) && t.recipe.some((l) => /pytest/.test(l))) ?? make.targets.find((t) => t.recipe.some((l) => /pytest/.test(l)))
-  found.makeRecipe = pytestTarget ? expandVars(pytestTarget.recipe.find((l) => /pytest/.test(l)), make.vars) : null
+  found.makeRecipe = pytestTarget ? maskSecrets(expandVars(pytestTarget.recipe.find((l) => /pytest/.test(l)), make.vars)) : null
   if (pytestTarget) {
     found.testFull = `make ${pytestTarget.name}`
     src.testFull = `Makefile (${pytestTarget.name}: ${found.makeRecipe})`
@@ -378,7 +380,7 @@ function collectCommand(d, cfgTestFull) {
 export function doctor(repoArg) {
   const d = detect(repoArg)
   const rows = []
-  const row = (status, check, todo) => rows.push(`${status} — ${check} — ${todo}`)
+  const row = (status, check, todo) => rows.push(maskSecrets(`${status} — ${check} — ${todo}`))
   const info = docker(['info', '--format', '{{.ServerVersion}}'])
   const dockerOk = info.status === 0
   if (dockerOk) row('ok', 'docker answers', `server ${info.stdout.trim()}`)

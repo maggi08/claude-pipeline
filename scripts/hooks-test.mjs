@@ -189,6 +189,7 @@ const UNITS = [
   { id: 'vt15s7', weight: 2 }, // VT-15 stage 7: taskRepos (own repo + siblings with task-branch commits), closing a Force block needs pro-review-branch-<repo> per other repo, one repo / backendSeen keep the old rule, deps-audit names the Python manifests
   { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
   { id: 'vt15s8', weight: 1 }, // VT-15 stage 8: the api-verify-owner-check pending case — its finding regexes against correct and wrong sample lines, the fixture settings can log in
+  { id: 'vt15f1', weight: 3 }, // VT-15 final-checks fix round 1: weakForm through ledgerViolations with a backend path, STAGING_DONE case, API_CONTROL qualifier, api-verify rerun, backendFileMatcher bad glob, maskSecrets
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
@@ -10716,7 +10717,7 @@ if (unit('vt15s7')) {
   const STALE = Date.parse('2026-10-18T09:00:00') / 1000
   let n = 0
   const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 0 · minor 0\n`
-  const fixture = ({ sibling = true, siblingCommits = true, bseen = false } = {}) => {
+  const fixture = ({ sibling = true, siblingCommits = true, bseen = false, backend = true } = {}) => {
     const base = join(root, `case${n++}`)
     const dir = join(base, 'app')
     const x = join(base, 'x')
@@ -10731,7 +10732,7 @@ if (unit('vt15s7')) {
       '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${sibling ? '## Paths\n- backend: ../x\n' : ''}`,
       [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${branch}\`\n\n## Status: stage 1\n\n${force}\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`,
     })
-    write(x, { '.claude/pipeline.config.md': '- main_branch: main\n' })
+    write(x, { '.claude/pipeline.config.md': `- main_branch: main\n${backend ? '## Backend\n- framework: django-drf\n' : ''}` })
     git(dir, 'checkout', '-qb', branch)
     git(x, 'checkout', '-qb', branch)
     if (siblingCommits) {
@@ -10839,15 +10840,71 @@ if (unit('vt15s7')) {
   old.main()
   check('vt15s7 AC-7.1: a Force block in backendSeen (an old run) — the per-repo rule is silent', old.gate().decision !== 'block', old.gate().text)
 
+  // fix round 1 (M-2): the per-repo rule is a backend one — two repos without `## Backend` close as before
+  const plain = fixture({ backend: false })
+  plain.journal('completed')
+  plain.main()
+  check('vt15s7 fix M-2: a two-repo task without `## Backend` anywhere closes with the two reports as before', plain.gate().decision !== 'block', plain.gate().text)
+  // fix round 1 (M-3): `main_branch: main` while the PRs go to dev — a sibling merged into origin/dev is not in the task
+  const merged = fixture()
+  git(merged.x, 'update-ref', 'refs/remotes/origin/dev', merged.branch)
+  check('vt15s7 fix M-3: the sibling branch is merged into origin/dev (main_branch: main is stale) — not in the task', pc.taskRepos(merged.config, merged.dir, [merged.branch]).map((r) => r.name).join() === 'app')
+  check('vt15s7 fix M-3: without origin/dev the same sibling is in the task, based on origin/main', pc.taskRepos(two.config, two.dir, branches).find((r) => !r.primary)?.base === 'origin/main')
+
   const skill = readFileSync(join(PLUGIN, '..', 'skills', 'deps-audit', 'SKILL.md'), 'utf8')
   check('vt15s7 AC-7.3: the deps-audit skill names pyproject.toml, poetry.lock, uv.lock and requirements', ['pyproject.toml', 'poetry.lock', 'uv.lock', 'requirements'].every((word) => skill.includes(word)))
   check('vt15s7 AC-7.3: the scope no longer limits the pass to package.json', /Python/.test(skill) && /site-packages|git\+/.test(skill))
   rmSync(root, { recursive: true, force: true })
 }
 
+if (unit('vt15f1')) {
+  const jc = await import(join(PLUGIN, 'journal-check.mjs'))
+  const REVIEW = '# pro-review\nFindings: critical 0 · major 1 · minor 0\n\n- **M-1** major — a.ts:3 — the finding\n\n## Findings outcome\n'
+  const entry = (line) => `${REVIEW}${line}\n`
+  const isBackendPath = (path) => /^app\/serializers\.py$/.test(path)
+  let weak = null
+  try {
+    weak = jc.ledgerViolations(entry('- M-1 — false: задача бэкенда, сериализатор обрабатывает это в app/serializers.py:12'), 'pro-review-1.md', { strict: true, backend: true, isBackendPath })
+  } catch (error) {
+    weak = error
+  }
+  check('vt15f1 M-1: a backend-task false: pointing at a backend path is a ledger-weak, not a crash', Array.isArray(weak) && weak.some((v) => v.rule === 'ledger-weak'), String(weak?.message ?? JSON.stringify(weak)))
+  check('vt15f1 m-2: "pass" in the criterion text does not read as closed staging', jc.stagingViolation('- `AC-2.1` WHEN the user logs in THEN the pass screen shows [verify: staging]') === null)
+  check('vt15f1 m-2: a ✅ staging criterion without an observation is still caught', jc.stagingViolation('- `AC-2.1` WHEN a deal is sent THEN it is stored [verify: staging] ✅')?.rule === 'staging-no-observation')
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'vt15f1-')))
+  mkdirSync(join(dir, 'checks'), { recursive: true })
+  writeFileSync(join(dir, 'STAGES.md'), '# T\n\n### Stage 1: api  [status: done]\n- `AC-1.1` WHEN PATCH THEN saved [verify: api-verify]\n- `AC-1.2` WHEN a button THEN it works [effect] [verify: devtools-verify]\n')
+  const api = (control) => `# api-verify 1\nFindings: critical 0 · major 0 · minor 0\n- AC-1.1 — PASS: PATCH /api/notes/1/ → 200\n  ${control}\n`
+  check('vt15f1 m-1: `read-back as A:` is a read-back label', jc.apiProofViolations(api('read-back as A: text changed'), 'api-verify-1.md', dir).length === 0)
+  check('vt15f1 m-1: `control (same test):` is a control label', jc.apiProofViolations(api('control \u0432 \u0442\u043e\u043c \u0436\u0435 \u0442\u0435\u0441\u0442\u0435: 403 for B'), 'api-verify-1.md', dir).length === 0)
+  check('vt15f1 M-4: no read-back still gives no-api-proof', jc.apiProofViolations(api('looks fine'), 'api-verify-1.md', dir)[0]?.rule === 'no-api-proof')
+  const effectReport = '# devtools-verify 1\nFindings: critical 0 · major 0 · minor 0\n- AC-1.2 — PASS: the button works\n'
+  check('vt15f1 M-4: the [effect] rule is unchanged after the factoring', jc.effectViolations(effectReport, 'devtools-verify-1.md', dir)[0]?.rule === 'no-effect-proof')
+  const fixedReport = `# api-verify 1\nFindings: critical 0 · major 1 · minor 0\n\n## Findings outcome\n- M-1 — fixed: app/views.py:3\n`
+  check('vt15f1 m-4: api-verify `fixed:` without a recheck report — no-rerun', jc.rerunViolations(fixedReport, 'api-verify-1.md', dir)[0]?.rule === 'no-rerun')
+  writeFileSync(join(dir, 'checks', 'api-verify-1-r1.md'), '# r\n')
+  check('vt15f1 m-4: api-verify `fixed:` citing the existing -r1 report — clean', jc.rerunViolations(fixedReport.replace('app/views.py:3', 'app/views.py:3 — recheck api-verify-1-r1.md'), 'api-verify-1.md', dir).length === 0)
+  check('vt15f1 m-4: the rerun rule of api-verify is off outside the backend gate', jc.rerunViolations(fixedReport, 'api-verify-1.md', dir, false).length === 0)
+  check('vt15f1 m-4: a `[verify: api-verify]` criterion closed ✅ without naming the checker — ac-checker', jc.acViolation('- `AC-1.1` WHEN PATCH THEN saved [verify: api-verify] ✅ pro-review: code')?.rule === 'ac-checker')
+  rmSync(dir, { recursive: true, force: true })
+  const { backendFileMatcher } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  let matcher = null
+  try {
+    matcher = backendFileMatcher({ apiFiles: ['a/*/*/*/*/*/b.py', 'app/views.py'] })
+  } catch (error) {
+    matcher = error
+  }
+  check('vt15f1 m-3: a 5-star glob does not throw; the good glob still matches', typeof matcher === 'function' && matcher('app/views.py') === true && matcher('a/b/c/d/e/f/b.py') === false, String(matcher?.message))
+  check('vt15f1 m-3: the skipped glob is named in matcher.skipped', typeof matcher === 'function' && matcher.skipped.length === 1 && matcher.skipped[0].glob === 'a/*/*/*/*/*/b.py')
+  const { maskSecrets } = await import(join(PLUGIN, 'backend-detect.mjs'))
+  const masked = maskSecrets('PIP_INDEX_URL=https://user:TOKEN123@host/simple API_KEY=abc DB_PASSWORD=pw pytest')
+  check('vt15f1 S-1: URL userinfo and *KEY/*PASSWORD values are masked', !/TOKEN123|abc|=pw/.test(masked) && /\/\/\*\*\*@host/.test(masked) && /API_KEY=\*\*\*/.test(masked) && /DB_PASSWORD=\*\*\*/.test(masked), masked)
+  check('vt15f1 S-1: the masked text keeps the command', /pytest$/.test(masked))
+}
+
 if (unit('vt15s8')) {
   const { readCase, lintCase, findingMatches } = await import(join(PLUGIN, '..', '..', '..', 'scripts/eval-lib.mjs'))
-  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/pending/api-verify-owner-check')
+  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/cases/api-verify-owner-check')
   const spec = readCase(caseDir)
   const [forbid] = spec.findingsForbid
   const [want] = spec.findings
@@ -10886,7 +10943,7 @@ if (unit('vt15s6')) {
   check('vt15s6 journal-check: a contract-compare report is read as that checker\'s', (await import(join(PLUGIN, 'journal-check.mjs'))).reportChecker('contract-compare-3.md') === 'contract-compare')
   check('vt15s6 AC-6.3: stage-check names the trigger and the skip line', /\| contract-compare \|[^\n]*api_layer[^\n]*contractPath[^\n]*\[skip: no trigger\]/.test(stageCheck))
   const { readCase, lintCase } = await import(join(PLUGIN, '..', '..', '..', 'scripts/eval-lib.mjs'))
-  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/pending/contract-compare-enum-drift')
+  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/cases/contract-compare-enum-drift')
   const spec = readCase(caseDir)
   check('vt15s6 case: case.json reads, agent contract-compare, three findings entries that compile', spec.agent === 'contract-compare' && spec.findings?.length === 3 && spec.findings.every((e) => new RegExp(e.file) && e.why) && spec.findingsForbid?.length === 1)
   check('vt15s6 case: the planted drift is in working/ (no `expired` in the type, price not nullable, a discount in the mock) and the contract has all four values', !/expired/.test(readFileSync(join(caseDir, 'working/src/api/deals.ts'), 'utf8')) && /price: number\n/.test(readFileSync(join(caseDir, 'working/src/api/deals.ts'), 'utf8')) && /discount/.test(readFileSync(join(caseDir, 'working/src/mocks/handlers.ts'), 'utf8')) && /`requested`, `approved`, `rejected`, `expired`/.test(readFileSync(join(caseDir, 'base/tasks/DLS-4/CONTRACT.md'), 'utf8')))

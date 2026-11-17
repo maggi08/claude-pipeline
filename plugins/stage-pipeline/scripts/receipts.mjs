@@ -27,7 +27,8 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { LEGIT_REASON, backendGate, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { taskRepos } from './plan-check.mjs'
+import { PATH_LINE } from './dismissals.mjs'
+import { siblingRepos, taskRepos } from './plan-check.mjs'
 import { OPEN_STATUS, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, taskBranches, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, forceKey, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
@@ -186,9 +187,8 @@ export function openStages(stagesText) {
 const RUNTIME_SKIP_REASON = /logic-only|no\s+visual|visuals?\s+(?:are\s+)?unchanged|без\s+визуал|визуал\w*\s+не\s+меня/i
 /** api-verify (VT-15, D4): only "the behaviour does not change" with the `path:line` that changed is a skip; an environment reason (docker, colima, no network, timeout) is not one. */
 const NO_BEHAVIOUR_CHANGE = /no\s+behaviou?r\s+change|без\s+изменени[яй]\s+поведения/i
-const SKIP_PATH_LINE = /(?<![\w@./-])[\w@./-]+\.[A-Za-z]{1,5}:\d+/
 const legitSkip = (skip) =>
-  skip.checker === 'api-verify' ? NO_BEHAVIOUR_CHANGE.test(skip.reason) && SKIP_PATH_LINE.test(skip.reason) : (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_REASON : LEGIT_REASON).test(skip.reason)
+  skip.checker === 'api-verify' ? NO_BEHAVIOUR_CHANGE.test(skip.reason) && PATH_LINE.test(skip.reason) : (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_REASON : LEGIT_REASON).test(skip.reason)
 
 const skipDeclared = (stages, checkers) => stages.flatMap((stage) => stage.skips).filter((skip) => checkers.includes(skip.checker))
 
@@ -461,7 +461,10 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
   // VT-15 (stage 7): a task of several repos needs a whole-branch pro-review report of every other repo too, `checks/pro-review-branch-<repo>.md`, for a Force block
   // of the backend rules (not in `backendSeen`); a task of one repo asks nothing more (AC-7.2). A repo's report is not the main repo's report.
   const config = readConfig(configRoot(worktree, worktree) ?? worktree)
-  const others = backendGate(dataDir, taskDir).seen.has(forceKey(run.block.heading))
+  // The rule is a backend one (D1): a task with no `## Backend` in its repo's config or a sibling's closes as before.
+  const root = configRoot(worktree, worktree) ?? worktree
+  const hasBackend = Boolean(backendConfig(config)?.repos.length) || siblingRepos(config, root).some((sibling) => Boolean(backendConfig(readConfig(sibling))?.repos.length))
+  const others = !hasBackend || backendGate(dataDir, taskDir).seen.has(forceKey(run.block.heading))
     ? []
     : taskRepos(config, worktree, taskBranches(run.stages)).filter((repo) => !repo.primary)
   const ofRepo = (repo, name) => new RegExp(`^pro-review-branch-${repo.name.replace(/[^\w]/g, '\\$&')}(?:\\.md$|-delta-|-fresh|-\\d)`).test(name)

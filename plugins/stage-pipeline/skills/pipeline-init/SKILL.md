@@ -134,7 +134,7 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 - stores: <store/ | stores/ | —>
 - server_api: <server/api/ | —>
 - tests: <tests/ | —>
-- api_layer: <globs of the API client and types | —>   # optional; contract-compare reads it
+- api_layer: <globs of the API client and types>   # only when the repo has a frontend API layer, omit otherwise; contract-compare reads it
 - reuse_baseline: <an existing implementation to compare against, e.g. components/<feature>/ | —>
 
 ## Platforms / related repos (optional, multi-context)

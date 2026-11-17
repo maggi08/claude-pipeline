@@ -37,7 +37,7 @@ A criterion no probe can reach (needs another service, a real broker, production
 
 ## 4. The run
 
-1. The command is `test` from `## Backend` with the probe path in the placeholder (`{files:rel+py}` gives the repo-relative paths in the form the container sees). `test_env` entries go as environment variables.
+1. The command is `test` from `## Backend` with the probe path in the placeholder (`{files:rel+py}` gives the repo-relative paths in the form the container sees). `test_env` entries go as environment variables. The report and any blocker show an entry as `KEY=<set>` without its value (the report may be committed with the task).
 2. **No terminal and a time limit.** Run the container without a TTY (`docker compose run -T ...`, stdin closed: `< /dev/null`). The container runner ignores the signal of an outer timer, so the limit goes **inside the container**. Substitution: in `test`, the tail `python -m pytest <args>` is replaced by `python -c "import faulthandler,sys,pytest; faulthandler.dump_traceback_later(<seconds>, exit=True); sys.exit(pytest.main([<args>]))"`; the prefix (`docker compose run -T --rm --no-deps -e ... <svc>`) and `test_env` stay, and `-e PYTHONDONTWRITEBYTECODE=1` is added to the prefix next to `test_env`, so that no `__pycache__` lands in the probe folder. `<args>` carry `-p no:faulthandler` (pytest's own faulthandler conflicts with `dump_traceback_later`), `-p no:cacheprovider` (the repo is mounted into the container), and `--reuse-db` when the test database exists. The wrapper kills the run and prints the stack where it stuck. Pick the seconds from the probe count (300 for a handful of probes; more for the first run on a fresh test database, whose migrations take minutes on an emulated database image).
 3. The run goes to a file, not into `tail` or another filter: the exit code is read from `$?` first, then the file. The report needs the pytest summary line and the exit code.
 4. A hang or a crash of the environment is **FAIL with the reason and the stack**: a critical finding and a FAIL on every criterion of the run. One retry is allowed when the stack shows a startup race, not a code error. A probe that fails by its own mistake (a wrong fixture, a wrong import) is fixed in the probe, counted as a probe iteration in the report header (`probe iterations: N`), and is not a product FAIL.
@@ -51,7 +51,7 @@ A criterion no probe can reach (needs another service, a real broker, production
 # api-verify <stage> — <TICKET>
 Findings: critical N · major N · minor N
 - ticket: <TICKET> · stage: <N> · repo: <name> · repo commit: <short sha> · contract: <path>
-- command: `<the exact command>` · exit code: <n> · time: <seconds> · result: <pytest summary line> · probe iterations: <n>
+- command: `<the exact command, test_env values as KEY=<set>>` · exit code: <n> · time: <seconds> · result: <pytest summary line> · probe iterations: <n>
 - overridden fixtures: <name — reason> | none
 
 ## Findings

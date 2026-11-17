@@ -22,7 +22,7 @@
 import { QUOTED, stripQuoted } from './markers.mjs'
 
 // A proof: `path/to/file.ext:12` or "file.ext line 12" — the line of a file, not just its name.
-const PATH_LINE = /(?<![\w@./-])[\w@./-]+\.[A-Za-z]{1,5}(?::\d+|\s+(?:строк[аи]?|line)\s+\d+)/
+export const PATH_LINE = /(?<![\w@./-])[\w@./-]+\.[A-Za-z]{1,5}(?::\d+|\s+(?:строк[аи]?|line)\s+\d+)/
 // A code file named without a line (a spec that covers the case, a component).
 const CODE_FILE = /(?<![\w@./-])[\w@./-]+\.(?:[cm]?[jt]sx?|vue|svelte|astro|css|scss|py|go|rb|kt|swift|java|php|rs)\b/
 // Base proof: a sha, a diff range, a git command, a named base.

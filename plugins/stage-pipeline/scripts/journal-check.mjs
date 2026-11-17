@@ -61,7 +61,7 @@ import { NOT_A_FAIL, entryHead, entrySeverity, findingRows, weakForm } from './d
 import { decisionViolations } from './decisions.mjs'
 import { languageMismatch } from './report-language.mjs'
 
-const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare']
+const LIVE_CHECKERS = ['devtools-verify', 'figma-compare', 'proto-compare', 'api-verify']
 const AC_ID = /AC-\d/
 
 /**
@@ -283,7 +283,7 @@ const LIVE_TAG = /\[live:\s*user-side\b/i
  */
 const STAGING_VERIFY_TAG = /\[verify:([^\]\n]*)\]/gi
 const stagingTagged = (open) => [...open.matchAll(STAGING_VERIFY_TAG)].some((match) => match[1].split(/[,+/&]|\band\b/).some((name) => name.trim().toLowerCase() === 'staging'))
-const STAGING_DONE = /✅|\[x\]|\bPASS\b/i
+const STAGING_DONE = /✅|\[x\]|\bPASS\b/
 const LOCAL_ADDRESS = /^\s*(?:(?:https?:\/\/)?(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])(?![\w-])|file:)/i
 const STAGING_PARTS = /^\[staging:\s*([^;\]\n]*);([^→\]\n]*)→([^\]\n]*)\]/i
 export function stagingViolation(line) {
@@ -533,7 +533,7 @@ export function ledgerViolations(text, name, { complete = false, strict = false,
       }
     }
     if (kind === 'weak') {
-      const { form, need } = weakForm(entry, { backend })
+      const { form, need } = weakForm(entry, { backend, isBackendPath })
       found.push({
         rule: 'ledger-weak',
         id: name,
@@ -683,22 +683,22 @@ export function reportViolations(path, language = null, { fresh = false, strict 
   const { text } = read
   // The honest live form is a rule for reports written after it came in: `fresh` is set by the hook for a report that is not in the snapshot.
   const bare = fresh ? text.split('\n').map(liveViolation).find(Boolean) : null
-  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)), backend: v020 && backend && backendRules, isBackendPath }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map), ...(v020 ? [...effectViolations(text, name, dirname(dirname(path))), ...(backendRules ? apiProofViolations(text, name, dirname(dirname(path))) : []), ...rerunViolations(text, name, dirname(dirname(path)))] : [])].filter(Boolean)
+  return [bare && { ...bare, message: `checks/${name}: ${bare.message}` }, languageViolation(text, name, language), reportViolation(path, text), summaryViolation(text, name), ...ledgerViolations(text, name, { strict, taskDir: dirname(dirname(path)), backend: v020 && backend && backendRules, isBackendPath }), ...runtimeViolations(text, name, dirname(dirname(path)), fresh, map), ...(v020 ? [...effectViolations(text, name, dirname(dirname(path))), ...(backendRules ? apiProofViolations(text, name, dirname(dirname(path))) : []), ...rerunViolations(text, name, dirname(dirname(path)), backendRules)] : [])].filter(Boolean)
 }
 
-/** The AC ids the task's STAGES.md and STAGES-ARCHIVE.md tag `[effect]` (stage 9: a criterion whose action sends something to the server). */
-export function effectCriteria(taskDir) {
+/** The AC ids whose criterion definition line (`- AC-x.y …` / `- \`AC-x.y\` …`) satisfies `tagged(rest)`; `rest` is the line after the id with inline code blanked, so the tag stands outside backticks. */
+function taggedCriteria(taskDir, tagged) {
   const ids = new Set()
   for (const whole of journalText(taskDir).split(/\r?\n/)) {
     const line = whole.slice(0, RULE_LINE_MAX)
-    // Only a criterion definition line (`- AC-x.y …` / `- \`AC-x.y\` …`) is tagged; the tag stands outside backticks, next to the verifier tag.
     const head = line.match(/^\s*[-*]\s+`?AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)`?(.*)$/)
-    if (!head) continue
-    const rest = head[2].replace(/`[^`]*`/g, '')
-    if (EFFECT_NEXT_TO_VERIFY.test(rest)) ids.add(head[1])
+    if (head && tagged(head[2].replace(/`[^`]*`/g, ''))) ids.add(head[1])
   }
   return ids
 }
+
+/** The AC ids the task's STAGES.md and STAGES-ARCHIVE.md tag `[effect]` (stage 9: a criterion whose action sends something to the server). */
+export const effectCriteria = (taskDir) => taggedCriteria(taskDir, (rest) => EFFECT_NEXT_TO_VERIFY.test(rest))
 
 /** The criteria a report passes, for the `[effect]` rule: the verdict stands right after the id (`AC-x.y — PASS`, `AC-x.y: PASS`, `AC-x.y (1440) — PASS` with a parenthetical of up to 60 characters, `AC-x.y ✅ PASS`, a compact `4.5 PASS` run). The word elsewhere on the line and a line under "Could not verify" are not a PASS. */
 function passedIds(text, wanted) {
@@ -741,61 +741,65 @@ function mentionsOf(text, id) {
  * FAIL, not checked and deferred criteria are not touched.
  */
 export function effectViolations(text, name, taskDir = null) {
-  if (reportChecker(name) !== 'devtools-verify' || !taskDir || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
-  const effects = effectCriteria(taskDir)
-  if (!effects.size) return []
+  return proofViolations(text, name, taskDir, {
+    checker: 'devtools-verify',
+    wanted: effectCriteria,
+    proofs: [
+      [REQUEST_PROOF, 'the request (`METHOD /path … status`, from list_network_requests / get_network_request)'],
+      [READBACK_PROOF, 'the read-back (after a reload or from a second view)'],
+    ],
+    rule: 'no-effect-proof',
+    tag: '[effect]',
+    why: 'A screen that shows the new state does not prove the server got it (skill devtools-verify, "Effects"; the Russian forms are in references/language.md).',
+  })
+}
+
+/**
+ * The shared PASS-needs-proof rule of `[effect]` and `[verify: api-verify]`: a report of `checker` that gets a PASS on a tagged criterion must name every proof of `proofs` ([test, what] pairs) in the lines about it.
+ * FAIL, not checked and deferred criteria are not touched.
+ */
+function proofViolations(text, name, taskDir, { checker, wanted, proofs, rule, tag, why }) {
+  if (reportChecker(name) !== checker || !taskDir || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
+  const criteria = wanted(taskDir)
+  if (!criteria.size) return []
   const found = []
-  for (const id of passedIds(text, effects)) {
+  for (const id of passedIds(text, criteria)) {
     const evidence = mentionsOf(text, id)
-    const missing = [!REQUEST_PROOF.test(evidence) && 'the request (`METHOD /path … status`, from list_network_requests / get_network_request)', !READBACK_PROOF.test(evidence) && 'the read-back (after a reload or from a second view)'].filter(Boolean)
+    const missing = proofs.filter(([test]) => !test.test(evidence)).map(([, what]) => what)
     if (missing.length)
       found.push({
-        rule: 'no-effect-proof',
+        rule,
         id: name,
         message:
-          `checks/${name}: AC-${id} is tagged [effect] and gets a PASS, but the report does not name ${missing.join(' and ')}. A screen that shows the new state does not prove the server got it ` +
-          '(skill devtools-verify, "Effects"; the Russian forms are in references/language.md). A criterion you could not prove is `not checked` or goes to "Could not verify", not PASS.',
+          `checks/${name}: AC-${id} is tagged ${tag} and gets a PASS, but the report does not name ${missing.join(' and ')}. ` +
+          `${why} A criterion you could not prove is \`not checked\` or goes to "Could not verify", not PASS.`,
       })
   }
   return found
 }
 
 /** The AC ids the task tags `[verify: api-verify]` (VT-15, stage 5): a criterion definition line whose verifier tag names api-verify. */
-export function apiVerifyCriteria(taskDir) {
-  const ids = new Set()
-  for (const whole of journalText(taskDir).split(/\r?\n/)) {
-    const line = whole.slice(0, RULE_LINE_MAX)
-    const head = line.match(/^\s*[-*]\s+`?AC-(\d+[a-z]?(?:\.\d+[a-z]?)+)`?(.*)$/)
-    if (head && /\[verify:[^\][]*\bapi-verify\b[^\][]*\]/i.test(head[2].replace(/`[^`]*`/g, ''))) ids.add(head[1])
-  }
-  return ids
-}
+export const apiVerifyCriteria = (taskDir) => taggedCriteria(taskDir, (rest) => /\[verify:[^\][]*\bapi-verify\b[^\][]*\]/i.test(rest))
 
 /** The read-back or control line of an api-verify criterion (either language): the label stands with its colon. */
-const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])\s*:/i
+const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])[^:\n]{0,40}:/i
 
 /**
  * VT-15 (stage 5): a PASS in an api-verify report on a `[verify: api-verify]` criterion names the request (`METHOD /path → status`) and a read-back or control (`read-back:` / `control:`).
  * A 200 alone proves nothing about what was saved. FAIL, not checked and deferred criteria are not touched. The same shape as `effectViolations`.
  */
 export function apiProofViolations(text, name, taskDir = null) {
-  if (reportChecker(name) !== 'api-verify' || !taskDir || /\bskip\b/i.test(text.split('\n').slice(0, 5).join(' '))) return []
-  const wanted = apiVerifyCriteria(taskDir)
-  if (!wanted.size) return []
-  const found = []
-  for (const id of passedIds(text, wanted)) {
-    const evidence = mentionsOf(text, id)
-    const missing = [!REQUEST_PROOF.test(evidence) && 'the request and the response code (`GET /path → 200`)', !API_CONTROL.test(evidence) && 'the read-back or control (`read-back:` / `control:`)'].filter(Boolean)
-    if (missing.length)
-      found.push({
-        rule: 'no-api-proof',
-        id: name,
-        message:
-          `checks/${name}: AC-${id} is tagged [verify: api-verify] and gets a PASS, but the report does not name ${missing.join(' and ')}. ` +
-          'A 200 does not prove what was saved (skill api-verify, "Read-back"; the Russian forms are in references/language.md). A criterion you could not prove is `not checked` or goes to "Could not verify", not PASS.',
-      })
-  }
-  return found
+  return proofViolations(text, name, taskDir, {
+    checker: 'api-verify',
+    wanted: apiVerifyCriteria,
+    proofs: [
+      [REQUEST_PROOF, 'the request and the response code (`GET /path → 200`)'],
+      [API_CONTROL, 'the read-back or control (`read-back:` / `control:`)'],
+    ],
+    rule: 'no-api-proof',
+    tag: '[verify: api-verify]',
+    why: 'A 200 does not prove what was saved (skill api-verify, "Read-back"; the Russian forms are in references/language.md).',
+  })
 }
 
 /** The checker and stage token of a report name: `devtools-verify-5-r1.md` → `devtools-verify-5`, `pro-review-3.md` → `pro-review-3`; `null` — not a checker report. */
@@ -849,8 +853,9 @@ function screenExists(taskDir, file) {
  * VT-4 0.20 (stage 9): a `fixed` outcome in a devtools-verify report cites a re-run artifact — the recheck report (`devtools-verify-<stage>-r<k>.md`, `…-fresh.md`)
  * or a `checks/screens/` path. `fixed: file:line` alone says the code changed, not that the page now behaves (the fix recheck went by `file:line` only).
  */
-export function rerunViolations(text, name, taskDir = null) {
-  if (reportChecker(name) !== 'devtools-verify') return []
+export function rerunViolations(text, name, taskDir = null, backendRules = true) {
+  const checker = reportChecker(name)
+  if (checker !== 'devtools-verify' && !(checker === 'api-verify' && backendRules)) return []
   const found = []
   for (const entry of ledgerEntries(text) ?? []) {
     if (disposition(entry) !== 'fixed' || citedRerun(entry, name, taskDir)) continue
@@ -859,7 +864,7 @@ export function rerunViolations(text, name, taskDir = null) {
       rule: 'no-rerun',
       id: name,
       message:
-        `checks/${name}: "${shown}" — a runtime finding is closed as fixed only with a re-run artifact: the recheck report \`checks/devtools-verify-<stage>-r<k>.md\` (or \`-fresh.md\`) that exists, ` +
+        `checks/${name}: "${shown}" — a runtime finding is closed as fixed only with a re-run artifact: the recheck report \`checks/${checker}-<stage>-r<k>.md\` (or \`-fresh.md\`) that exists, ` +
         'or a `checks/screens/` path (stage-check, Step 3.2). `fixed: file:line` shows the code changed, not that the page behaves.',
     })
   }

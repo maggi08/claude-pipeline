@@ -55,7 +55,7 @@ import {
   stageBlocksOf,
   stripQuoted,
 } from './markers.mjs'
-import { contractPath, pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/pipeline-state.mjs'
+import { contractPath, integrationBase, mainRoot, pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/pipeline-state.mjs'
 
 const AC_START = /^[ \t]*(?:[-*][ \t]*|\|[ \t]*)?(?:\[[ xX]\][ \t]*)?(?:✅[ \t]*)?\**`?(AC-[\w.]*\w)`?\**(?=[\s:.,—–|)-]|$)/
 const VERIFIER_TAG = /\[(?:verify|live):/i
@@ -196,37 +196,40 @@ const gitOut = (cwd, ...args) => {
 export function siblingRepos(config, root) {
   if (!root || !config) return []
   const names = [...config.matchAll(/(?<![\w./~-])\.\.\/([A-Za-z0-9_@][\w@.-]*)/g)].map((match) => match[1])
-  const common = gitOut(root, 'rev-parse', '--git-common-dir')
-  const mainRoot = common ? dirname(resolve(root, common)) : null
+  const mainTree = mainRoot(root)
   return [...new Set(names)].map((name) => {
     const own = resolve(root, '..', name)
-    if (!mainRoot || existsSync(own)) return own
-    const beside = resolve(mainRoot, '..', name)
+    if (!mainTree || existsSync(own)) return own
+    const beside = resolve(mainTree, '..', name)
     return existsSync(beside) ? beside : own
   })
 }
 
 /**
  * The repos of a task (VT-15, stage 7): the task's own repo (`root`) plus each sibling repo of the config that has a local branch of the task (`branches` — `taskBranches`)
- * with commits that `origin/<main_branch>` of that repo (its own `.claude/pipeline.config.md`, else `origin/HEAD`; a local `<main_branch>` when the repo has no origin) lacks.
+ * with commits that the nearest integration ref of that repo (`integrationBase` over its own `.claude/pipeline.config.md`: `main_branch`, dev, develop, main …, `origin/` first) lacks.
  * `[{ name, root, base, branch, primary }]`; `name` is the directory name. A sibling with no task branch, or none of whose branches carries commits, is not in the task.
- * The base is the local `origin/<main>`: with a stale one (no fetch in a hook) a sibling with already-merged commits joins the task; fetch before the final checks.
+ * The base is the local `origin/<ref>`: with a stale one (no fetch in a hook) a sibling with already-merged commits joins the task; fetch before the final checks.
  */
 export function taskRepos(config, root, branches = []) {
   if (!root) return []
-  const baseOf = (dir) => {
-    const main = /^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m.exec(readConfig(dir) ?? '')?.[1]
-    const heads = [main && `origin/${main}`, 'origin/HEAD', main].filter(Boolean)
-    return heads.find((ref) => gitOut(dir, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`)) ?? null
-  }
+  // The base is the nearest integration ref (`integrationBase`: `main_branch`, dev, develop, main …) — `main_branch: main` with PRs into dev must not pull a sibling's merged commits in.
+  const baseOf = (dir, ref, text) => integrationBase(dir, text, ref)
   const own = (dir) => branches.find((name) => gitOut(dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`))
-  const primary = { name: basename(root), root, base: baseOf(root), branch: own(root) ?? gitOut(root, 'rev-parse', '--abbrev-ref', 'HEAD') ?? null, primary: true }
+  const branch = own(root) ?? gitOut(root, 'rev-parse', '--abbrev-ref', 'HEAD') ?? null
+  const primary = { name: basename(root), root, base: baseOf(root, branch ? `refs/heads/${branch}` : 'HEAD', config)?.ref ?? null, branch, primary: true }
   const found = [primary]
   for (const dir of siblingRepos(config, root)) {
     if (!existsSync(dir) || dir === root) continue
-    const base = baseOf(dir)
-    const branch = branches.find((name) => base && gitOut(dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`) && Number(gitOut(dir, 'rev-list', '--count', `${base}..refs/heads/${name}`)) > 0)
-    if (branch) found.push({ name: basename(dir), root: dir, base, branch, primary: false })
+    const text = readConfig(dir)
+    for (const name of branches) {
+      if (!gitOut(dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`)) continue
+      const base = baseOf(dir, `refs/heads/${name}`, text)
+      if (base && base.ahead > 0) {
+        found.push({ name: basename(dir), root: dir, base: base.ref, branch: name, primary: false })
+        break
+      }
+    }
   }
   return found
 }
