@@ -1,5 +1,5 @@
 {
-  "$comment": "The stage-pipeline permission profile. Read by scripts/permissions.mjs. Skill(...) and mcp__* entries are not listed — they are generated from the plugin itself (skills/*, .mcp.json), so a new skill does not have to be added here by hand. Bash(...) is a PREFIX match: the space before * is literal, so \"Bash(rm -rf dist *)\" does not cover \"rm -rf dist\", and \"Bash(curl -s http://localhost *)\" does not cover \"curl -s http://localhost:3000/\". deny here is protection against accidents, not a security boundary: the profile allows node/npx/python3, which is arbitrary execution, and bypassing any prohibition from it is trivial.",
+  "$comment": "The stage-pipeline permission profile. Read by scripts/permissions.mjs. Skill(...) and mcp__* entries are not listed — they are generated from the plugin itself (skills/*, .mcp.json), so a new skill does not have to be added here by hand. Bash(...) is a PREFIX match: the space before * is literal, so \"Bash(rm -rf dist *)\" does not cover \"rm -rf dist\", and \"Bash(curl -s http://localhost *)\" does not cover \"curl -s http://localhost:3000/\". deny here is protection against accidents, not a security boundary: the profile allows node/npx/python3/uv run/poetry run, which is arbitrary execution, and bypassing any prohibition from it is trivial.",
   "defaultGroups": [
     "pipeline",
     "fs-read",
@@ -161,6 +161,8 @@
         "Bash(node *)",
         "Bash(corepack *)",
         "Bash(python3 *)",
+        "Bash(uv run *)",
+        "Bash(poetry run *)",
         "Bash(./node_modules/.bin/tsc *)",
         "Bash(./node_modules/.bin/eslint *)",
         "Bash(./node_modules/.bin/prettier *)",

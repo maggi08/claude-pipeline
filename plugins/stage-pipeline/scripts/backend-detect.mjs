@@ -3,8 +3,11 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 import { backendConfig } from './hooks/pipeline-state.mjs'
 import { globToRegExp } from './markers.mjs'
+import { bashRulePattern } from './hooks/permission-rules.mjs'
+import { loadProfile, overriddenBy } from './permission-profile.mjs'
 
 /**
  * backend-detect — what a Python backend repo has (framework, package manager, test command, compose, API schema), read from its files.
@@ -377,7 +380,43 @@ function collectCommand(d, cfgTestFull) {
   return { command: `${base} --collect-only -q`, needsDocker: /docker/.test(base) }
 }
 
-export function doctor(repoArg) {
+/** Claude settings files the doctor reads: user scope (settings, settings.local) and the repo's. `files` replaces them (the unit points it at temp files). */
+function settingsLists(repo, files) {
+  const sources = files ?? [join(homedir(), '.claude/settings.json'), join(homedir(), '.claude/settings.local.json'), join(repo, '.claude/settings.json'), join(repo, '.claude/settings.local.json')]
+  const lists = { allow: [], ask: [], deny: [] }
+  for (const source of sources) {
+    try {
+      const permissions = JSON.parse(readFileSync(source, 'utf8'))?.permissions
+      for (const key of Object.keys(lists)) if (Array.isArray(permissions?.[key])) lists[key].push(...permissions[key])
+    } catch {
+      // a missing or broken file adds nothing
+    }
+  }
+  return lists
+}
+
+/** Is `command` allowed by the settings: some allow rule covers it (`Bash(*)` too) and no ask/deny rule beats it. Returns `{ ok }` or `{ ok: false, beatenBy }`. */
+function commandAllowed(command, lists) {
+  const covers = (rule) => rule === 'Bash' || rule === 'Bash(*)' || bashRulePattern(rule)?.test(command)
+  if (!lists.allow.some(covers)) return { ok: false }
+  const beaten = overriddenBy(`Bash(${command})`, lists)
+  if (beaten) return { ok: false, beatenBy: beaten }
+  return { ok: true }
+}
+
+export const shellQuote = (text) => (/^[\w./:=@%+-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`)
+
+/** The docker command the repo's tests start, which api-verify must be allowed to run, or null when the tests run on the host. */
+function dockerProbe(d, cfg, plan) {
+  const text = [cfg?.testFull, cfg?.test, d.testFull, d.makeRecipe].filter(Boolean).join('\n')
+  if ((cfg?.testFull ?? d.testFull) === './pytest.sh') return { command: 'docker build', note: '`./pytest.sh` builds an image and runs it' }
+  const found = text.match(/\bdocker\s+(?:compose\s+)?(?:run|exec|build)\b/)?.[0]?.replace(/\s+/g, ' ')
+  if (found) return { command: found, note: 'the tests run in docker' }
+  if (d.testInDocker || plan.needsDocker || /\bdocker\b/.test(text)) return { command: 'docker compose run', note: 'the tests run in docker' }
+  return null
+}
+
+export function doctor(repoArg, { settingsFiles } = {}) {
   const d = detect(repoArg)
   const rows = []
   const row = (status, check, todo) => rows.push(maskSecrets(`${status} — ${check} — ${todo}`))
@@ -399,6 +438,16 @@ export function doctor(repoArg) {
   const cfgText = read(join(d.repo, '.claude/pipeline.config.md'))
   const cfg = cfgText ? backendConfig(cfgText, d.repo)?.repos?.[0] : null
   const plan = collectCommand(d, cfg?.testFull)
+  const probe = dockerProbe(d, cfg, plan)
+  if (probe) {
+    const verdict = commandAllowed(probe.command, settingsLists(d.repo, settingsFiles))
+    if (verdict.ok) row('ok', 'permissions', `\`${probe.command}\` is allowed in the Claude settings`)
+    else {
+      const why = verdict.beatenBy ? `the ${verdict.beatenBy.key} rule \`${verdict.beatenBy.rule}\` beats the allow entry (remove it or keep the question knowingly)` : `no allow entry covers \`${probe.command}\``
+      const fix = verdict.beatenBy ? '' : `: node ${shellQuote(fileURLToPath(new URL('./permissions.mjs', import.meta.url)))} --apply --groups ${[...loadProfile(resolve(dirname(fileURLToPath(import.meta.url)), '..')).defaultGroups, 'docker'].join(',')}`
+      row('fail', 'permissions', `${probe.note} and ${why}, so api-verify stops on a permission question${fix}`)
+    }
+  }
   if (plan.skip) row('skip', 'tests collect', plan.skip)
   else if (plan.needsDocker && !dockerOk) row('skip', 'tests collect', `needs docker (\`${plan.command}\`)`)
   else {

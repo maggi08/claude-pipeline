@@ -188,6 +188,7 @@ const UNITS = [
   { id: 'vt15s6', weight: 1 }, // VT-15 stage 6: contract-compare agent and skill, agent-guard for it, the pending case reads and passes the leak lint, the counts
   { id: 'vt15s7', weight: 2 }, // VT-15 stage 7: taskRepos (own repo + siblings with task-branch commits), closing a Force block needs pro-review-branch-<repo> per other repo, one repo / backendSeen keep the old rule, deps-audit names the Python manifests
   { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
+  { id: 'vt15s8a', weight: 1 }, // VT-15 stage 8a: uv run / poetry run in js-toolchain, --doctor permissions row for a docker test command (settings files pointed at temp files)
   { id: 'vt15s8', weight: 1 }, // VT-15 stage 8: the api-verify-owner-check pending case — its finding regexes against correct and wrong sample lines, the fixture settings can log in
   { id: 'vt15f1', weight: 3 }, // VT-15 final-checks fix round 1: weakForm through ledgerViolations with a backend path, STAGING_DONE case, API_CONTROL qualifier, api-verify rerun, backendFileMatcher bad glob, maskSecrets
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
@@ -10948,6 +10949,58 @@ if (unit('vt15f1')) {
   }
   const initTmpl = readFileSync(join(PLUGIN, '../skills/pipeline-init/SKILL.md'), 'utf8')
   check('vt15r2 d-3: api_layer is written only with a `## Backend` section here or in a related repo', /^- api_layer: .*only when this config or a related repo it names has a `## Backend` section/m.test(initTmpl))
+}
+
+if (unit('vt15s8a')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s8a-')))
+  const profile = JSON.parse(readFileSync(join(PLUGIN, '..', 'permissions', 'base.json'), 'utf8'))
+  const toolchain = profile.groups['js-toolchain'].allow
+  check('vt15s8a AC-8a.1: js-toolchain (a default group) allows uv run and poetry run', profile.defaultGroups.includes('js-toolchain') && toolchain.includes('Bash(uv run *)') && toolchain.includes('Bash(poetry run *)'), JSON.stringify(toolchain))
+  const { doctor, shellQuote } = await import(join(PLUGIN, 'backend-detect.mjs'))
+  const repo = join(root, 'repo')
+  mkdirSync(join(repo, '.claude'), { recursive: true })
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: docker compose run -T --rm api python -m pytest\n')
+  const put = (name, allow) => {
+    const file = join(root, name)
+    writeFileSync(file, JSON.stringify({ permissions: { allow } }))
+    return file
+  }
+  // hermetic: stub docker (does not answer) and uv (collects 1 test) first on PATH, so no real tool is spawned
+  const stubs = join(root, 'stubs')
+  mkdirSync(stubs)
+  writeFileSync(join(stubs, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  writeFileSync(join(stubs, 'uv'), '#!/bin/sh\necho "1 test collected"\n', { mode: 0o755 })
+  const prevPath = process.env.PATH
+  process.env.PATH = `${stubs}:${prevPath}`
+  const rowOf = (files) => doctor(repo, { settingsFiles: files }).rows.find((r) => / — permissions — /.test(r))
+  const none = rowOf([join(root, 'missing.json'), put('other.json', ['Bash(node *)'])])
+  check('vt15s8a AC-8a.2: docker test command and no allow for docker compose run — fail with the permissions command', /^fail — permissions — .*permissions\.mjs --apply --groups .*js-toolchain.*,docker$/.test(none ?? ''), none)
+  check('vt15s8a AC-8a.2: Bash(docker compose *) in one of the settings files — ok', /^ok — permissions/.test(rowOf([put('a.json', []), put('b.json', ['Bash(docker compose *)'])]) ?? ''))
+  check('vt15s8a AC-8a.2: Bash(docker *) — ok', /^ok — permissions/.test(rowOf([put('c.json', ['Bash(docker *)'])]) ?? ''))
+  const putSettings = (name, permissions) => {
+    const file = join(root, name)
+    writeFileSync(file, JSON.stringify({ permissions }))
+    return file
+  }
+  const askRow = rowOf([putSettings('d.json', { allow: ['Bash(docker compose *)'], ask: ['Bash(docker *)'] })])
+  check('vt15s8a F-8a-2: an ask rule beats the allow — fail naming the ask rule', /^fail — permissions — .*ask rule `Bash\(docker \*\)`/.test(askRow ?? ''), askRow)
+  check('vt15s8a F-8a-2: Bash(*) covers docker — ok', /^ok — permissions/.test(rowOf([putSettings('e.json', { allow: ['Bash(*)'] })]) ?? ''))
+  check('vt15s8a F-8a-3: shellQuote wraps a path with spaces and leaves a plain one', shellQuote('/a b/it\'s.mjs') === "'/a b/it'\\''s.mjs'" && shellQuote('/a/b.mjs') === '/a/b.mjs', shellQuote('/a b/it\'s.mjs'))
+  writeFileSync(join(repo, 'Makefile'), 'run-tests:\n\tdocker exec -it core pytest\n')
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: make run-tests\n')
+  const makeRow = rowOf([join(root, 'missing.json')])
+  check('vt15s8a F-8a-1: make run-tests with docker exec in the recipe and no allow — fail — permissions', /^fail — permissions — .*docker exec/.test(makeRow ?? ''), makeRow)
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: ENV=1 docker exec core pytest {files:rel+py}\n- test_full: uv run pytest\n')
+  const testLine = rowOf([join(root, 'missing.json')])
+  check('vt15s8a F-8a-1: docker in the config test line (env prefix) — fail — permissions', /^fail — permissions/.test(testLine ?? ''), testLine)
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: ./pytest.sh\n')
+  const shRow = rowOf([join(root, 'missing.json')])
+  check('vt15s8a F-8a-1: ./pytest.sh — its own wording (builds an image)', /^fail — permissions — .*builds an image/.test(shRow ?? ''), shRow)
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: uv run pytest\n')
+  rmSync(join(repo, 'Makefile'))
+  check('vt15s8a AC-8a.2: a host test command — no permissions row', rowOf([join(root, 'missing.json')]) === undefined)
+  process.env.PATH = prevPath
+  rmSync(root, { recursive: true, force: true })
 }
 
 if (unit('vt15s8')) {
