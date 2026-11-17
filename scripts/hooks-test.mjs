@@ -182,6 +182,7 @@ const UNITS = [
   { id: 'vt6s13c', weight: 2 }, // Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit…
   { id: 'vt12s1', weight: 4 }, // VT-12 stage 1: force-run.mjs — one headless run with a fake `claude`: readiness, worktree, rate-limit record, the four outcomes, caffeinate
   { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
+  { id: 'vt15s1', weight: 2 }, // VT-15 stage 1: the `## Backend` config section (backendConfig, backendFileMatcher) and `{files:rel}` in run-check.mjs
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -10312,6 +10313,69 @@ setTimeout(() => {
   const gateCode = await gateDone
   check('final #6 incident: VT-B is removed while the queue waits for the reset before it — it does not run, the queue ends without it', removed.status === 0 && gateCode === 0 && starts().join() === 'VT-A' && /VT-B: removed from the queue while waiting/.test(gateOut), `${removed.status} ${gateCode} ${starts().join()} ${gateOut}`)
 
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-15 stage 1: `## Backend` and `{files:rel}` ────────────────────────────────────────────────────────────────────────
+if (unit('vt15s1')) {
+  const { backendConfig, backendFileMatcher } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  check('backendConfig: no `## Backend` section — null', backendConfig('## Project\n- slug: app\n\n## Commands\n- test: yarn test\n') === null)
+  check('backendConfig: the section without a single field — no repos, not null', same(backendConfig('## Backend\n\n## Commands\n- test: x\n'), { repos: [] }))
+  const one = backendConfig(
+    [
+      '## Project',
+      '- slug: core',
+      '',
+      '## Backend',
+      '- framework: django-drf',
+      '- test: **docker compose run --rm core-app python -m pytest {files:rel+py}**',
+      '- test_full: `make run-tests`',
+      '- lint: make ruff-lint',
+      '- type_check: —',
+      '- compose: docker-compose.yml · service: core-app · networks: common_network',
+      '- test_env: DISABLE_RABBITMQ=1, TEST_MODE=1, JWT_SECRET_KEY=secret',
+      '- api_files: src/entities/*/views/**, src/entities/*/serializers/**, src/entities/**/access_polic*.py',
+      '- api_schema: src/project/swagger_urls.py   # partial',
+      '- auth: POST /api/v3/token/ → Authorization: JWT <token>; credentials from env SMOKE_LOGIN / SMOKE_PASSWORD',
+      '- contracts: —   # default',
+      '- unknown_key: ignored',
+      '',
+      '## Commands',
+      '- test: yarn test',
+    ].join('\n'),
+  )
+  const r = one?.repos?.[0]
+  check('backendConfig one repo: a single repo named by the project slug, path "."', one?.repos?.length === 1 && r.name === 'core' && r.path === '.', JSON.stringify(one))
+  check('backendConfig one repo: ** and backticks are stripped, a dash value is null, a trailing comment is cut, unknown keys are not carried', r.test === 'docker compose run --rm core-app python -m pytest {files:rel+py}' && r.testFull === 'make run-tests' && r.typeCheck === null && r.contracts === null && r.apiSchema === 'src/project/swagger_urls.py' && !('unknown_key' in r) && r.framework === 'django-drf', JSON.stringify(r))
+  check('backendConfig one repo: compose as is, test_env an object, api_files an array, auth as is', r.compose === 'docker-compose.yml · service: core-app · networks: common_network' && same(r.testEnv, { DISABLE_RABBITMQ: '1', TEST_MODE: '1', JWT_SECRET_KEY: 'secret' }) && r.apiFiles.length === 3 && /^POST \/api\/v3\/token\/ → Authorization: JWT <token>; credentials/.test(r.auth), JSON.stringify(r))
+  const two = backendConfig('## Backend\n### core\n- path: ../chekin-backend-core\n- test: pytest {files:rel}\n- api_files: src/a/**\n### upselling\n- path: ../chekin-upselling\n- test: make t\n- api_files: app/api/**, app/models/**\n\n## Other\n- test: no\n')
+  check('backendConfig two repos: two repos with their own path, test and apiFiles', two?.repos?.length === 2 && two.repos[0].name === 'core' && two.repos[1].name === 'upselling' && two.repos[0].path === '../chekin-backend-core' && two.repos[1].path === '../chekin-upselling' && two.repos[0].test === 'pytest {files:rel}' && two.repos[1].test === 'make t' && same(two.repos[0].apiFiles, ['src/a/**']) && same(two.repos[1].apiFiles, ['app/api/**', 'app/models/**']), JSON.stringify(two))
+  const noSlug = backendConfig('## Backend\n- test: t\n', '/x/some-repo')
+  check('backendConfig one repo without a project slug: the root folder names it', noSlug.repos[0].name === 'some-repo', JSON.stringify(noSlug))
+  const glob1 = backendConfig('## Backend\n- api_files: **/serializers/**\n- test: **pytest**\n')
+  const glob2 = backendConfig('## Backend\n- api_files: **/views/**, **/urls/**\n')
+  check('backendConfig: a glob that starts with ** and ends with ** is not stripped as bold; real bold still is', same(glob1.repos[0].apiFiles, ['**/serializers/**']) && glob1.repos[0].test === 'pytest' && same(glob2.repos[0].apiFiles, ['**/views/**', '**/urls/**']), JSON.stringify([glob1, glob2]))
+  const wrongSlug = backendConfig('## Project\n- name: x\n\n## Backend\n- test: t\n\n## Other\n- slug: wrong\n', '/x/some-repo')
+  check('backendConfig: the slug is read only inside `## Project`, else the root folder', wrongSlug.repos[0].name === 'some-repo', JSON.stringify(wrongSlug))
+  const mixed = backendConfig('## Backend\n- test: shared t\n- lint: shared l\n### core\n- test: own t\n### up\n- path: ../up\n- test_env: NOEQUALS, A=1\n')
+  check('backendConfig mixed form: fields above ### are defaults, a repo field wins; a test_env item without = is dropped', mixed.repos[0].test === 'own t' && mixed.repos[0].lint === 'shared l' && mixed.repos[1].test === 'shared t' && mixed.repos[1].lint === 'shared l' && same(mixed.repos[1].testEnv, { A: '1' }), JSON.stringify(mixed))
+  const match = backendFileMatcher(r)
+  check('backendFileMatcher: a serializer and an access policy match, a util does not', match('src/entities/housing/serializers/v3.py') && !match('src/entities/housing/utils.py') && match('src/entities/reservation/access_policy.py'))
+  check('backendFileMatcher: no globs — never matches', backendFileMatcher({ apiFiles: [] })('src/a.py') === false)
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s1-')))
+  repoAt(root, 'main')
+  const runCheck = (command) => spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', command], { cwd: root, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
+  const none = runCheck('echo ARGS {files:rel+py}')
+  check('run-check {files:rel+py}: no changed files — the command is not run, code 0', none.status === 0 && /skipped/.test(none.stdout) && !/^ARGS/m.test(none.stdout), none.stdout + none.stderr)
+  write(root, { 'src/x.py': 'x = 1\n', 'src/sub/y.py': 'y = 1\n', 'src/z.ts': 'export const z = 1\n' })
+  const relPy = runCheck('echo ARGS {files:rel+py}')
+  const relOnly = runCheck('echo ARGS {files:rel}')
+  const absPy = runCheck('echo ARGS {files:py}')
+  const args = (out) => (out.stdout.match(/^ARGS (.*)$/m)?.[1] ?? '').split(' ').filter(Boolean).sort()
+  check('run-check {files:rel+py}: relative paths, only .py', same(args(relPy), ['src/sub/y.py', 'src/x.py']), relPy.stdout + relPy.stderr)
+  check('run-check {files:rel}: relative paths of every changed code file', same(args(relOnly), ['src/sub/y.py', 'src/x.py', 'src/z.ts']), relOnly.stdout + relOnly.stderr)
+  check('run-check {files:py}: still absolute paths', args(absPy).every((path) => path.startsWith(root)) && args(absPy).length === 2, absPy.stdout)
   rmSync(root, { recursive: true, force: true })
 }
 

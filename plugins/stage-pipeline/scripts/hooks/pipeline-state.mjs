@@ -18,6 +18,7 @@ import {
   STATUS_LINE,
   forceHeadings,
   freshestForceHeading,
+  globToRegExp,
   headingDate,
   ruleAppliesToBlock,
 } from '../markers.mjs'
@@ -571,6 +572,106 @@ export function taskDirFromConfig(config, root) {
   if (path === '~' || path.startsWith('~/')) path = join(homedir(), path.slice(1))
   else if (path.startsWith('$HOME/')) path = join(homedir(), path.slice(5))
   return isAbsolute(path) ? path : resolve(root, path)
+}
+
+const BACKEND_KEYS = {
+  path: 'path',
+  framework: 'framework',
+  test: 'test',
+  test_full: 'testFull',
+  lint: 'lint',
+  type_check: 'typeCheck',
+  compose: 'compose',
+  test_env: 'testEnv',
+  api_files: 'apiFiles',
+  api_schema: 'apiSchema',
+  auth: 'auth',
+  contracts: 'contracts',
+}
+
+/** A `## Backend` value: a trailing ` # comment` cut, wrapping `**` and backticks removed; empty, `—`, `-`, `none` are null. */
+function backendValue(raw) {
+  let value = raw.trim().replace(/(?:^|\s+)#(?:\s.*)?$/, '').trim()
+  // `**…**` is bold only when its inside has no `*` and no `/`: `**/views/**` is a glob, not bold
+  const unbold = (text) => text.replace(/^\*\*([^*/]*)\*\*$/, '$1')
+  for (let i = 0; i < 3; i++) value = unbold(value).replace(/^`([^`]*)`$/, '$1').trim()
+  return !value || /^(?:—|-|none)$/i.test(value) ? null : value
+}
+
+/** A comma list without the commas inside `{…}` of a glob. */
+function splitOutsideBraces(text) {
+  const parts = []
+  let depth = 0
+  let current = ''
+  for (const c of text) {
+    if (c === '{') depth++
+    else if (c === '}' && depth) depth--
+    if (c === ',' && !depth) {
+      parts.push(current)
+      current = ''
+    } else current += c
+  }
+  parts.push(current)
+  return parts.map((part) => part.trim().replace(/^`([^`]*)`$/, '$1')).filter(Boolean)
+}
+
+/**
+ * The `## Backend` section of a config: `null` when there is none (the pipeline behaves as without backend support), else
+ * `{ repos: [{ name, path, framework, test, testFull, lint, typeCheck, compose, testEnv, apiFiles, apiSchema, auth, contracts }] }`.
+ * Two forms: fields right under the heading (one repo, `path: .`, `name` is the `slug` of `## Project` or the folder of `root`),
+ * or one `### <name>` subheading per repo, each with its own `path:`. `apiFiles` is an array of globs, `testEnv` an object, the rest strings or null.
+ */
+export function backendConfig(config, root = '') {
+  const heading = /^##[ \t]+Backend[ \t]*$/im.exec(config ?? '')
+  if (!heading) return null
+  const lines = config.slice(heading.index + heading[0].length).split('\n').slice(1)
+  const blocks = [{ name: null, fields: {} }]
+  for (const line of lines) {
+    if (/^##(?!#)/.test(line)) break
+    const sub = line.match(/^###[ \t]+(.+?)[ \t]*$/)
+    if (sub) {
+      blocks.push({ name: sub[1], fields: {} })
+      continue
+    }
+    const field = line.match(/^[ \t]*-[ \t]*([A-Za-z_]+):[ \t]*(.*)$/)
+    const key = field && BACKEND_KEYS[field[1].toLowerCase()]
+    if (key) blocks.at(-1).fields[key] = backendValue(field[2])
+  }
+  const projectHead = /^##[ \t]+Project[ \t]*$/im.exec(config)
+  const projectBody = projectHead ? config.slice(projectHead.index + projectHead[0].length).split(/^##(?!#)/m)[0] : ''
+  const projectSlug = backendValue(/^[ \t]*-[ \t]*slug:[ \t]*(.*)$/im.exec(projectBody)?.[1] ?? '')
+  const toRepo = (name, f) => ({
+    name,
+    path: f.path ?? '.',
+    framework: f.framework ?? null,
+    test: f.test ?? null,
+    testFull: f.testFull ?? null,
+    lint: f.lint ?? null,
+    typeCheck: f.typeCheck ?? null,
+    compose: f.compose ?? null,
+    testEnv: f.testEnv
+      ? Object.fromEntries(
+          splitOutsideBraces(f.testEnv)
+            .map((pair) => pair.split(/=(.*)/s).slice(0, 2))
+            .filter(([k]) => k),
+        )
+      : {},
+    apiFiles: f.apiFiles ? splitOutsideBraces(f.apiFiles) : [],
+    apiSchema: f.apiSchema ?? null,
+    auth: f.auth ?? null,
+    contracts: f.contracts ?? null,
+  })
+  const [head, ...subs] = blocks
+  // fields above the first `###` are defaults for every `###` repo; a repo's own field wins
+  if (subs.length) return { repos: subs.map((b) => toRepo(b.name, { ...head.fields, ...b.fields })) }
+  if (!Object.keys(head.fields).length) return { repos: [] }
+  return { repos: [toRepo(projectSlug ?? (root ? basename(resolve(root)) : null), { ...head.fields, path: '.' })] }
+}
+
+/** `path → boolean` over the repo's `apiFiles` globs (repo-relative, `/`); no globs — always false. */
+export function backendFileMatcher(repo) {
+  const patterns = (repo?.apiFiles ?? []).map((glob) => globToRegExp(glob))
+  return (path) => patterns.some((pattern) => pattern.test(path))
 }
 
 export function readConfig(root) {
