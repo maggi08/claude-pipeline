@@ -10,7 +10,8 @@ Update: `claude plugin update stage-pipeline` + restart Claude Code.
 ### A repo can pin the security review to a model, and a broken Repo rules row is a named config problem
 
 - **`security_model` in `## Models` (optional).** When the config has `- security_model: <model>`, agent-guard denies a `security-review` call whose model (the `model` parameter, else the agent's own) differs from it (`agent-guard/security-model`), and the message says to repeat the call with `model: "<model>"`. No line: nothing changes, the agent stays on its own model. For a repo whose security review must stay on a stronger model, e.g. hook or permission code. `stage-force`, `stage-plan` and `pipeline-init` mention the key.
-- **A Repo rules row that throws when checked is a config problem.** Before, floor-guard dropped such a row quietly and every repo rule looked off; now it names the row as a config problem, and a throw of the rules parser prints a config problem and exits 2.
+- **A Repo rules row that throws when checked is a config problem.** Before, floor-guard dropped such a row quietly and every repo rule looked off; now it names the row as a config problem, and a throw of the rules parser prints a config problem and exits 2 when there are no violations.
+- **Agent names are compared the way the host reads them.** The host normalizes `subagent_type` after the hook (NFKC, lowercase, white space, dashes and `_` dropped), so `stage-pipeline:security_review`, `Security-Review` or a name with an en dash reached the agent past agent-guard's rules; every agent-name comparison in agent-guard now uses the same form. `security_model: none`, `-`, `off` or `n/a` read as no key.
 
 ## 0.27.1 — 2026-11-16
 

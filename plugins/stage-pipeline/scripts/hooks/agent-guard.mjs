@@ -35,7 +35,7 @@ const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(
 // Also `Mode: delta`, `delta review`, the Russian forms, and a prompt naming a `-branch-delta-` report; a stage prompt that only mentions "the delta of the round" stays allowed.
 const DELTA_MODE = new RegExp(`--delta\\b|\\bdelta[-\\s](?:mode|review)\\b|(?:${MODE_WORD})\\s*(?::\\s*)?\\**delta\\b|дельта[-\\s]?(?:режим|ревью)|(?:${MODE_WORD})\\s*:?\\s*\\**дельта|-branch-delta-`, 'i')
 // No subagent_type is a general-purpose agent too; `claude` is the catch-all type of some hosts.
-const GENERIC_AGENTS = new Set(['', 'general-purpose', 'claude'])
+const GENERIC_AGENTS = new Set(['', 'generalpurpose', 'claude'])
 // Told by the call's description or, for ds-parity, by a prompt that points at its skill. In the transcripts since 2026-10-01 most calls named the check in the
 // description; a combined sweep ("Delta sweep final 9": dead-code, i18n, security and ds-parity in one call) is caught by the ds-parity skill path only, so the message
 // sends every other check of the prompt to its own agent. "security" alone is not enough: an interview probe of "the account security page" is not a review; it counts
@@ -55,9 +55,14 @@ let spawned = null
 const input = await readHookInput()
 const toolInput = input.tool_input ?? {}
 const type = String(toolInput.subagent_type ?? '')
-const agent = type.split(':').at(-1)
-const generic = GENERIC_AGENTS.has(agent)
-if (!generic && agent !== 'pro-review' && agent !== 'stage-implement' && agent !== 'security-review') process.exit(0)
+// The host normalizes `subagent_type` after PreToolUse (NFKC, lowercase, strip white space, dashes and `_`), so `security_review`, `Security-Review` or an en-dash spelling reach the real agent:
+// every comparison below is made on the same form, and the canonical name is mapped back where a file is read.
+const squash = (name) => name.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')
+const CANONICAL = Object.fromEntries(['pro-review', 'stage-implement', 'security-review'].map((name) => [squash(name), name]))
+const rawAgent = type.split(':').at(-1)
+const agent = CANONICAL[squash(rawAgent)] ?? rawAgent
+const generic = GENERIC_AGENTS.has(squash(rawAgent))
+if (!generic && !Object.values(CANONICAL).includes(agent)) process.exit(0)
 
 const state = readPipelineState(input.cwd ?? process.cwd())
 if (!state) process.exit(0)
