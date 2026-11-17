@@ -183,6 +183,7 @@ const UNITS = [
   { id: 'vt12s1', weight: 4 }, // VT-12 stage 1: force-run.mjs — one headless run with a fake `claude`: readiness, worktree, rate-limit record, the four outcomes, caffeinate
   { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
   { id: 'vt15s1', weight: 2 }, // VT-15 stage 1: the `## Backend` config section (backendConfig, backendFileMatcher) and `{files:rel}` in run-check.mjs
+  { id: 'vt15s2', weight: 3 }, // VT-15 stage 2: backend-detect.mjs — detection on poetry / pip / uv fixtures, --init (never overwrites, exclude without duplicates), --doctor with a dead docker, a frontend repo
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -10377,6 +10378,127 @@ if (unit('vt15s1')) {
   check('run-check {files:rel}: relative paths of every changed code file', same(args(relOnly), ['src/sub/y.py', 'src/x.py', 'src/z.ts']), relOnly.stdout + relOnly.stderr)
   check('run-check {files:py}: still absolute paths', args(absPy).every((path) => path.startsWith(root)) && args(absPy).length === 2, absPy.stdout)
   rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-15 stage 2: backend-detect.mjs ────────────────────────────────────────────────────────────────────────────────────
+if (unit('vt15s2')) {
+  const SCRIPT = join(PLUGIN, 'backend-detect.mjs')
+  const detect = (repo, ...args) => spawnSync(process.execPath, [SCRIPT, repo, ...args], { encoding: 'utf8', env: { ...process.env, DOCKER_HOST: 'unix:///nonexistent' } })
+  const json = (repo) => JSON.parse(detect(repo, '--json').stdout)
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s2-')))
+  const mk = (name, files, tracked = false) => {
+    const repo = join(base, name)
+    mkdirSync(repo, { recursive: true })
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    write(repo, files)
+    if (tracked) {
+      git(repo, 'add', '-A')
+      git(repo, 'commit', '-qm', 'base')
+    }
+    return repo
+  }
+  const a = mk(
+    'poetry',
+    {
+      'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4.2"\ndjangorestframework = "3.14"\ndrf-yasg = "1.21"\n[tool.poetry.group.dev.dependencies]\npytest = "8"\n[tool.ruff]\nline-length = 120\n',
+      Makefile: 'CODE := src/a src/b\n.PHONY: ruff-lint run-tests\n\nruff-fix:\n\tpoetry run ruff check --fix\n\nruff-lint:\n\tpoetry run ruff check --no-fix\n\nrun-tests:\n\tdocker exec backend-x python -m pytest $(CODE)\n',
+      'docker-compose.yml': 'services:\n  db:\n    image: postgres\n  app-svc:\n    build:\n      context: .\n    networks:\n      - common_network\nnetworks:\n  common_network:\n    external: true\n  inner:\n    driver: bridge\n',
+      'src/manage.py': '',
+      'src/project/swagger_urls.py': 'schema_view = get_schema_view(info)\n',
+      'src/entities/housing/views/v3.py': '',
+      'src/entities/housing/serializers/v3.py': '',
+      'src/entities/housing/utils.py': '',
+      '.claude/skills/x.md': 'skill\n',
+    },
+    true,
+  )
+  const da = json(a)
+  check('backend-detect poetry fixture: django-drf, poetry, the Makefile pytest target is the test command', da.framework === 'django-drf' && da.packageManager === 'poetry' && da.testFull === 'make run-tests', JSON.stringify(da))
+  check('backend-detect poetry fixture: the file-run test goes through compose with {files:rel+py}', da.test === 'docker compose run -T --rm --no-deps app-svc python -m pytest {files:rel+py}', da.test)
+  check('backend-detect poetry fixture: lint is the ruff target without --fix, no type check', da.lint === 'make ruff-lint' && da.typeCheck === null, `${da.lint} ${da.typeCheck}`)
+  check('backend-detect poetry fixture: compose line has the file, the service with build and only external networks', da.compose === 'docker-compose.yml · service: app-svc · networks: common_network', da.compose)
+  check('backend-detect poetry fixture: the schema path is found by get_schema_view', da.apiSchema === 'src/project/swagger_urls.py', da.apiSchema)
+  check('backend-detect poetry fixture: only the masks that match a file are listed', same(da.apiFiles, ['**/views/**', '**/serializers/**']), JSON.stringify(da.apiFiles))
+  const b = mk('pip', { 'requirements/base.txt': 'Django==4.2\npytest==8\n', 'pytest.sh': 'docker run x python -m pytest $1\n', 'src/manage.py': '', 'pyproject.toml': '[tool.ruff]\n' })
+  const db = json(b)
+  check('backend-detect requirements/ + pytest.sh fixture: pip, ./pytest.sh, django without DRF', db.packageManager === 'pip' && db.testFull === './pytest.sh' && db.framework === 'django' && db.test === './pytest.sh {files:rel+py}', JSON.stringify(db))
+  check('backend-detect requirements/ + pytest.sh fixture: bare ruff, no compose, no schema', db.lint === 'ruff check' && db.compose === null && db.apiSchema === null, JSON.stringify(db))
+  const c = mk('uv', { 'pyproject.toml': '[project]\ndependencies = ["fastapi>=0.1"]\n[dependency-groups]\ndev = ["pytest", "ruff"]\n', 'uv.lock': '', 'ty.toml': '[rules]\n', 'src/routers/a.py': '' })
+  const dc = json(c)
+  check('backend-detect uv fixture: fastapi, uv, uv run pytest, ty, the FastAPI schema line', dc.framework === 'fastapi' && dc.packageManager === 'uv' && dc.testFull === 'uv run pytest' && dc.test === 'uv run pytest {files:rel+py}' && dc.typeCheck === 'uv run ty check' && dc.lint === 'uv run ruff check' && dc.apiSchema === 'auto (FastAPI /openapi.json)', JSON.stringify(dc))
+  check('backend-detect uv fixture: only the FastAPI mask that matches', same(dc.apiFiles, ['**/routers/**']), JSON.stringify(dc.apiFiles))
+  // the host runner is not on PATH, the repo has a compose service with `build:`: the tests run in the container (uv / poetry on PATH stay on the host)
+  const noBin = join(base, 'nobin')
+  const withUv = join(base, 'withuv')
+  mkdirSync(noBin, { recursive: true })
+  mkdirSync(withUv, { recursive: true })
+  writeFileSync(join(withUv, 'uv'), '')
+  const detectPath = (repo, path) => JSON.parse(spawnSync(process.execPath, [SCRIPT, repo, '--json'], { encoding: 'utf8', env: { ...process.env, PATH: path } }).stdout)
+  const compose = 'services:\n  api:\n    build: .\n'
+  const d1 = mk('poetry-compose', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4"\npytest = "8"\n', 'docker-compose.yml': compose, 'src/manage.py': '' })
+  const dd1 = detectPath(d1, noBin)
+  check('backend-detect poetry + compose, no Makefile / pytest.sh, poetry not on PATH: the tests run in the compose service', dd1.testFull === 'docker compose run -T --rm --no-deps api python -m pytest' && dd1.test === 'docker compose run -T --rm --no-deps api python -m pytest {files:rel+py}' && /runner not on PATH → compose service api/.test(dd1.sources.testFull), JSON.stringify(dd1))
+  const hum1 = spawnSync(process.execPath, [SCRIPT, d1], { encoding: 'utf8', env: { ...process.env, PATH: noBin } }).stdout
+  check('backend-detect prints the source of the container test command', /test command: docker compose run .*\[runner not on PATH → compose service api\]/.test(hum1), hum1)
+  const d2 = mk('uv-compose', { 'pyproject.toml': '[project]\ndependencies = ["fastapi"]\n[dependency-groups]\ndev = ["pytest"]\n', 'uv.lock': '', 'docker-compose.yml': compose })
+  const dd2 = detectPath(d2, withUv)
+  check('backend-detect uv + compose with uv on PATH: the tests stay on the host', dd2.testFull === 'uv run pytest' && dd2.test === 'uv run pytest {files:rel+py}', JSON.stringify(dd2))
+  check('backend-detect uv + compose without uv on PATH: the tests go to the container', detectPath(d2, noBin).testFull === 'docker compose run -T --rm --no-deps api python -m pytest')
+  const d3 = mk('poetry-nocompose', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4"\npytest = "8"\n', 'src/manage.py': '' })
+  check('backend-detect poetry without compose and without poetry on PATH: host command, nothing to fall back to', detectPath(d3, noBin).testFull === 'poetry run pytest')
+  const d4 = mk('poetry-compose-lint', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4"\npytest = "8"\n[tool.ruff]\nline-length = 120\n[tool.mypy]\nstrict = true\n', 'docker-compose.yml': compose, 'src/manage.py': '' })
+  const dd4 = detectPath(d4, noBin)
+  check('backend-detect poetry + compose, poetry not on PATH: lint and type_check run in the compose service', dd4.lint === 'docker compose run -T --rm --no-deps api ruff check' && dd4.typeCheck === 'docker compose run -T --rm --no-deps api mypy .', `${dd4.lint} | ${dd4.typeCheck}`)
+  const withPoetry = join(base, 'withpoetry')
+  mkdirSync(withPoetry, { recursive: true })
+  writeFileSync(join(withPoetry, 'poetry'), '')
+  check('backend-detect poetry + compose with poetry on PATH: lint stays on the host', detectPath(d4, withPoetry).lint === 'poetry run ruff check')
+  check('backend-detect poetry without compose and without poetry on PATH: lint stays the host command', detectPath(mk('poetry-nocompose-lint', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.ruff]\nline-length = 120\n', 'src/manage.py': '' }), noBin).lint === 'poetry run ruff check')
+  // --doctor takes test_full of the repo's own config before detection
+  mkdirSync(join(d1, '.claude'), { recursive: true })
+  writeFileSync(join(d1, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: echo 3 tests collected\n')
+  const docCfg = detect(d1, '--doctor')
+  check('backend-detect --doctor: test_full of the repo config wins over detection', /^ok — tests collect — 3 tests collected .*`echo 3 tests collected --collect-only -q`/m.test(docCfg.stdout), docCfg.stdout)
+  const noOrigin = detect(d3, '--init')
+  check('backend-detect --init without origin/HEAD: main_branch is — , not the current branch', /^- main_branch: —$/m.test(readFileSync(join(d3, '.claude/pipeline.config.md'), 'utf8')), noOrigin.stdout)
+  const human = detect(a).stdout
+  check('backend-detect prints the found values with their source and the `## Backend` candidate', /framework: django-drf {3}\[src\/manage\.py\]/.test(human) && /^## Backend$/m.test(human) && /^- test_full: make run-tests$/m.test(human), human)
+
+  // --init: writes once, never over an existing file, excludes without duplicates and not the whole .claude/
+  const first = detect(a, '--init', '--language', 'ru')
+  const configPath = join(a, '.claude/pipeline.config.md')
+  const text = readFileSync(configPath, 'utf8')
+  const { backendConfig } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  const parsed = backendConfig(text, a)
+  check('backend-detect --init: writes the config with a parsable `## Backend` and the slug of the folder', first.status === 0 && /^- slug: poetry$/m.test(text) && /^- language: ru$/m.test(text) && parsed?.repos?.[0]?.testFull === 'make run-tests' && /^- dev: —$/m.test(text) && /^- url: —$/m.test(text), first.stdout + text)
+  const exclude = readFileSync(join(a, '.git/info/exclude'), 'utf8').split('\n')
+  check('backend-detect --init: git does not show the config, exclude lines are exact (not the whole .claude/)', git(a, 'status', '--short').trim() === '' && ['.claude/pipeline.config.md', '.claude/pipeline.config.local.md', '.claude/tasks/'].every((l) => exclude.includes(l)) && !exclude.includes('.claude/') && !exclude.includes('.claude'), git(a, 'status', '--short') + exclude.join('|'))
+  writeFileSync(configPath, 'my config\n')
+  const second = detect(a, '--init')
+  check('backend-detect --init: an existing config is not touched', /exists, not touched/.test(second.stdout) && readFileSync(configPath, 'utf8') === 'my config\n', second.stdout)
+  rmSync(configPath)
+  detect(a, '--init')
+  check('backend-detect --init: exclude lines are not duplicated on a second init', readFileSync(join(a, '.git/info/exclude'), 'utf8').split('\n').filter((l) => l === '.claude/pipeline.config.md').length === 1)
+
+  // --doctor with a dead docker: the reason and the command, exit 1, the compose file still checked
+  const doc = detect(a, '--doctor')
+  check('backend-detect --doctor with DOCKER_HOST at nothing: a fail line about docker with a remedy, exit 1', doc.status === 1 && /^fail — docker does not answer — .*(colima start|Docker Desktop|install and start Docker)/m.test(doc.stdout), `${doc.status} ${doc.stdout}`)
+  check('backend-detect --doctor with a dead docker: compose file ok, the network and the collect step skipped, not failed', /^ok — compose file — docker-compose\.yml$/m.test(doc.stdout) && /^skip — external network common_network/m.test(doc.stdout) && /^skip — tests collect — needs docker/m.test(doc.stdout), doc.stdout)
+
+  // AC-2.4: a frontend repo is not a backend: nothing is printed as backend, nothing is written
+  const front = mk('front', { 'package.json': '{"name":"web","scripts":{"dev":"vite"}}\n', 'src/a.ts': '' }, true)
+  const out = detect(front)
+  const fi = detect(front, '--init')
+  check('backend-detect on a frontend repo: no backend, no `## Backend`, --init writes nothing', /no backend/.test(out.stdout) && !/## Backend/.test(out.stdout) && /nothing written/.test(fi.stdout) && !existsSync(join(front, '.claude')), out.stdout + fi.stdout)
+  const tooling = mk('front-tooling', { 'package.json': '{"name":"web"}\n', 'docs/requirements.txt': 'mkdocs\n', 'pyproject.toml': '[tool.ruff]\nline-length = 100\n', 'scripts/tool.py': '' }, true)
+  const ft = detect(tooling, '--init')
+  check('backend-detect: a frontend repo with docs/requirements.txt and a ruff-only pyproject.toml is not a backend', json(tooling).hasBackend === false && /nothing written/.test(ft.stdout) && !existsSync(join(tooling, '.claude')), ft.stdout)
+  const tmpl = readFileSync(join(PLUGIN, '../skills/pipeline-init/SKILL.md'), 'utf8')
+  check('pipeline-init: the template has a `## Backend` section marked backend-only, and the init step names backend-detect.mjs', /## Backend\n<!-- Only for a backend repo; without this section the backend checks are off/.test(tmpl) && /backend-detect\.mjs <repo> --init/.test(tmpl))
+  check('pipeline-init (AC-2.4): the template says to omit the whole `## Backend` section in a repo without a Python backend, and lists test_env / auth / contracts / note', /Omit this whole section \(the heading and this comment\) in a repo without a Python backend/.test(tmpl) && ['test_env', 'auth', 'contracts', 'note'].every((k) => new RegExp(`^- ${k}: <`, 'm').test(tmpl)))
+  rmSync(base, { recursive: true, force: true })
 }
 
 if (MODE === 'serial') for (const late of lateChecks) late(DATA)
