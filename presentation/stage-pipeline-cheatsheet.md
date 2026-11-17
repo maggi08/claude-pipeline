@@ -1,6 +1,6 @@
 # Stage Pipeline · cheatsheet
 
-A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.27.1 — 23 skills, 17 agents.
+A staged maker/checker workflow for Claude Code. Plugin `stage-pipeline@magzhan`, v0.28.0 — 23 skills, 17 agents.
 
 ---
 
@@ -94,6 +94,7 @@ If you do not need a broad Bash allowlist, `--minimal` allows only skills and MC
 | `/root-cause` | debugging to the cause: a fix did not work, a symptom with no explanation |
 | `/dead-code`, `/i18n-sweep`, `/deps-audit` | narrow passes: junk from the task, i18n, dependencies |
 | `/ds-parity` | parity with the design system before a PR |
+| `api-verify`, `contract-compare` | backend checkers: probes of the API by the stage criteria; frontend types, mocks and serializers against the contract |
 | `/task-converge` | the code on HEAD against the intent of the whole task: an uncovered criterion, a silently widened scope |
 | `/task-wrapup` | an MR description from the task journal → `PR.md`, by the human-text rules; manual only |
 | `/human-text` | text about a project for people (team, manager, newcomer, client): fact card, draft by the rules, closed-question check; manual only. Also installs alone: `human-text@magzhan` |

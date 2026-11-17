@@ -5,6 +5,24 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.28.0 — 2026-11-17
+
+### A backend task: a contract first, a backend API check, a frontend-against-contract check, and the final checks in every repo of the task
+
+What changes against 0.27.1: nothing, in a repo without a `## Backend` section in `pipeline.config.md`. In a repo that has one (a Python backend, or a frontend repo that names one), the pipeline plans and checks the API too.
+
+- **A `## Backend` config section and `backend-detect.mjs`.** The section holds the test, lint and type-check commands, the compose file, the `api_files` globs, the schema, `auth`, `contracts` and a one-line `note` for checkers; one block for this repo, or one `### <name>` per backend repo. `{files:rel+py}` in a command gives repo-relative paths, which a container sees. `node scripts/backend-detect.mjs <repo>` reads a Python repo (Django, DRF, FastAPI; pip, uv, poetry) and prints the candidate section; `--init` writes `pipeline.config.md` only if there is none; `--doctor` checks that docker answers, the compose file and networks are there and the tests collect.
+- **`/pipeline-init` and `/pipeline-doctor` know a Python backend.** Init offers the section from the detector, doctor runs `--doctor` for every backend repo of the config.
+- **Contract first, and the tags.** The plan of a backend task starts with a contract stage written once in `references/contract.md` (endpoints, roles, errors, events, migrations), carries a "Contract coverage" table, and tags backend behavior `[verify: api-verify]` and what needs both sides live `[verify: staging]`; a `staging` criterion closes only with an observation on staging. `plan-check.mjs` and `journal-check.mjs` read the tags.
+- **`api-verify` (a new agent, sonnet, and its skill).** Probes written from the criteria and the contract, before the maker's tests are read, run in the repo's own test setup: codes, response body, the role matrix with another user and an anonymous request, a read-back after a write, a sent event, a migration forward and back. A PASS carries the request, the code and a read-back line; a probe that did not run is `not checked`.
+- **A force commit that changes backend API files needs an `api-verify` report** in its window (or a skip line `no behaviour change — <path:line>`); an environment reason is not a skip. The journal gate refuses a PASS on an `api-verify` criterion without the request and the read-back, and a dismissal that hands a finding to "the backend" in a task that owns the backend.
+- **`contract-compare` (a new agent, sonnet, and its skill).** A static check of the frontend types and calls, the MSW mocks and the backend serializers against the task's `CONTRACT.md`: a field, a nullable, an enum value missing on one side.
+- **Final checks in every repo of a multi-repo task, and `deps-audit` for Python.** `/stage-force` runs the final tests, floor-guard and the diff review in each repo the task touched, not only the one the session is in; `deps-audit` reads `pyproject.toml`, `requirements*` and lockfiles of a Python manifest.
+
+**Models.** `api-verify` and `contract-compare` run on sonnet, like the other checkers of a stage.
+
+**Dev repo only:** the `vt15` cases of `scripts/hooks-test.mjs` (backend config, detector, plan and journal tags, the force-commit rule, the receipts), `rule-enforcers.json` rows for the new rules, and the cases `api-verify-owner-check` and `contract-compare-enum-drift` in `evals/pending/` (not run yet).
+
 ## 0.27.1 — 2026-11-16
 
 ### A force run that hits its org's monthly spend text while the 5-hour window resets within hours now waits for the reset instead of stopping with `spend_limit`

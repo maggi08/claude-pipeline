@@ -94,9 +94,15 @@ A task spanning two repositories (core + webview) lives in the task directory of
 
 Studies the project and creates `<repo>/.claude/pipeline.config.md` (paths, commands, dev URL, design sources, code layout, platforms, `task_path`/`memory_path`). If there is no `CLAUDE.md`, it offers `/init`. It also offers to lay the pipeline permissions into the user scope (see "Permissions" above) — once per machine, not in every repository.
 
+### Backend tasks (overview)
+
+A repo with a `## Backend` section in its config gets backend support; without it nothing changes. The pieces, each described where it works: the section and `backend-detect.mjs` (below, "Backend section"); the contract and the criterion tags (below, "Backend task: contract first"); `api-verify` and `contract-compare` ("Skills and agents"); the force-commit rule for `api_files` and its `api-verify` report ("Hooks", git-guard); the final checks in every repo of a task (`stage-force`, final checks); `deps-audit` for Python manifests.
+
+Two pieces live only in their skill files: the final checks in every repo of a multi-repo task are in `skills/stage-force/SKILL.md` (final checks), and the Python manifests (`pyproject.toml`, `requirements*`, lockfiles) are read by `skills/deps-audit/SKILL.md`. To turn it on in an existing backend repo: `/pipeline-init`, then `/pipeline-doctor`.
+
 ### Backend section (optional)
 
-`## Backend` in `pipeline.config.md` turns on backend support for a repo that serves an API (the commands to test and lint it, the files that make up its API, where the contract goes). Two forms: fields right under the heading (this repo is the backend, `path: .`), or one `### <name>` subheading per backend repo, each with its own `path:`; in the second form, fields above the first `###` are defaults inherited by every repo, and a repo's own field wins. A value of `—`, `-` or `none` means "not set". Without the section nothing changes: the pipeline behaves as before. `backendConfig()` in `scripts/hooks/pipeline-state.mjs` reads it; `/pipeline-init` does not write it yet.
+`## Backend` in `pipeline.config.md` turns on backend support for a repo that serves an API (the commands to test and lint it, the files that make up its API, where the contract goes). Two forms: fields right under the heading (this repo is the backend, `path: .`), or one `### <name>` subheading per backend repo, each with its own `path:`; in the second form, fields above the first `###` are defaults inherited by every repo, and a repo's own field wins. A value of `—`, `-` or `none` means "not set". Without the section nothing changes: the pipeline behaves as before. `backendConfig()` in `scripts/hooks/pipeline-state.mjs` reads it; `/pipeline-init` offers it from `scripts/backend-detect.mjs`.
 
 ### Backend task: contract first
 

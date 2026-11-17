@@ -188,6 +188,7 @@ const UNITS = [
   { id: 'vt15s6', weight: 1 }, // VT-15 stage 6: contract-compare agent and skill, agent-guard for it, the pending case reads and passes the leak lint, the counts
   { id: 'vt15s7', weight: 2 }, // VT-15 stage 7: taskRepos (own repo + siblings with task-branch commits), closing a Force block needs pro-review-branch-<repo> per other repo, one repo / backendSeen keep the old rule, deps-audit names the Python manifests
   { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
+  { id: 'vt15s8', weight: 1 }, // VT-15 stage 8: the api-verify-owner-check pending case — its finding regexes against correct and wrong sample lines, the fixture settings can log in
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
@@ -10842,6 +10843,25 @@ if (unit('vt15s7')) {
   check('vt15s7 AC-7.3: the deps-audit skill names pyproject.toml, poetry.lock, uv.lock and requirements', ['pyproject.toml', 'poetry.lock', 'uv.lock', 'requirements'].every((word) => skill.includes(word)))
   check('vt15s7 AC-7.3: the scope no longer limits the pass to package.json', /Python/.test(skill) && /site-packages|git\+/.test(skill))
   rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('vt15s8')) {
+  const { readCase, lintCase, findingMatches } = await import(join(PLUGIN, '..', '..', '..', 'scripts/eval-lib.mjs'))
+  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/pending/api-verify-owner-check')
+  const spec = readCase(caseDir)
+  const [forbid] = spec.findingsForbid
+  const [want] = spec.findings
+  const correct = [
+    '- **major** FAIL AC-1.1: PATCH /api/notes/1/ as user B (non-owner) → 200, FAIL; read-back as A: text changed',
+    '- **major** the queryset is not scoped to the owner, wrong code 200 for user B',
+  ]
+  const wrong = ['- **major** PATCH as the owner returned 200, unexpected FAIL', '- **major** anonymous request answered 403 — wrong, a bug']
+  check('vt15s8 case: correct findings (non-owner PATCH 200) do not trip findingsForbid', correct.every((line) => findingMatches(forbid, line).length === 0), JSON.stringify(correct.map((line) => findingMatches(forbid, line).length)))
+  check('vt15s8 case: correct findings match findings[0]', correct.every((line) => findingMatches(want, line).length === 1), JSON.stringify(correct.map((line) => findingMatches(want, line).length)))
+  check('vt15s8 case: a failed owner PATCH and a wrong anonymous refusal trip findingsForbid', wrong.every((line) => findingMatches(forbid, line).length === 1), JSON.stringify(wrong.map((line) => findingMatches(forbid, line).length)))
+  const settings = readFileSync(join(caseDir, 'base/app/settings.py'), 'utf8')
+  check('vt15s8 case: the fixture settings carry sessions and the auth middleware, so APIClient().login works', ['django.contrib.sessions"', 'SessionMiddleware', 'AuthenticationMiddleware'].every((part) => settings.includes(part)))
+  check('vt15s8 case: the leak lint finds nothing', lintCase(caseDir).length === 0)
 }
 
 if (unit('vt15s6')) {
