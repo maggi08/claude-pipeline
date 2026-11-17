@@ -687,7 +687,15 @@ export function parseRepoRules(configText) {
       fail(`the pattern does not compile — ${error.message}`)
       continue
     }
-    if (regex.test('')) {
+    let matchesEmpty
+    try {
+      matchesEmpty = regex.test('')
+    } catch (error) {
+      // V8 starts such a message with the echoed pattern (`Invalid regular expression: /…/: Maximum call stack size exceeded`): the echo goes, the cause stays
+      fail(`the pattern fails when checked — ${String(error?.message ?? error).replace(/^Invalid regular expression: \/[\s\S]*\/[a-z]*:\s*/, '').slice(0, 200)}`)
+      continue
+    }
+    if (matchesEmpty) {
       fail('the pattern matches an empty string, so it would flag every line')
       continue
     }

@@ -11,6 +11,7 @@ import {
   EN_HEADINGS,
   LANGUAGE_LINE,
   NOT_CLOSED,
+  NO_VALUE,
   NO_BRANCH,
   RU_HEADINGS,
   STATUS_FORCE_CLOSED,
@@ -381,6 +382,14 @@ export function registerTaskDir(dir) {
 export function reviewModel(config) {
   const raw = config.match(/^[ \t]*-[ \t]*review_model:[ \t]*[`*]*([\w.-]+)/m)?.[1]
   return raw ? raw.toLowerCase() : 'opus'
+}
+
+/** `security_model` from the config: the model the security-review agent is held to. No key: `null`, the agent's own model (no default). */
+export function securityModel(config) {
+  // the value is read up to white space or `#`; the "no value" words (markers.mjs NO_VALUE, `off`) read as no key
+  const raw = config.match(/^[ \t]*-[ \t]*security_model:[ \t]*[`*]*([^\s#`*]+)/m)?.[1]
+  if (!raw || NO_VALUE.test(raw) || /^off$/i.test(raw)) return null
+  return /^[\w.-]+$/.test(raw) ? raw.toLowerCase() : null
 }
 
 /**

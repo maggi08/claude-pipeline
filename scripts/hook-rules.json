@@ -6,7 +6,8 @@
         "whole-branch pro-review without model — denied",
         "delta pro-review (--delta) without model — denied, as a whole-branch one",
         "delta mode pro-review: `Mode: delta` — denied",
-        "delta mode pro-review: Russian mode-delta form — denied"
+        "delta mode pro-review: Russian mode-delta form — denied",
+        "S-1: whole-branch `stage-pipeline:Pro-Review` without model — denied as review-model"
       ],
       "legitimate": [
         "whole-branch pro-review on opus — passes",
@@ -14,6 +15,29 @@
         "stage pro-review that only mentions the delta of the stage — no model required"
       ],
       "head": "whole-branch pro-review runs on review_model"
+    },
+    "agent-guard/security-model": {
+      "incident": [
+        "security_model: opus — security-review without model denied",
+        "security_model: opus — security-review on sonnet denied",
+        "S-1: security_model: opus — `stage-pipeline:security_review` on sonnet denied",
+        "S-1: security_model: opus — `Security-Review` and an en-dash spelling on sonnet denied",
+        "S-1: security_model: opus — a trailing newline in the agent name on sonnet denied"
+      ],
+      "legitimate": [
+        "security_model: opus — security-review on opus passes",
+        "security_model: opus — security-review on Opus passes",
+        "security_model: claude-opus-5-5 — security-review on the alias opus passes",
+        "security_model: opus — security-review on claude-opus-5-5 passes",
+        "no security_model — security-review without model passes",
+        "no security_model — security-review on opus passes",
+        "S-1: security_model: opus — `stage-pipeline:Security_Review` on opus passes",
+        "S-1: security_model: opus — a differently named agent on sonnet passes",
+        "security_model: none — security-review on sonnet passes",
+        "security_model: - — security-review on sonnet passes",
+        "security_model: n/a — security-review on sonnet passes"
+      ],
+      "head": "the security review runs on security_model"
     },
     "agent-guard/checker-agent": {
       "incident": [

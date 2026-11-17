@@ -6,7 +6,7 @@
  * A guard that silently stopped seeing its class is worse than none: it reports green.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -451,7 +451,7 @@ for (const spec of CASES) {
 {
   const SECRET_LINE = `const k = "${'AKIA'}${'QWERTYUIOPASDFGH'}"\n`
   const withConfig = (rows) => `- main_branch: main\n\n## Repo rules\n\n| id | pattern | files | message |\n|--|--|--|--|\n${rows}\n`
-  const timedRun = (name, base, change, check) => {
+  const timedRun = (name, base, change, check, guard = GUARD) => {
     const repo = mkdtempSync(join(tmpdir(), 'floor-guard-13a-'))
     git(repo, 'init', '-q', '-b', 'main')
     git(repo, 'config', 'user.email', 'test@example.com')
@@ -462,7 +462,7 @@ for (const spec of CASES) {
     write(repo, change)
     git(repo, 'add', '-A')
     const started = Date.now()
-    const run = spawnSync('node', [GUARD, '--json'], { cwd: repo, encoding: 'utf8', timeout: 12_000 })
+    const run = spawnSync('node', [guard, '--json'], { cwd: repo, encoding: 'utf8', timeout: 12_000 })
     const ms = Date.now() - started
     let out = null
     try {
@@ -486,6 +486,28 @@ for (const spec of CASES) {
     run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'repo:nofoo' && !out.configProblems ? null : `status ${run.status}, ${JSON.stringify(out)}`)
   timedRun('repo rules legitimate: realistic globs with four wildcards apply on a deep path', { '.claude/pipeline.config.md': withConfig('| g | `forbiddenCall\\(` | `**/__tests__/**/*.test.*` | no |') }, { 'a/b/__tests__/c/d.test.ts': 'forbiddenCall(1)\n' }, ({ run, out }) =>
     run.status === 1 && out?.violations.some((v) => v.rule === 'repo:g') ? null : `status ${run.status}, ${JSON.stringify(out)}`)
+  // VT-16 stage 1 (D4): a row whose pattern throws when checked, a table that cannot be parsed, a config that cannot be read.
+  // Incident: one row that overflows the stack on `test('')` took the whole table (and floor-guard's exit code) down. Legitimate: the good rows keep working, an unreadable config stays "no config".
+  const good = '| good | `FORBIDDEN_THING` | * | no |'
+  const overflow = `| overflow | \`(${'a+'.repeat(8000)})x\` | * | no |`
+  const a1 = { 'src/a.ts': 'export const a = 1\n' }
+  timedRun('repo rule incident (VT-16 AC-1.1): a pattern that throws on the empty-string check is named by its id and its cause, the good row still reports', { '.claude/pipeline.config.md': withConfig(`${good}\n${overflow}`), ...a1 }, { 'src/a.ts': 'export const a = FORBIDDEN_THING\n' }, ({ run, out }) =>
+    run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'repo:good' && out.configProblems?.length === 1 && out.configProblems[0].includes('"overflow"') && /fails when checked/.test(out.configProblems[0]) && /stack/i.test(out.configProblems[0]) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  timedRun('repo rule incident (VT-16 AC-1.1): only the throwing row and a clean diff — code 2, not a silent pass', { '.claude/pipeline.config.md': withConfig(overflow), ...a1 }, { 'src/a.ts': 'export const a = 2\n' }, ({ run, out }) =>
+    run.status === 2 && out?.configProblems?.length === 1 && out.configProblems[0].includes('"overflow"') ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`)
+  // AC-1.2: the fixed parser no longer throws on any table text, so the loader's branch is reached through a copy of the scripts whose `markers.mjs` is a stub that re-exports the real one but throws in `parseRepoRules` (the one case that needs its own guard path, passed to timedRun).
+  {
+    const copy = mkdtempSync(join(tmpdir(), 'floor-guard-vt16-scripts-'))
+    cpSync(dirname(GUARD), copy, { recursive: true })
+    renameSync(join(copy, 'markers.mjs'), join(copy, 'markers-real.mjs'))
+    writeFileSync(join(copy, 'markers.mjs'), "export * from './markers-real.mjs'\nexport const parseRepoRules = () => {\n  throw new Error('boom from the parser')\n}\n")
+    timedRun('repo rule incident (VT-16 AC-1.2, parser stubbed to throw): the table that cannot be parsed is a config problem and code 2, not 0', { '.claude/pipeline.config.md': withConfig(good), ...a1 }, { 'src/a.ts': 'export const a = 2\n' }, ({ run, out }) =>
+      run.status === 2 && out?.configProblems?.some((line) => /Repo rules: the table could not be parsed — boom from the parser/.test(line)) ? null : `status ${run.status}, ${JSON.stringify(out?.configProblems)}`, join(copy, 'floor-guard.mjs'))
+    rmSync(copy, { recursive: true, force: true })
+  }
+  // AC-1.3: a config that cannot be read (here a directory) is no config: no repo rules, no problem, the built-in rules still run.
+  timedRun('repo rule legitimate (VT-16 AC-1.3): an unreadable config (a directory) means no repo rules, no problem, built-in rules still run', { '.claude/pipeline.config.md/keep': '\n', ...a1 }, { 'src/a.ts': 'export const a = 2 as any\n' }, ({ run, out }) =>
+    run.status === 1 && out?.violations.length === 1 && out.violations[0].rule === 'type-escape' && !out.configProblems ? null : `status ${run.status}, ${JSON.stringify(out)}`)
 }
 
 // Stage 13c of VT-6 (B5): the `files` cell written as several code spans, and the globs that can never match.
