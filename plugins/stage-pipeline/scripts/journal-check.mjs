@@ -277,12 +277,40 @@ export function liveViolation(line) {
 }
 const LIVE_TAG = /\[live:\s*user-side\b/i
 
+/**
+ * VT-15 (D5): a criterion tagged `[verify: staging]` needs both sides alive, so a run does not close it. A line that marks it done (✅) must carry the observation:
+ * `[staging: <address>; <route> → <observed>]`, each of the three parts with content (same empty words as the live form). An open line (no ✅) is not a violation.
+ */
+const STAGING_VERIFY_TAG = /\[verify:([^\]\n]*)\]/gi
+const stagingTagged = (open) => [...open.matchAll(STAGING_VERIFY_TAG)].some((match) => match[1].split(/[,+/&]|\band\b/).some((name) => name.trim().toLowerCase() === 'staging'))
+const STAGING_DONE = /✅|\[x\]|\bPASS\b/i
+const LOCAL_ADDRESS = /^\s*(?:(?:https?:\/\/)?(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])(?![\w-])|file:)/i
+const STAGING_PARTS = /^\[staging:\s*([^;\]\n]*);([^→\]\n]*)→([^\]\n]*)\]/i
+export function stagingViolation(line) {
+  const open = line.replace(/`[^`\n]*`/g, (quote) => ' '.repeat(quote.length))
+  if (!stagingTagged(open) || !STAGING_DONE.test(open)) return null
+  const id = line.match(/AC-[\w.]*\w/)?.[0]
+  const observed = [...open.matchAll(/\[staging:/gi)].some((match) => {
+    const parts = open.slice(match.index, match.index + 2000).match(STAGING_PARTS)
+    return parts && parts.slice(1).every(hasContent) && !LOCAL_ADDRESS.test(parts[1])
+  })
+  if (observed) return null
+  return {
+    rule: 'staging-no-observation',
+    id: id ?? 'staging',
+    message:
+      `${id ? `${id}: ` : ''}a \`[verify: staging]\` criterion is closed (✅ / [x] / PASS) without an observation on staging, or its address is local (staging means the deployed environment, not localhost, 127.*, 0.0.0.0 or file:). No run closes it: it stays open and goes to the TEST-PLAN until someone sees it work with both sides deployed. ` +
+      'Close it with `[staging: <address>; <route> → <observed>]`, all three parts with content, for example ' +
+      '`[staging: https://staging.example.test; /bookings/42 → the upsell line shows the new price]`.',
+  }
+}
+
 export function journalViolations(text, reports = null, taskDir = null) {
   const lines = text
     .split('\n')
     .map((line) => {
       const violation =
-        liveViolation(line) ?? acViolation(line, reports) ?? skipViolation(line) ?? caveatViolation(line) ?? noDataViolation(line) ?? likeViolation(line) ?? checkerLineViolation(line, taskDir)
+        liveViolation(line) ?? stagingViolation(line) ?? acViolation(line, reports) ?? skipViolation(line) ?? caveatViolation(line) ?? noDataViolation(line) ?? likeViolation(line) ?? checkerLineViolation(line, taskDir)
       return violation && { ...violation, line: line.trim() }
     })
     .filter(Boolean)

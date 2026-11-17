@@ -36,6 +36,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Section | `## Stages` | `## Этапы` |
 | Section | `## Final checks (after all stages)` | `## Финальные проверки (после всех этапов)` |
 | Section | `## Design source coverage` | `## Покрытие дизайн-источника` |
+| Section, backend task only | `## Contract coverage` | `## Покрытие контракта` |
 | Section | `## Shared elements (stage overlaps)` | `## Общие элементы (пересечения этапов)` |
 | Section | `## ⚠ Awaiting user confirmation` | `## ⚠ Ожидают подтверждения пользователя` |
 | Section | `## Not included in the plan` | `## Не включено в план` |
@@ -90,6 +91,9 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | devtools-verify `fixed` outcome (new reports) | `fixed: <file:line> — re-run checks/devtools-verify-<stage>-r<k>.md` (or `-fresh.md`, or a `checks/screens/<file>.png`) | `исправлено: <file:line> — перепроверка checks/devtools-verify-<stage>-r<k>.md` (the cited file name is the same) |
 | Repro mode, not reproduced (written in the `-repro` report by the checker; read by the weak-dismissal rule when a `false:` line repeats it: two attempts and a route) | `not reproduced (2 attempts, <route>)` | `не воспроизведено (2 попытки, <маршрут>)` |
 | Deferral to the user, criterion line | `[live: user-side — <prerequisite>; <route> → <observed>]` | `[live: user-side — <что мешало>; <маршрут> → <что видно>]` (the tag, `—`, `;` and `→` are the same; only the words inside are in the task language; a bare `[live: user-side]` on a new line is rejected in both) |
+| Criterion tags, backend task (the same in both languages, like every `[verify: …]`) | `[verify: api-verify]`, `[verify: staging]` | the same |
+| Observation of a `[verify: staging]` criterion (the same in both languages, like `[live: …]`; the three parts need content; a `✅` on a staging criterion without it is rejected) | `[staging: <address>; <route> → <observed>]` | `[staging: <адрес>; <маршрут> → <увиденное>]` (the tag, `;` and `→` are the same; only the words inside are in the task language) |
+| Contract file sections (`references/contract.md`, written in the task language; the ids `E<n>`, `EV<n>`, `MG<n>` are the same) | `## Endpoints`, `## Events`, `## Migrations`, `## Open questions` | `## Эндпоинты`, `## События`, `## Миграции`, `## Открытые вопросы` |
 | Decision line, new (Awaiting, assumption) | `Rollback: <what undoing it costs>` | `Откат: <во что обойдётся откат>` |
 | Decision line, new (Awaiting, assumption) | `Basis: <path:line \| node-id \| URL \| a quote \| D<n> / A<n> / AC-<n> \| guess>` | `Основание: <path:line \| node-id \| URL \| цитата \| D<n> / A<n> / AC-<n> \| догадка>` |
 | Report section | `## Findings outcome` | `## Итог находок` |

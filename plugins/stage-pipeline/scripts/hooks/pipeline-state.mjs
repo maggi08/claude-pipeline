@@ -668,6 +668,16 @@ export function backendConfig(config, root = '') {
   return { repos: [toRepo(projectSlug ?? (root ? basename(resolve(root)) : null), { ...head.fields, path: '.' })] }
 }
 
+/**
+ * Where the contract of a backend task lives (VT-15, D2): the first repo of `## Backend` with a `contracts:` key wins — `<repo>/<contracts>/<TICKET>.md`
+ * (committed with the backend PR; the repo path is relative to `root`); without the key, `<taskDir>/<TICKET>/CONTRACT.md`. `taskDir` is the tasks folder.
+ */
+export function contractPath(config, taskDir, ticket, root = '') {
+  const repo = backendConfig(config, root)?.repos.find((entry) => entry.contracts)
+  if (repo) return join(root, repo.path, repo.contracts, `${ticket}.md`)
+  return join(taskDir, ticket, 'CONTRACT.md')
+}
+
 /** `path → boolean` over the repo's `apiFiles` globs (repo-relative, `/`); no globs — always false. */
 export function backendFileMatcher(repo) {
   const patterns = (repo?.apiFiles ?? []).map((glob) => globToRegExp(glob))

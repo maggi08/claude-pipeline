@@ -97,6 +97,10 @@ Studies the project and creates `<repo>/.claude/pipeline.config.md` (paths, comm
 
 `## Backend` in `pipeline.config.md` turns on backend support for a repo that serves an API (the commands to test and lint it, the files that make up its API, where the contract goes). Two forms: fields right under the heading (this repo is the backend, `path: .`), or one `### <name>` subheading per backend repo, each with its own `path:`; in the second form, fields above the first `###` are defaults inherited by every repo, and a repo's own field wins. A value of `—`, `-` or `none` means "not set". Without the section nothing changes: the pipeline behaves as before. `backendConfig()` in `scripts/hooks/pipeline-state.mjs` reads it; `/pipeline-init` does not write it yet.
 
+### Backend task: contract first
+
+In a repo with a `## Backend` section the plan starts with a contract stage: endpoints, roles, errors, events and migrations written once in `references/contract.md`, before any code. The plan carries a "Contract coverage" table (every endpoint, event and migration has a stage); backend behavior is tagged `[verify: api-verify]`, and what needs both sides live is tagged `[verify: staging]` and closes only with an observation on staging. See `references/contract.md` and the stage-plan skill, "Backend task".
+
 ## 1. Once per task
 
 1. **`/feature-checker <ticket/feature>`** → `FEATURE-MAP.md` — a map of what already exists (reuse vs write from scratch). Needed for planning.

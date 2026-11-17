@@ -184,6 +184,7 @@ const UNITS = [
   { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
   { id: 'vt15s1', weight: 2 }, // VT-15 stage 1: the `## Backend` config section (backendConfig, backendFileMatcher) and `{files:rel}` in run-check.mjs
   { id: 'vt15s2', weight: 3 }, // VT-15 stage 2: backend-detect.mjs — detection on poetry / pip / uv fixtures, --init (never overwrites, exclude without duplicates), --doctor with a dead docker, a frontend repo
+  { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -10499,6 +10500,56 @@ if (unit('vt15s2')) {
   check('pipeline-init: the template has a `## Backend` section marked backend-only, and the init step names backend-detect.mjs', /## Backend\n<!-- Only for a backend repo; without this section the backend checks are off/.test(tmpl) && /backend-detect\.mjs <repo> --init/.test(tmpl))
   check('pipeline-init (AC-2.4): the template says to omit the whole `## Backend` section in a repo without a Python backend, and lists test_env / auth / contracts / note', /Omit this whole section \(the heading and this comment\) in a repo without a Python backend/.test(tmpl) && ['test_env', 'auth', 'contracts', 'note'].every((k) => new RegExp(`^- ${k}: <`, 'm').test(tmpl)))
   rmSync(base, { recursive: true, force: true })
+}
+
+if (unit('vt15s3')) {
+  const { checkPlan } = await import(join(PLUGIN, 'plan-check.mjs'))
+  const { contractPath } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  const stage = (n, acs, ru = false) => `${ru ? `### Этап ${n}: первый  [status: todo]  logic-only\nЧто есть:\nКритерии приёмки:` : `### Stage ${n}: first  [status: todo]  logic-only\nWhat exists:\nAcceptance criteria:`}\n${acs.map((tag, i) => `- \`AC-${n}.${i + 1}\` WHEN x THEN y — ${tag}`).join('\n')}\n\n`
+  const plan = (stages, sections = '') => `# P-1: task\n\n${stages}${sections}`
+  const rules = (result, key = 'problems') => result[key].map((finding) => finding.rule)
+  const table = (head, cell, ru) => `## ${ru ? 'Покрытие контракта' : 'Contract coverage'}\n| ${head} | Kind | ${ru ? 'Этап' : 'Stage'} |\n|---|---|---|\n| E1 — POST /api/v3/things/ | endpoint | ${cell} |\n| EV1 — thing.created | event | 1 |\n\n`
+  const ok = stage(1, ['[verify: api-verify]'])
+  check('plan-check contract: an empty Stage cell in "Contract coverage" (en) — contract-coverage-empty-stage, names the endpoint', (() => { const r = checkPlan(plan(ok, table('Item', '', false))); return rules(r).join() === 'contract-coverage-empty-stage' && /E1 — POST/.test(r.problems[0].message) })())
+  check('plan-check contract: the same with the Russian section and column names', rules(checkPlan(plan(stage(1, ['[verify: api-verify]'], true), table('Пункт', '', true)))).join() === 'contract-coverage-empty-stage')
+  check('plan-check contract: a filled Stage cell — no problem', checkPlan(plan(ok, table('Item', '1', false))).problems.length === 0)
+  check('plan-check contract: `[verify: api-verify]` without the section — contract-coverage-missing', rules(checkPlan(plan(ok))).join() === 'contract-coverage-missing')
+  check('plan-check contract: a plan without backend tags and without the section — no new problem', checkPlan(plan(stage(1, ['[verify: pro-review]']))).problems.length === 0)
+  const one = checkPlan(plan(stage(1, ['[verify: staging]', '[verify: pro-review]'])))
+  check('plan-check contract: `[verify: staging]` alone in a stage — staging-one-side warning, not a problem', one.problems.length === 0 && rules(one, 'warnings').join() === 'staging-one-side', JSON.stringify(one.warnings))
+  check('plan-check contract: staging beside `devtools-verify` or `api-verify` in the stage — no warning', ['devtools-verify', 'api-verify'].every((tag) => !rules(checkPlan(plan(stage(1, ['[verify: staging]', `[verify: ${tag}]`]), tag === 'api-verify' ? table('Item', '1', false) : '')), 'warnings').includes('staging-one-side')))
+  check('plan-check contract: an unknown verify tag is not a new problem', checkPlan(plan(stage(1, ['[verify: contract-compare]']))).problems.length === 0)
+
+  const live = '[staging: https://staging.example.test; /bookings/42 → the upsell line shows the new price]'
+  const v = (line) => jc.stagingViolation(line)
+  check('journal-check staging: ✅ on a `[verify: staging]` criterion without the form — staging-no-observation naming the criterion and the form', (() => { const x = v('- `AC-3.2` ✅ [verify: staging] the price shows'); return x?.rule === 'staging-no-observation' && x.id === 'AC-3.2' && /\[staging: <address>; <route> → <observed>\]/.test(x.message) })())
+  check('journal-check staging: ✅ with the three-part form — no violation', v(`- \`AC-3.2\` ✅ [verify: staging] ${live}`) === null)
+  check('journal-check staging: the Russian words inside the form — no violation', v('- `AC-3.2` ✅ [verify: staging] [staging: https://staging.example.test; /bookings/42 → цена показана]') === null)
+  check('journal-check staging: an open criterion (no ✅) — no violation', v('- `AC-3.2` [verify: staging] the price shows') === null && v('- `AC-3.2` ⏳ [verify: staging] the price shows') === null)
+  check('journal-check staging: a part with `tbd`, `n/a`, `?` or empty — violation', ['[staging: tbd; /x → seen]', '[staging: https://s.test; n/a → seen]', '[staging: https://s.test; /x → ?]', '[staging: ; /x → seen]'].every((form) => v(`- \`AC-3.2\` ✅ [verify: staging] ${form}`)?.rule === 'staging-no-observation'))
+  check('journal-check staging: a ✅ line without the staging tag, or a quoted tag — no violation', v('- `AC-3.2` ✅ [verify: pro-review] done') === null && v('- `AC-3.2` ✅ the tag `[verify: staging]` is quoted') === null)
+  check('journal-check staging: journalViolations (what the journal-gate uses) rejects the bare ✅ line', jc.journalViolations('- `AC-3.2` ✅ [verify: staging] the price shows\n').some((x) => x.rule === 'staging-no-observation'))
+
+  const withContract = (cell, contract) => checkPlan(plan(ok, table('Item', cell, false)), { contractFile: contract })
+  check('plan-check contract: a Stage cell naming no stage of the plan (`99`, `—`) — contract-coverage-unknown-stage', ['99', '—'].every((cell) => rules(withContract(cell, null)).join() === 'contract-coverage-unknown-stage'))
+  check('plan-check contract: `not in plan — <reason>` and its Russian form are accepted; the Stage cell `Stage 1` too', ['not in plan — later', '\u043d\u0435 \u0432 \u043f\u043b\u0430\u043d\u0435 \u2014 later', 'Stage 1'].every((cell) => withContract(cell, null).problems.length === 0))
+  check('plan-check contract: `not in plan` without a reason — still a problem', rules(withContract('not in plan', null)).join() === 'contract-coverage-unknown-stage')
+  const body = '### E1 — POST /a/\n\n### E2 — GET /b/\n\n### EV1 — x\n\n### MG1 — t\n\n### E3 — GET /c/ [cancelled: dropped]\n'
+  const missing = withContract('1', body)
+  check('plan-check contract: ids of the contract file with no row — contract-coverage-missing-row per id (E2, MG1; not the cancelled E3)', missing.problems.map((x) => x.rule).join() === 'contract-coverage-missing-row,contract-coverage-missing-row' && /E2/.test(missing.problems[0].message) && /MG1/.test(missing.problems[1].message), JSON.stringify(missing.problems.map((x) => x.message)))
+  check('plan-check contract: no contract file — the row check is skipped silently', withContract('1', null).problems.length === 0)
+  check('plan-check contract: every id has a row — no problem', checkPlan(plan(ok, table('Item', '1', false).replace('\n\n', '\n| E2 — GET /b/ | endpoint | 1 |\n| MG1 — t | migration | 1 |\n\n')), { contractFile: body }).problems.length === 0)
+  const open = (form, mark) => v(`- \`AC-3.2\` ${mark} [verify: staging] ${form}`)
+  check('journal-check staging: `[x]` or `PASS` next to the tag without the form — violation', ['[x]', 'PASS'].every((mark) => open('the price shows', mark)?.rule === 'staging-no-observation'))
+  check('journal-check staging: `[x]` / `PASS` with the full form — no violation', ['[x]', 'PASS'].every((mark) => open(live, mark) === null))
+  check('journal-check staging: a local address (localhost, 127.0.0.1, 0.0.0.0, file:) — violation that says staging means the deployed environment', ['http://localhost:3000', '127.0.0.1:8000', '0.0.0.0', 'file:///tmp/x.html'].every((addr) => { const x = open(`[staging: ${addr}; /x → seen]`, '✅'); return x?.rule === 'staging-no-observation' && /deployed/.test(x.message) }))
+  check('journal-check staging: an address that only starts like a local one (localhost.example.com is not excused? — a real host `staging-localhost.test`) — no violation', open('[staging: https://staging-localhost.test; /x → seen]', '✅') === null)
+  check('journal-check staging: `[verify: staging-check]` is not the staging tag; `[verify: api-verify, staging]` is', v('- `AC-3.2` ✅ [verify: staging-check] done') === null && v('- `AC-3.2` ✅ [verify: api-verify, staging] done')?.rule === 'staging-no-observation')
+
+  const cfg = (extra) => `## Backend\n- framework: django\n${extra}`
+  check('contractPath: without `contracts:` — <task_dir>/<TICKET>/CONTRACT.md', contractPath(cfg(''), '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md' && contractPath('', '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md')
+  check('contractPath: with `contracts: docs/contracts` — <repo>/docs/contracts/<TICKET>.md', contractPath(cfg('- contracts: docs/contracts\n'), '/t/tasks', 'VT-9', '/r') === '/r/docs/contracts/VT-9.md')
+  check('contractPath: the first repo with the key wins', contractPath('## Backend\n### a\n- path: a\n### b\n- path: b\n- contracts: c\n### c\n- path: c\n- contracts: d\n', '/t', 'X-1', '/r') === '/r/b/c/X-1.md')
 }
 
 if (MODE === 'serial') for (const late of lateChecks) late(DATA)

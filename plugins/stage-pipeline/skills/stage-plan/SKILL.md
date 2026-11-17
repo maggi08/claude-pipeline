@@ -56,6 +56,14 @@ For every overlap make a decision and write it as a row in the "Shared elements"
 
 **The output of the scan is a table, not a verdict.** "No overlaps" without listing the pairs you checked is not a completed scan but a skipped one. Overlaps are really absent only in a plan where every stage touches its own screen and no shared element repeats; on a redesign of a multi-screen flow that does not happen.
 
+## Step 2.2. Backend task
+
+This applies when the config of this repo, or of a sibling repo from "Platforms / related repos", has a `## Backend` section.
+- Stage 1 is the contract: it fills `${CLAUDE_PLUGIN_ROOT}/references/contract.md` (the path comes from `contractPath` in `hooks/pipeline-state.mjs`: `<task_dir>/<TICKET>/CONTRACT.md`, or `<repo>/<contracts>/<TICKET>.md` when the backend repo sets `contracts:`). The template is only the source: the stage fills a copy of it at that path. Its criteria: `[verify: pro-review]` for completeness against the template, `[verify: user-review]` for the agreement with the frontend and the backend team. In a force run the agreement goes into the interview.
+- Backend stages come before the frontend ones. A frontend stage that runs before the backend deploy works on MSW mocks written from the contract.
+- The "Contract coverage" table (Step 4) has a row for every `E*`, `EV*` and `MG*` of the contract, each with a stage; an empty Stage cell, or one that names no stage of the plan, is a hole (the explicit form is `not in plan — <reason>`); when the contract file exists, plan-check also reports an id with no row.
+- `[verify: api-verify]` is for what the backend does: codes, body, roles, read-back after a write, a sent event, a migration. `[verify: staging]` is for what shows only with both sides live (the frontend against the deployed backend). A run does not close a staging criterion: it stays open, goes to the TEST-PLAN, and closes with an observation `[staging: <address>; <route> → <observed>]`. Each staging criterion gets, in the same stage, an `api-verify` and/or `devtools-verify` criterion for each side alone, since before the deploy nothing else checks it.
+
 ## Step 3. Acceptance criteria: ID and verifier
 
 A criterion without an ID cannot be collected into TEST-PLAN, cannot be referenced from a checker report, and "what of the plan is still uncovered" can only be answered by rereading all the stages. So:
@@ -134,7 +142,7 @@ Pipeline:
 - [ ] dead-code: what was orphaned across the whole task (`${CLAUDE_PLUGIN_ROOT}/skills/dead-code`)
 - [ ] i18n-sweep: copy and locale completeness across the whole branch (`${CLAUDE_PLUGIN_ROOT}/skills/i18n-sweep`)
 - [ ] deps-audit: what the task dragged into the manifest and assets (`${CLAUDE_PLUGIN_ROOT}/skills/deps-audit`)
-- [ ] coverage: the "Design source coverage" table has no rows without a stage; every `AC-*` is closed by its verifier or deferred in the honest form `[live: user-side — <prerequisite>; <route> → <observed>]` decided at check time; no criterion is pre-marked `[live: user-side]` at plan time
+- [ ] coverage: the "Design source coverage" table (and, in a backend task, "Contract coverage") has no rows without a stage; `[verify: staging]` criteria stay open until the staging observation and are listed in TEST-PLAN; every `AC-*` is closed by its verifier or deferred in the honest form `[live: user-side — <prerequisite>; <route> → <observed>]` decided at check time; no criterion is pre-marked `[live: user-side]` at plan time
 - [ ] task-converge: the code on HEAD against the intent of the whole task — `missing`/`partial`/`contradicts`/`unrequested` (`${CLAUDE_PLUGIN_ROOT}/skills/task-converge`); the only pass that sees an uncovered criterion and a silently widened scope, because it does not look at the diff. If there are findings → a "Catch-up" block and a rerun until it converges
 - [ ] test-plan: TEST-PLAN.md — assembled from the `AC-*` of all stages (ID → scenario → how to check) + recipes for simulating states (throttle/block/offline/crash) on all platforms
 - [ ] confirmations: the "Awaiting user confirmation" block is empty
@@ -145,6 +153,13 @@ Pipeline:
 | <name — node-id / screen-id> | empty, error | 2 |
 <a row for EVERY non-service frame/screen-id from the registry. An empty "Stage" cell = a hole in the plan,
 not "we'll do it along the way". A paired table to "Not included in the plan": there are the service items, here the working ones.>
+
+## Contract coverage
+<only for a backend task (Step 2.2); omit the section otherwise>
+| Contract item | Kind | Stage |
+|---|---|---|
+| <E1 — POST /api/v3/things/> | endpoint | 2 |
+<a row for EVERY endpoint (E*), event (EV*) and migration (MG*) of the contract. An empty "Stage" cell = a hole in the plan.>
 
 ## Shared elements (stage overlaps)
 | Element | Stages | Owner (builds) | Where it lives |
