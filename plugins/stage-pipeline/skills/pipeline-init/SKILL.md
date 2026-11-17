@@ -90,6 +90,7 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 
 ## Models
 - review_model: opus   # whole-branch pro-review and the fresh checker run in the fix-loop — the strongest model; in force it is also not the maker's (`stage-implement` = sonnet); sonnet | opus | haiku
+- security_model: <opus | —>   # optional: pins the security-review agent to this model (agent-guard denies a call whose model, the call's `model:` else the agent's own, is not this one); for a repo whose security review must stay on a stronger model, e.g. hook or permission code. No line: the agent's own model
 
 ## Final checks (optional)
 - team_review: <cleanup-review | —>   # a repo-local review skill (`.claude/skills/<name>/SKILL.md`) the force run runs on the whole branch as a final check; its report `checks/<name>-branch.md` is required fresh to close "completed". — or no line: no extra report is asked for (a hand-saved `checks/<name>-branch.md` is still read as a checker report). Several: comma-separated

@@ -383,6 +383,12 @@ export function reviewModel(config) {
   return raw ? raw.toLowerCase() : 'opus'
 }
 
+/** `security_model` from the config: the model the security-review agent is held to. No key: `null`, the agent's own model (no default). */
+export function securityModel(config) {
+  const raw = config.match(/^[ \t]*-[ \t]*security_model:[ \t]*[`*]*([\w.-]+)/m)?.[1]
+  return raw ? raw.toLowerCase() : null
+}
+
 /**
  * An open "Force run" block (the last one without "completed" in the heading): the heading, the date from it
  * (`2026-09-30`, `2026-09-30b`, `28.09.2026`; `unreadDate` — the heading has a date in another form) and the text up to the next `## ` section.

@@ -3,10 +3,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CONFIRMED_LINE, MODE_WORD, NO_GATE_COMMAND } from '../markers.mjs'
 import { denyTool } from './firing.mjs'
-import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
+import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel, securityModel } from './pipeline-state.mjs'
 
 /**
- * Three rules for launching subagents that the orchestrator keeps only in memory — and loses
+ * Four rules for launching subagents that the orchestrator keeps only in memory — and loses
  * on a long run:
  *
  * - the security review and ds-parity run as their own agents, pinned to sonnet. A general-purpose
@@ -17,6 +17,9 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, review
  *   as a parameter on the call, and of 13 live whole-branch reviews 5 went to sonnet from the
  *   agent's frontmatter: the first review of a run ran on opus, the second one, on a neighbouring
  *   branch or after a catch-up, did not.
+ * - the security review runs on `security_model` when the config sets it (no key: the agent's own
+ *   model, as before). The model is passed as a parameter on the call; a repo whose security review
+ *   must stay on a stronger model (hook or permission code) pins it there.
  * - `stage-implement` starts only after the run interview (stage-force, Step 0): the orchestrator
  *   clarifies ambiguous free-form answers in the batch itself and writes a `Confirmed:` line into the
  *   "Force run" block. Without the interview a free-form answer "current branch" quietly turned into a
@@ -54,7 +57,7 @@ const toolInput = input.tool_input ?? {}
 const type = String(toolInput.subagent_type ?? '')
 const agent = type.split(':').at(-1)
 const generic = GENERIC_AGENTS.has(agent)
-if (!generic && agent !== 'pro-review' && agent !== 'stage-implement') process.exit(0)
+if (!generic && agent !== 'pro-review' && agent !== 'stage-implement' && agent !== 'security-review') process.exit(0)
 
 const state = readPipelineState(input.cwd ?? process.cwd())
 if (!state) process.exit(0)
@@ -78,15 +81,30 @@ if (generic) {
   process.exit(0)
 }
 
+// An alias and a full id name one model: `opus` and `claude-opus-5-5` match by substring in both directions.
+const sameModel = (got, want) => got.includes(want) || want.includes(got)
+
 if (agent === 'pro-review' && (WHOLE_BRANCH.test(toolInput.prompt ?? '') || DELTA_MODE.test(toolInput.prompt ?? ''))) {
   const want = reviewModel(state.config)
   const got = String(toolInput.model || agentModel('pro-review')).toLowerCase()
-  if (!got.includes(want) && !want.includes(got)) {
+  if (!sameModel(got, want)) {
     const delta = WHOLE_BRANCH.test(toolInput.prompt ?? '') ? '' : ' (a delta review in `--delta` mode is held to it as well)'
     deny(
       'agent-guard/review-model',
       `stage-pipeline: whole-branch pro-review runs on review_model${delta} — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
         `Repeat the same call with model: "${want}" (stage-check, Step 3.3).`,
+    )
+  }
+}
+
+if (agent === 'security-review') {
+  const want = securityModel(state.config)
+  const got = String(toolInput.model || agentModel('security-review')).toLowerCase()
+  if (want && !sameModel(got, want)) {
+    deny(
+      'agent-guard/security-model',
+      `stage-pipeline: the security review runs on security_model — \`${want}\` (pipeline.config.md), but the call goes to \`${got}\`. ` +
+        `Repeat the same call with model: "${want}".`,
     )
   }
 }
