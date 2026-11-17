@@ -3,10 +3,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CONFIRMED_LINE, MODE_WORD, NO_GATE_COMMAND } from '../markers.mjs'
 import { denyTool } from './firing.mjs'
-import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel } from './pipeline-state.mjs'
+import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel, securityModel } from './pipeline-state.mjs'
 
 /**
- * Three rules for launching subagents that the orchestrator keeps only in memory — and loses
+ * Four rules for launching subagents that the orchestrator keeps only in memory — and loses
  * on a long run:
  *
  * - the security review and ds-parity run as their own agents, pinned to sonnet. A general-purpose
@@ -17,6 +17,9 @@ import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, review
  *   as a parameter on the call, and of 13 live whole-branch reviews 5 went to sonnet from the
  *   agent's frontmatter: the first review of a run ran on opus, the second one, on a neighbouring
  *   branch or after a catch-up, did not.
+ * - the security review runs on `security_model` when the config sets it (no key: the agent's own
+ *   model, as before). The model is passed as a parameter on the call; a repo whose security review
+ *   must stay on a stronger model (hook or permission code) pins it there.
  * - `stage-implement` starts only after the run interview (stage-force, Step 0): the orchestrator
  *   clarifies ambiguous free-form answers in the batch itself and writes a `Confirmed:` line into the
  *   "Force run" block. Without the interview a free-form answer "current branch" quietly turned into a
@@ -32,7 +35,7 @@ const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(
 // Also `Mode: delta`, `delta review`, the Russian forms, and a prompt naming a `-branch-delta-` report; a stage prompt that only mentions "the delta of the round" stays allowed.
 const DELTA_MODE = new RegExp(`--delta\\b|\\bdelta[-\\s](?:mode|review)\\b|(?:${MODE_WORD})\\s*(?::\\s*)?\\**delta\\b|дельта[-\\s]?(?:режим|ревью)|(?:${MODE_WORD})\\s*:?\\s*\\**дельта|-branch-delta-`, 'i')
 // No subagent_type is a general-purpose agent too; `claude` is the catch-all type of some hosts.
-const GENERIC_AGENTS = new Set(['', 'general-purpose', 'claude'])
+const GENERIC_AGENTS = new Set(['', 'generalpurpose', 'claude'])
 // Told by the call's description or, for ds-parity, by a prompt that points at its skill. In the transcripts since 2026-10-01 most calls named the check in the
 // description; a combined sweep ("Delta sweep final 9": dead-code, i18n, security and ds-parity in one call) is caught by the ds-parity skill path only, so the message
 // sends every other check of the prompt to its own agent. "security" alone is not enough: an interview probe of "the account security page" is not a review; it counts
@@ -54,9 +57,14 @@ let spawned = null
 const input = await readHookInput()
 const toolInput = input.tool_input ?? {}
 const type = String(toolInput.subagent_type ?? '')
-const agent = type.split(':').at(-1)
-const generic = GENERIC_AGENTS.has(agent)
-if (!generic && agent !== 'pro-review' && agent !== 'stage-implement') process.exit(0)
+// The host normalizes `subagent_type` after PreToolUse (NFKC, lowercase, strip white space, dashes and `_`), so `security_review`, `Security-Review` or an en-dash spelling reach the real agent:
+// every comparison below is made on the same form, and the canonical name is mapped back where a file is read.
+const squash = (name) => name.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')
+const CANONICAL = Object.fromEntries(['pro-review', 'stage-implement', 'security-review'].map((name) => [squash(name), name]))
+const rawAgent = type.split(':').at(-1)
+const agent = CANONICAL[squash(rawAgent)] ?? rawAgent
+const generic = GENERIC_AGENTS.has(squash(rawAgent))
+if (!generic && !Object.values(CANONICAL).includes(agent)) process.exit(0)
 
 const state = readPipelineState(input.cwd ?? process.cwd())
 if (!state) process.exit(0)
@@ -80,15 +88,30 @@ if (generic) {
   process.exit(0)
 }
 
+// An alias and a full id name one model: `opus` and `claude-opus-5-5` match by substring in both directions.
+const sameModel = (got, want) => got.includes(want) || want.includes(got)
+
 if (agent === 'pro-review' && (WHOLE_BRANCH.test(toolInput.prompt ?? '') || DELTA_MODE.test(toolInput.prompt ?? ''))) {
   const want = reviewModel(state.config)
   const got = String(toolInput.model || agentModel('pro-review')).toLowerCase()
-  if (!got.includes(want) && !want.includes(got)) {
+  if (!sameModel(got, want)) {
     const delta = WHOLE_BRANCH.test(toolInput.prompt ?? '') ? '' : ' (a delta review in `--delta` mode is held to it as well)'
     deny(
       'agent-guard/review-model',
       `stage-pipeline: whole-branch pro-review runs on review_model${delta} — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
         `Repeat the same call with model: "${want}" (stage-check, Step 3.3).`,
+    )
+  }
+}
+
+if (agent === 'security-review') {
+  const want = securityModel(state.config)
+  const got = String(toolInput.model || agentModel('security-review')).toLowerCase()
+  if (want && !sameModel(got, want)) {
+    deny(
+      'agent-guard/security-model',
+      `stage-pipeline: the security review runs on security_model — \`${want}\` (pipeline.config.md), but the call goes to \`${got}\`. ` +
+        `Repeat the same call with model: "${want}".`,
     )
   }
 }

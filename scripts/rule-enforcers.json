@@ -945,7 +945,7 @@
       "text": "the fix-loop is exhausted (2 iterations + a fresh checker run) and a critical remains; typecheck or the build ",
       "baseline": true
     },
-    "stage-force#2f050de41e": {
+    "stage-force#d954293e37": {
       "to": "hook:agent-guard/review-model",
       "text": "all stages done or todo — blocked → the final checks from stages.md (pro-review whole-branch — spawn the pro-r"
     },

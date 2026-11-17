@@ -5,11 +5,11 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
-## 0.28.0 — 2026-11-17
+## 0.29.0 — 2026-11-17
 
 ### A backend task: a contract first, a backend API check, a frontend-against-contract check, and the final checks in every repo of the task
 
-What changes against 0.27.1: nothing, in a repo without a `## Backend` section in `pipeline.config.md`. In a repo that has one (a Python backend, or a frontend repo that names one), the pipeline plans and checks the API too.
+What changes against 0.28.0: nothing, in a repo without a `## Backend` section in `pipeline.config.md`. In a repo that has one (a Python backend, or a frontend repo that names one), the pipeline plans and checks the API too.
 
 - **A `## Backend` config section and `backend-detect.mjs`.** The section holds the test, lint and type-check commands, the compose file, the `api_files` globs, the schema, `auth`, `contracts` and a one-line `note` for checkers; one block for this repo, or one `### <name>` per backend repo. `{files:rel+py}` in a command gives repo-relative paths, which a container sees. `node scripts/backend-detect.mjs <repo>` reads a Python repo (Django, DRF, FastAPI; pip, uv, poetry) and prints the candidate section; `--init` writes `pipeline.config.md` only if there is none; `--doctor` checks that docker answers, the compose file and networks are there and the tests collect.
 - **`/pipeline-init` and `/pipeline-doctor` know a Python backend.** Init offers the section from the detector, doctor runs `--doctor` for every backend repo of the config.
@@ -24,6 +24,15 @@ What changes against 0.27.1: nothing, in a repo without a `## Backend` section i
 **Dev repo only:** the `vt15` cases of `scripts/hooks-test.mjs` (backend config, detector, plan and journal tags, the force-commit rule, the receipts), `rule-enforcers.json` rows for the new rules, and the cases `api-verify-owner-check` (red on the tree until the TODO.md item «Backend repos in the eval and force sandbox» lands) and `contract-compare-enum-drift` in `evals/cases/`.
 
 eval: skipped api-verify — `api-verify-owner-check` fails 0 of 1 on the tree (invocation 20261117T113204-1wxz): the eval sandbox's permission profile denied the case's `uv run … pytest` command (`permissions/base.json` allows `python3 *`, no `uv`), so the probes never ran and the report is FAIL (probes could not be run); the case is not yet proven on the tree and stays red until the `uv run` permission lands (item «Backend repos in the eval and force sandbox» in TODO.md). `contract-compare-enum-drift` passes 1 of 1, `deps-audit-duplicate-lib` 1 of 1, `stage-implement-reuse` 1 of 1 (`--runs 1`, total about $0.48). Proven failure on `stage-pipeline--v0.27.1`: both new cases fail 1 of 1 and are recorded as `provenFailing`, but the failure is «Agent type not found» (the agents do not exist at 0.27.1), so it does not show that the cases tell the versions apart; rerun with `--runs 3` once the agents exist on a tag.
+eval: skipped contract-compare, deps-audit, stage-implement — measured at 0.28.0 on this branch (2026-11-17, `--runs 1`): `contract-compare-enum-drift` 1 of 1, `deps-audit-duplicate-lib` 1 of 1, `stage-implement-reuse` 1 of 1; their agent files are unchanged by the merge of main, but the rows at 0.29.0 are not recorded yet: stage 8a reruns them together with `api-verify`.
+
+## 0.28.0 — 2026-11-17
+
+### A repo can pin the security review to a model, and a broken Repo rules row is a named config problem
+
+- **`security_model` in `## Models` (optional).** When the config has `- security_model: <model>`, agent-guard denies a `security-review` call whose model (the `model` parameter, else the agent's own) differs from it (`agent-guard/security-model`), and the message says to repeat the call with `model: "<model>"`. No line: nothing changes, the agent stays on its own model. For a repo whose security review must stay on a stronger model, e.g. hook or permission code. `stage-force`, `stage-plan` and `pipeline-init` mention the key.
+- **A Repo rules row that throws when checked is a config problem.** Before, floor-guard dropped such a row quietly and every repo rule looked off; now it names the row as a config problem, and a throw of the rules parser prints a config problem and exits 2 when there are no violations.
+- **Agent names are compared the way the host reads them.** The host normalizes `subagent_type` after the hook (NFKC, lowercase, white space, dashes and `_` dropped), so `stage-pipeline:security_review`, `Security-Review` or a name with an en dash reached the agent past agent-guard's rules; every agent-name comparison in agent-guard now uses the same form. `security_model: none`, `-`, `off` or `n/a` read as no key.
 
 ## 0.27.1 — 2026-11-16
 
