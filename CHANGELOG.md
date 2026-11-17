@@ -21,7 +21,9 @@ What changes against 0.27.1: nothing, in a repo without a `## Backend` section i
 
 **Models.** `api-verify` and `contract-compare` run on sonnet, like the other checkers of a stage.
 
-**Dev repo only:** the `vt15` cases of `scripts/hooks-test.mjs` (backend config, detector, plan and journal tags, the force-commit rule, the receipts), `rule-enforcers.json` rows for the new rules, and the cases `api-verify-owner-check` and `contract-compare-enum-drift` in `evals/pending/` (not run yet).
+**Dev repo only:** the `vt15` cases of `scripts/hooks-test.mjs` (backend config, detector, plan and journal tags, the force-commit rule, the receipts), `rule-enforcers.json` rows for the new rules, and the cases `api-verify-owner-check` (red on the tree until the TODO.md item «Backend repos in the eval and force sandbox» lands) and `contract-compare-enum-drift` in `evals/cases/`.
+
+eval: skipped api-verify — `api-verify-owner-check` fails 0 of 1 on the tree (invocation 20261117T113204-1wxz): the eval sandbox's permission profile denied the case's `uv run … pytest` command (`permissions/base.json` allows `python3 *`, no `uv`), so the probes never ran and the report is FAIL (probes could not be run); the case is not yet proven on the tree and stays red until the `uv run` permission lands (item «Backend repos in the eval and force sandbox» in TODO.md). `contract-compare-enum-drift` passes 1 of 1, `deps-audit-duplicate-lib` 1 of 1, `stage-implement-reuse` 1 of 1 (`--runs 1`, total about $0.48). Proven failure on `stage-pipeline--v0.27.1`: both new cases fail 1 of 1 and are recorded as `provenFailing`, but the failure is «Agent type not found» (the agents do not exist at 0.27.1), so it does not show that the cases tell the versions apart; rerun with `--runs 3` once the agents exist on a tag.
 
 ## 0.27.1 — 2026-11-16
 
