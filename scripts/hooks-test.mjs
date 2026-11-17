@@ -10886,6 +10886,11 @@ if (unit('vt15f1')) {
   check('vt15f1 m-4: api-verify `fixed:` citing the existing -r1 report — clean', jc.rerunViolations(fixedReport.replace('app/views.py:3', 'app/views.py:3 — recheck api-verify-1-r1.md'), 'api-verify-1.md', dir).length === 0)
   check('vt15f1 m-4: the rerun rule of api-verify is off outside the backend gate', jc.rerunViolations(fixedReport, 'api-verify-1.md', dir, false).length === 0)
   check('vt15f1 m-4: a `[verify: api-verify]` criterion closed ✅ without naming the checker — ac-checker', jc.acViolation('- `AC-1.1` WHEN PATCH THEN saved [verify: api-verify] ✅ pro-review: code')?.rule === 'ac-checker')
+  const apiR2 = api
+  const dirR2 = dir
+  for (const bad of ['read-back not done: later', 'перечитывание не делалось: потом', 'the controller returns: 200']) check(`vt15r2 d-4: "${bad}" is no-api-proof`, jc.apiProofViolations(apiR2(bad), 'api-verify-1.md', dirR2)[0]?.rule === 'no-api-proof')
+  for (const good of ['read-back as A: text changed', 'control в том же тесте: 403', 'read-back: ok', 'контроль: 403']) check(`vt15r2 d-4: "${good}" is clean`, jc.apiProofViolations(apiR2(good), 'api-verify-1.md', dirR2).length === 0)
+  check('vt15r2 d-5: `[X]` closes a staging criterion without an observation', jc.stagingViolation('- [X] `AC-2.1` WHEN a deal is sent THEN it is stored [verify: staging]')?.rule === 'staging-no-observation')
   rmSync(dir, { recursive: true, force: true })
   const { backendFileMatcher } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
   let matcher = null
@@ -10900,6 +10905,21 @@ if (unit('vt15f1')) {
   const masked = maskSecrets('PIP_INDEX_URL=https://user:TOKEN123@host/simple API_KEY=abc DB_PASSWORD=pw pytest')
   check('vt15f1 S-1: URL userinfo and *KEY/*PASSWORD values are masked', !/TOKEN123|abc|=pw/.test(masked) && /\/\/\*\*\*@host/.test(masked) && /API_KEY=\*\*\*/.test(masked) && /DB_PASSWORD=\*\*\*/.test(masked), masked)
   check('vt15f1 S-1: the masked text keeps the command', /pytest$/.test(masked))
+  const unmasked = maskSecrets('KEYCLOAK_URL=http://kc primary_key=1 sort_keys=2 monkey=3 pytest')
+  check('vt15r2 d-1: KEYCLOAK_URL / primary_key / sort_keys / monkey stay unmasked', unmasked === 'KEYCLOAK_URL=http://kc primary_key=1 sort_keys=2 monkey=3 pytest', unmasked)
+  {
+    const { spawnSync: sp } = await import('node:child_process')
+    const fx = realpathSync(mkdtempSync(join(tmpdir(), 'vt15r2-')))
+    writeFileSync(join(fx, 'Makefile'), 'test:\n\tAPI_TOKEN=x echo 3 tests collected pytest\n')
+    writeFileSync(join(fx, 'pyproject.toml'), '[project]\nname = "x"\ndependencies = ["django", "pytest"]\n')
+    mkdirSync(join(fx, 'app'), { recursive: true })
+    writeFileSync(join(fx, 'app/views.py'), '')
+    const dr = sp(process.execPath, [join(PLUGIN, 'backend-detect.mjs'), fx, '--doctor'], { encoding: 'utf8' })
+    check('vt15r2 d-1: --doctor runs the real recipe (API_TOKEN=x in it) — the collect row is ok, the token is not printed', /^ok — tests collect/m.test(dr.stdout) && !/API_TOKEN=x/.test(dr.stdout), dr.stdout)
+    rmSync(fx, { recursive: true, force: true })
+  }
+  const initTmpl = readFileSync(join(PLUGIN, '../skills/pipeline-init/SKILL.md'), 'utf8')
+  check('vt15r2 d-3: api_layer is written only with a `## Backend` section here or in a related repo', /^- api_layer: .*only when this config or a related repo it names has a `## Backend` section/m.test(initTmpl))
 }
 
 if (unit('vt15s8')) {

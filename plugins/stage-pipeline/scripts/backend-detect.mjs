@@ -83,7 +83,7 @@ function parseMakefile(text) {
 }
 
 /** What is printed (detection, `--json`, `--doctor` rows and the tail of the test output) never carries a secret of the repo: the userinfo of a URL and the value of a `*TOKEN*|*SECRET*|*PASSWORD*|*KEY*=` assignment are masked. */
-export const maskSecrets = (text) => String(text).replace(/(\/\/)[^/@\s]+@/g, '$1***@').replace(/\b([A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|KEY)[A-Za-z_]*=)\S+/gi, '$1***')
+export const maskSecrets = (text) => String(text).replace(/(\/\/)[^/@\s]+@/g, '$1***@').replace(/((?:^|[^A-Za-z0-9])[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY)=)\S+/g, '$1***')
 const expandVars = (text, vars) => text.replace(/\$\(([A-Za-z_]\w*)\)/g, (whole, name) => vars[name] ?? whole)
 
 /** The compose file read by indentation: service names (which have `build:`) and external networks. */
@@ -172,10 +172,10 @@ export function detect(repoArg) {
   const makefile = read(join(repo, 'Makefile'))
   const make = makefile ? parseMakefile(makefile) : { targets: [], vars: {} }
   const pytestTarget = make.targets.find((t) => /test/.test(t.name) && t.recipe.some((l) => /pytest/.test(l))) ?? make.targets.find((t) => t.recipe.some((l) => /pytest/.test(l)))
-  found.makeRecipe = pytestTarget ? maskSecrets(expandVars(pytestTarget.recipe.find((l) => /pytest/.test(l)), make.vars)) : null
+  found.makeRecipe = pytestTarget ? expandVars(pytestTarget.recipe.find((l) => /pytest/.test(l)), make.vars) : null
   if (pytestTarget) {
     found.testFull = `make ${pytestTarget.name}`
-    src.testFull = `Makefile (${pytestTarget.name}: ${found.makeRecipe})`
+    src.testFull = `Makefile (${pytestTarget.name}: ${maskSecrets(found.makeRecipe)})`
   } else if (files.includes('pytest.sh')) {
     found.testFull = './pytest.sh'
     src.testFull = 'pytest.sh'
@@ -443,6 +443,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const { rows, code } = doctor(repoArg)
     console.log(rows.join('\n'))
     process.exitCode = code
-  } else if (args.includes('--json')) console.log(JSON.stringify(detect(repoArg), null, 2))
-  else console.log(printDetection(detect(repoArg)))
+  } else if (args.includes('--json')) console.log(maskSecrets(JSON.stringify(detect(repoArg), null, 2)))
+  else console.log(maskSecrets(printDetection(detect(repoArg))))
 }

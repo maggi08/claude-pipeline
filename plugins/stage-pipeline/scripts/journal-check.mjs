@@ -283,7 +283,7 @@ const LIVE_TAG = /\[live:\s*user-side\b/i
  */
 const STAGING_VERIFY_TAG = /\[verify:([^\]\n]*)\]/gi
 const stagingTagged = (open) => [...open.matchAll(STAGING_VERIFY_TAG)].some((match) => match[1].split(/[,+/&]|\band\b/).some((name) => name.trim().toLowerCase() === 'staging'))
-const STAGING_DONE = /✅|\[x\]|\bPASS\b/
+const STAGING_DONE = /✅|\[[xX]\]|\bPASS\b/
 const LOCAL_ADDRESS = /^\s*(?:(?:https?:\/\/)?(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])(?![\w-])|file:)/i
 const STAGING_PARTS = /^\[staging:\s*([^;\]\n]*);([^→\]\n]*)→([^\]\n]*)\]/i
 export function stagingViolation(line) {
@@ -782,7 +782,7 @@ function proofViolations(text, name, taskDir, { checker, wanted, proofs, rule, t
 export const apiVerifyCriteria = (taskDir) => taggedCriteria(taskDir, (rest) => /\[verify:[^\][]*\bapi-verify\b[^\][]*\]/i.test(rest))
 
 /** The read-back or control line of an api-verify criterion (either language): the label stands with its colon. */
-const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])[^:\n]{0,40}:/i
+const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])(?!\p{L})(?:\s+(?:as|под|in|в)\s[^:\n]{0,30})?\s*:/iu
 
 /**
  * VT-15 (stage 5): a PASS in an api-verify report on a `[verify: api-verify]` criterion names the request (`METHOD /path → status`) and a read-back or control (`read-back:` / `control:`).
