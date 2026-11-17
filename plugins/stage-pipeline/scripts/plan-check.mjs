@@ -181,11 +181,54 @@ function lineCount(path) {
   return count
 }
 
-/** The sibling repos a config names: `../<name>` at the first level of a path (not `../../node_modules/…`), resolved against the repo root. */
+const gitOut = (cwd, ...args) => {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The sibling repos a config names: `../<name>` at the first level of a path (not `../../node_modules/…`), resolved against the repo root; a linked worktree that is not
+ * at `<parent>/<repo>` also looks next to the main checkout (`git rev-parse --git-common-dir` → its parent), the first existing directory wins.
+ */
 export function siblingRepos(config, root) {
   if (!root || !config) return []
   const names = [...config.matchAll(/(?<![\w./~-])\.\.\/([A-Za-z0-9_@][\w@.-]*)/g)].map((match) => match[1])
-  return [...new Set(names)].map((name) => resolve(root, '..', name))
+  const common = gitOut(root, 'rev-parse', '--git-common-dir')
+  const mainRoot = common ? dirname(resolve(root, common)) : null
+  return [...new Set(names)].map((name) => {
+    const own = resolve(root, '..', name)
+    if (!mainRoot || existsSync(own)) return own
+    const beside = resolve(mainRoot, '..', name)
+    return existsSync(beside) ? beside : own
+  })
+}
+
+/**
+ * The repos of a task (VT-15, stage 7): the task's own repo (`root`) plus each sibling repo of the config that has a local branch of the task (`branches` — `taskBranches`)
+ * with commits that `origin/<main_branch>` of that repo (its own `.claude/pipeline.config.md`, else `origin/HEAD`; a local `<main_branch>` when the repo has no origin) lacks.
+ * `[{ name, root, base, branch, primary }]`; `name` is the directory name. A sibling with no task branch, or none of whose branches carries commits, is not in the task.
+ * The base is the local `origin/<main>`: with a stale one (no fetch in a hook) a sibling with already-merged commits joins the task; fetch before the final checks.
+ */
+export function taskRepos(config, root, branches = []) {
+  if (!root) return []
+  const baseOf = (dir) => {
+    const main = /^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m.exec(readConfig(dir) ?? '')?.[1]
+    const heads = [main && `origin/${main}`, 'origin/HEAD', main].filter(Boolean)
+    return heads.find((ref) => gitOut(dir, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`)) ?? null
+  }
+  const own = (dir) => branches.find((name) => gitOut(dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`))
+  const primary = { name: basename(root), root, base: baseOf(root), branch: own(root) ?? gitOut(root, 'rev-parse', '--abbrev-ref', 'HEAD') ?? null, primary: true }
+  const found = [primary]
+  for (const dir of siblingRepos(config, root)) {
+    if (!existsSync(dir) || dir === root) continue
+    const base = baseOf(dir)
+    const branch = branches.find((name) => base && gitOut(dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`) && Number(gitOut(dir, 'rev-list', '--count', `${base}..refs/heads/${name}`)) > 0)
+    if (branch) found.push({ name: basename(dir), root: dir, base, branch, primary: false })
+  }
+  return found
 }
 
 /** The tracked files of a repo (`git ls-files`), as a map from the base name to the paths; null when the directory is not a git repo. Computed once per `checkPlan` run. */

@@ -485,7 +485,7 @@ function validateStageChecklist(pluginDir) {
     ...readdirSync(join(ROOT, pluginDir, 'agents')).map((file) => basename(file, '.md')),
     // process steps: run by the orchestrator or the user; metrics-* is the bundle_size command from the config
     'kickoff', 'implement', 'user-review', 'commit', 'security-review', 'metrics-baseline', 'metrics-guard', 'floor-guard',
-    'coverage', 'test-plan', 'confirmations', 'wrapup', 'full-checks', 'ci-gates', 'kit-overrides', 'team-review',
+    'coverage', 'test-plan', 'confirmations', 'wrapup', 'full-checks', 'ci-gates', 'kit-overrides', 'team-review', 'other-repos',
   ])
   readFileSync(join(ROOT, rel), 'utf8').split('\n').forEach((line, i) => {
     const item = line.match(/^- \[ \] ([a-z0-9-]+)/)?.[1]

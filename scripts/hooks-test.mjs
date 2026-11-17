@@ -186,6 +186,7 @@ const UNITS = [
   { id: 'vt15s2', weight: 3 }, // VT-15 stage 2: backend-detect.mjs — detection on poetry / pip / uv fixtures, --init (never overwrites, exclude without duplicates), --doctor with a dead docker, a frontend repo
   { id: 'vt15s4', weight: 1 }, // VT-15 stage 4: agent-guard sends a general-purpose api-verify job to stage-pipeline:api-verify; the agent and the skill exist with their frontmatter
   { id: 'vt15s6', weight: 1 }, // VT-15 stage 6: contract-compare agent and skill, agent-guard for it, the pending case reads and passes the leak lint, the counts
+  { id: 'vt15s7', weight: 2 }, // VT-15 stage 7: taskRepos (own repo + siblings with task-branch commits), closing a Force block needs pro-review-branch-<repo> per other repo, one repo / backendSeen keep the old rule, deps-audit names the Python manifests
   { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
@@ -10703,6 +10704,144 @@ if (unit('vt15s5')) {
   check('vt15s5 AC-5.4: a sibling backend repo in the config of the task repo — the backend dismissal is weak there (ledger-weak)', withSib.decision === 'block' && /ledger|weak|backend/i.test(withSib.text), withSib.text)
   check('vt15s5 AC-5.4: a sibling repo without `## Backend` — no backend rule', sibGate(false).decision === 'allow')
   rmSync(bRoot, { recursive: true, force: true })
+}
+
+if (unit('vt15s7')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s7-')))
+  const rcv = await import(join(PLUGIN, 'receipts.mjs'))
+  const pc = await import(join(PLUGIN, 'plan-check.mjs'))
+  const T0 = Date.now()
+  const at = (hours) => (T0 + hours * 3600_000) / 1000
+  const STALE = Date.parse('2026-10-18T09:00:00') / 1000
+  let n = 0
+  const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 0 · minor 0\n`
+  const fixture = ({ sibling = true, siblingCommits = true, bseen = false } = {}) => {
+    const base = join(root, `case${n++}`)
+    const dir = join(base, 'app')
+    const x = join(base, 'x')
+    const ticket = `S7-${n}`
+    const branch = `${ticket}/feat/b`
+    repoAt(dir, 'main')
+    repoAt(x, 'main')
+    git(x, 'update-ref', 'refs/remotes/origin/main', 'main')
+    git(dir, 'update-ref', 'refs/remotes/origin/main', 'main')
+    const force = '## Force run 2026-10-22'
+    write(dir, {
+      '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${sibling ? '## Paths\n- backend: ../x\n' : ''}`,
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${branch}\`\n\n## Status: stage 1\n\n${force}\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`,
+    })
+    write(x, { '.claude/pipeline.config.md': '- main_branch: main\n' })
+    git(dir, 'checkout', '-qb', branch)
+    git(x, 'checkout', '-qb', branch)
+    if (siblingCommits) {
+      write(x, { 'x.py': 'x = 1\n' })
+      git(x, 'add', 'x.py')
+      git(x, 'commit', '-qm', 'x work')
+    }
+    write(dir, { 'src/z.ts': 'export const z = 1\n' })
+    git(dir, 'add', 'src/z.ts')
+    git(dir, 'commit', '-qm', 'z')
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20', [], DATA, bseen ? [markers.forceKey(force)] : [])
+    const report = (file, checker, hours) => {
+      write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: REPORT(checker) })
+      utimesSync(join(tdir, 'checks', file), hours, hours)
+    }
+    const journal = (suffix, body = '') => write(dir, { [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${branch}\`\n\n## Status: done\n\n${force} — ${suffix}\nConfirmed: 22.10.2026\n${body}\n## Stages\n\n### Stage 1: card  [status: done]\n` })
+    const gate = () => runHook('journal-gate.mjs', { cwd: dir, tool_name: 'Write', tool_input: { file_path: join(tdir, 'STAGES.md') } })
+    const main = () => {
+      report('pro-review-branch.md', 'pro-review', at(8))
+      report('task-converge.md', 'task-converge', at(8))
+    }
+    return { dir, x, tdir, ticket, branch, report, journal, gate, main, config: readFileSync(join(dir, '.claude/pipeline.config.md'), 'utf8') }
+  }
+
+  const two = fixture()
+  const stagesText = readFileSync(join(two.tdir, 'STAGES.md'), 'utf8')
+  const branches = [two.branch]
+  const repos = pc.taskRepos(two.config, two.dir, branches)
+  check('vt15s7 AC-7.1: taskRepos — the task repo and a sibling with branch commits, primary marked', repos.length === 2 && repos[0].primary && !repos[1].primary && repos[1].name === 'x' && repos[1].root === join(dirname(two.dir), 'x') && repos[1].base === 'origin/main' && repos[1].branch === two.branch, JSON.stringify(repos))
+  const noCommits = fixture({ siblingCommits: false })
+  check('vt15s7 AC-7.1: a sibling whose task branch has no commits beyond origin/main — only the main repo', pc.taskRepos(noCommits.config, noCommits.dir, [noCommits.branch]).map((r) => r.name).join() === 'app')
+  const noBranch = fixture()
+  git(noBranch.x, 'checkout', '-q', 'main')
+  git(noBranch.x, 'branch', '-D', noBranch.branch)
+  check('vt15s7 AC-7.1: a sibling without the task branch — only the main repo', pc.taskRepos(noBranch.config, noBranch.dir, [noBranch.branch]).length === 1)
+  check('vt15s7: taskBranches reads the branch of the header (the input of taskRepos)', (await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))).taskBranches(stagesText).includes(two.branch))
+
+  two.journal('completed')
+  two.main()
+  const denied = two.gate()
+  check('vt15s7 AC-7.1: completed with the reports of the main repo only — rejected, repo x named', denied.decision === 'block' && /pro-review-x: no whole-task report/.test(denied.text) && /pro-review-branch-x\.md/.test(denied.text) && !/task-converge: no/.test(denied.text), denied.text)
+  two.report('pro-review-branch-x.md', 'pro-review', STALE)
+  const staleX = two.gate()
+  check('vt15s7 AC-7.1: a pro-review-branch-x.md older than the tree of x — rejected, stale marker offered', staleX.decision === 'block' && /\[final: pro-review-x — stale\]/.test(staleX.text), staleX.text)
+  two.report('pro-review-branch-x.md', 'pro-review', at(9))
+  check('vt15s7 AC-7.1: with pro-review-branch-x.md newer than the tree of x — the close is accepted', two.gate().decision !== 'block', two.gate().text)
+  // review round 1 (M-1): a sibling's freshness comes from its task branch, not from the checkout's HEAD, which may sit on another branch
+  const away = fixture()
+  away.journal('completed')
+  away.main()
+  git(away.x, 'checkout', '-q', 'main')
+  const prevDate = process.env.GIT_COMMITTER_DATE
+  process.env.GIT_COMMITTER_DATE = `${Math.round(at(2))} +0000`
+  const later = execFileSync('git', ['commit-tree', '4b825dc642cb6eb9a060e54bf8d69288fbee4904', '-p', away.branch, '-m', 'later'], { cwd: away.x, encoding: 'utf8' }).trim()
+  if (prevDate === undefined) delete process.env.GIT_COMMITTER_DATE
+  else process.env.GIT_COMMITTER_DATE = prevDate
+  git(away.x, 'update-ref', `refs/heads/${away.branch}`, later)
+  rmSync(join(away.x, '.git', 'logs'), { recursive: true, force: true })
+  away.report('pro-review-branch-x.md', 'pro-review', at(1))
+  const awayStale = away.gate()
+  check('vt15s7 review M-1: the checkout of x sits on main, the task branch of x has a newer commit than the report — rejected', awayStale.decision === 'block' && /\[final: pro-review-x — stale\]/.test(awayStale.text), awayStale.text)
+  away.report('pro-review-branch-x.md', 'pro-review', at(3))
+  check('vt15s7 review M-1: the same with a report newer than the task branch of x — accepted', away.gate().decision !== 'block', away.gate().text)
+  // review round 1 (n-1): the repo name must end at a separator that a report name has
+  const near = fixture()
+  near.journal('completed')
+  near.main()
+  near.report('pro-review-branch-x-abc.md', 'pro-review', at(9))
+  check('vt15s7 review n-1: pro-review-branch-x-abc.md is not the report of repo x', near.gate().decision === 'block' && /pro-review-x: no whole-task report/.test(near.gate().text), near.gate().text)
+  near.report('pro-review-branch-x-2.md', 'pro-review', at(9))
+  check('vt15s7 review n-1: pro-review-branch-x-2.md is a re-run of the report of repo x', near.gate().decision !== 'block', near.gate().text)
+  // review round 1 (m-1): a linked worktree of the task repo elsewhere still finds the sibling next to the main checkout
+  const wtRoot = join(dirname(two.dir), 'elsewhere', 'wt-app')
+  mkdirSync(dirname(wtRoot), { recursive: true })
+  git(two.dir, 'worktree', 'add', '-q', '-b', 'wt-side', wtRoot)
+  check('vt15s7 review m-1: siblingRepos from a linked worktree outside <parent>/<repo> resolves next to the main checkout', pc.siblingRepos(two.config, wtRoot).join() === two.x, pc.siblingRepos(two.config, wtRoot).join())
+  check('vt15s7 review m-1: siblingRepos in an ordinary checkout is unchanged', pc.siblingRepos(two.config, two.dir).join() === two.x)
+  const xOnly = fixture()
+  xOnly.journal('completed')
+  xOnly.report('pro-review-branch-x.md', 'pro-review', at(8))
+  xOnly.report('task-converge.md', 'task-converge', at(8))
+  const xOnlyOut = xOnly.gate()
+  check('vt15s7 AC-7.1: the report of x does not stand for the main repo — rejected naming pro-review', xOnlyOut.decision === 'block' && /pro-review: no whole-task report/.test(xOnlyOut.text) && !/pro-review-x: no/.test(xOnlyOut.text), xOnlyOut.text)
+  const blk = fixture()
+  blk.main()
+  blk.journal('completed with blockers', 'Blockers: B1 — [final: pro-review-x — not run] no capacity for the second repo\n')
+  check('vt15s7 AC-7.1: completed with blockers carrying [final: pro-review-x — not run] — accepted', blk.gate().decision !== 'block', blk.gate().text)
+
+  const one = fixture({ sibling: false })
+  one.journal('completed')
+  one.main()
+  check('vt15s7 AC-7.2: a task of one repo — the close needs the same two reports as before, accepted with them', one.gate().decision !== 'block', one.gate().text)
+  const oneBare = fixture({ sibling: false })
+  oneBare.journal('completed')
+  const oneOut = oneBare.gate()
+  check('vt15s7 AC-7.2: a task of one repo without them — only pro-review and task-converge are named', oneOut.decision === 'block' && /pro-review: no whole-task/.test(oneOut.text) && /task-converge: no whole-task/.test(oneOut.text) && !/pro-review-/.test(oneOut.text.replace(/pro-review-branch\.md/g, '')), oneOut.text)
+  const idle = fixture({ siblingCommits: false })
+  idle.journal('completed')
+  idle.main()
+  check('vt15s7 AC-7.2: a sibling in the config with no task commits is not in the task — the close needs no report for it', idle.gate().decision !== 'block', idle.gate().text)
+  const old = fixture({ bseen: true })
+  old.journal('completed')
+  old.main()
+  check('vt15s7 AC-7.1: a Force block in backendSeen (an old run) — the per-repo rule is silent', old.gate().decision !== 'block', old.gate().text)
+
+  const skill = readFileSync(join(PLUGIN, '..', 'skills', 'deps-audit', 'SKILL.md'), 'utf8')
+  check('vt15s7 AC-7.3: the deps-audit skill names pyproject.toml, poetry.lock, uv.lock and requirements', ['pyproject.toml', 'poetry.lock', 'uv.lock', 'requirements'].every((word) => skill.includes(word)))
+  check('vt15s7 AC-7.3: the scope no longer limits the pass to package.json', /Python/.test(skill) && /site-packages|git\+/.test(skill))
+  rmSync(root, { recursive: true, force: true })
 }
 
 if (unit('vt15s6')) {

@@ -12,6 +12,10 @@ The batch is the only collection point for the whole run, and a missed category 
 
 In force mode the user answers once for the whole task: a question without a recommendation shifts onto them work you can do by reading the code and the source.
 
+### A free-form answer that reads two ways
+
+"Bring the button back in the webview" meant "do not touch master", and "the current branch" meant a branch off release instead of dev (Step 1, the answers to the batch).
+
 ## Step 2. Mid-run — no questions
 
 A question in the middle of the run stops all of it, together with everything that does not depend on the answer, and costs as long as the user is not looking at the terminal.
