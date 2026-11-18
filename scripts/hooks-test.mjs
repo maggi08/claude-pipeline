@@ -10949,6 +10949,25 @@ if (unit('vt15f1')) {
     check('vt15r2 d-1: --doctor runs the real recipe (API_TOKEN=x in it) — the collect row is ok, the token is not printed', /^ok — tests collect/m.test(dr.stdout) && !/API_TOKEN=x/.test(dr.stdout), dr.stdout)
     rmSync(fx, { recursive: true, force: true })
   }
+  const compound = maskSecrets('PGPASSWORD=a1 GITHUBTOKEN=a2 NPM_AUTHTOKEN=a3 CLIENTSECRET=a4 MYSQLPASSWD=a5 _SECRET=a6 docker run --env=DB_PASSWORD=a7 --build-arg=PIP_TOKEN=a8 pytest')
+  check('mask 0.29.1: PGPASSWORD / GITHUBTOKEN / NPM_AUTHTOKEN / CLIENTSECRET / MYSQLPASSWD, a leading _ and an assignment inside --env= / --build-arg= are masked', !/a[1-8]/.test(compound) && /--env=DB_PASSWORD=\*\*\* /.test(compound) && /pytest$/.test(compound), compound)
+  const open = maskSecrets('BYPASS=1 TASK=2 docker run --env=DEBUG=1 -e LOG_LEVEL=info pytest')
+  check('mask 0.29.1: names that only end in PASS or SK and a nested assignment of an open name stay as they are', open === 'BYPASS=1 TASK=2 docker run --env=DEBUG=1 -e LOG_LEVEL=info pytest', open)
+  {
+    const { spawnSync: sp } = await import('node:child_process')
+    const fx = realpathSync(mkdtempSync(join(tmpdir(), 'mask-')))
+    writeFileSync(join(fx, 'Makefile'), 'DB_PASS := s3cret\ntest:\n\tPGPASSWORD=$(DB_PASS) pytest tests API_KEY=$(DB_PASS)\n')
+    writeFileSync(join(fx, 'pyproject.toml'), '[project]\nname = "x"\ndependencies = ["django", "pytest"]\n')
+    const printed = sp(process.execPath, [join(PLUGIN, 'backend-detect.mjs'), fx], { encoding: 'utf8' })
+    check('mask 0.29.1: the detection of a Makefile recipe with PGPASSWORD=$(DB_PASS) does not print the password', /PGPASSWORD=\*\*\*/.test(printed.stdout) && !/s3cret/.test(printed.stdout), printed.stdout)
+    const json = sp(process.execPath, [join(PLUGIN, 'backend-detect.mjs'), fx, '--json'], { encoding: 'utf8' })
+    let parsed = null
+    try {
+      parsed = JSON.parse(json.stdout)
+    } catch {}
+    check('mask 0.29.1: --json stays valid JSON when a masked value ends a string, and carries no password', parsed !== null && !/s3cret/.test(json.stdout) && /API_KEY=\*\*\*$/.test(parsed.makeRecipe ?? ''), json.stdout)
+    rmSync(fx, { recursive: true, force: true })
+  }
   const initTmpl = readFileSync(join(PLUGIN, '../skills/pipeline-init/SKILL.md'), 'utf8')
   check('vt15r2 d-3: api_layer is written only with a `## Backend` section here or in a related repo', /^- api_layer: .*only when this config or a related repo it names has a `## Backend` section/m.test(initTmpl))
 }

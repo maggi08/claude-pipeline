@@ -86,18 +86,19 @@ function parseMakefile(text) {
 }
 
 const SECRET_SEGMENTS = new Set(['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'KEY', 'SK'])
-const secretName = (name) => name.split('_').some((part) => SECRET_SEGMENTS.has(part.toUpperCase())) || /KEY$/.test(name)
+const secretName = (name) => name.split('_').some((part) => SECRET_SEGMENTS.has(part.toUpperCase())) || /(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY)$/.test(name)
 const VALUE = '"[^"]*"|\'[^\']*\'|\\S+'
+const ASSIGNMENT = new RegExp(`((?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=)(${VALUE})`, 'g')
+const maskAssignments = (text) => text.replace(ASSIGNMENT, (whole, head, name, value) => (secretName(name) ? `${head}***` : `${head}${maskAssignments(value)}`))
 
 /**
  * What is printed (detection, `--json`, `--doctor` rows and the tail of the test output) never carries a secret of the repo: the userinfo of a URL, the value of a
- * `NAME=value` whose name has a segment (split on `_`) TOKEN, SECRET, PASSWORD, PASSWD, PASS, KEY or SK, or ends with KEY, and the value of `--password x` / `--token x`.
+ * `NAME=value` whose name has a segment (split on `_`) TOKEN, SECRET, PASSWORD, PASSWD, PASS, KEY or SK, or ends with TOKEN, SECRET, PASSWORD, PASSWD or KEY
+ * (`PGPASSWORD`, `GITHUBTOKEN`), an assignment inside the value of another (`--env=DB_PASSWORD=x`), and the value of `--password x` / `--token x`.
  * The masking affects printed text only, so it errs toward too much (`primary_key=1` is masked); a quoted value is masked whole, with its spaces.
  */
 export const maskSecrets = (text) =>
-  String(text)
-    .replace(/(\/\/)[^/@\s]+@/g, '$1***@')
-    .replace(new RegExp(`((?:^|[^A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)=)(?:${VALUE})`, 'g'), (whole, head, name) => (secretName(name) ? `${head}***` : whole))
+  maskAssignments(String(text).replace(/(\/\/)[^/@\s]+@/g, '$1***@'))
     .replace(new RegExp(`(--(?:password|passwd|pass|token|secret|api-key|access-key|private-key)(?:=|\\s+))(?:${VALUE})`, 'gi'), '$1***')
 const expandVars = (text, vars) => text.replace(/\$\(([A-Za-z_]\w*)\)/g, (whole, name) => vars[name] ?? whole)
 
@@ -506,6 +507,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const { rows, code } = doctor(repoArg)
     console.log(rows.join('\n'))
     process.exitCode = code
-  } else if (args.includes('--json')) console.log(maskSecrets(JSON.stringify(detect(repoArg), null, 2)))
+  } else if (args.includes('--json')) console.log(JSON.stringify(detect(repoArg), (key, value) => (typeof value === 'string' ? maskSecrets(value) : value), 2))
   else console.log(maskSecrets(printDetection(detect(repoArg))))
 }

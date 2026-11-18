@@ -5,6 +5,17 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.29.1 — 2026-11-18
+
+### `backend-detect.mjs` again hides `PGPASSWORD`-style secrets in what it prints, and `--json` stays valid JSON
+
+What changes against 0.29.0: only the printed text of `backend-detect.mjs` (the detection, `--json`, the `--doctor` rows). The commands it runs and the config `--init` writes are as before; neither was ever masked.
+
+- **Compound and nested secret names are masked again.** 0.29.0 matched a secret word only as a `_`-separated part of the name, so `PGPASSWORD`, `GITHUBTOKEN`, `NPM_AUTHTOKEN`, `CLIENTSECRET`, `MYSQLPASSWD`, a name with a leading `_` (`_SECRET`) and an assignment inside another value (`--env=DB_PASSWORD=…`, `--build-arg=PIP_TOKEN=…`) were printed in clear. Now a name that ends in TOKEN, SECRET, PASSWORD, PASSWD or KEY is masked as well, and the value of an open name is checked for an assignment inside it. Names that only end in PASS or SK (`BYPASS`, `TASK`) stay open, as do `KEYCLOAK_URL`, `sort_keys` and `monkey`.
+- **`--json` masks each string, not the finished JSON.** A masked value at the end of a string used to swallow the closing quote and break the JSON.
+
+**Dev repo only:** the `vt15f1` unit of `scripts/hooks-test.mjs` checks the compound names, the nested assignment, the open names and a Makefile fixture with `PGPASSWORD=$(DB_PASS)` through the detection and `--json`.
+
 ## 0.29.0 — 2026-11-17
 
 ### A backend task: a contract first, a backend API check, a frontend-against-contract check, and the final checks in every repo of the task
