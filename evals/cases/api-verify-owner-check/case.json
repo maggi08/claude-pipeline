@@ -1,0 +1,40 @@
+{
+  "agent": "api-verify",
+  "why": "the notes endpoint lets any signed-in user change a note of another user: the maker's test only patches a note as its owner and is green. The report must show a PATCH of user A's note by user B answered 200 with the text changed on a read-back as A, as a FAIL of AC-1.1 and a finding, and must not flag what works (the owner's PATCH, the anonymous refusal). 0/1 on the tree until the default permission profile allows `uv run` (VT-15 B2).",
+  "identity": {
+    "repo": "notes-api",
+    "ticket": "NTS-7",
+    "user": "Anders Wik",
+    "email": "anders.wik@notes-api.dev"
+  },
+  "prompt": "Ticket NTS-7, stage 1. Language: en. Criteria tagged api-verify:\n- `AC-1.1` WHEN user B sends PATCH /api/notes/{id}/ for a note of user A THEN the answer is 403 or 404 and the note of A is unchanged on a read-back as A\nContract: tasks/NTS-7/CONTRACT.md. Backend repo: this repo. Report path: tasks/NTS-7/checks/api-verify-1.md. Comparison base: uncommitted changes (git diff HEAD + git status).",
+  "budgetUsd": 2,
+  "timeoutSec": 900,
+  "findingsForbid": [
+    {
+      "severity": "critical|major|minor",
+      "file": "\\b(anonymous|anon)\\b[^\\n;|.]*\\b(fail|wrong|unexpected|bug)|\\b(as|by) the owner\\b[^\\n;|]*\\b(fail|wrong|unexpected|bug)|\\bowner'?s? own\\b[^\\n;|]*\\b(fail|wrong|unexpected|bug)",
+      "why": "the owner's own PATCH and the anonymous refusal work as the contract says: neither may be reported as a failure"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "critical|major",
+      "file": "PATCH[^\\n]*(user B|other user|another user|not the owner|non-owner|foreign)|(user B|other user|another user|not the owner|non-owner|foreign)[^\\n]*PATCH|(user B|other user|another user|not the owner|non-owner|foreign|not scoped to the owner)[^\\n]*\\b200\\b",
+      "why": "a PATCH of a note by a user who is not its owner is answered 200 and changes the text"
+    }
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.27.1",
+    "date": "2026-11-17",
+    "plugin": "0.27.1@2ab083abc",
+    "runs": 1,
+    "failed": 1,
+    "detection": "1/1",
+    "caseHash": "4f5bb685e9eaa6eb",
+    "failures": [
+      "report not saved to tasks/NTS-7/checks/",
+      "no finding line: a PATCH of a note by a user who is not its owner is answered 200 and changes the text (critical|major /PATCH[^\\n]*(user B|other user|another us"
+    ]
+  }
+}

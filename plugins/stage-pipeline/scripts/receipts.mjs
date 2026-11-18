@@ -25,14 +25,59 @@
  */
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
-import { LEGIT_REASON, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
-import { OPEN_STATUS, configRoot, dirtyPaths, inTaskDir, pathList, patchIds, readConfig, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
-import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
+import { basename, dirname, join, relative, resolve } from 'node:path'
+import { LEGIT_REASON, backendGate, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
+import { PATH_LINE } from './dismissals.mjs'
+import { siblingRepos, taskRepos } from './plan-check.mjs'
+import { OPEN_STATUS, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, taskBranches, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
+import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, forceKey, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
 const NOT_UI = /\.(?:test|spec|stories|story)\.\w+$|(?:^|\/)(?:__tests__|__mocks__|mocks?|fixtures?)\//
 export const uiFiles = (files) => files.filter((file) => UI_FILE.test(file) && !NOT_UI.test(file))
+
+const TEST_FILE = /(?:^|\/)(?:tests?\/|test_[^/]*\.py$|[^/]*_test\.py$|conftest\.py$)/
+
+/** The directory with `.claude/pipeline.config.md` above the task directory (the repo of the task), or null. */
+function taskRepoRoot(taskDir) {
+  for (let dir = dirname(taskDir); dir !== dirname(dir); dir = dirname(dir)) {
+    if (readConfig(dir)) return dir
+  }
+  return null
+}
+
+/**
+ * The backend files of a commit (VT-15, stage 5): the changed files that match the `api_files` masks of a `## Backend` repo, tests excluded.
+ * The config of the repo the commit is made in comes first; without `## Backend` there, the config of the task's repo is read: a `### <name>` repo whose `path` points at this
+ * worktree (or its main tree) lends its masks. `{ files, backend, front }`: `backend` — whether a `## Backend` repo describes this worktree, `front` — whether the repo has a dev server url.
+ */
+export function backendFiles(changed, { worktree, taskDir }) {
+  const top = realOr(worktree)
+  const tops = new Set([top, realOr(mainRoot(worktree) ?? worktree)])
+  const own = configRoot(worktree, worktree) ?? worktree
+  const lookups = [{ text: readConfig(own), root: realOr(own) }]
+  const taskRoot = taskDir ? taskRepoRoot(taskDir) : null
+  if (taskRoot && realOr(taskRoot) !== lookups[0].root) lookups.push({ text: readConfig(taskRoot), root: realOr(taskRoot) })
+  const front = Boolean(devServerConfig(own)?.url)
+  for (const { text, root } of lookups) {
+    const repos = (backendConfig(text, root)?.repos ?? []).filter((repo) => {
+      const base = realOr(resolve(root, repo.path))
+      return tops.has(base) || [...tops].some((candidate) => base.startsWith(`${candidate}/`))
+    })
+    if (!repos.length) continue
+    const files = changed.filter(
+      (file) =>
+        !TEST_FILE.test(file) &&
+        repos.some((repo) => {
+          const base = realOr(resolve(root, repo.path))
+          const rel = tops.has(base) ? file : relative(base, resolve(top, file))
+          return !rel.startsWith('..') && backendFileMatcher(repo)(rel)
+        }),
+    )
+    return { files, backend: true, front }
+  }
+  return { files: [], backend: false, front: true }
+}
 
 const DESIGN = ['figma-compare', 'proto-compare']
 const WHOLE_BRANCH = /branch|whole|final|целик|ветк/i
@@ -118,7 +163,7 @@ export function openStages(stagesText) {
     const heading = block.split('\n')[0]
     const skips = []
     for (const line of block.split('\n')) {
-      const found = line.match(/^\s*[-*]\s*\[[ xX]\]\s*`?(figma-compare|proto-compare|devtools-verify)`?\b/i)
+      const found = line.match(/^\s*[-*]\s*\[[ xX]\]\s*`?(figma-compare|proto-compare|devtools-verify|api-verify)`?\b/i)
       if (!found) continue
       const reason = skipReasonAfter(line, found[0].length)
       if (reason !== null) skips.push({ checker: found[1].toLowerCase(), reason: reason.replace(/[`*()]/g, '').trim() })
@@ -140,7 +185,10 @@ export function openStages(stagesText) {
 
 /** devtools-verify is a runtime check: only a stage with nothing visible may skip it. A missing mockup (a design-checker reason) is no reason. */
 const RUNTIME_SKIP_REASON = /logic-only|no\s+visual|visuals?\s+(?:are\s+)?unchanged|без\s+визуал|визуал\w*\s+не\s+меня/i
-const legitSkip = (skip) => (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_REASON : LEGIT_REASON).test(skip.reason)
+/** api-verify (VT-15, D4): only "the behaviour does not change" with the `path:line` that changed is a skip; an environment reason (docker, colima, no network, timeout) is not one. */
+const NO_BEHAVIOUR_CHANGE = /no\s+behaviou?r\s+change|без\s+изменени[яй]\s+поведения/i
+const legitSkip = (skip) =>
+  skip.checker === 'api-verify' ? NO_BEHAVIOUR_CHANGE.test(skip.reason) && PATH_LINE.test(skip.reason) : (skip.checker === 'devtools-verify' ? RUNTIME_SKIP_REASON : LEGIT_REASON).test(skip.reason)
 
 const skipDeclared = (stages, checkers) => stages.flatMap((stage) => stage.skips).filter((skip) => checkers.includes(skip.checker))
 
@@ -176,7 +224,9 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
   const reports = window.map(({ name }) => name)
   const has = (...checkers) => reports.some((name) => checkers.includes(reportChecker(name)))
   const stages = openStages(readTaskFile(taskDir, 'STAGES.md') ?? '')
-  const ui = uiFiles(changed)
+  const backend = backendFiles(changed, { worktree, taskDir })
+  // a backend repo without a front: an `.html` is a service template, nothing to compare with a design or open in a browser (VT-15)
+  const ui = uiFiles(changed).filter((file) => backend.front || !/\.html$/i.test(file))
   const head = git(worktree, 'rev-parse', 'HEAD')
   const headFiles = last && isSameCommit(worktree, last, head) ? new Set(git(worktree, 'show', '--name-only', '--format=', '--no-renames', 'HEAD').split('\n').filter(Boolean)) : null
   const continuation = Boolean(headFiles) && changed.length > 0 && changed.every((file) => headFiles.has(file))
@@ -206,6 +256,15 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
       }
     }
   }
+  // the backend rules are for a Force block opened after this version first saw the task (`backendGate`): a run already open keeps the rules it started with
+  const backendNew = !backendGate(dataDir, taskDir).seen.has(forceKey(run.block.heading))
+  if (!continuation && backendNew && backend.files.length && !has('api-verify') && !legit(['api-verify']).length) {
+    const shown = `${backend.files.slice(0, 4).join(', ')}${backend.files.length > 4 ? ` and ${backend.files.length - 4} more` : ''}`
+    missing.push(
+      `backend files changed (${shown}) with no api-verify report in the window and no legitimate skip line: run the \`api-verify\` agent (/stage-check, Step 3) and save \`checks/api-verify-<N>.md\`, ` +
+        'or write `- [x] api-verify (skip: no behaviour change — <path:line> of what changed)` in the stage pipeline (a rename, a comment, formatting). "docker not started", "colima", "no network", "timeout" do not replace the run',
+    )
+  }
   const counts = { critical: 0, major: 0, minor: 0 }
   for (const { name, text } of window) {
     const found = findingCounts(text, name)
@@ -215,6 +274,7 @@ export function commitVerdict({ dataDir, taskDir, ticket, branch, worktree, chan
     since,
     reports,
     ui,
+    backend: backend.files,
     continuation,
     // a continuation stands on the checks of the commit it continues: runtime and skips come from its receipt
     skips: continuation && last.skips ? last.skips : skipDeclared(stages, [...DESIGN, 'devtools-verify']).map((skip) => ({ ...skip, legit: legitSkip(skip) })),
@@ -265,6 +325,7 @@ export function finishPending(dataDir, id, worktree) {
     counts: pending.counts,
     skips: pending.skips,
     ui: pending.ui.length > 0,
+    backend: pending.backend ?? [],
     runtime: pending.runtime,
     continuation: pending.continuation,
     files: git(worktree, 'show', '--name-only', '--format=', '--no-renames', 'HEAD').split('\n').filter(Boolean).slice(0, 300),
@@ -296,8 +357,10 @@ export function finishFloorOk(dataDir, id, worktree) {
  * of commits and the branch's receipts for this tree stand in; with a reflog the receipts are not read: a receipt of an older commit (a `reset --hard`
  * onto it) would win the minimum over the reflog's later stamp. Any tree change counts, a docs-only commit too: in this plugin docs are the product.
  */
-function treeSince(dataDir, worktree, ticket, branch) {
-  const tree = git(worktree, 'rev-parse', 'HEAD^{tree}')
+function treeSince(dataDir, worktree, ticket, branch, onBranch = false) {
+  // `onBranch`: a sibling repo, whose checkout may sit on another branch (the task branch lives in a worktree of its own): the tree and the log are the branch ref's, not HEAD's.
+  const head = onBranch ? `refs/heads/${branch}` : 'HEAD'
+  const tree = git(worktree, 'rev-parse', `${head}^{tree}`)
   if (!tree) return 0
   const times = []
   for (const line of git(worktree, 'log', '-g', '-n', '300', '--date=unix', '--format=%gd %T', `refs/heads/${branch}`).split('\n').filter(Boolean)) {
@@ -307,7 +370,7 @@ function treeSince(dataDir, worktree, ticket, branch) {
     if (stamp) times.push(stamp * 1000)
   }
   if (!times.length) {
-    for (const line of git(worktree, 'log', '-n', '300', '--format=%ct %T').split('\n').filter(Boolean)) {
+    for (const line of git(worktree, 'log', '-n', '300', '--format=%ct %T', head).split('\n').filter(Boolean)) {
       const [time, commitTree] = line.split(' ')
       if (commitTree !== tree) break
       times.push(Number(time) * 1000)
@@ -331,9 +394,9 @@ function dirtyTracked(worktree, taskDir) {
 }
 
 /** Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory (a move out of it counts by its destination); a binary file counts 0 (S1-D2); null when git fails. */
-function changedLinesSince(worktree, taskDir, base) {
+function changedLinesSince(worktree, taskDir, base, head = 'HEAD') {
   const taskRel = taskRelPath(worktree, taskDir)
-  const out = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, 'HEAD')
+  const out = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, head)
   if (out === null) return null
   let sum = 0
   for (const line of out.trim().split('\n').filter(Boolean)) {
@@ -352,8 +415,9 @@ function changedLinesSince(worktree, taskDir, base) {
  * (`isFresh`); the change since the base is within DELTA_MAX_LINES.
  */
 function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
+  const head = item.repo ? `refs/heads/${item.repo.branch}` : 'HEAD' // a sibling's task branch, not its checkout's HEAD
   const match = DELTA_LINE.exec(reportHeader(text))
-  const redo = `re-run the delta review (${item.checker === 'pro-review' ? '`pro-review --delta checks/<full report>`' : `the delta mode of the project skill \`${item.checker}\``}) after the last fix`
+  const redo = `re-run the delta review (${item.pro ? '`pro-review --delta checks/<full report>`' : `the delta mode of the project skill \`${item.checker}\``}) after the last fix`
   const fullRun = `run ${item.how} (a full review, it becomes the new anchor)`
   if (!match) return { why: `its \`delta:\` line is not \`delta: <full report file> <base sha>..<new head sha>\``, run: `rewrite the line as plain \`delta: <full report file> <base sha>..<new head sha>\` (no markup), or ${redo}` }
   const [, file, baseRaw, endRaw] = match
@@ -366,12 +430,12 @@ function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
   const resolve = (sha) => git(worktree, 'rev-parse', '--verify', '--quiet', `${sha}^{commit}`)
   const base = resolve(baseRaw)
   if (!base || base !== resolve(anchor)) return { why: `its base \`${baseRaw}\` is not the \`head:\` of \`${shown}\` (\`${anchor}\`)`, run: fullRun }
-  if (git(worktree, 'merge-base', base, 'HEAD') !== base) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (the branch was rebased or reset)`, run: fullRun }
+  if (git(worktree, 'merge-base', base, head) !== base) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (the branch was rebased or reset)`, run: fullRun }
   const tree = (rev) => git(worktree, 'rev-parse', '--verify', '--quiet', `${rev}^{tree}`)
   const endTree = resolve(endRaw) && tree(endRaw)
-  if (!endTree || endTree !== tree('HEAD')) return { why: `the delta reviewed \`${endRaw}\`, not HEAD (its tree differs from HEAD's or the commit is unknown)`, run: redo }
+  if (!endTree || endTree !== tree(head)) return { why: `the delta reviewed \`${endRaw}\`, not HEAD (its tree differs from HEAD's or the commit is unknown)`, run: redo }
   if (!isFresh) return { why: `it is older than HEAD's tree (the tree appeared ${new Date(since).toISOString()})`, run: redo }
-  const lines = changedLinesSince(worktree, taskDir, base)
+  const lines = changedLinesSince(worktree, taskDir, base, head)
   if (lines === null) return { why: `could not count the change since the base \`${base.slice(0, 8)}\``, run: fullRun }
   if (lines > DELTA_MAX_LINES) return { why: `${lines} lines changed since the full review's head \`${base.slice(0, 8)}\`, over the bound of ${DELTA_MAX_LINES}`, run: fullRun }
   return null
@@ -394,10 +458,28 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
   const since = treeSince(dataDir, worktree, basename(taskDir), branch)
   if (!since) return []
   const dirty = dirtyTracked(worktree, taskDir)
+  // VT-15 (stage 7): a task of several repos needs a whole-branch pro-review report of every other repo too, `checks/pro-review-branch-<repo>.md`, for a Force block
+  // of the backend rules (not in `backendSeen`); a task of one repo asks nothing more (AC-7.2). A repo's report is not the main repo's report.
+  const config = readConfig(configRoot(worktree, worktree) ?? worktree)
+  // The rule is a backend one (D1): a task with no `## Backend` in its repo's config or a sibling's closes as before.
+  const root = configRoot(worktree, worktree) ?? worktree
+  const hasBackend = Boolean(backendConfig(config)?.repos.length) || siblingRepos(config, root).some((sibling) => Boolean(backendConfig(readConfig(sibling))?.repos.length))
+  const others = !hasBackend || backendGate(dataDir, taskDir).seen.has(forceKey(run.block.heading))
+    ? []
+    : taskRepos(config, worktree, taskBranches(run.stages)).filter((repo) => !repo.primary)
+  const ofRepo = (repo, name) => new RegExp(`^pro-review-branch-${repo.name.replace(/[^\w]/g, '\\$&')}(?:\\.md$|-delta-|-fresh|-\\d)`).test(name)
   const wanted = [
-    { checker: 'pro-review', match: (name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
+    { checker: 'pro-review', pro: true, match: (name) => reportChecker(name) === 'pro-review' && WHOLE_BRANCH.test(name) && !others.some((repo) => ofRepo(repo, name)), how: 'the `pro-review` agent in whole-branch mode, `checks/pro-review-branch.md`' },
     { checker: 'task-converge', match: (name) => reportChecker(name) === 'task-converge', how: 'the `task-converge` agent, `checks/task-converge.md`' },
-    ...teamReviewSkills(readConfig(configRoot(worktree, worktree) ?? worktree)).map((skill) => ({
+    ...others.map((repo) => ({
+      checker: `pro-review-${repo.name}`,
+      pro: true,
+      repo,
+      since: treeSince(dataDir, repo.root, basename(taskDir), repo.branch, true),
+      match: (name) => reportChecker(name) === 'pro-review' && ofRepo(repo, name),
+      how: `the \`pro-review\` agent in whole-branch mode on the repo \`${repo.root}\` (base \`${repo.base}\`), \`checks/pro-review-branch-${repo.name}.md\``,
+    })),
+    ...teamReviewSkills(config).map((skill) => ({
       checker: skill,
       match: (name) => reportChecker(name) === skill.toLowerCase(),
       how: `a general-purpose subagent that follows the project skill \`${skill}\` on the whole branch (the config names it as \`team_review\`), writing \`checks/${skill}-branch.md\` under the checker-report contract`,
@@ -405,21 +487,22 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
   ]
   // A full report keeps today's rule; a report with a `delta:` line is never read as a full one: it counts only when deltaProblem finds nothing (VT-7, D3).
   const fresh = new Set(newReports(taskDir, since))
+  const freshOf = (item) => (item.repo ? new Set(newReports(taskDir, item.since)) : fresh)
   const deltaWhy = new Map()
   const noteDelta = (checker, entry) => deltaWhy.set(checker, [...(deltaWhy.get(checker) ?? []), entry])
   const counts = (item, name) => {
     const text = item.match(name) ? readTaskFile(taskDir, 'checks', name) : null
     if (text === null) return false
-    if (!isDeltaReport(name, text)) return fresh.has(name)
+    if (!isDeltaReport(name, text)) return freshOf(item).has(name)
     if (item.checker === 'task-converge') { // a delta never counts for it, and it is not read as a full report either (S3-D2)
       noteDelta(item.checker, { name, why: 'task-converge has no delta mode', run: `run ${item.how} (a full pass)` })
       return false
     }
-    const problem = deltaProblem(worktree, taskDir, name, text, since, item, fresh.has(name))
+    const problem = deltaProblem(item.repo?.root ?? worktree, taskDir, name, text, item.repo ? item.since : since, item, freshOf(item).has(name))
     if (problem) noteDelta(item.checker, { name, ...problem })
     return !problem
   }
-  const missing = wanted.filter((item) => dirty.length || !newReports(taskDir, 0).some((name) => counts(item, name)))
+  const missing = wanted.filter((item) => (dirty.length && !item.repo) || !newReports(taskDir, 0).some((name) => counts(item, name)))
   const bGate = blockerGate(dataDir, taskDir)
   const blockers = openBlockers(run.block, bGate)
   const withBlockers = WITH_BLOCKERS.test(run.block.heading)
@@ -432,6 +515,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
   return missing
     .filter((item) => !withBlockers || !blockers.some((line) => finalMarkerReports(line).has(item.checker)))
     .map((item) => {
+      const why = item.repo ? `newer than the code last changed in \`${item.repo.root}\` (the tree of its HEAD appeared ${new Date(item.since).toISOString()})` : reason
       const marker = finalMarker(item.checker, newReports(taskDir, 0).some(item.match) ? 'stale' : 'missing', language)
       const prose = withBlockers ? blockers.find((line) => line.toLowerCase().includes(item.checker)) : undefined
       // The marker is there, but a lift word in the reason ("skipped per user decision 2026-10-20", "closed by the token limit") makes the line read as lifted.
@@ -440,7 +524,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
         rule: 'final-review',
         id: item.checker,
         message:
-          `${item.checker}: no whole-task report ${reason} — "completed" needs it fresh. Run ${item.how} after the last fix; ` +
+          `${item.checker}: no whole-task report ${why} — "completed" needs it fresh. Run ${item.how} after the last fix; ` +
           `or close as "completed with blockers" with an open blocker that carries the marker \`${marker}\`, for example \`B<n> — ${marker} <why>\`.` +
           (deltaWhy.get(item.checker) ?? []).map(({ name, why, run }) => ` The delta report \`${name}\` does not count: ${why}; ${run}.`).join('') +
           (lifted

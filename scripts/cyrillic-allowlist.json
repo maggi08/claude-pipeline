@@ -29,7 +29,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/journal-check.mjs",
-      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|NEGATED_FIXED|FALSE_OUTCOME|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN|CLOSING_TAIL_WORD|CLOSING_TAIL_TOKEN|FIELD_CLOSING_MARK)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
+      "line": "^\\s*(?:(?:export )?const (?:FIXED_WORD|NEGATED_FIXED|FALSE_OUTCOME|deferred|live|BROWSER_REASON|CAVEAT_RU|NO_DATA|STUBBED|DECISION|SUMMARY_LINE|BLOCKERS_FIELD|PRE_EXISTING|BASE_EVIDENCE|PASS_RUN|CLOSING_TAIL_WORD|CLOSING_TAIL_TOKEN|FIELD_CLOSING_MARK|API_CONTROL)\\b|/(?![/*])|if \\((?:!AC_ID\\.test|REF\\.test|/\\^|!/\\\\bFAIL|/исправлен|proven \\|\\||/\\(\\?:решени))",
       "reason": "RU alternatives in the phrase-heuristic regexes (RU forms next to EN ones); messages are not covered"
     },
     {
@@ -39,7 +39,7 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/dismissals.mjs",
-      "line": "^\\s*(?:(?:export )?const [A-Z_]+ = |if \\((?:DEFERRED|SELF_SOURCED)|const before = |    ')",
+      "line": "^\\s*(?:(?:export )?const [A-Z_]+ = |if \\((?:DEFERRED|SELF_SOURCED)|const before = |const generic = |    ')",
       "reason": "RU alternatives of the weak-dismissal phrase regexes (RU|EN pairs)"
     },
     {
@@ -84,8 +84,8 @@
     },
     {
       "glob": "plugins/stage-pipeline/scripts/receipts.mjs",
-      "line": "^\\s*(?:const WHOLE_BRANCH|const commitOpen|const RUNTIME_SKIP_REASON)",
-      "reason": "RU alternatives of the whole-branch, commit-line and runtime-skip-reason regexes (RU|EN pairs)"
+      "line": "^\\s*(?:const WHOLE_BRANCH|const commitOpen|const RUNTIME_SKIP_REASON|const NO_BEHAVIOUR_CHANGE)",
+      "reason": "RU alternatives of the whole-branch, commit-line, runtime-skip-reason and no-behaviour-change regexes (RU|EN pairs)"
     },
     {
       "glob": "plugins/stage-pipeline/scripts/run-digest.mjs",

@@ -6,10 +6,10 @@ import { denyTool } from './firing.mjs'
 import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel, securityModel } from './pipeline-state.mjs'
 
 /**
- * Four rules for launching subagents that the orchestrator keeps only in memory — and loses
+ * Rules for launching subagents that the orchestrator keeps only in memory — and loses
  * on a long run:
  *
- * - the security review and ds-parity run as their own agents, pinned to sonnet. A general-purpose
+ * - the security review, ds-parity, api-verify and contract-compare run as their own agents, pinned to sonnet. A general-purpose
  *   agent inherits the session's model: of 173 general-purpose calls in the transcripts of
  *   2026-10-01…11-09, 52 were security reviews and 40 ds-parity passes, almost all on opus, a median
  *   of 9 min each, and the final rounds ran them again.
@@ -36,13 +36,15 @@ const WHOLE_BRANCH = new RegExp(`whole[-\\s]branch\\s+mode|(?:${MODE_WORD})\\s*(
 const DELTA_MODE = new RegExp(`--delta\\b|\\bdelta[-\\s](?:mode|review)\\b|(?:${MODE_WORD})\\s*(?::\\s*)?\\**delta\\b|дельта[-\\s]?(?:режим|ревью)|(?:${MODE_WORD})\\s*:?\\s*\\**дельта|-branch-delta-`, 'i')
 // No subagent_type is a general-purpose agent too; `claude` is the catch-all type of some hosts.
 const GENERIC_AGENTS = new Set(['', 'generalpurpose', 'claude'])
-// Told by the call's description or, for ds-parity, by a prompt that points at its skill. In the transcripts since 2026-10-01 most calls named the check in the
+// Told by the call's description or, for ds-parity, api-verify and contract-compare, by a prompt that points at the skill. In the transcripts since 2026-10-01 most calls named the check in the
 // description; a combined sweep ("Delta sweep final 9": dead-code, i18n, security and ds-parity in one call) is caught by the ds-parity skill path only, so the message
 // sends every other check of the prompt to its own agent. "security" alone is not enough: an interview probe of "the account security page" is not a review; it counts
 // next to a review word (whole words: "password" is not "pass") or next to another checker's name ("ds-parity security i18n final 7").
 const SECURITY_JOB = /\bsecurity\b[^\n]*\b(?:review|re-review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b|\b(?:review|audit|check|pass|sweep)(?:s|es|ed|ing)?\b[^\n]*\bsecurity\b|\bsecurity\b[^\n]*\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b|\b(?:ds[-\s]?parity|i18n|dead[-\s]code|deps[-\s]audit)\b[^\n]*\bsecurity\b|(?:ревью|провер\S*|аудит)\s+безопасност|безопасност\S*\s+(?:ревью|провер|аудит)/i
 const CHECKER_JOBS = [
   { agent: 'security-review', job: 'the security review', matches: (description) => SECURITY_JOB.test(description) },
+  { agent: 'api-verify', job: 'the api-verify check', matches: (description, prompt) => /\bapi[-\s]?verify\b/i.test(description) || /skills\/api-verify\b/.test(prompt) },
+  { agent: 'contract-compare', job: 'the contract-compare check', matches: (description, prompt) => /\bcontract[-\s]?compare\b/i.test(description) || /skills\/contract-compare\b/.test(prompt) },
   {
     agent: 'ds-parity',
     job: 'the ds-parity pass',

@@ -41,6 +41,11 @@
       "text": "do not guess — look at what really gets into the bundle.",
       "baseline": true
     },
+    "deps-audit#52814ee7fe": {
+      "to": "prose",
+      "text": "a token or password inside the url is a security finding: name the file and line, never the value.",
+      "baseline": true
+    },
     "deps-audit#12c4e5b895": {
       "to": "prose",
       "text": "the registry is unavailable and the package is not installed — mark the item \"not checked\" and do not make a f",
@@ -801,9 +806,9 @@
       "to": "hook:journal-gate/report",
       "text": "a critical that was dismissed as false always goes to this fresh pass, and its ledger line cites the fresh rep"
     },
-    "stage-check#df0ab656d2": {
+    "stage-check#5be4524acf": {
       "to": "prose",
-      "text": "the journal is mandatory, not optional: together with the decisions from /stage-kickoff it is the saved flow o",
+      "text": "the journal is mandatory: with the /stage-kickoff decisions it is the saved flow of \"what, when, why, decided\"",
       "baseline": true
     },
     "stage-check#878ada9776": {
@@ -877,7 +882,7 @@
       "text": "| environment and access | what the run will need from outside: the needed file open in figma desktop, a logge",
       "baseline": true
     },
-    "stage-force#abb79faee0": {
+    "stage-force#4343930e2a": {
       "to": "prose",
       "text": "open the route in the managed browser, picking the server the way devtools-verify picks it: the stage-pipeline",
       "baseline": true
@@ -910,11 +915,6 @@
     "stage-force#dbe18bdda7": {
       "to": "prose",
       "text": "files the plan deletes (git rm by the criteria) are named one by one in the text of the question about boundar",
-      "baseline": true
-    },
-    "stage-force#6cfd1bbd71": {
-      "to": "prose",
-      "text": "a free-form answer that reads two ways with different implementations or narrows the scope against the ticket ",
       "baseline": true
     },
     "stage-force#27ddb36ac7": {

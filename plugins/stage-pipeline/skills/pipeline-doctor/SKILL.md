@@ -77,6 +77,8 @@ machine, and suggest a fix for what does not. The pipeline itself comes with the
    (b) the profile directory is held by one Chrome at a time, so a second concurrent session in the same repo
    finds it busy and devtools-verify falls back to its playwright path instead of waiting. Undo: `claude mcp remove stage-pipeline-chrome -s local`.
 
+4b. **Backend repo (the config has `## Backend`).** `node ${CLAUDE_PLUGIN_ROOT}/scripts/backend-detect.mjs <repo> --doctor` for each backend repo of the config (read-only apart from running the tests in `--collect-only` mode, 5 min limit). It prints `ok|fail|skip — <check> — <what to do>` lines: docker answers (no — the reason and `colima start` / Docker Desktop), the compose file is there, every external network exists (no — `docker network create <n>`), the test command collects tests (the count), `permissions` (the docker command of the tests is allowed in the Claude settings, else the command that adds the `docker` group). Exit 1 = a `fail`. Show the lines; start nothing yourself without the user's word.
+
 5. **Baseline (optional, ~a minute).** `type_check` from the config → compare the
    error count with the baseline. It has drifted — suggest updating the baseline in the
    base config (a shared file — in a separate commit, not silently). Two catches:

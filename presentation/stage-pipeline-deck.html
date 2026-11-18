@@ -440,8 +440,8 @@
       <span class="pill">3 projects</span>
       <span class="pill">16 tasks</span>
       <span class="pill">161 checker reports</span>
-      <span class="pill">21 skills · 15 agents</span>
-      <span class="pill">v0.28.0</span>
+      <span class="pill">23 skills · 17 agents</span>
+      <span class="pill">v0.29.0</span>
     </div>
     <div class="sig">Magzhan Mussaiyn · 21 Jul → 21 Aug 2026 · plugin <b>stage-pipeline@magzhan</b></div>
   </section>
@@ -722,8 +722,8 @@
         <pre>
 <span class="cm"># installed once, works in every repo</span>
 <b>stage-pipeline@magzhan</b>
-├── skills/     21 skills
-├── agents/     15 agents
+├── skills/     23 skills
+├── agents/     17 agents
 └── .mcp.json    figma · chrome-devtools
 
 <span class="cm"># in the project, created by /pipeline-init</span>
@@ -767,7 +767,7 @@
 
   <!-- 7 -->
   <section class="slide" aria-label="Skills catalog">
-    <div class="eyebrow"><span class="num">06</span><span>Catalog</span><span class="spacer"></span><span>21 skills · 1 of 2</span></div>
+    <div class="eyebrow"><span class="num">06</span><span>Catalog</span><span class="spacer"></span><span>23 skills · 1 of 2</span></div>
     <h2>Skills: the commands you type by hand</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -795,7 +795,7 @@
 
   <!-- 7b -->
   <section class="slide" aria-label="Skills catalog">
-    <div class="eyebrow"><span class="num">07</span><span>Catalog</span><span class="spacer"></span><span>21 skills · 2 of 2</span></div>
+    <div class="eyebrow"><span class="num">07</span><span>Catalog</span><span class="spacer"></span><span>23 skills · 2 of 2</span></div>
     <h2>Skills: the commands you type by hand</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -826,7 +826,7 @@
 
   <!-- 8 -->
   <section class="slide" aria-label="Agents catalog">
-    <div class="eyebrow"><span class="num">08</span><span>Catalog</span><span class="spacer"></span><span>15 agents · 1 of 2</span></div>
+    <div class="eyebrow"><span class="num">08</span><span>Catalog</span><span class="spacer"></span><span>17 agents · 1 of 2</span></div>
     <h2>Agents: subagents launched by the orchestrator and by skills</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">
@@ -841,6 +841,8 @@
             <tr><td class="name">proto-compare</td><td>the same against a prototype, plus behavior per SPEC.md (transitions, CTAs, guards)</td><td class="when">after code</td></tr>
             <tr><td class="name">devtools-verify</td><td>runtime: console and hydration, light/dark, widths 1440/1280/1024, live state</td><td class="when">after code</td></tr>
             <tr><td class="name">pro-review</td><td>correctness, security, repo conventions, duplicates, naming — with an adversarial re-check of every finding</td><td class="when">always</td></tr>
+            <tr><td class="name">api-verify</td><td>probes a Django backend through its HTTP layer by the stage criteria: codes, body, role matrix, read-back after a write</td><td class="when">backend files changed</td></tr>
+            <tr><td class="name">contract-compare</td><td>frontend types, MSW mocks and backend serializers against the task's CONTRACT.md: a missing field, nullable, enum value</td><td class="when">API layer changed</td></tr>
             <tr><td class="name">security-review</td><td>the branch traced from untrusted input to its sinks: access, secrets, redirects, payment state; each finding with an attack scenario</td><td class="when">before PR</td></tr>
           </tbody>
         </table>
@@ -854,7 +856,7 @@
 
   <!-- 8b -->
   <section class="slide" aria-label="Agents catalog">
-    <div class="eyebrow"><span class="num">09</span><span>Catalog</span><span class="spacer"></span><span>15 agents · 2 of 2</span></div>
+    <div class="eyebrow"><span class="num">09</span><span>Catalog</span><span class="spacer"></span><span>17 agents · 2 of 2</span></div>
     <h2>Agents: subagents launched by the orchestrator and by skills</h2>
     <div class="body">
       <div class="table-wrap" style="flex:1">

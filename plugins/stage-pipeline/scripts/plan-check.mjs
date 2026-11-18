@@ -36,6 +36,7 @@ import {
   CLOSED_STAGE,
   CLOSED_WORD,
   CONFIRMED_LINE,
+  CONTRACT_COVERAGE_SECTION,
   COVERAGE_SECTION,
   FORCE_FIELD_LINE,
   NO_VISUAL_REFERENCE,
@@ -54,7 +55,7 @@ import {
   stageBlocksOf,
   stripQuoted,
 } from './markers.mjs'
-import { pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/pipeline-state.mjs'
+import { contractPath, integrationBase, mainRoot, pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/pipeline-state.mjs'
 
 const AC_START = /^[ \t]*(?:[-*][ \t]*|\|[ \t]*)?(?:\[[ xX]\][ \t]*)?(?:✅[ \t]*)?\**`?(AC-[\w.]*\w)`?\**(?=[\s:.,—–|)-]|$)/
 const VERIFIER_TAG = /\[(?:verify|live):/i
@@ -180,11 +181,57 @@ function lineCount(path) {
   return count
 }
 
-/** The sibling repos a config names: `../<name>` at the first level of a path (not `../../node_modules/…`), resolved against the repo root. */
+const gitOut = (cwd, ...args) => {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The sibling repos a config names: `../<name>` at the first level of a path (not `../../node_modules/…`), resolved against the repo root; a linked worktree that is not
+ * at `<parent>/<repo>` also looks next to the main checkout (`git rev-parse --git-common-dir` → its parent), the first existing directory wins.
+ */
 export function siblingRepos(config, root) {
   if (!root || !config) return []
   const names = [...config.matchAll(/(?<![\w./~-])\.\.\/([A-Za-z0-9_@][\w@.-]*)/g)].map((match) => match[1])
-  return [...new Set(names)].map((name) => resolve(root, '..', name))
+  const mainTree = mainRoot(root)
+  return [...new Set(names)].map((name) => {
+    const own = resolve(root, '..', name)
+    if (!mainTree || existsSync(own)) return own
+    const beside = resolve(mainTree, '..', name)
+    return existsSync(beside) ? beside : own
+  })
+}
+
+/**
+ * The repos of a task (VT-15, stage 7): the task's own repo (`root`) plus each sibling repo of the config that has a local branch of the task (`branches` — `taskBranches`)
+ * with commits that the nearest integration ref of that repo (`integrationBase` over its own `.claude/pipeline.config.md`: `main_branch`, dev, develop, main …, `origin/` first) lacks.
+ * `[{ name, root, base, branch, primary }]`; `name` is the directory name. A sibling with no task branch, or none of whose branches carries commits, is not in the task.
+ * The base is the local `origin/<ref>`: with a stale one (no fetch in a hook) a sibling with already-merged commits joins the task; fetch before the final checks.
+ */
+export function taskRepos(config, root, branches = []) {
+  if (!root) return []
+  // The base is the nearest integration ref (`integrationBase`: `main_branch`, dev, develop, main …) — `main_branch: main` with PRs into dev must not pull a sibling's merged commits in.
+  const baseOf = (dir, ref, text) => integrationBase(dir, text, ref)
+  const own = (dir) => branches.find((name) => gitOut(dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`))
+  const branch = own(root) ?? gitOut(root, 'rev-parse', '--abbrev-ref', 'HEAD') ?? null
+  const primary = { name: basename(root), root, base: baseOf(root, branch ? `refs/heads/${branch}` : 'HEAD', config)?.ref ?? null, branch, primary: true }
+  const found = [primary]
+  for (const dir of siblingRepos(config, root)) {
+    if (!existsSync(dir) || dir === root) continue
+    const text = readConfig(dir)
+    for (const name of branches) {
+      if (!gitOut(dir, 'rev-parse', '--verify', '--quiet', `refs/heads/${name}`)) continue
+      const base = baseOf(dir, `refs/heads/${name}`, text)
+      if (base && base.ahead > 0) {
+        found.push({ name: basename(dir), root: dir, base: base.ref, branch: name, primary: false })
+        break
+      }
+    }
+  }
+  return found
 }
 
 /** The tracked files of a repo (`git ls-files`), as a map from the base name to the paths; null when the directory is not a git repo. Computed once per `checkPlan` run. */
@@ -291,11 +338,28 @@ function tableRows(section) {
   return { header: header ? cellsOf(header) : null, body: body.map(cellsOf) }
 }
 
+// VT-15: the "Contract coverage" Stage cell names a stage of the plan or says explicitly that the item is out of it; the ids of the contract file must each have a row.
+const OUT_OF_PLAN = /^(?:not in plan|не в плане)\s*[—–-]\s*\S/i
+const CONTRACT_ID = /\b(?:EV|MG|E)\d+\b/gi
+const contractIds = (text) => [...new Set([...text.matchAll(/^#{2,4}\s*((?:EV|MG|E)\d+)\b(?![^\n]*\[cancelled)/gim)].map((match) => match[1].toUpperCase()))]
+/** The text of the task's contract file, or null when there is none (the check is then skipped). `taskDir` is the ticket folder. */
+function contractFileOf(taskDir, config, roots) {
+  if (!taskDir) return null
+  for (const root of roots.length ? roots : ['']) {
+    try {
+      return readFileSync(contractPath(config, dirname(taskDir), basename(taskDir), root), 'utf8')
+    } catch {
+      continue // no contract file under this root: the row check is skipped
+    }
+  }
+  return null
+}
+
 // ── the check ─────────────────────────────────────────────────────────────────
 
 /**
  * Lints a plan. `options`: `taskDir`, `dataDir` (the first-sight gate and the plan snapshot; without both everything is new), `roots` (repo roots the references are
- * resolved in), `config` (the config text, for sibling repos), `stage` (narrow the problems), `context` (a ready `planContext`, for tests).
+ * resolved in), `config` (the config text, for sibling repos), `contractFile` (the contract text, for tests; null = none), `stage` (narrow the problems), `context` (a ready `planContext`, for tests).
  * Returns `{ stages: [{ number, heading, isNew, summary, line }], problems, warnings }`; a finding is `{ level, rule, scope: 'stage' | 'force' | 'plan', stage, block, message }`.
  */
 export function checkPlan(planText, options = {}) {
@@ -339,6 +403,11 @@ export function checkPlan(planText, options = {}) {
       }
       const like = likeViolation(criterion.line)
       if (like && !blocked) note(hard, { ...at, rule: 'ac-like-ref', message: like.message })
+    }
+
+    // VT-15 (D5): a `[verify: staging]` criterion needs both sides (or one of them) checked alone, or nothing is checked before the deploy.
+    if (summary.verifiers.staging && !summary.verifiers['api-verify'] && !summary.verifiers['devtools-verify']) {
+      note(false, { ...at, rule: 'staging-one-side', message: 'a `[verify: staging]` criterion with no `[verify: api-verify]` or `[verify: devtools-verify]` in the same stage — before the deploy nobody checks either side alone (stage-plan, "Backend task").' })
     }
 
     const forks = block.split('\n').filter((line) => OPEN_FORK.test(stripQuoted(line)) && !BLOCKED_TAG.test(line) && !FORK_CLOSED.test(stripQuoted(line).replace(OPEN_FORK, ' ')))
@@ -395,6 +464,38 @@ export function checkPlan(planText, options = {}) {
         note(planHard, { ...plan, rule: 'coverage-empty-stage', message: `"Design source coverage": the row "${row[0]?.slice(0, 50)}" has an empty Stage cell — every source item has a stage or an explicit "out of plan" reason.` })
       }
     }
+  }
+  // VT-15: a backend task's contract coverage — every endpoint, event and migration of the contract has a stage. Only a plan that uses the backend tags is held to it.
+  const contractCoverage = sectionText(text, CONTRACT_COVERAGE_SECTION)
+  if (contractCoverage !== null) {
+    const { header, body } = tableRows(contractCoverage)
+    const column = header?.findIndex((cell) => /^(?:stage|этап)/i.test(cell)) ?? -1
+    if (column >= 0) {
+      const rows = body.filter((cells) => cells.some(Boolean) && !cells.every((cell) => /^<.*>$/.test(cell)))
+      const known = new Set(stages.map((entry) => entry.number))
+      for (const row of rows) {
+        const cell = (row[column] ?? '').trim()
+        const label = row[0]?.slice(0, 50)
+        if (!cell) {
+          note(planHard, { ...plan, rule: 'contract-coverage-empty-stage', message: `"Contract coverage": the row "${label}" has an empty Stage cell — every endpoint (E*), event (EV*) and migration (MG*) of the contract has a stage, or an explicit "out of plan" reason.` })
+        } else if (!OUT_OF_PLAN.test(cell)) {
+          const numbers = [...cell.matchAll(/\d+/g)].map((match) => String(Number(match[0])))
+          if (!numbers.length || numbers.some((number) => !known.has(number))) {
+            note(planHard, { ...plan, rule: 'contract-coverage-unknown-stage', message: `"Contract coverage": the row "${label}" has the Stage cell "${cell.slice(0, 40)}", which is not a stage of this plan (${[...known].join(', ') || 'none'}) — name an existing stage, or \`not in plan — <reason>\` (or its Russian equivalent).` })
+          }
+        }
+      }
+      // The contract file, when it exists, lists the ids that need a row; without it the check is skipped.
+      const contract = options.contractFile !== undefined ? options.contractFile : contractFileOf(taskDir, config, roots)
+      if (contract !== null) {
+        const have = new Set(rows.flatMap((cells) => [...(cells[0] ?? '').matchAll(CONTRACT_ID)].map((match) => match[0].toUpperCase())))
+        for (const id of contractIds(contract).filter((entry) => !have.has(entry))) {
+          note(planHard, { ...plan, rule: 'contract-coverage-missing-row', message: `"Contract coverage": the contract has \`${id}\` but the table has no row for it — add a row with a stage, or an explicit "out of plan" reason.` })
+        }
+      }
+    }
+  } else if (stages.some((entry) => entry.summary.verifiers['api-verify'])) {
+    note(planHard, { ...plan, rule: 'contract-coverage-missing', message: 'the plan has `[verify: api-verify]` criteria but no "Contract coverage" section — a row per endpoint (E*), event (EV*) and migration (MG*) of the contract, each with a stage (stage-plan, "Backend task").' })
   }
   const shared = sectionText(text, SHARED_SECTION)
   if (shared !== null) {

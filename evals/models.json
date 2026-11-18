@@ -1,4 +1,6 @@
 {
+  "api-verify": "claude-sonnet-5-5",
+  "contract-compare": "claude-sonnet-5-5",
   "dead-code": "claude-sonnet-5-5",
   "deps-audit": "claude-haiku-5-5",
   "devtools-verify": "claude-sonnet-5-5",

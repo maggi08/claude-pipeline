@@ -264,6 +264,8 @@ export const PAIRS_CHECKED = /(?:pairs\s+checked|проверено\s+пар)\s*
 export const STATE_ACTION_FIELD = /(?:^|\n)[ \t]*(?:[-*][ \t]*)?\**(?:State\s*[×x]\s*action|Состояние\s*[×x]\s*действие)\**\s*:/i
 /** The "Design source coverage" and "Shared elements" sections. */
 export const COVERAGE_SECTION = /^## (?:Design source coverage|Покрытие дизайн-источника)/m
+/** The "Contract coverage" section of a backend task's plan (VT-15): one row per contract endpoint, event and migration. */
+export const CONTRACT_COVERAGE_SECTION = /^## (?:Contract coverage|Покрытие контракта)/m
 export const SHARED_SECTION = /^## (?:Shared elements|Общие элементы)/m
 
 /** The word "mode" in a subagent prompt: `Mode: whole-branch` (or the Russian form). */

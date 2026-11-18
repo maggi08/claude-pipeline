@@ -11,7 +11,7 @@ The goal is narrow: every new dependency and every new asset must be justified, 
 
 ## Scope
 
-Changes of manifests and the lockfile in the diff (`package.json` of all workspaces, the lockfile) plus new binary files: images, fonts, video, icons.
+Changes of manifests and lockfiles in the diff plus new binary files: images, fonts, video, icons. JavaScript: `package.json` of all workspaces and the lockfile. Python: `pyproject.toml` (`[project.dependencies]`, `[project.optional-dependencies]`, `[tool.poetry.dependencies]` and its dev/test groups), `poetry.lock`, `uv.lock`, `requirements*.txt` and the `requirements/` directory (follow its `-r` includes). The package manager of a Python repo: `node ${CLAUDE_PLUGIN_ROOT}/scripts/backend-detect.mjs <repo> --json`.
 
 None of that is in the diff — return "nothing to check" in one line and do not spend the pass.
 
@@ -28,6 +28,16 @@ The config declares `unused_deps` in the "Static analysis" section — run it fi
 5. **Transitive weight.** For a notable library say the size and whether there is a tree-shakeable entry. Do not guess — look at what really gets into the bundle.
 6. **Liveness and version.** Check (see "Confirmation") that the added version is not deprecated, the package is not replaced by a successor, and the API used in the diff exists in this version. A new dependency on a major below the current one is a separate finding with the question "why not the fresh one".
 7. **Framework duplicates.** A second copy of React/Vue/i18next because of a link to a neighbouring repo breaks hooks and contexts in a way that looks like an app bug. Check if the task touched linked packages.
+
+### New Python dependencies
+
+The same checks, with the Python forms:
+
+1. **Justification and equivalent.** Grep the imports over the repo (`import x` / `from x import`; the import name may differ from the package name) before agreeing to a second library for what one already in `pyproject.toml` / `requirements` does.
+2. **The section.** Test, lint and tooling packages belong in the dev/test group (`[tool.poetry.group.dev.dependencies]`, `[project.optional-dependencies]`, `requirements/dev.txt`), not in the runtime list that goes into the image.
+3. **Pin and lock.** A range or pin in the style of the file; the manifest and the lock agree — a changed `pyproject.toml` with an untouched `poetry.lock` / `uv.lock` (or the reverse) is a finding; `requirements*.txt` pins `==` where the rest of the repo does.
+4. **A git or URL dependency** (`git+https://…`, `@ git+…`): why not a release, a pinned commit or tag. A token or password inside the URL is a security finding: name the file and line, never the value.
+5. **Liveness.** As item 6 above and "Confirmation", with `site-packages` standing for `node_modules`.
 
 ### New assets
 

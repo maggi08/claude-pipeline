@@ -182,6 +182,16 @@ const UNITS = [
   { id: 'vt6s13c', weight: 2 }, // Stage 13c of VT-6 (B5): a `files` cell written as several code spans, on the force-commit…
   { id: 'vt12s1', weight: 4 }, // VT-12 stage 1: force-run.mjs — one headless run with a fake `claude`: readiness, worktree, rate-limit record, the four outcomes, caffeinate
   { id: 'vt12s2', weight: 5 }, // VT-12 stage 2: force-run.mjs loop — wait for the five-hour reset, a new session of the same task, weekly/spend/error stops, short-failure retry, N sessions cap, interrupt, UTF-8 split
+  { id: 'vt15s1', weight: 2 }, // VT-15 stage 1: the `## Backend` config section (backendConfig, backendFileMatcher) and `{files:rel}` in run-check.mjs
+  { id: 'vt15s2', weight: 3 }, // VT-15 stage 2: backend-detect.mjs — detection on poetry / pip / uv fixtures, --init (never overwrites, exclude without duplicates), --doctor with a dead docker, a frontend repo
+  { id: 'vt15s4', weight: 1 }, // VT-15 stage 4: agent-guard sends a general-purpose api-verify job to stage-pipeline:api-verify; the agent and the skill exist with their frontmatter
+  { id: 'vt15s6', weight: 1 }, // VT-15 stage 6: contract-compare agent and skill, agent-guard for it, the pending case reads and passes the leak lint, the counts
+  { id: 'vt15s7', weight: 2 }, // VT-15 stage 7: taskRepos (own repo + siblings with task-branch commits), closing a Force block needs pro-review-branch-<repo> per other repo, one repo / backendSeen keep the old rule, deps-audit names the Python manifests
+  { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
+  { id: 'vt15s8a', weight: 1 }, // VT-15 stage 8a: uv run / poetry run in js-toolchain, --doctor permissions row for a docker test command (settings files pointed at temp files)
+  { id: 'vt15s8', weight: 1 }, // VT-15 stage 8: the api-verify-owner-check pending case — its finding regexes against correct and wrong sample lines, the fixture settings can log in
+  { id: 'vt15f1', weight: 3 }, // VT-15 final-checks fix round 1: weakForm through ledgerViolations with a backend path, STAGING_DONE case, API_CONTROL qualifier, api-verify rerun, backendFileMatcher bad glob, maskSecrets
+  { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -431,10 +441,10 @@ const journal = (extra = '', force = '') =>
 const BAD_LINE = '- `AC-2.1` WHEN новое THEN новое — [verify: devtools-verify] ✅ pro-review по коду\n'
 const jc = await import(join(PLUGIN, 'journal-check.mjs'))
 const snapshotFile = (dataDir, taskDir) => join(dataDir, 'journal-baseline', `${createHash('sha1').update(realpathSync(taskDir)).digest('hex').slice(0, 16)}.json`)
-const setGate = (taskDir, since, seen = [], dataDir = DATA) => {
+const setGate = (taskDir, since, seen = [], dataDir = DATA, backendSeen = []) => {
   jc.baselineInfo(dataDir, taskDir)
   const file = snapshotFile(dataDir, taskDir)
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since018: since, forceSeen: seen }))
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), since018: since, forceSeen: seen, backendSeen }))
 }
 const REVIEW_EN = '# pro-review, stage 1\nFindings: critical 0 · major 2 · minor 0\n\n### 🟠 M-1 a.ts:1 — duplicate\n### 🟠 M-2 b.ts:2 — race\n'
 const gates = await import(join(PLUGIN, 'ci-gates.mjs'))
@@ -10340,6 +10350,765 @@ setTimeout(() => {
   const gateCode = await gateDone
   check('final #6 incident: VT-B is removed while the queue waits for the reset before it — it does not run, the queue ends without it', removed.status === 0 && gateCode === 0 && starts().join() === 'VT-A' && /VT-B: removed from the queue while waiting/.test(gateOut), `${removed.status} ${gateCode} ${starts().join()} ${gateOut}`)
 
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-15 stage 1: `## Backend` and `{files:rel}` ────────────────────────────────────────────────────────────────────────
+if (unit('vt15s1')) {
+  const { backendConfig, backendFileMatcher } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  check('backendConfig: no `## Backend` section — null', backendConfig('## Project\n- slug: app\n\n## Commands\n- test: yarn test\n') === null)
+  check('backendConfig: the section without a single field — no repos, not null', same(backendConfig('## Backend\n\n## Commands\n- test: x\n'), { repos: [] }))
+  const one = backendConfig(
+    [
+      '## Project',
+      '- slug: core',
+      '',
+      '## Backend',
+      '- framework: django-drf',
+      '- test: **docker compose run --rm core-app python -m pytest {files:rel+py}**',
+      '- test_full: `make run-tests`',
+      '- lint: make ruff-lint',
+      '- type_check: —',
+      '- compose: docker-compose.yml · service: core-app · networks: common_network',
+      '- test_env: DISABLE_RABBITMQ=1, TEST_MODE=1, JWT_SECRET_KEY=secret',
+      '- api_files: src/entities/*/views/**, src/entities/*/serializers/**, src/entities/**/access_polic*.py',
+      '- api_schema: src/project/swagger_urls.py   # partial',
+      '- auth: POST /api/v3/token/ → Authorization: JWT <token>; credentials from env SMOKE_LOGIN / SMOKE_PASSWORD',
+      '- contracts: —   # default',
+      '- unknown_key: ignored',
+      '',
+      '## Commands',
+      '- test: yarn test',
+    ].join('\n'),
+  )
+  const r = one?.repos?.[0]
+  check('backendConfig one repo: a single repo named by the project slug, path "."', one?.repos?.length === 1 && r.name === 'core' && r.path === '.', JSON.stringify(one))
+  check('backendConfig one repo: ** and backticks are stripped, a dash value is null, a trailing comment is cut, unknown keys are not carried', r.test === 'docker compose run --rm core-app python -m pytest {files:rel+py}' && r.testFull === 'make run-tests' && r.typeCheck === null && r.contracts === null && r.apiSchema === 'src/project/swagger_urls.py' && !('unknown_key' in r) && r.framework === 'django-drf', JSON.stringify(r))
+  check('backendConfig one repo: compose as is, test_env an object, api_files an array, auth as is', r.compose === 'docker-compose.yml · service: core-app · networks: common_network' && same(r.testEnv, { DISABLE_RABBITMQ: '1', TEST_MODE: '1', JWT_SECRET_KEY: 'secret' }) && r.apiFiles.length === 3 && /^POST \/api\/v3\/token\/ → Authorization: JWT <token>; credentials/.test(r.auth), JSON.stringify(r))
+  const two = backendConfig('## Backend\n### core\n- path: ../chekin-backend-core\n- test: pytest {files:rel}\n- api_files: src/a/**\n### upselling\n- path: ../chekin-upselling\n- test: make t\n- api_files: app/api/**, app/models/**\n\n## Other\n- test: no\n')
+  check('backendConfig two repos: two repos with their own path, test and apiFiles', two?.repos?.length === 2 && two.repos[0].name === 'core' && two.repos[1].name === 'upselling' && two.repos[0].path === '../chekin-backend-core' && two.repos[1].path === '../chekin-upselling' && two.repos[0].test === 'pytest {files:rel}' && two.repos[1].test === 'make t' && same(two.repos[0].apiFiles, ['src/a/**']) && same(two.repos[1].apiFiles, ['app/api/**', 'app/models/**']), JSON.stringify(two))
+  const noSlug = backendConfig('## Backend\n- test: t\n', '/x/some-repo')
+  check('backendConfig one repo without a project slug: the root folder names it', noSlug.repos[0].name === 'some-repo', JSON.stringify(noSlug))
+  const glob1 = backendConfig('## Backend\n- api_files: **/serializers/**\n- test: **pytest**\n')
+  const glob2 = backendConfig('## Backend\n- api_files: **/views/**, **/urls/**\n')
+  check('backendConfig: a glob that starts with ** and ends with ** is not stripped as bold; real bold still is', same(glob1.repos[0].apiFiles, ['**/serializers/**']) && glob1.repos[0].test === 'pytest' && same(glob2.repos[0].apiFiles, ['**/views/**', '**/urls/**']), JSON.stringify([glob1, glob2]))
+  const wrongSlug = backendConfig('## Project\n- name: x\n\n## Backend\n- test: t\n\n## Other\n- slug: wrong\n', '/x/some-repo')
+  check('backendConfig: the slug is read only inside `## Project`, else the root folder', wrongSlug.repos[0].name === 'some-repo', JSON.stringify(wrongSlug))
+  const mixed = backendConfig('## Backend\n- test: shared t\n- lint: shared l\n### core\n- test: own t\n### up\n- path: ../up\n- test_env: NOEQUALS, A=1\n')
+  check('backendConfig mixed form: fields above ### are defaults, a repo field wins; a test_env item without = is dropped', mixed.repos[0].test === 'own t' && mixed.repos[0].lint === 'shared l' && mixed.repos[1].test === 'shared t' && mixed.repos[1].lint === 'shared l' && same(mixed.repos[1].testEnv, { A: '1' }), JSON.stringify(mixed))
+  const match = backendFileMatcher(r)
+  check('backendFileMatcher: a serializer and an access policy match, a util does not', match('src/entities/housing/serializers/v3.py') && !match('src/entities/housing/utils.py') && match('src/entities/reservation/access_policy.py'))
+  check('backendFileMatcher: no globs — never matches', backendFileMatcher({ apiFiles: [] })('src/a.py') === false)
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s1-')))
+  repoAt(root, 'main')
+  const runCheck = (command) => spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', command], { cwd: root, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'normal' } })
+  const none = runCheck('echo ARGS {files:rel+py}')
+  check('run-check {files:rel+py}: no changed files — the command is not run, code 0', none.status === 0 && /skipped/.test(none.stdout) && !/^ARGS/m.test(none.stdout), none.stdout + none.stderr)
+  write(root, { 'src/x.py': 'x = 1\n', 'src/sub/y.py': 'y = 1\n', 'src/z.ts': 'export const z = 1\n' })
+  const relPy = runCheck('echo ARGS {files:rel+py}')
+  const relOnly = runCheck('echo ARGS {files:rel}')
+  const absPy = runCheck('echo ARGS {files:py}')
+  const args = (out) => (out.stdout.match(/^ARGS (.*)$/m)?.[1] ?? '').split(' ').filter(Boolean).sort()
+  check('run-check {files:rel+py}: relative paths, only .py', same(args(relPy), ['src/sub/y.py', 'src/x.py']), relPy.stdout + relPy.stderr)
+  check('run-check {files:rel}: relative paths of every changed code file', same(args(relOnly), ['src/sub/y.py', 'src/x.py', 'src/z.ts']), relOnly.stdout + relOnly.stderr)
+  check('run-check {files:py}: still absolute paths', args(absPy).every((path) => path.startsWith(root)) && args(absPy).length === 2, absPy.stdout)
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-15 stage 2: backend-detect.mjs ────────────────────────────────────────────────────────────────────────────────────
+if (unit('vt15s2')) {
+  const SCRIPT = join(PLUGIN, 'backend-detect.mjs')
+  const detect = (repo, ...args) => spawnSync(process.execPath, [SCRIPT, repo, ...args], { encoding: 'utf8', env: { ...process.env, DOCKER_HOST: 'unix:///nonexistent' } })
+  const json = (repo) => JSON.parse(detect(repo, '--json').stdout)
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s2-')))
+  const mk = (name, files, tracked = false) => {
+    const repo = join(base, name)
+    mkdirSync(repo, { recursive: true })
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    write(repo, files)
+    if (tracked) {
+      git(repo, 'add', '-A')
+      git(repo, 'commit', '-qm', 'base')
+    }
+    return repo
+  }
+  const a = mk(
+    'poetry',
+    {
+      'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4.2"\ndjangorestframework = "3.14"\ndrf-yasg = "1.21"\n[tool.poetry.group.dev.dependencies]\npytest = "8"\n[tool.ruff]\nline-length = 120\n',
+      Makefile: 'CODE := src/a src/b\n.PHONY: ruff-lint run-tests\n\nruff-fix:\n\tpoetry run ruff check --fix\n\nruff-lint:\n\tpoetry run ruff check --no-fix\n\nrun-tests:\n\tdocker exec backend-x python -m pytest $(CODE)\n',
+      'docker-compose.yml': 'services:\n  db:\n    image: postgres\n  app-svc:\n    build:\n      context: .\n    networks:\n      - common_network\nnetworks:\n  common_network:\n    external: true\n  inner:\n    driver: bridge\n',
+      'src/manage.py': '',
+      'src/project/swagger_urls.py': 'schema_view = get_schema_view(info)\n',
+      'src/entities/housing/views/v3.py': '',
+      'src/entities/housing/serializers/v3.py': '',
+      'src/entities/housing/utils.py': '',
+      '.claude/skills/x.md': 'skill\n',
+    },
+    true,
+  )
+  const da = json(a)
+  check('backend-detect poetry fixture: django-drf, poetry, the Makefile pytest target is the test command', da.framework === 'django-drf' && da.packageManager === 'poetry' && da.testFull === 'make run-tests', JSON.stringify(da))
+  check('backend-detect poetry fixture: the file-run test goes through compose with {files:rel+py}', da.test === 'docker compose run -T --rm --no-deps app-svc python -m pytest {files:rel+py}', da.test)
+  check('backend-detect poetry fixture: lint is the ruff target without --fix, no type check', da.lint === 'make ruff-lint' && da.typeCheck === null, `${da.lint} ${da.typeCheck}`)
+  check('backend-detect poetry fixture: compose line has the file, the service with build and only external networks', da.compose === 'docker-compose.yml · service: app-svc · networks: common_network', da.compose)
+  check('backend-detect poetry fixture: the schema path is found by get_schema_view', da.apiSchema === 'src/project/swagger_urls.py', da.apiSchema)
+  check('backend-detect poetry fixture: only the masks that match a file are listed', same(da.apiFiles, ['**/views/**', '**/serializers/**']), JSON.stringify(da.apiFiles))
+  const b = mk('pip', { 'requirements/base.txt': 'Django==4.2\npytest==8\n', 'pytest.sh': 'docker run x python -m pytest $1\n', 'src/manage.py': '', 'pyproject.toml': '[tool.ruff]\n' })
+  const db = json(b)
+  check('backend-detect requirements/ + pytest.sh fixture: pip, ./pytest.sh, django without DRF', db.packageManager === 'pip' && db.testFull === './pytest.sh' && db.framework === 'django' && db.test === './pytest.sh {files:rel+py}', JSON.stringify(db))
+  check('backend-detect requirements/ + pytest.sh fixture: bare ruff, no compose, no schema', db.lint === 'ruff check' && db.compose === null && db.apiSchema === null, JSON.stringify(db))
+  const c = mk('uv', { 'pyproject.toml': '[project]\ndependencies = ["fastapi>=0.1"]\n[dependency-groups]\ndev = ["pytest", "ruff"]\n', 'uv.lock': '', 'ty.toml': '[rules]\n', 'src/routers/a.py': '' })
+  const dc = json(c)
+  check('backend-detect uv fixture: fastapi, uv, uv run pytest, ty, the FastAPI schema line', dc.framework === 'fastapi' && dc.packageManager === 'uv' && dc.testFull === 'uv run pytest' && dc.test === 'uv run pytest {files:rel+py}' && dc.typeCheck === 'uv run ty check' && dc.lint === 'uv run ruff check' && dc.apiSchema === 'auto (FastAPI /openapi.json)', JSON.stringify(dc))
+  check('backend-detect uv fixture: only the FastAPI mask that matches', same(dc.apiFiles, ['**/routers/**']), JSON.stringify(dc.apiFiles))
+  // the host runner is not on PATH, the repo has a compose service with `build:`: the tests run in the container (uv / poetry on PATH stay on the host)
+  const noBin = join(base, 'nobin')
+  const withUv = join(base, 'withuv')
+  mkdirSync(noBin, { recursive: true })
+  mkdirSync(withUv, { recursive: true })
+  writeFileSync(join(withUv, 'uv'), '')
+  const detectPath = (repo, path) => JSON.parse(spawnSync(process.execPath, [SCRIPT, repo, '--json'], { encoding: 'utf8', env: { ...process.env, PATH: path } }).stdout)
+  const compose = 'services:\n  api:\n    build: .\n'
+  const d1 = mk('poetry-compose', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4"\npytest = "8"\n', 'docker-compose.yml': compose, 'src/manage.py': '' })
+  const dd1 = detectPath(d1, noBin)
+  check('backend-detect poetry + compose, no Makefile / pytest.sh, poetry not on PATH: the tests run in the compose service', dd1.testFull === 'docker compose run -T --rm --no-deps api python -m pytest' && dd1.test === 'docker compose run -T --rm --no-deps api python -m pytest {files:rel+py}' && /runner not on PATH → compose service api/.test(dd1.sources.testFull), JSON.stringify(dd1))
+  const hum1 = spawnSync(process.execPath, [SCRIPT, d1], { encoding: 'utf8', env: { ...process.env, PATH: noBin } }).stdout
+  check('backend-detect prints the source of the container test command', /test command: docker compose run .*\[runner not on PATH → compose service api\]/.test(hum1), hum1)
+  const d2 = mk('uv-compose', { 'pyproject.toml': '[project]\ndependencies = ["fastapi"]\n[dependency-groups]\ndev = ["pytest"]\n', 'uv.lock': '', 'docker-compose.yml': compose })
+  const dd2 = detectPath(d2, withUv)
+  check('backend-detect uv + compose with uv on PATH: the tests stay on the host', dd2.testFull === 'uv run pytest' && dd2.test === 'uv run pytest {files:rel+py}', JSON.stringify(dd2))
+  check('backend-detect uv + compose without uv on PATH: the tests go to the container', detectPath(d2, noBin).testFull === 'docker compose run -T --rm --no-deps api python -m pytest')
+  const d3 = mk('poetry-nocompose', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4"\npytest = "8"\n', 'src/manage.py': '' })
+  check('backend-detect poetry without compose and without poetry on PATH: host command, nothing to fall back to', detectPath(d3, noBin).testFull === 'poetry run pytest')
+  const d4 = mk('poetry-compose-lint', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\ndjango = "4"\npytest = "8"\n[tool.ruff]\nline-length = 120\n[tool.mypy]\nstrict = true\n', 'docker-compose.yml': compose, 'src/manage.py': '' })
+  const dd4 = detectPath(d4, noBin)
+  check('backend-detect poetry + compose, poetry not on PATH: lint and type_check run in the compose service', dd4.lint === 'docker compose run -T --rm --no-deps api ruff check' && dd4.typeCheck === 'docker compose run -T --rm --no-deps api mypy .', `${dd4.lint} | ${dd4.typeCheck}`)
+  const withPoetry = join(base, 'withpoetry')
+  mkdirSync(withPoetry, { recursive: true })
+  writeFileSync(join(withPoetry, 'poetry'), '')
+  check('backend-detect poetry + compose with poetry on PATH: lint stays on the host', detectPath(d4, withPoetry).lint === 'poetry run ruff check')
+  check('backend-detect poetry without compose and without poetry on PATH: lint stays the host command', detectPath(mk('poetry-nocompose-lint', { 'pyproject.toml': '[tool.poetry]\nname = "x"\n[tool.ruff]\nline-length = 120\n', 'src/manage.py': '' }), noBin).lint === 'poetry run ruff check')
+  // --doctor takes test_full of the repo's own config before detection
+  mkdirSync(join(d1, '.claude'), { recursive: true })
+  writeFileSync(join(d1, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: echo 3 tests collected\n')
+  const docCfg = detect(d1, '--doctor')
+  check('backend-detect --doctor: test_full of the repo config wins over detection', /^ok — tests collect — 3 tests collected .*`echo 3 tests collected --collect-only -q`/m.test(docCfg.stdout), docCfg.stdout)
+  const noOrigin = detect(d3, '--init')
+  check('backend-detect --init without origin/HEAD: main_branch is — , not the current branch', /^- main_branch: —$/m.test(readFileSync(join(d3, '.claude/pipeline.config.md'), 'utf8')), noOrigin.stdout)
+  const human = detect(a).stdout
+  check('backend-detect prints the found values with their source and the `## Backend` candidate', /framework: django-drf {3}\[src\/manage\.py\]/.test(human) && /^## Backend$/m.test(human) && /^- test_full: make run-tests$/m.test(human), human)
+
+  // --init: writes once, never over an existing file, excludes without duplicates and not the whole .claude/
+  const first = detect(a, '--init', '--language', 'ru')
+  const configPath = join(a, '.claude/pipeline.config.md')
+  const text = readFileSync(configPath, 'utf8')
+  const { backendConfig } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  const parsed = backendConfig(text, a)
+  check('backend-detect --init: writes the config with a parsable `## Backend` and the slug of the folder', first.status === 0 && /^- slug: poetry$/m.test(text) && /^- language: ru$/m.test(text) && parsed?.repos?.[0]?.testFull === 'make run-tests' && /^- dev: —$/m.test(text) && /^- url: —$/m.test(text), first.stdout + text)
+  const exclude = readFileSync(join(a, '.git/info/exclude'), 'utf8').split('\n')
+  check('backend-detect --init: git does not show the config, exclude lines are exact (not the whole .claude/)', git(a, 'status', '--short').trim() === '' && ['.claude/pipeline.config.md', '.claude/pipeline.config.local.md', '.claude/tasks/'].every((l) => exclude.includes(l)) && !exclude.includes('.claude/') && !exclude.includes('.claude'), git(a, 'status', '--short') + exclude.join('|'))
+  writeFileSync(configPath, 'my config\n')
+  const second = detect(a, '--init')
+  check('backend-detect --init: an existing config is not touched', /exists, not touched/.test(second.stdout) && readFileSync(configPath, 'utf8') === 'my config\n', second.stdout)
+  rmSync(configPath)
+  detect(a, '--init')
+  check('backend-detect --init: exclude lines are not duplicated on a second init', readFileSync(join(a, '.git/info/exclude'), 'utf8').split('\n').filter((l) => l === '.claude/pipeline.config.md').length === 1)
+
+  // --doctor with a dead docker: the reason and the command, exit 1, the compose file still checked
+  const doc = detect(a, '--doctor')
+  check('backend-detect --doctor with DOCKER_HOST at nothing: a fail line about docker with a remedy, exit 1', doc.status === 1 && /^fail — docker does not answer — .*(colima start|Docker Desktop|install and start Docker)/m.test(doc.stdout), `${doc.status} ${doc.stdout}`)
+  check('backend-detect --doctor with a dead docker: compose file ok, the network and the collect step skipped, not failed', /^ok — compose file — docker-compose\.yml$/m.test(doc.stdout) && /^skip — external network common_network/m.test(doc.stdout) && /^skip — tests collect — needs docker/m.test(doc.stdout), doc.stdout)
+
+  // AC-2.4: a frontend repo is not a backend: nothing is printed as backend, nothing is written
+  const front = mk('front', { 'package.json': '{"name":"web","scripts":{"dev":"vite"}}\n', 'src/a.ts': '' }, true)
+  const out = detect(front)
+  const fi = detect(front, '--init')
+  check('backend-detect on a frontend repo: no backend, no `## Backend`, --init writes nothing', /no backend/.test(out.stdout) && !/## Backend/.test(out.stdout) && /nothing written/.test(fi.stdout) && !existsSync(join(front, '.claude')), out.stdout + fi.stdout)
+  const tooling = mk('front-tooling', { 'package.json': '{"name":"web"}\n', 'docs/requirements.txt': 'mkdocs\n', 'pyproject.toml': '[tool.ruff]\nline-length = 100\n', 'scripts/tool.py': '' }, true)
+  const ft = detect(tooling, '--init')
+  check('backend-detect: a frontend repo with docs/requirements.txt and a ruff-only pyproject.toml is not a backend', json(tooling).hasBackend === false && /nothing written/.test(ft.stdout) && !existsSync(join(tooling, '.claude')), ft.stdout)
+  const tmpl = readFileSync(join(PLUGIN, '../skills/pipeline-init/SKILL.md'), 'utf8')
+  check('pipeline-init: the template has a `## Backend` section marked backend-only, and the init step names backend-detect.mjs', /## Backend\n<!-- Only for a backend repo; without this section the backend checks are off/.test(tmpl) && /backend-detect\.mjs <repo> --init/.test(tmpl))
+  check('pipeline-init (AC-2.4): the template says to omit the whole `## Backend` section in a repo without a Python backend, and lists test_env / auth / contracts / note', /Omit this whole section \(the heading and this comment\) in a repo without a Python backend/.test(tmpl) && ['test_env', 'auth', 'contracts', 'note'].every((k) => new RegExp(`^- ${k}: <`, 'm').test(tmpl)))
+  rmSync(base, { recursive: true, force: true })
+}
+
+if (unit('vt15s3')) {
+  const { checkPlan } = await import(join(PLUGIN, 'plan-check.mjs'))
+  const { contractPath } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  const stage = (n, acs, ru = false) => `${ru ? `### Этап ${n}: первый  [status: todo]  logic-only\nЧто есть:\nКритерии приёмки:` : `### Stage ${n}: first  [status: todo]  logic-only\nWhat exists:\nAcceptance criteria:`}\n${acs.map((tag, i) => `- \`AC-${n}.${i + 1}\` WHEN x THEN y — ${tag}`).join('\n')}\n\n`
+  const plan = (stages, sections = '') => `# P-1: task\n\n${stages}${sections}`
+  const rules = (result, key = 'problems') => result[key].map((finding) => finding.rule)
+  const table = (head, cell, ru) => `## ${ru ? 'Покрытие контракта' : 'Contract coverage'}\n| ${head} | Kind | ${ru ? 'Этап' : 'Stage'} |\n|---|---|---|\n| E1 — POST /api/v3/things/ | endpoint | ${cell} |\n| EV1 — thing.created | event | 1 |\n\n`
+  const ok = stage(1, ['[verify: api-verify]'])
+  check('plan-check contract: an empty Stage cell in "Contract coverage" (en) — contract-coverage-empty-stage, names the endpoint', (() => { const r = checkPlan(plan(ok, table('Item', '', false))); return rules(r).join() === 'contract-coverage-empty-stage' && /E1 — POST/.test(r.problems[0].message) })())
+  check('plan-check contract: the same with the Russian section and column names', rules(checkPlan(plan(stage(1, ['[verify: api-verify]'], true), table('Пункт', '', true)))).join() === 'contract-coverage-empty-stage')
+  check('plan-check contract: a filled Stage cell — no problem', checkPlan(plan(ok, table('Item', '1', false))).problems.length === 0)
+  check('plan-check contract: `[verify: api-verify]` without the section — contract-coverage-missing', rules(checkPlan(plan(ok))).join() === 'contract-coverage-missing')
+  check('plan-check contract: a plan without backend tags and without the section — no new problem', checkPlan(plan(stage(1, ['[verify: pro-review]']))).problems.length === 0)
+  const one = checkPlan(plan(stage(1, ['[verify: staging]', '[verify: pro-review]'])))
+  check('plan-check contract: `[verify: staging]` alone in a stage — staging-one-side warning, not a problem', one.problems.length === 0 && rules(one, 'warnings').join() === 'staging-one-side', JSON.stringify(one.warnings))
+  check('plan-check contract: staging beside `devtools-verify` or `api-verify` in the stage — no warning', ['devtools-verify', 'api-verify'].every((tag) => !rules(checkPlan(plan(stage(1, ['[verify: staging]', `[verify: ${tag}]`]), tag === 'api-verify' ? table('Item', '1', false) : '')), 'warnings').includes('staging-one-side')))
+  check('plan-check contract: an unknown verify tag is not a new problem', checkPlan(plan(stage(1, ['[verify: contract-compare]']))).problems.length === 0)
+
+  const live = '[staging: https://staging.example.test; /bookings/42 → the upsell line shows the new price]'
+  const v = (line) => jc.stagingViolation(line)
+  check('journal-check staging: ✅ on a `[verify: staging]` criterion without the form — staging-no-observation naming the criterion and the form', (() => { const x = v('- `AC-3.2` ✅ [verify: staging] the price shows'); return x?.rule === 'staging-no-observation' && x.id === 'AC-3.2' && /\[staging: <address>; <route> → <observed>\]/.test(x.message) })())
+  check('journal-check staging: ✅ with the three-part form — no violation', v(`- \`AC-3.2\` ✅ [verify: staging] ${live}`) === null)
+  check('journal-check staging: the Russian words inside the form — no violation', v('- `AC-3.2` ✅ [verify: staging] [staging: https://staging.example.test; /bookings/42 → цена показана]') === null)
+  check('journal-check staging: an open criterion (no ✅) — no violation', v('- `AC-3.2` [verify: staging] the price shows') === null && v('- `AC-3.2` ⏳ [verify: staging] the price shows') === null)
+  check('journal-check staging: a part with `tbd`, `n/a`, `?` or empty — violation', ['[staging: tbd; /x → seen]', '[staging: https://s.test; n/a → seen]', '[staging: https://s.test; /x → ?]', '[staging: ; /x → seen]'].every((form) => v(`- \`AC-3.2\` ✅ [verify: staging] ${form}`)?.rule === 'staging-no-observation'))
+  check('journal-check staging: a ✅ line without the staging tag, or a quoted tag — no violation', v('- `AC-3.2` ✅ [verify: pro-review] done') === null && v('- `AC-3.2` ✅ the tag `[verify: staging]` is quoted') === null)
+  check('journal-check staging: journalViolations (what the journal-gate uses) rejects the bare ✅ line', jc.journalViolations('- `AC-3.2` ✅ [verify: staging] the price shows\n').some((x) => x.rule === 'staging-no-observation'))
+
+  const withContract = (cell, contract) => checkPlan(plan(ok, table('Item', cell, false)), { contractFile: contract })
+  check('plan-check contract: a Stage cell naming no stage of the plan (`99`, `—`) — contract-coverage-unknown-stage', ['99', '—'].every((cell) => rules(withContract(cell, null)).join() === 'contract-coverage-unknown-stage'))
+  check('plan-check contract: `not in plan — <reason>` and its Russian form are accepted; the Stage cell `Stage 1` too', ['not in plan — later', '\u043d\u0435 \u0432 \u043f\u043b\u0430\u043d\u0435 \u2014 later', 'Stage 1'].every((cell) => withContract(cell, null).problems.length === 0))
+  check('plan-check contract: `not in plan` without a reason — still a problem', rules(withContract('not in plan', null)).join() === 'contract-coverage-unknown-stage')
+  const body = '### E1 — POST /a/\n\n### E2 — GET /b/\n\n### EV1 — x\n\n### MG1 — t\n\n### E3 — GET /c/ [cancelled: dropped]\n'
+  const missing = withContract('1', body)
+  check('plan-check contract: ids of the contract file with no row — contract-coverage-missing-row per id (E2, MG1; not the cancelled E3)', missing.problems.map((x) => x.rule).join() === 'contract-coverage-missing-row,contract-coverage-missing-row' && /E2/.test(missing.problems[0].message) && /MG1/.test(missing.problems[1].message), JSON.stringify(missing.problems.map((x) => x.message)))
+  check('plan-check contract: no contract file — the row check is skipped silently', withContract('1', null).problems.length === 0)
+  check('plan-check contract: every id has a row — no problem', checkPlan(plan(ok, table('Item', '1', false).replace('\n\n', '\n| E2 — GET /b/ | endpoint | 1 |\n| MG1 — t | migration | 1 |\n\n')), { contractFile: body }).problems.length === 0)
+  const open = (form, mark) => v(`- \`AC-3.2\` ${mark} [verify: staging] ${form}`)
+  check('journal-check staging: `[x]` or `PASS` next to the tag without the form — violation', ['[x]', 'PASS'].every((mark) => open('the price shows', mark)?.rule === 'staging-no-observation'))
+  check('journal-check staging: `[x]` / `PASS` with the full form — no violation', ['[x]', 'PASS'].every((mark) => open(live, mark) === null))
+  check('journal-check staging: a local address (localhost, 127.0.0.1, 0.0.0.0, file:) — violation that says staging means the deployed environment', ['http://localhost:3000', '127.0.0.1:8000', '0.0.0.0', 'file:///tmp/x.html'].every((addr) => { const x = open(`[staging: ${addr}; /x → seen]`, '✅'); return x?.rule === 'staging-no-observation' && /deployed/.test(x.message) }))
+  check('journal-check staging: an address that only starts like a local one (localhost.example.com is not excused? — a real host `staging-localhost.test`) — no violation', open('[staging: https://staging-localhost.test; /x → seen]', '✅') === null)
+  check('journal-check staging: `[verify: staging-check]` is not the staging tag; `[verify: api-verify, staging]` is', v('- `AC-3.2` ✅ [verify: staging-check] done') === null && v('- `AC-3.2` ✅ [verify: api-verify, staging] done')?.rule === 'staging-no-observation')
+
+  const cfg = (extra) => `## Backend\n- framework: django\n${extra}`
+  check('contractPath: without `contracts:` — <task_dir>/<TICKET>/CONTRACT.md', contractPath(cfg(''), '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md' && contractPath('', '/t/tasks', 'VT-9') === '/t/tasks/VT-9/CONTRACT.md')
+  check('contractPath: with `contracts: docs/contracts` — <repo>/docs/contracts/<TICKET>.md', contractPath(cfg('- contracts: docs/contracts\n'), '/t/tasks', 'VT-9', '/r') === '/r/docs/contracts/VT-9.md')
+  check('contractPath: the first repo with the key wins', contractPath('## Backend\n### a\n- path: a\n### b\n- path: b\n- contracts: c\n### c\n- path: c\n- contracts: d\n', '/t', 'X-1', '/r') === '/r/b/c/X-1.md')
+}
+
+if (unit('vt15s5')) {
+  const bRoot = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s5-')))
+  const T0 = Date.now()
+  const at = (hours) => (T0 + hours * 3600_000) / 1000
+  let n = 0
+  const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 0 · minor 0\n`
+  const BACKEND = '## Backend\n- framework: django\n- api_files: src/**/serializers.py, src/**/views.py\n'
+  const fixture = (name, { backend = true, stages = '', seen = false, front = false, bseen = false, extraConfig = '' } = {}) => {
+    const dir = join(bRoot, name)
+    const ticket = `B-5${n++}`
+    repoAt(dir, 'main')
+    const force = '## Force run 2026-10-22'
+    write(dir, {
+      '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${backend ? BACKEND : ''}${front ? '## Dev server\n- url: http://localhost:3000\n' : ''}${extraConfig}`,
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${ticket}/feat/b\`\n\n## Status: stage 3\n\n${force}\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 3: api  [status: in-progress]\n${stages}\n`,
+    })
+    git(dir, 'checkout', '-qb', `${ticket}/feat/b`)
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20', seen ? [markers.forceKey(force)] : [], DATA, bseen ? [markers.forceKey(force)] : [])
+    return {
+      dir,
+      tdir,
+      ticket,
+      report: (file, checker, hours) => {
+        write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: REPORT(checker) })
+        utimesSync(join(tdir, 'checks', file), at(hours), at(hours))
+      },
+      commit: (files) => {
+        write(dir, files)
+        const call = { cwd: dir, tool_name: 'Bash', tool_use_id: `toolu_b5_${n++}`, tool_input: { command: 'git add -A && git commit -m x' } }
+        return runHook('git-guard.mjs', { ...call, hook_event_name: 'PreToolUse' })
+      },
+    }
+  }
+  const SER = { 'src/x/serializers.py': 'class S: pass\n' }
+  const a = fixture('no-report')
+  a.report('pro-review-3.md', 'pro-review', 2)
+  const d1 = a.commit(SER)
+  check('vt15s5 AC-5.1: serializers.py in a backend repo, only pro-review in the window — denied, api-verify named', d1.decision === 'deny' && /api-verify/.test(d1.text) && /backend files changed/.test(d1.text), d1.text)
+  a.report('api-verify-3.md', 'api-verify', 3)
+  check('vt15s5 AC-5.1: with checks/api-verify-3.md in the window — passes', a.commit(SER).decision === 'allow')
+  const env = fixture('skip-env', { stages: '- [x] api-verify (skip: docker не запущен)\n' })
+  env.report('pro-review-3.md', 'pro-review', 2)
+  const d2 = env.commit(SER)
+  check('vt15s5 AC-5.2: a docker-not-running skip is not legitimate — denied', d2.decision === 'deny' && /api-verify/.test(d2.text) && /docker/.test(d2.text), d2.text)
+  const noBeh = fixture('skip-ok', { stages: '- [x] api-verify (skip: no behaviour change — src/x/serializers.py:12 rename)\n' })
+  noBeh.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.2: skip "no behaviour change — path:line" — passes', noBeh.commit(SER).decision === 'allow')
+  const noLine = fixture('skip-noline', { stages: '- [x] api-verify (skip: no behaviour change)\n' })
+  noLine.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.2: "no behaviour change" with no path:line — denied', noLine.commit(SER).decision === 'deny')
+  const plain = fixture('no-backend', { backend: false })
+  plain.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.3: a repo without ## Backend, a .py changes — only pro-review is needed, passes', plain.commit(SER).decision === 'allow')
+  const onlyTest = fixture('tests-only')
+  onlyTest.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5: only tests/test_x.py changed in a backend repo — api-verify not needed', onlyTest.commit({ 'tests/test_x.py': 'def test_x(): pass\n' }).decision === 'allow')
+  const html = fixture('html')
+  html.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5: an .html template in a backend repo without a front — not UI, no design or devtools-verify demand', html.commit({ 'templates/page.html': '<p>x</p>\n' }).decision === 'allow')
+  const withFront = fixture('html-front', { front: true })
+  withFront.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5: the same .html with a dev server url — still UI, denied', withFront.commit({ 'templates/page.html': '<p>x</p>\n' }).decision === 'deny')
+  const old = fixture('old-block', { seen: true })
+  old.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.5: a Force block already there at the first look (forceSeen) — the new rule is silent, passes without api-verify', old.commit(SER).decision === 'allow')
+  // P-1: the backend rules are for a Force block opened after the version first saw the task (`backendGate`), whatever the 0.18 gate says
+  const bOld = fixture('backend-seen', { bseen: true })
+  bOld.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.5: a Force block there at the first sight of the backend rules (backendSeen), `## Backend` added later — a commit touching api_files with no api-verify report is allowed', bOld.commit(SER).decision === 'allow')
+  const bNew = fixture('backend-other-block', { bseen: true })
+  write(bNew.dir, { [`.claude/tasks/${bNew.ticket}/STAGES.md`]: readFileSync(join(bNew.tdir, 'STAGES.md'), 'utf8').replace('## Stages', '## Force run 2026-10-23\nConfirmed: 23.10.2026\n\n## Stages') })
+  bNew.report('pro-review-3.md', 'pro-review', 2)
+  check('vt15s5 AC-5.5: a new Force block after the first sight (not in backendSeen) — the same commit is refused, api-verify named', bNew.commit(SER).decision === 'deny')
+  const migrated = fixture('backend-migrate')
+  const snapFile = snapshotFile(DATA, migrated.tdir)
+  const snap = JSON.parse(readFileSync(snapFile, 'utf8'))
+  delete snap.backendSeen
+  writeFileSync(snapFile, JSON.stringify(snap))
+  const info = jc.baselineInfo(DATA, migrated.tdir)
+  check('vt15s5 AC-5.5: a snapshot without the backend mark gets it at the first look — the Force headings already there, so they keep the old rules', info.backendSeen.has(markers.forceKey('## Force run 2026-10-22')) && jc.backendGate(DATA, migrated.tdir).seen.has(markers.forceKey('## Force run 2026-10-22')))
+  const withReceipt = fixture('receipt')
+  withReceipt.report('pro-review-3.md', 'pro-review', 2)
+  withReceipt.report('api-verify-3.md', 'api-verify', 3)
+  withReceipt.commit(SER)
+  git(withReceipt.dir, 'add', '-A')
+  git(withReceipt.dir, 'commit', '-qm', 'x')
+  const stateCall = { cwd: withReceipt.dir, tool_name: 'Bash', tool_use_id: `toolu_b5_${n++}`, tool_input: { command: 'git add -A && git commit -m y' } }
+  write(withReceipt.dir, { 'src/x/views.py': 'x = 1\n' })
+  runHook('git-guard.mjs', { ...stateCall, hook_event_name: 'PreToolUse' })
+  git(withReceipt.dir, 'add', '-A')
+  git(withReceipt.dir, 'commit', '-qm', 'y')
+  runHook('git-guard.mjs', { ...stateCall, hook_event_name: 'PostToolUse' })
+  const rcpt = (await import(join(PLUGIN, 'receipts.mjs'))).readReceipts(DATA, withReceipt.ticket).at(-1)
+  check('vt15s5: the receipt carries backend: [files]', Array.isArray(rcpt?.backend) && rcpt.backend.includes('src/x/views.py'), JSON.stringify(rcpt))
+
+  // journal-gate: a PASS on [verify: api-verify] needs the request with its code and a read-back / control
+  const jt = fixture('journal')
+  write(jt.dir, { [`.claude/tasks/${jt.ticket}/STAGES.md`]: `# ${jt.ticket}: t\n\n## Stages\n\n### Stage 3: api  [status: in-progress]\nКритерии приёмки:\n- \`AC-3.1\` WHEN POST x THEN 201 [verify: api-verify]\n- \`AC-3.2\` WHEN y THEN z [verify: pro-review]\n` })
+  const bad = '# api-verify, stage 3\nFindings: critical 0 · major 0 · minor 0\n## Stage criteria\n- AC-3.1 — PASS: POST /api/v3/things/ created the row\n- AC-3.2 — PASS: ok\n'
+  const good = '# api-verify, stage 3\nFindings: critical 0 · major 0 · minor 0\n## Stage criteria\n- AC-3.1 — PASS: POST /api/v3/things/ → 201; read-back: GET /api/v3/things/1/ → 200, name equal\n'
+  const badV = jc.apiProofViolations(bad, 'api-verify-3.md', jt.tdir)
+  check('vt15s5: PASS with no response code and no read-back — no-api-proof for AC-3.1 only', badV.length === 1 && badV[0].rule === 'no-api-proof' && /AC-3\.1/.test(badV[0].message) && /response code/.test(badV[0].message) && /read-back/.test(badV[0].message), JSON.stringify(badV))
+  check('vt15s5: method, path, code and `read-back:` — clean', jc.apiProofViolations(good, 'api-verify-3.md', jt.tdir).length === 0)
+  check('vt15s5: the Russian read-back and control labels count', ['перечитывание: GET /a/ → 200', 'контроль: тот же запрос без фильтра'].every((c) => jc.apiProofViolations(good.replace(/read-back:.*/, c), 'api-verify-3.md', jt.tdir).length === 0))
+  check('vt15s5: a FAIL line is not touched', jc.apiProofViolations(bad.replace('AC-3.1 — PASS', 'AC-3.1 — FAIL'), 'api-verify-3.md', jt.tdir).length === 0)
+  write(jt.dir, { [`.claude/tasks/${jt.ticket}/checks/api-verify-3.md`]: bad })
+  const pv = join(jt.tdir, 'checks', 'api-verify-3.md')
+  check('vt15s5 AC-5.5: reportViolations reports no-api-proof for a report newer than the release (v020), not for an old one', jc.reportViolations(pv, null, { v020: true }).some((v) => v.rule === 'no-api-proof') && !jc.reportViolations(pv, null, { v020: false }).some((v) => v.rule === 'no-api-proof'))
+
+  // dismissals: "this is the backend's" is weak when the task has a backend repo
+  const entry = '- M-1 — false: это задача бэкенда (docs/openapi/schema.yaml:10)'
+  check('vt15s5 AC-5.4: a Russian backend-owns dismissal with a contract line, with a backend repo in the task — weak (not-ours-backend)', jc.disposition(entry, { strict: true, backend: true }) === 'weak' && (await import(join(PLUGIN, 'dismissals.mjs'))).weakForm(entry, { backend: true })?.form === 'not-ours-backend')
+  check('vt15s5 AC-5.4: the same without a backend in the task — as before (false: the contract line is a proof)', jc.disposition(entry, { strict: true }) === 'false')
+  check('vt15s5 AC-5.4: kit ownership with a kit proof stays as before in a backend task', jc.disposition('- M-2 — false: the kit has no such slot (node_modules/ui-kit/Button.vue:5)', { strict: true, backend: true }) === 'false')
+  check('vt15s5 AC-5.4: English "belongs to the backend (openapi.yaml:10)" in a backend task — weak', jc.disposition('- M-1 — false: belongs to the backend (docs/openapi/schema.yaml:10)', { strict: true, backend: true }) === 'weak')
+  const ledger = `# pro-review\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.py:1 — x\n## Findings outcome\n${entry}\n`
+  check('vt15s5 AC-5.4: ledgerViolations names it ledger-weak only with backend', jc.ledgerViolations(ledger, 'pro-review-3.md', { strict: true, backend: true }).some((v) => v.rule === 'ledger-weak' && v.form === 'not-ours-backend') && !jc.ledgerViolations(ledger, 'pro-review-3.md', { strict: true }).some((v) => v.rule === 'ledger-weak'))
+  // P-3: a weak backend closure is an ownership hand-off, not any mention of the backend
+  const { weakForm: weak } = await import(join(PLUGIN, 'dismissals.mjs'))
+  for (const line of ['not a backend bug, the frontend filter drops it (src/list.ts:40)', 'the backend returns it as a string and we cast at api.ts:12', 'backend does not support pagination here, the code handles the empty page (list.ts:9)', 'это бэкенд-тест'])
+    check(`vt15s5 AC-5.4: "${line.slice(0, 40)}" stays strong in a backend task`, weak(`- M-1 — false: ${line}`, { backend: true }) === null && jc.disposition(`- M-1 — false: ${line}`, { strict: true, backend: true }) === 'false')
+  for (const line of ['backend must fix the serializer (docs/openapi/schema.yaml:10)', 'for the backend to fix (docs/openapi/schema.yaml:10)', 'бэкенд должен исправить (docs/openapi/schema.yaml:10)', 'задача бэкенда (docs/openapi/schema.yaml:10)'])
+    check(`vt15s5 AC-5.4: hand-off "${line.slice(0, 40)}" is weak in a backend task`, weak(`- M-1 — false: ${line}`, { backend: true })?.form === 'not-ours-backend')
+
+  // R-1: the backend repo is task code too; a path counts as proof only when the clause says our code handles it
+  const isBack = (path) => /^orders\//.test(path)
+  for (const line of ['the backend must handle it (orders/views.py:40)', 'this is a backend issue, the guard is not ours (src/list.ts:40)'])
+    check(`vt15s5 R-1: "${line.slice(0, 40)}" is weak in a backend task`, weak(`- M-1 — false: ${line}`, { backend: true, isBackendPath: isBack })?.form === 'not-ours-backend')
+  check('vt15s5 R-1: a backend path with a "handles" phrase is no own-code proof', weak('- M-1 — false: backend owns it, though the view handles it (orders/views.py:40)', { backend: true, isBackendPath: isBack })?.form === 'not-ours-backend')
+  check('vt15s5 R-1: a frontend path with a "handled at" phrase stays strong', weak('- M-1 — false: backend must fix it, but it is handled at src/list.ts:40', { backend: true, isBackendPath: isBack }) === null)
+
+  // P-2: a frontend repo whose config names a sibling backend repo counts as having a backend
+  const sibLedger = '# pro-review\nFindings: critical 0 · major 1 · minor 0\n### 🟠 M-1 a.py:1 — x\n## Findings outcome\n- M-1 — false: belongs to the backend (docs/openapi/schema.yaml:10)\n'
+  const sibGate = (backendRepo) => {
+    const front = fixture(`sib-front-${backendRepo}`, { backend: false, extraConfig: '- backend_repo: ../sibling-back\n' })
+    const sib = join(bRoot, 'sibling-back')
+    rmSync(sib, { recursive: true, force: true })
+    mkdirSync(join(sib, '.claude'), { recursive: true })
+    writeFileSync(join(sib, '.claude/pipeline.config.md'), backendRepo ? BACKEND : '- main_branch: main\n')
+    write(front.dir, { [`.claude/tasks/${front.ticket}/checks/pro-review-3.md`]: sibLedger })
+    return runHook('journal-gate.mjs', { cwd: front.dir, tool_name: 'Write', tool_input: { file_path: join(front.tdir, 'checks', 'pro-review-3.md') } })
+  }
+  const withSib = sibGate(true)
+  check('vt15s5 AC-5.4: a sibling backend repo in the config of the task repo — the backend dismissal is weak there (ledger-weak)', withSib.decision === 'block' && /ledger|weak|backend/i.test(withSib.text), withSib.text)
+  check('vt15s5 AC-5.4: a sibling repo without `## Backend` — no backend rule', sibGate(false).decision === 'allow')
+  rmSync(bRoot, { recursive: true, force: true })
+}
+
+if (unit('vt15s7')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s7-')))
+  const rcv = await import(join(PLUGIN, 'receipts.mjs'))
+  const pc = await import(join(PLUGIN, 'plan-check.mjs'))
+  const T0 = Date.now()
+  const at = (hours) => (T0 + hours * 3600_000) / 1000
+  const STALE = Date.parse('2026-10-18T09:00:00') / 1000
+  let n = 0
+  const REPORT = (checker) => `# ${checker}\nFindings: critical 0 · major 0 · minor 0\n`
+  const fixture = ({ sibling = true, siblingCommits = true, bseen = false, backend = true } = {}) => {
+    const base = join(root, `case${n++}`)
+    const dir = join(base, 'app')
+    const x = join(base, 'x')
+    const ticket = `S7-${n}`
+    const branch = `${ticket}/feat/b`
+    repoAt(dir, 'main')
+    repoAt(x, 'main')
+    git(x, 'update-ref', 'refs/remotes/origin/main', 'main')
+    git(dir, 'update-ref', 'refs/remotes/origin/main', 'main')
+    const force = '## Force run 2026-10-22'
+    write(dir, {
+      '.claude/pipeline.config.md': `- task_path: .claude/tasks/\n- main_branch: main\n${sibling ? '## Paths\n- backend: ../x\n' : ''}`,
+      [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${branch}\`\n\n## Status: stage 1\n\n${force}\nConfirmed: 22.10.2026\n\n## Stages\n\n### Stage 1: card  [status: done]\n`,
+    })
+    write(x, { '.claude/pipeline.config.md': `- main_branch: main\n${backend ? '## Backend\n- framework: django-drf\n' : ''}` })
+    git(dir, 'checkout', '-qb', branch)
+    git(x, 'checkout', '-qb', branch)
+    if (siblingCommits) {
+      write(x, { 'x.py': 'x = 1\n' })
+      git(x, 'add', 'x.py')
+      git(x, 'commit', '-qm', 'x work')
+    }
+    write(dir, { 'src/z.ts': 'export const z = 1\n' })
+    git(dir, 'add', 'src/z.ts')
+    git(dir, 'commit', '-qm', 'z')
+    runHook('session-start.mjs', { cwd: dir })
+    const tdir = join(dir, '.claude/tasks', ticket)
+    setGate(tdir, '2026-10-20', [], DATA, bseen ? [markers.forceKey(force)] : [])
+    const report = (file, checker, hours) => {
+      write(dir, { [`.claude/tasks/${ticket}/checks/${file}`]: REPORT(checker) })
+      utimesSync(join(tdir, 'checks', file), hours, hours)
+    }
+    const journal = (suffix, body = '') => write(dir, { [`.claude/tasks/${ticket}/STAGES.md`]: `# ${ticket}: task\nBranch: \`${branch}\`\n\n## Status: done\n\n${force} — ${suffix}\nConfirmed: 22.10.2026\n${body}\n## Stages\n\n### Stage 1: card  [status: done]\n` })
+    const gate = () => runHook('journal-gate.mjs', { cwd: dir, tool_name: 'Write', tool_input: { file_path: join(tdir, 'STAGES.md') } })
+    const main = () => {
+      report('pro-review-branch.md', 'pro-review', at(8))
+      report('task-converge.md', 'task-converge', at(8))
+    }
+    return { dir, x, tdir, ticket, branch, report, journal, gate, main, config: readFileSync(join(dir, '.claude/pipeline.config.md'), 'utf8') }
+  }
+
+  const two = fixture()
+  const stagesText = readFileSync(join(two.tdir, 'STAGES.md'), 'utf8')
+  const branches = [two.branch]
+  const repos = pc.taskRepos(two.config, two.dir, branches)
+  check('vt15s7 AC-7.1: taskRepos — the task repo and a sibling with branch commits, primary marked', repos.length === 2 && repos[0].primary && !repos[1].primary && repos[1].name === 'x' && repos[1].root === join(dirname(two.dir), 'x') && repos[1].base === 'origin/main' && repos[1].branch === two.branch, JSON.stringify(repos))
+  const noCommits = fixture({ siblingCommits: false })
+  check('vt15s7 AC-7.1: a sibling whose task branch has no commits beyond origin/main — only the main repo', pc.taskRepos(noCommits.config, noCommits.dir, [noCommits.branch]).map((r) => r.name).join() === 'app')
+  const noBranch = fixture()
+  git(noBranch.x, 'checkout', '-q', 'main')
+  git(noBranch.x, 'branch', '-D', noBranch.branch)
+  check('vt15s7 AC-7.1: a sibling without the task branch — only the main repo', pc.taskRepos(noBranch.config, noBranch.dir, [noBranch.branch]).length === 1)
+  check('vt15s7: taskBranches reads the branch of the header (the input of taskRepos)', (await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))).taskBranches(stagesText).includes(two.branch))
+
+  two.journal('completed')
+  two.main()
+  const denied = two.gate()
+  check('vt15s7 AC-7.1: completed with the reports of the main repo only — rejected, repo x named', denied.decision === 'block' && /pro-review-x: no whole-task report/.test(denied.text) && /pro-review-branch-x\.md/.test(denied.text) && !/task-converge: no/.test(denied.text), denied.text)
+  two.report('pro-review-branch-x.md', 'pro-review', STALE)
+  const staleX = two.gate()
+  check('vt15s7 AC-7.1: a pro-review-branch-x.md older than the tree of x — rejected, stale marker offered', staleX.decision === 'block' && /\[final: pro-review-x — stale\]/.test(staleX.text), staleX.text)
+  two.report('pro-review-branch-x.md', 'pro-review', at(9))
+  check('vt15s7 AC-7.1: with pro-review-branch-x.md newer than the tree of x — the close is accepted', two.gate().decision !== 'block', two.gate().text)
+  // review round 1 (M-1): a sibling's freshness comes from its task branch, not from the checkout's HEAD, which may sit on another branch
+  const away = fixture()
+  away.journal('completed')
+  away.main()
+  git(away.x, 'checkout', '-q', 'main')
+  const prevDate = process.env.GIT_COMMITTER_DATE
+  process.env.GIT_COMMITTER_DATE = `${Math.round(at(2))} +0000`
+  const later = execFileSync('git', ['commit-tree', '4b825dc642cb6eb9a060e54bf8d69288fbee4904', '-p', away.branch, '-m', 'later'], { cwd: away.x, encoding: 'utf8' }).trim()
+  if (prevDate === undefined) delete process.env.GIT_COMMITTER_DATE
+  else process.env.GIT_COMMITTER_DATE = prevDate
+  git(away.x, 'update-ref', `refs/heads/${away.branch}`, later)
+  rmSync(join(away.x, '.git', 'logs'), { recursive: true, force: true })
+  away.report('pro-review-branch-x.md', 'pro-review', at(1))
+  const awayStale = away.gate()
+  check('vt15s7 review M-1: the checkout of x sits on main, the task branch of x has a newer commit than the report — rejected', awayStale.decision === 'block' && /\[final: pro-review-x — stale\]/.test(awayStale.text), awayStale.text)
+  away.report('pro-review-branch-x.md', 'pro-review', at(3))
+  check('vt15s7 review M-1: the same with a report newer than the task branch of x — accepted', away.gate().decision !== 'block', away.gate().text)
+  // review round 1 (n-1): the repo name must end at a separator that a report name has
+  const near = fixture()
+  near.journal('completed')
+  near.main()
+  near.report('pro-review-branch-x-abc.md', 'pro-review', at(9))
+  check('vt15s7 review n-1: pro-review-branch-x-abc.md is not the report of repo x', near.gate().decision === 'block' && /pro-review-x: no whole-task report/.test(near.gate().text), near.gate().text)
+  near.report('pro-review-branch-x-2.md', 'pro-review', at(9))
+  check('vt15s7 review n-1: pro-review-branch-x-2.md is a re-run of the report of repo x', near.gate().decision !== 'block', near.gate().text)
+  // review round 1 (m-1): a linked worktree of the task repo elsewhere still finds the sibling next to the main checkout
+  const wtRoot = join(dirname(two.dir), 'elsewhere', 'wt-app')
+  mkdirSync(dirname(wtRoot), { recursive: true })
+  git(two.dir, 'worktree', 'add', '-q', '-b', 'wt-side', wtRoot)
+  check('vt15s7 review m-1: siblingRepos from a linked worktree outside <parent>/<repo> resolves next to the main checkout', pc.siblingRepos(two.config, wtRoot).join() === two.x, pc.siblingRepos(two.config, wtRoot).join())
+  check('vt15s7 review m-1: siblingRepos in an ordinary checkout is unchanged', pc.siblingRepos(two.config, two.dir).join() === two.x)
+  const xOnly = fixture()
+  xOnly.journal('completed')
+  xOnly.report('pro-review-branch-x.md', 'pro-review', at(8))
+  xOnly.report('task-converge.md', 'task-converge', at(8))
+  const xOnlyOut = xOnly.gate()
+  check('vt15s7 AC-7.1: the report of x does not stand for the main repo — rejected naming pro-review', xOnlyOut.decision === 'block' && /pro-review: no whole-task report/.test(xOnlyOut.text) && !/pro-review-x: no/.test(xOnlyOut.text), xOnlyOut.text)
+  const blk = fixture()
+  blk.main()
+  blk.journal('completed with blockers', 'Blockers: B1 — [final: pro-review-x — not run] no capacity for the second repo\n')
+  check('vt15s7 AC-7.1: completed with blockers carrying [final: pro-review-x — not run] — accepted', blk.gate().decision !== 'block', blk.gate().text)
+
+  const one = fixture({ sibling: false })
+  one.journal('completed')
+  one.main()
+  check('vt15s7 AC-7.2: a task of one repo — the close needs the same two reports as before, accepted with them', one.gate().decision !== 'block', one.gate().text)
+  const oneBare = fixture({ sibling: false })
+  oneBare.journal('completed')
+  const oneOut = oneBare.gate()
+  check('vt15s7 AC-7.2: a task of one repo without them — only pro-review and task-converge are named', oneOut.decision === 'block' && /pro-review: no whole-task/.test(oneOut.text) && /task-converge: no whole-task/.test(oneOut.text) && !/pro-review-/.test(oneOut.text.replace(/pro-review-branch\.md/g, '')), oneOut.text)
+  const idle = fixture({ siblingCommits: false })
+  idle.journal('completed')
+  idle.main()
+  check('vt15s7 AC-7.2: a sibling in the config with no task commits is not in the task — the close needs no report for it', idle.gate().decision !== 'block', idle.gate().text)
+  const old = fixture({ bseen: true })
+  old.journal('completed')
+  old.main()
+  check('vt15s7 AC-7.1: a Force block in backendSeen (an old run) — the per-repo rule is silent', old.gate().decision !== 'block', old.gate().text)
+
+  // fix round 1 (M-2): the per-repo rule is a backend one — two repos without `## Backend` close as before
+  const plain = fixture({ backend: false })
+  plain.journal('completed')
+  plain.main()
+  check('vt15s7 fix M-2: a two-repo task without `## Backend` anywhere closes with the two reports as before', plain.gate().decision !== 'block', plain.gate().text)
+  // fix round 1 (M-3): `main_branch: main` while the PRs go to dev — a sibling merged into origin/dev is not in the task
+  const merged = fixture()
+  git(merged.x, 'update-ref', 'refs/remotes/origin/dev', merged.branch)
+  check('vt15s7 fix M-3: the sibling branch is merged into origin/dev (main_branch: main is stale) — not in the task', pc.taskRepos(merged.config, merged.dir, [merged.branch]).map((r) => r.name).join() === 'app')
+  check('vt15s7 fix M-3: without origin/dev the same sibling is in the task, based on origin/main', pc.taskRepos(two.config, two.dir, branches).find((r) => !r.primary)?.base === 'origin/main')
+
+  const skill = readFileSync(join(PLUGIN, '..', 'skills', 'deps-audit', 'SKILL.md'), 'utf8')
+  check('vt15s7 AC-7.3: the deps-audit skill names pyproject.toml, poetry.lock, uv.lock and requirements', ['pyproject.toml', 'poetry.lock', 'uv.lock', 'requirements'].every((word) => skill.includes(word)))
+  check('vt15s7 AC-7.3: the scope no longer limits the pass to package.json', /Python/.test(skill) && /site-packages|git\+/.test(skill))
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('vt15f1')) {
+  const jc = await import(join(PLUGIN, 'journal-check.mjs'))
+  const REVIEW = '# pro-review\nFindings: critical 0 · major 1 · minor 0\n\n- **M-1** major — a.ts:3 — the finding\n\n## Findings outcome\n'
+  const entry = (line) => `${REVIEW}${line}\n`
+  const isBackendPath = (path) => /^app\/serializers\.py$/.test(path)
+  let weak = null
+  try {
+    weak = jc.ledgerViolations(entry('- M-1 — false: задача бэкенда, сериализатор обрабатывает это в app/serializers.py:12'), 'pro-review-1.md', { strict: true, backend: true, isBackendPath })
+  } catch (error) {
+    weak = error
+  }
+  check('vt15f1 M-1: a backend-task false: pointing at a backend path is a ledger-weak, not a crash', Array.isArray(weak) && weak.some((v) => v.rule === 'ledger-weak'), String(weak?.message ?? JSON.stringify(weak)))
+  check('vt15f1 m-2: "pass" in the criterion text does not read as closed staging', jc.stagingViolation('- `AC-2.1` WHEN the user logs in THEN the pass screen shows [verify: staging]') === null)
+  check('vt15f1 m-2: a ✅ staging criterion without an observation is still caught', jc.stagingViolation('- `AC-2.1` WHEN a deal is sent THEN it is stored [verify: staging] ✅')?.rule === 'staging-no-observation')
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'vt15f1-')))
+  mkdirSync(join(dir, 'checks'), { recursive: true })
+  writeFileSync(join(dir, 'STAGES.md'), '# T\n\n### Stage 1: api  [status: done]\n- `AC-1.1` WHEN PATCH THEN saved [verify: api-verify]\n- `AC-1.2` WHEN a button THEN it works [effect] [verify: devtools-verify]\n')
+  const api = (control) => `# api-verify 1\nFindings: critical 0 · major 0 · minor 0\n- AC-1.1 — PASS: PATCH /api/notes/1/ → 200\n  ${control}\n`
+  check('vt15f1 m-1: `read-back as A:` is a read-back label', jc.apiProofViolations(api('read-back as A: text changed'), 'api-verify-1.md', dir).length === 0)
+  check('vt15f1 m-1: `control (same test):` is a control label', jc.apiProofViolations(api('control \u0432 \u0442\u043e\u043c \u0436\u0435 \u0442\u0435\u0441\u0442\u0435: 403 for B'), 'api-verify-1.md', dir).length === 0)
+  check('vt15f1 M-4: no read-back still gives no-api-proof', jc.apiProofViolations(api('looks fine'), 'api-verify-1.md', dir)[0]?.rule === 'no-api-proof')
+  const effectReport = '# devtools-verify 1\nFindings: critical 0 · major 0 · minor 0\n- AC-1.2 — PASS: the button works\n'
+  check('vt15f1 M-4: the [effect] rule is unchanged after the factoring', jc.effectViolations(effectReport, 'devtools-verify-1.md', dir)[0]?.rule === 'no-effect-proof')
+  const fixedReport = `# api-verify 1\nFindings: critical 0 · major 1 · minor 0\n\n## Findings outcome\n- M-1 — fixed: app/views.py:3\n`
+  check('vt15f1 m-4: api-verify `fixed:` without a recheck report — no-rerun', jc.rerunViolations(fixedReport, 'api-verify-1.md', dir)[0]?.rule === 'no-rerun')
+  writeFileSync(join(dir, 'checks', 'api-verify-1-r1.md'), '# r\n')
+  check('vt15f1 m-4: api-verify `fixed:` citing the existing -r1 report — clean', jc.rerunViolations(fixedReport.replace('app/views.py:3', 'app/views.py:3 — recheck api-verify-1-r1.md'), 'api-verify-1.md', dir).length === 0)
+  check('vt15f1 m-4: the rerun rule of api-verify is off outside the backend gate', jc.rerunViolations(fixedReport, 'api-verify-1.md', dir, false).length === 0)
+  check('vt15f1 m-4: a `[verify: api-verify]` criterion closed ✅ without naming the checker — ac-checker', jc.acViolation('- `AC-1.1` WHEN PATCH THEN saved [verify: api-verify] ✅ pro-review: code')?.rule === 'ac-checker')
+  const apiR2 = api
+  const dirR2 = dir
+  for (const bad of ['read-back not done: later', 'перечитывание не делалось: потом', 'the controller returns: 200']) check(`vt15r2 d-4: "${bad}" is no-api-proof`, jc.apiProofViolations(apiR2(bad), 'api-verify-1.md', dirR2)[0]?.rule === 'no-api-proof')
+  for (const good of ['read-back as A: text changed', 'control в том же тесте: 403', 'read-back: ok', 'контроль: 403']) check(`vt15r2 d-4: "${good}" is clean`, jc.apiProofViolations(apiR2(good), 'api-verify-1.md', dirR2).length === 0)
+  check('vt15r2 d-5: `[X]` closes a staging criterion without an observation', jc.stagingViolation('- [X] `AC-2.1` WHEN a deal is sent THEN it is stored [verify: staging]')?.rule === 'staging-no-observation')
+  rmSync(dir, { recursive: true, force: true })
+  const { backendFileMatcher } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
+  let matcher = null
+  try {
+    matcher = backendFileMatcher({ apiFiles: ['a/*/*/*/*/*/b.py', 'app/views.py'] })
+  } catch (error) {
+    matcher = error
+  }
+  check('vt15f1 m-3: a 5-star glob does not throw; the good glob still matches', typeof matcher === 'function' && matcher('app/views.py') === true && matcher('a/b/c/d/e/f/b.py') === false, String(matcher?.message))
+  check('vt15f1 m-3: the skipped glob is named in matcher.skipped', typeof matcher === 'function' && matcher.skipped.length === 1 && matcher.skipped[0].glob === 'a/*/*/*/*/*/b.py')
+  const { maskSecrets } = await import(join(PLUGIN, 'backend-detect.mjs'))
+  const masked = maskSecrets('PIP_INDEX_URL=https://user:TOKEN123@host/simple API_KEY=abc DB_PASSWORD=pw pytest')
+  check('vt15f1 S-1: URL userinfo and *KEY/*PASSWORD values are masked', !/TOKEN123|abc|=pw/.test(masked) && /\/\/\*\*\*@host/.test(masked) && /API_KEY=\*\*\*/.test(masked) && /DB_PASSWORD=\*\*\*/.test(masked), masked)
+  check('vt15f1 S-1: the masked text keeps the command', /pytest$/.test(masked))
+  const unmasked = maskSecrets('KEYCLOAK_URL=http://kc sort_keys=2 monkey=3 pytest')
+  check('vt15r2 d-1: KEYCLOAK_URL / sort_keys / monkey stay unmasked', unmasked === 'KEYCLOAK_URL=http://kc sort_keys=2 monkey=3 pytest', unmasked)
+  const wide = maskSecrets('SECRET_KEY=a1 DJANGO_SECRET_KEY=a2 AUTH_KEY=a3 STRIPE_SK=a4 pip_token=a5 docker run -e DB_PASS=a6 x --password a7 --token=a8 PASSWD="two words" APIKEY=a9 pytest')
+  check('vt15f2 S-4: SECRET_KEY / DJANGO_SECRET_KEY / AUTH_KEY / STRIPE_SK / pip_token / -e DB_PASS / --password x / --token=x / a quoted value / APIKEY are masked', !/a[1-9]|two|words/.test(wide) && /pytest$/.test(wide) && /PASSWD=\*\*\*/.test(wide), wide)
+  {
+    const { spawnSync: sp } = await import('node:child_process')
+    const fx = realpathSync(mkdtempSync(join(tmpdir(), 'vt15r2-')))
+    writeFileSync(join(fx, 'Makefile'), 'test:\n\tAPI_TOKEN=x echo 3 tests collected pytest\n')
+    writeFileSync(join(fx, 'pyproject.toml'), '[project]\nname = "x"\ndependencies = ["django", "pytest"]\n')
+    mkdirSync(join(fx, 'app'), { recursive: true })
+    writeFileSync(join(fx, 'app/views.py'), '')
+    const dr = sp(process.execPath, [join(PLUGIN, 'backend-detect.mjs'), fx, '--doctor'], { encoding: 'utf8' })
+    check('vt15r2 d-1: --doctor runs the real recipe (API_TOKEN=x in it) — the collect row is ok, the token is not printed', /^ok — tests collect/m.test(dr.stdout) && !/API_TOKEN=x/.test(dr.stdout), dr.stdout)
+    rmSync(fx, { recursive: true, force: true })
+  }
+  const initTmpl = readFileSync(join(PLUGIN, '../skills/pipeline-init/SKILL.md'), 'utf8')
+  check('vt15r2 d-3: api_layer is written only with a `## Backend` section here or in a related repo', /^- api_layer: .*only when this config or a related repo it names has a `## Backend` section/m.test(initTmpl))
+}
+
+if (unit('vt15s8a')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s8a-')))
+  const profile = JSON.parse(readFileSync(join(PLUGIN, '..', 'permissions', 'base.json'), 'utf8'))
+  const toolchain = profile.groups['js-toolchain'].allow
+  check('vt15s8a AC-8a.1: js-toolchain (a default group) allows uv run and poetry run', profile.defaultGroups.includes('js-toolchain') && toolchain.includes('Bash(uv run *)') && toolchain.includes('Bash(poetry run *)'), JSON.stringify(toolchain))
+  const { doctor } = await import(join(PLUGIN, 'backend-detect.mjs'))
+  const { shellQuote } = await import(join(PLUGIN, 'ci-gates.mjs'))
+  const repo = join(root, 'repo')
+  mkdirSync(join(repo, '.claude'), { recursive: true })
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: docker compose run -T --rm api python -m pytest\n')
+  const put = (name, allow) => {
+    const file = join(root, name)
+    writeFileSync(file, JSON.stringify({ permissions: { allow } }))
+    return file
+  }
+  // hermetic: stub docker (does not answer) and uv (collects 1 test) first on PATH, so no real tool is spawned
+  const stubs = join(root, 'stubs')
+  mkdirSync(stubs)
+  writeFileSync(join(stubs, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  writeFileSync(join(stubs, 'uv'), '#!/bin/sh\necho "1 test collected"\n', { mode: 0o755 })
+  const prevPath = process.env.PATH
+  process.env.PATH = `${stubs}:${prevPath}`
+  const rowOf = (files) => doctor(repo, { settingsFiles: files }).rows.find((r) => / — permissions — /.test(r))
+  const none = rowOf([join(root, 'missing.json'), put('other.json', ['Bash(node *)'])])
+  check('vt15s8a AC-8a.2: docker test command and no allow for docker compose run — fail with the permissions command', /^fail — permissions — .*permissions\.mjs' --apply --groups .*js-toolchain.*,docker$/.test(none ?? ''), none)
+  check('vt15s8a AC-8a.2: Bash(docker compose *) in one of the settings files — ok', /^ok — permissions/.test(rowOf([put('a.json', []), put('b.json', ['Bash(docker compose *)'])]) ?? ''))
+  check('vt15s8a AC-8a.2: Bash(docker *) — ok', /^ok — permissions/.test(rowOf([put('c.json', ['Bash(docker *)'])]) ?? ''))
+  const putSettings = (name, permissions) => {
+    const file = join(root, name)
+    writeFileSync(file, JSON.stringify({ permissions }))
+    return file
+  }
+  const askRow = rowOf([putSettings('d.json', { allow: ['Bash(docker compose *)'], ask: ['Bash(docker *)'] })])
+  check('vt15s8a F-8a-2: an ask rule beats the allow — fail naming the ask rule', /^fail — permissions — .*ask rule `Bash\(docker \*\)`/.test(askRow ?? ''), askRow)
+  check('vt15s8a F-8a-2: Bash(*) covers docker — ok', /^ok — permissions/.test(rowOf([putSettings('e.json', { allow: ['Bash(*)'] })]) ?? ''))
+  check('vt15s8a F-8a-3: shellQuote (ci-gates, the one copy) wraps a path with spaces', shellQuote('/a b/it\'s.mjs') === "'/a b/it'\\''s.mjs'" && shellQuote('/a/b.mjs') === "'/a/b.mjs'", shellQuote('/a b/it\'s.mjs'))
+  writeFileSync(join(repo, 'Makefile'), 'run-tests:\n\tdocker exec -it core pytest\n')
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: make run-tests\n')
+  const makeRow = rowOf([join(root, 'missing.json')])
+  check('vt15s8a F-8a-1: make run-tests with docker exec in the recipe and no allow — fail — permissions', /^fail — permissions — .*docker exec/.test(makeRow ?? ''), makeRow)
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: ENV=1 docker exec core pytest {files:rel+py}\n- test_full: uv run pytest\n')
+  const testLine = rowOf([join(root, 'missing.json')])
+  check('vt15s8a F-8a-1: docker in the config test line (env prefix) — fail — permissions', /^fail — permissions/.test(testLine ?? ''), testLine)
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: ./pytest.sh\n')
+  const shRow = rowOf([join(root, 'missing.json')])
+  check('vt15s8a F-8a-1: ./pytest.sh — its own wording (builds an image)', /^fail — permissions — .*builds an image/.test(shRow ?? ''), shRow)
+  // m-1: api-verify runs `test`; the pms/worker-pms shape has test_full: ./pytest.sh next to a docker compose test
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker compose run -T --rm --no-deps api python -m pytest {files:rel+py}\n- test_full: ./pytest.sh\n')
+  const buildOnly = rowOf([put('f.json', ['Bash(docker build *)'])])
+  check('vt15f2 m-1: test = docker compose run, allow only docker build — fail naming docker compose run', /^fail — permissions — .*`docker compose run -T --rm --no-deps api python -m pytest app\/models\.py`/.test(buildOnly ?? ''), buildOnly)
+  check('vt15f2 m-1: Bash(docker compose *) — ok', /^ok — permissions/.test(rowOf([put('g.json', ['Bash(docker compose *)'])]) ?? ''))
+  check('vt15f2 m-1: Bash(docker compose run -T *) — ok (the whole command is checked, not three words)', /^ok — permissions/.test(rowOf([put('h.json', ['Bash(docker compose run -T *)'])]) ?? ''))
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker-compose run --rm api pytest {files:rel+py}\n')
+  const v1 = rowOf([put('i.json', ['Bash(docker compose *)'])])
+  check('vt15f2 m-1: docker-compose (v1) is its own command — docker compose allow does not cover it', /^fail — permissions — .*`docker-compose run/.test(v1 ?? '') && /docker-compose \*/.test(v1), v1)
+  writeFileSync(join(repo, 'Makefile'), 'run-tests:\n\tdocker exec -it core pytest\n')
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: uv run pytest {files:rel+py}\n- test_full: make run-tests\n')
+  check('vt15f2 m-1: a host test with a docker Makefile — no permissions row', rowOf([join(root, 'missing.json')]) === undefined)
+  writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test_full: uv run pytest\n')
+  rmSync(join(repo, 'Makefile'))
+  check('vt15s8a AC-8a.2: a host test command — no permissions row', rowOf([join(root, 'missing.json')]) === undefined)
+  // m-4: force-guard and the doctor read one set of files, the user's settings.local.json among them
+  {
+    const { settingsFiles, askRules } = await import(join(PLUGIN, 'hooks', 'permission-rules.mjs'))
+    const home = join(root, 'home')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(repo, '.claude/settings.local.json'), JSON.stringify({ permissions: { ask: ['Bash(docker compose *)'] } }))
+    writeFileSync(join(home, '.claude/settings.local.json'), JSON.stringify({ permissions: { ask: ['Bash(docker exec *)'] } }))
+    const prevHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      check('vt15f2 m-4: settingsFiles = user settings, project settings, project settings.local (as force-guard always read)', settingsFiles('/p').map((f) => f.replace(home, '~')).join(' ') === '~/.claude/settings.json /p/.claude/settings.json /p/.claude/settings.local.json', settingsFiles('/p').join(' '))
+      check('vt15f2 m-4: askRules (force-guard) sees the project settings.local.json and not a user settings.local.json', askRules(repo).some(({ rule }) => rule === 'Bash(docker compose *)') && !askRules(repo).some(({ rule }) => rule === 'Bash(docker exec *)'))
+      writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker compose run api pytest {files:rel+py}\n')
+      writeFileSync(join(repo, '.claude/settings.json'), JSON.stringify({ permissions: { allow: ['Bash(docker compose *)'] } }))
+      const localAsk = doctor(repo).rows.find((r) => / — permissions — /.test(r))
+      check('vt15f2 m-4: the doctor reads the same project settings.local.json — the ask rule beats the allow', /^fail — permissions — .*ask rule/.test(localAsk ?? ''), localAsk)
+    } finally {
+      process.env.HOME = prevHome
+    }
+  }
+  process.env.PATH = prevPath
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('vt15s8')) {
+  const { readCase, lintCase, findingMatches } = await import(join(PLUGIN, '..', '..', '..', 'scripts/eval-lib.mjs'))
+  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/cases/api-verify-owner-check')
+  const spec = readCase(caseDir)
+  const [forbid] = spec.findingsForbid
+  const [want] = spec.findings
+  const correct = [
+    '- **major** FAIL AC-1.1: PATCH /api/notes/1/ as user B (non-owner) → 200, FAIL; read-back as A: text changed',
+    '- **major** the queryset is not scoped to the owner, wrong code 200 for user B',
+  ]
+  const wrong = ['- **major** PATCH as the owner returned 200, unexpected FAIL', '- **major** anonymous request answered 403 — wrong, a bug']
+  check('vt15s8 case: correct findings (non-owner PATCH 200) do not trip findingsForbid', correct.every((line) => findingMatches(forbid, line).length === 0), JSON.stringify(correct.map((line) => findingMatches(forbid, line).length)))
+  check('vt15s8 case: correct findings match findings[0]', correct.every((line) => findingMatches(want, line).length === 1), JSON.stringify(correct.map((line) => findingMatches(want, line).length)))
+  check('vt15s8 case: a failed owner PATCH and a wrong anonymous refusal trip findingsForbid', wrong.every((line) => findingMatches(forbid, line).length === 1), JSON.stringify(wrong.map((line) => findingMatches(forbid, line).length)))
+  const settings = readFileSync(join(caseDir, 'base/app/settings.py'), 'utf8')
+  check('vt15s8 case: the fixture settings carry sessions and the auth middleware, so APIClient().login works', ['django.contrib.sessions"', 'SessionMiddleware', 'AuthenticationMiddleware'].every((part) => settings.includes(part)))
+  check('vt15s8 case: the leak lint finds nothing', lintCase(caseDir).length === 0)
+}
+
+if (unit('vt15s6')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s6-')))
+  const app = join(root, 'app')
+  repoAt(app, 'main')
+  write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': journal() })
+  git(app, 'checkout', '-qb', 'T-7/feat/g')
+  runHook('session-start.mjs', { cwd: app })
+  const call = (subagent_type, description, prompt) => runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type, description, prompt } })
+  const byName = call('general-purpose', 'contract-compare of stage 2', 'Language: en. Compare the types with the contract.')
+  check('vt15s6 agent-guard: a general-purpose call whose description names contract-compare — denied, stage-pipeline:contract-compare named', byName.decision === 'deny' && byName.text.includes('subagent_type: "stage-pipeline:contract-compare"'), byName.text)
+  const bySkill = call('general-purpose', 'Front vs contract', `Follow ${join(PLUGIN, '..', 'skills/contract-compare/SKILL.md')} for stage 2.`)
+  check('vt15s6 agent-guard: a general-purpose call following the contract-compare skill — denied', bySkill.decision === 'deny' && bySkill.text.includes('stage-pipeline:contract-compare'), bySkill.text)
+  check('vt15s6 agent-guard: stage-pipeline:contract-compare itself — allowed', call('stage-pipeline:contract-compare', 'contract-compare of stage 2', 'Ticket T-7, stage 2.').decision === 'allow')
+  check('vt15s6 agent-guard: a general-purpose call that only mentions a contract — allowed', call('general-purpose', 'Read the contract', 'Summarize the contract file.').decision === 'allow')
+  const agentText = readFileSync(join(PLUGIN, '..', 'agents/contract-compare.md'), 'utf8')
+  const skillText = readFileSync(join(PLUGIN, '..', 'skills/contract-compare/SKILL.md'), 'utf8')
+  check('vt15s6 contract-compare agent: name, model sonnet, points at its skill', /^name: contract-compare$/m.test(agentText) && /^model: sonnet$/m.test(agentText) && agentText.includes('skills/contract-compare/SKILL.md'))
+  check('vt15s6 contract-compare skill: name, the three anchors, Could not verify, the severities', /^name: contract-compare$/m.test(skillText) && ['three anchors', 'Could not verify', '**major**', '**minor**', 'checks/contract-compare-<stage>.md'].every((part) => skillText.includes(part)))
+  const stageCheck = readFileSync(join(PLUGIN, '..', 'skills/stage-check/SKILL.md'), 'utf8')
+  check('vt15s6 journal-check: a contract-compare report is read as that checker\'s', (await import(join(PLUGIN, 'journal-check.mjs'))).reportChecker('contract-compare-3.md') === 'contract-compare')
+  check('vt15s6 AC-6.3: stage-check names the trigger and the skip line', /\| contract-compare \|[^\n]*api_layer[^\n]*contractPath[^\n]*\[skip: no trigger\]/.test(stageCheck))
+  const { readCase, lintCase } = await import(join(PLUGIN, '..', '..', '..', 'scripts/eval-lib.mjs'))
+  const caseDir = join(PLUGIN, '..', '..', '..', 'evals/cases/contract-compare-enum-drift')
+  const spec = readCase(caseDir)
+  check('vt15s6 case: case.json reads, agent contract-compare, three findings entries that compile', spec.agent === 'contract-compare' && spec.findings?.length === 3 && spec.findings.every((e) => new RegExp(e.file) && e.why) && spec.findingsForbid?.length === 1)
+  check('vt15s6 case: the planted drift is in working/ (no `expired` in the type, price not nullable, a discount in the mock) and the contract has all four values', !/expired/.test(readFileSync(join(caseDir, 'working/src/api/deals.ts'), 'utf8')) && /price: number\n/.test(readFileSync(join(caseDir, 'working/src/api/deals.ts'), 'utf8')) && /discount/.test(readFileSync(join(caseDir, 'working/src/mocks/handlers.ts'), 'utf8')) && /`requested`, `approved`, `rejected`, `expired`/.test(readFileSync(join(caseDir, 'base/tasks/DLS-4/CONTRACT.md'), 'utf8')))
+  const hits = lintCase(caseDir)
+  check('vt15s6 case: the leak lint finds nothing', hits.length === 0, JSON.stringify(hits).slice(0, 300))
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('vt15s4')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vt15s4-')))
+  const app = join(root, 'app')
+  repoAt(app, 'main')
+  write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/T-7/STAGES.md': journal() })
+  git(app, 'checkout', '-qb', 'T-7/feat/g')
+  runHook('session-start.mjs', { cwd: app })
+  const call = (subagent_type, description, prompt) => runHook('agent-guard.mjs', { cwd: app, tool_name: 'Agent', tool_input: { subagent_type, description, prompt } })
+  const byName = call('general-purpose', 'api-verify of stage 2', 'Language: en. Check the endpoint against the criteria.')
+  check('agent-guard: a general-purpose call whose description names api-verify — denied, stage-pipeline:api-verify named', byName.decision === 'deny' && byName.text.includes('subagent_type: "stage-pipeline:api-verify"'), byName.text)
+  const bySkill = call('general-purpose', 'Backend probes', `Follow ${join(PLUGIN, '..', 'skills/api-verify/SKILL.md')} for stage 2.`)
+  check('agent-guard: a general-purpose call following the api-verify skill — denied', bySkill.decision === 'deny' && bySkill.text.includes('stage-pipeline:api-verify'), bySkill.text)
+  check('agent-guard: no subagent_type (the catch-all) with an api-verify description — denied', call(null, 'API verify, stage 3', 'Check it.').decision === 'deny')
+  check('agent-guard: stage-pipeline:api-verify itself — allowed', call('stage-pipeline:api-verify', 'api-verify of stage 2', 'Ticket T-7, stage 2.').decision === 'allow')
+  check('agent-guard: a general-purpose call that does not name api-verify (an "API" word alone) — allowed', call('general-purpose', 'Explore the API client', 'Find where the API client is built.').decision === 'allow')
+  const agentText = readFileSync(join(PLUGIN, '..', 'agents/api-verify.md'), 'utf8')
+  const skillText = readFileSync(join(PLUGIN, '..', 'skills/api-verify/SKILL.md'), 'utf8')
+  check('api-verify agent: frontmatter name, model sonnet, points at its skill', /^name: api-verify$/m.test(agentText) && /^model: sonnet$/m.test(agentText) && agentText.includes('skills/api-verify/SKILL.md'))
+  check('api-verify skill: frontmatter name and the report parts (Stage criteria, Could not verify, read-back, role matrix, migration)', /^name: api-verify$/m.test(skillText) && ['## Stage criteria', '## Could not verify', 'read-back', 'Role matrix', 'Migration'].every((part) => skillText.includes(part)))
+  check('api-verify skill: the faulthandler substitution rule (tail replaced, prefix kept, -p no:faulthandler, -p no:cacheprovider, --reuse-db)', ['replaced by `python -c', '-p no:faulthandler', '-p no:cacheprovider', '--reuse-db', 'the prefix'].every((part) => skillText.includes(part)))
+  check('api-verify skill: the cleanup rule (clear first, ls .api-verify, absolute path and cleanup command when deletion is refused)', ['Clear it first', 'empty file', 'leftover', 'PYTHONDONTWRITEBYTECODE', 'ls <abs repo>/.api-verify', 'cleanup command'].every((part) => skillText.includes(part)))
   rmSync(root, { recursive: true, force: true })
 }
 

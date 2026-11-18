@@ -23,6 +23,7 @@ Study the repository directly (Read/Glob/Grep), without fanning out to subagents
 5. **Design sources of truth** (for figma-compare/spec): tokens/theme (`glob` over `**/theme/*`, `tokens*`, `design-tokens*`, `tailwind.config.*`), the UI library (deps like `@*/ui*`, the component prefix), breakpoints (from `tailwind.config`), icons (the folder + the auto-import convention), i18n (`locales/`, the i18n config, the translation helper).
 6. **Code layout** (for the dedup audit/feature-checker): `components/`, `composables/`|`hooks/`, `page-components/`, `store/`|`stores/`, `server/api/`, tests. Note the "reuse baseline" (an existing implementation to match a redesign against), if the user named one.
 7. **Platforms/related repos** (optional): one repo or multi-context (desktop/adaptive/webview, neighboring repositories).
+7a. **Python backend (only if the repo has one — what `backend-detect.mjs` checks: a django / fastapi dependency or `manage.py`, or pytest in the dependencies, or app code (`src/` or a package with `.py` files) beside a `pyproject.toml` / `requirements*`; a manifest alone, e.g. a ruff-only `pyproject.toml` or `docs/requirements.txt` in a frontend repo, is not a backend).** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/backend-detect.mjs <repo>` — it reads the files (framework, package manager, test command from a Makefile / `pytest.sh` / uv / poetry, compose file and external networks, API schema, `api_files` masks) and prints the `## Backend` candidate with the source of each value; paste that section into the config. A pure backend repo has no UI: its front sections (`## Dev server`, `## Design sources of truth`) are `—` and the verify map (the README step below) is NOT created. For a repo the session cannot write into with its file tools (a neighbouring repo, another worktree) the script writes the whole backend config itself: `node ${CLAUDE_PLUGIN_ROOT}/scripts/backend-detect.mjs <repo> --init [--language ru]` — an existing config is left alone — and it adds `.claude/pipeline.config.md`, `.claude/pipeline.config.local.md`, `.claude/tasks/` to `.git/info/exclude` when git does not ignore the config. When the test command starts with `docker`, `--doctor` checks that the settings allow `docker compose run` and prints the command that adds the `docker` group. No backend in the repo — skip this item: the config has no `## Backend` section and init behaves as before.
 8. **MCP dependencies — check.** The pipeline needs the Figma MCP for `figma-compare`/`figma-spec` and the Chrome DevTools MCP for `devtools-verify`. Both come in the plugin's `.mcp.json`, so connecting them by hand is usually not needed — `claude mcp list` is enough (expect "✓ Connected"), and approve the plugin's servers if Claude Code asks for confirmation.
    - `figma` does not connect — it is a local desktop-Figma server: the app must be running, Dev Mode MCP Server enabled (Figma → Preferences). Port check: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3845/mcp`.
    - `chrome-devtools` starts by itself via `npx` on the first call; it needs Node ≥ 18 and an installed Chrome.
@@ -101,6 +102,21 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 - unused_deps: <yarn depcheck | yarn knip --dependencies | —>  # dependencies without imports
 - import_graph: <npx madge --circular <src> | —>       # cycles and the import graph
 
+## Backend
+<!-- Only for a backend repo; without this section the backend checks are off. Omit this whole section (the heading and this comment) in a repo without a Python backend. Candidate: `node ${CLAUDE_PLUGIN_ROOT}/scripts/backend-detect.mjs <repo>` -->
+- framework: <django | django-drf | fastapi | —>
+- test: <a command for the stage's files, `{files:rel+py}` = repo-relative paths: a container sees the repo elsewhere | —>
+- test_full: <the whole suite, e.g. `make run-tests` | ./pytest.sh | uv run pytest | —>
+- lint: <make ruff-lint | uv run ruff check | —>
+- type_check: <uv run ty check | —>
+- compose: <docker-compose.yml · service: app · networks: common_network | —>
+- api_files: <comma-separated globs of the API layer | —>
+- api_schema: <path to the schema view | auto (FastAPI /openapi.json) | —>
+- test_env: <env the tests need (a file or KEY=value list) | —>   # filled by hand
+- auth: <how the API authenticates (scheme, where the token comes from) | —>   # filled by hand
+- contracts: <where the API contracts live (a repo path or a neighbouring repo) | —>   # filled by hand
+- note: <a one-line warning for checkers, e.g. tests need network | omit>   # optional, free text
+
 ## Dev server
 - url: <https://localhost:3000>        # protocol+host+port for devtools-verify
 
@@ -119,6 +135,7 @@ Create `<repo>/.claude/pipeline.config.md` from the template below. Fill in what
 - stores: <store/ | stores/ | —>
 - server_api: <server/api/ | —>
 - tests: <tests/ | —>
+- api_layer: <globs of the API client and types>   # write only when this config or a related repo it names has a `## Backend` section (a frontend repo of a backend task), otherwise omit; contract-compare reads it
 - reuse_baseline: <an existing implementation to compare against, e.g. components/<feature>/ | —>
 
 ## Platforms / related repos (optional, multi-context)

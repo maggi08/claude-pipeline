@@ -5,13 +5,15 @@
  *   node run-check.mjs -- yarn eslint {files}             # only changed code files; if there are none — skipped
  *   node run-check.mjs -- yarn vitest related --run {files:ts+tsx+vue}
  *   node run-check.mjs -- yarn type-check                 # without {files} — the command as is
+ *   node run-check.mjs -- docker compose run --rm app pytest {files:rel+py}   # repo-relative paths: the container sees the repo elsewhere (`/app`)
  *   node run-check.mjs --base origin/dev -- yarn eslint {files}   # changed over the branch, not only in the working tree
  *   node run-check.mjs --mode                             # low | normal and why
  *
  * Commands from the config run over the whole repository: at a stage that is minutes of CPU and gigabytes of memory, and on a weak machine
  * or with 3–4 parallel projects there is also competition for them. The script does three things:
  * - `{files}` — changed and new code files against HEAD (or the merge-base with `--base`) as absolute paths;
- *   `{files:ts+vue}` — only these extensions (joined with `+`: a comma in braces would be expanded by the shell).
+ *   `{files:ts+vue}` — only these extensions (joined with `+`: a comma in braces would be expanded by the shell);
+ *   the token `rel` among them (`{files:rel}`, `{files:rel+py}`) — paths relative to the repo root instead of absolute ones.
  *   No files — the command is not run, code 0.
  * - `low` mode (`resources: low` in pipeline.config.local.md, otherwise automatically at RAM ≤ 16 GB) — runs
  *   of all the machine's projects go one by one through a shared lock and at a lower priority (`nice`): two type
@@ -60,14 +62,16 @@ const SKIP_PATH = /(^|\/)(node_modules|dist|build|\.next|\.nuxt|\.output|coverag
 const placeholder = command.match(/\{files(?::([\w+.]+))?\}/)
 let finalCommand = command
 if (placeholder) {
-  const extensions = placeholder[1]?.split('+').map((ext) => ext.replace(/^\./, ''))
-  const matches = extensions ? (path) => extensions.some((ext) => path.endsWith(`.${ext}`)) : (path) => CODE.test(path)
+  const tokens = placeholder[1]?.split('+').map((ext) => ext.replace(/^\./, ''))
+  const relative = Boolean(tokens?.includes('rel'))
+  const extensions = tokens?.filter((token) => token !== 'rel')
+  const matches = extensions?.length ? (path) => extensions.some((ext) => path.endsWith(`.${ext}`)) : (path) => CODE.test(path)
   const files = changedFiles().filter((path) => matches(path) && !SKIP_PATH.test(path))
   if (!files.length) {
     console.log(`run-check: no changed files for "${command}" — skipped`)
     process.exit(0)
   }
-  finalCommand = command.replace(placeholder[0], files.map((path) => shellQuote(join(root, path))).join(' '))
+  finalCommand = command.replace(placeholder[0], files.map((path) => shellQuote(relative ? path : join(root, path))).join(' '))
   console.log(`run-check: ${mode.name} · ${files.length} changed files · ${command}`)
 } else {
   console.log(`run-check: ${mode.name} · ${command}`)

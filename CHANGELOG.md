@@ -5,6 +5,29 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.29.0 — 2026-11-17
+
+### A backend task: a contract first, a backend API check, a frontend-against-contract check, and the final checks in every repo of the task
+
+What changes against 0.28.0: nothing, in a repo without a `## Backend` section in `pipeline.config.md`. In a repo that has one (a Python backend, or a frontend repo that names one), the pipeline plans and checks the API too.
+
+- **A `## Backend` config section and `backend-detect.mjs`.** The section holds the test, lint and type-check commands, the compose file, the `api_files` globs, the schema, `auth`, `contracts` and a one-line `note` for checkers; one block for this repo, or one `### <name>` per backend repo. `{files:rel+py}` in a command gives repo-relative paths, which a container sees. `node scripts/backend-detect.mjs <repo>` reads a Python repo (Django, DRF, FastAPI; pip, uv, poetry) and prints the candidate section; `--init` writes `pipeline.config.md` only if there is none; `--doctor` checks that docker answers, the compose file and networks are there and the tests collect.
+- **Permissions for a backend run.** The default `js-toolchain` group allows `uv run` and `poetry run`, so api-verify does not stop on a permission question in a backend repo; `backend-detect.mjs --doctor` checks that `docker compose run` is allowed when the tests run in docker and prints the command that adds the `docker` group.
+- **`/pipeline-init` and `/pipeline-doctor` know a Python backend.** Init offers the section from the detector, doctor runs `--doctor` for every backend repo of the config.
+- **Contract first, and the tags.** The plan of a backend task starts with a contract stage written once in `references/contract.md` (endpoints, roles, errors, events, migrations), carries a "Contract coverage" table, and tags backend behavior `[verify: api-verify]` and what needs both sides live `[verify: staging]`; a `staging` criterion closes only with an observation on staging. `plan-check.mjs` and `journal-check.mjs` read the tags.
+- **`api-verify` (a new agent, sonnet, and its skill).** Probes written from the criteria and the contract, before the maker's tests are read, run in the repo's own test setup: codes, response body, the role matrix with another user and an anonymous request, a read-back after a write, a sent event, a migration forward and back. A PASS carries the request, the code and a read-back line; a probe that did not run is `not checked`.
+- **A force commit that changes backend API files needs an `api-verify` report** in its window (or a skip line `no behaviour change — <path:line>`); an environment reason is not a skip. The journal gate refuses a PASS on an `api-verify` criterion without the request and the read-back, and a dismissal that hands a finding to "the backend" in a task that owns the backend.
+- **`contract-compare` (a new agent, sonnet, and its skill).** A static check of the frontend types and calls, the MSW mocks and the backend serializers against the task's `CONTRACT.md`: a field, a nullable, an enum value missing on one side.
+- **Final checks in every repo of a multi-repo task, and `deps-audit` for Python.** `/stage-force` runs the final tests, floor-guard and the diff review in each repo the task touched, not only the one the session is in; `deps-audit` reads `pyproject.toml`, `requirements*` and lockfiles of a Python manifest.
+
+**Models.** `api-verify` and `contract-compare` run on sonnet, like the other checkers of a stage.
+
+**To update existing settings.** Run `node "$PERMS" --apply` again so `Bash(uv run *)` and `Bash(poetry run *)` reach the settings you already have; `node "$PERMS" --check` shows what is left.
+
+**Dev repo only:** the `vt15` cases of `scripts/hooks-test.mjs` (backend config, detector, plan and journal tags, the force-commit rule, the receipts), `rule-enforcers.json` rows for the new rules, and the cases `api-verify-owner-check` and `contract-compare-enum-drift` in `evals/cases/`.
+
+eval: skipped stage-implement — measured at 0.29.0 on this tree (2026-11-17, `--runs 1`, these runs about $0.61, the task's eval runs together about $1.1): `api-verify-owner-check` 1 of 1 (the `uv run … pytest` probe ran this time, now allowed by the default permission profile), `contract-compare-enum-drift` 1 of 1, `deps-audit-duplicate-lib` 1 of 1, `stage-implement-reuse` 0 of 2 (invocations 20261117T183754-scha and 20261117T183949-t5b8: the maker's final summary was 28 and 27 lines against the cap of 25; its agent file is unchanged since this branch's pre-merge run at d4fdba6, where the same case passed 1 of 1, so the cause is not in a change of this release, but the case failed twice in a row on the tree and is not proven; `releases.tsv` keeps only the latest run, 0/1). Proven failure on `stage-pipeline--v0.27.1`: both new cases (`api-verify-owner-check`, `contract-compare-enum-drift`) fail 1 of 1 and are recorded as `provenFailing`, but the failure is «Agent type not found» (the agents do not exist at 0.27.1), so it does not show that the cases tell the versions apart; rerun with `--runs 3` once the agents exist on a tag.
+
 ## 0.28.0 — 2026-11-17
 
 ### A repo can pin the security review to a model, and a broken Repo rules row is a named config problem

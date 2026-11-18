@@ -132,22 +132,27 @@ export function askMatch(line, rules) {
   return null
 }
 
-/**
- * Bash ask rules from the settings the session sees: the user file and both project files.
- * A broken or missing file is not a hook error: there are just no rules from it.
- */
-export function askRules(projectDir) {
+/** The settings files the session sees: the user's `settings.json` and the project's `settings.json` and `settings.local.json`. Force-guard and the doctor read the same set. */
+export function settingsFiles(projectDir) {
   const files = [join(homedir(), '.claude/settings.json')]
   if (projectDir) files.push(join(projectDir, '.claude/settings.json'), join(projectDir, '.claude/settings.local.json'))
+  return files
+}
+
+/** The `allow`, `ask` or `deny` rules (strings) of the files with the file each came from. A broken or missing file is not an error: it adds nothing. */
+export function permissionRules(kind, files) {
   return files.flatMap((source) => {
     try {
-      const ask = JSON.parse(readFileSync(source, 'utf8'))?.permissions?.ask
-      return Array.isArray(ask) ? ask.filter((rule) => typeof rule === 'string' && rule.startsWith('Bash')).map((rule) => ({ rule, source })) : []
+      const list = JSON.parse(readFileSync(source, 'utf8'))?.permissions?.[kind]
+      return Array.isArray(list) ? list.filter((rule) => typeof rule === 'string').map((rule) => ({ rule, source })) : []
     } catch {
       return []
     }
   })
 }
+
+/** Bash ask rules from the settings the session sees (`settingsFiles`). */
+export const askRules = (projectDir) => permissionRules('ask', settingsFiles(projectDir)).filter(({ rule }) => rule.startsWith('Bash'))
 
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
