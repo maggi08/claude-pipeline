@@ -1,9 +1,6 @@
-import { readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { denyTool } from './firing.mjs'
 import { askMatch, askRules, forceNever, nameKill } from './permission-rules.mjs'
-import { dataDirReason, pluginDataDir, readHookInput, readPipelineState, writesDataDir } from './pipeline-state.mjs'
+import { dataDirReason, pluginAgentNames, pluginDataDir, readHookInput, readPipelineState, splitAgentType, squashAgentName, writesDataDir } from './pipeline-state.mjs'
 
 /**
  * In a force run the user is not at the screen, and a call that waits for confirmation costs the run as
@@ -30,7 +27,7 @@ import { dataDirReason, pluginDataDir, readHookInput, readPipelineState, writesD
  * - a push, or a `gh` / `glab` call that is not a read, from a subagent that is one of the plugin's agents (0.29.3) — in and out of force: a checker or the maker never
  *   publishes, push and PR are the orchestrator's or the user's. The whole-branch pro-review of the 0.29.1 fix pushed its branch by itself (2026-11-18), and only its
  *   prompt stood in the way. The host marks a call from a subagent with `agent_id` and names the agent in `agent_type`; the main thread and other agents are not touched.
- * Outside force (but for the plugin's agents) and outside a repo with the pipeline the hook stays silent: the user is nearby there, and a
+ * Outside force and outside a repo with the pipeline the hook stays silent (but for the plugin's agents, which run in repos without a config too): the user is nearby there, and a
  * question is a normal part of the work.
  * The task is only the current branch's, as in git-guard.
  */
@@ -47,17 +44,21 @@ const agent = pluginAgent(input)
 const agentPublishes = agent ? forceNever(command) : null
 if (!killer && !asked && !published && !dataDir && !agentPublishes) process.exit(0)
 
-const state = readPipelineState(cwd)
-if (!state) process.exit(0)
-const task = state.tasks.find((candidate) => candidate.current)
+const READS_PASS = 'Reads (`gh pr view`, `gh pr checks`, `gh run view`, a GET `gh api`, a graphql query) pass. '
+// the plugin's agents run in repos without a pipeline config too (pro-review, docs-lookup): this rule does not wait for one
+const state = agentPublishes ? null : readPipelineState(cwd)
+let task = null
 if (agentPublishes) {
   deny(
     'force-guard/agent-publish',
     `stage-pipeline: \`${agentPublishes}\` publishes outside the repo (a push, a PR or MR, a GitHub / GitLab write), and the call comes from the subagent \`${agent}\`: ` +
-      "an agent of the pipeline never publishes, in a force run or not — push and PR are the orchestrator's or the user's. Reads (`gh pr view`, `gh pr checks`, `gh run view`, a GET `gh api`) pass. " +
+      "an agent of the pipeline never publishes, in a force run or not — push and PR are the orchestrator's or the user's. " +
+      READS_PASS +
       'Do not look for another command that does the same: name what should be published in your report or summary and go on with your own job.',
   )
 }
+if (!state) process.exit(0)
+task = state.tasks.find((candidate) => candidate.current)
 if (!task?.forceActive) process.exit(0)
 
 // K11b.2: only a run that is new by the first look is denied — a run already going when this version came keeps the rules it started with (D7), as the maker rules do
@@ -69,7 +70,8 @@ if (published) {
   deny(
     'force-guard/never-in-force',
     `stage-pipeline: force run ${task.ticket} — \`${published}\` publishes outside the repo (a push, a PR or MR, a GitHub / GitLab write): ` +
-      "force never does that, whatever the permissions allow — push and PR are the user's (/stage-force, Step 3). Reads (`gh pr view`, `gh pr checks`, `gh run view`, a GET `gh api`) pass. " +
+      "force never does that, whatever the permissions allow — push and PR are the user's (/stage-force, Step 3). " +
+      READS_PASS +
       'Do not look for a way around it by doing the same action with another command. If a criterion cannot be closed without it — ' +
       blockerHint,
   )
@@ -102,20 +104,17 @@ async function runIsNew(task) {
   }
 }
 
-/** The plugin's agent a call comes from (`agent_type` as the host names it, e.g. `stage-pipeline:pro-review`), or null: the main thread has no `agent_id`, and another plugin's or a built-in agent is not ours. */
+/**
+ * The plugin's agent a call comes from (`agent_type` as the host names it, e.g. `stage-pipeline:pro-review`), or null: the main thread has no `agent_id`, and a built-in agent
+ * or another plugin's is not ours. A prefixed name counts only under this plugin's prefix (another plugin may have its own `pro-review`); a bare name is the host's short form.
+ */
 function pluginAgent(hookInput) {
   if (!hookInput.agent_id || typeof hookInput.agent_type !== 'string') return null
-  // the host's own normalization of a name (NFKC, lowercase, no white space, dashes or `_`), as in agent-guard
-  const squash = (name) => name.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')
-  const name = squash(hookInput.agent_type.normalize('NFKC').split(':').at(-1))
-  try {
-    const ours = readdirSync(join(dirname(fileURLToPath(import.meta.url)), '../../agents')).filter((file) => file.endsWith('.md')).map((file) => squash(file.slice(0, -3)))
-    return ours.includes(name) ? hookInput.agent_type : null
-  } catch {
-    return null
-  }
+  const { plugin, name } = splitAgentType(hookInput.agent_type)
+  if (plugin !== null && squashAgentName(plugin) !== 'stagepipeline') return null
+  return pluginAgentNames().some((ours) => squashAgentName(ours) === squashAgentName(name)) ? hookInput.agent_type : null
 }
 
 function deny(rule, reason) {
-  denyTool(rule, reason, { input, task: task?.ticket, repo: state.worktree })
+  denyTool(rule, reason, { input, task: task?.ticket, repo: state?.worktree ?? cwd })
 }

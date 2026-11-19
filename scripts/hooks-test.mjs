@@ -1065,6 +1065,20 @@ const NEVER = [
   ['echo "gh pr create later"', null],
   ['grep -rn "git push" plugins/', null],
   ['ghost pr create', null],
+  // 0.29.3 review m-3: help, version, a clone, a download, a graphql query, a dry run and a push to a local path publish nothing
+  ['gh --version', null],
+  ['gh pr create --help', null],
+  ['gh repo clone o/r /tmp/r', null],
+  ['gh run download 41 -n logs', null],
+  ["gh api graphql -f query='{ viewer { login } }'", null],
+  ["gh api graphql -f query='mutation { addStar(input: {}) { clientMutationId } }'", 'gh api graphql -f query=mutation { addStar(input: {}) { clientMutationId } }'],
+  ['gh api graphql -F query=@q.graphql', 'gh api graphql -F query=@q.graphql'],
+  ['git push --dry-run origin x', null],
+  ['git push origin HEAD -n', null],
+  ['git -C /tmp/scratch push ../remote.git main', null],
+  ['git push file:///tmp/r.git HEAD', null],
+  ['git push origin main', 'git push origin main'],
+  ['git push --repo=origin', 'git push --repo=origin'],
 ]
 for (const [command, want] of NEVER) check(`force never ${JSON.stringify(command).slice(0, 60)} → ${want}`, forceNever(command) === want, `got ${forceNever(command)}`)
 
@@ -11272,9 +11286,16 @@ if (unit('todogroup1')) {
   check('agent-publish legitimate: a general-purpose subagent — not the plugin\'s agent, passes', bash('git push -u origin fix/x', 'general-purpose').decision === 'allow')
   check('agent-publish legitimate: reads by the pro-review agent (`gh pr view`, `gh pr checks`, a GET `gh api`, `git log`) — pass', ['gh pr view 32', 'gh pr checks 32', 'gh api repos/o/r/pulls/32', 'git log --oneline origin/main..HEAD'].every((command) => bash(command, 'stage-pipeline:pro-review').decision === 'allow'))
   check('agent-publish legitimate: "git push" quoted in an echo by the agent — passes', bash('echo "do not git push"', 'stage-pipeline:pro-review').decision === 'allow')
+  // 0.29.3 review m-2: the plugin's agents run in repos without a pipeline config too (pro-review, docs-lookup)
   const foreign = join(root, 'plain')
   repoAt(foreign, 'main')
-  check('agent-publish legitimate: a repo without the pipeline — the hook stays silent', bash('git push', 'stage-pipeline:pro-review', foreign).decision === 'allow')
+  check('agent-publish m-2: a plugin agent pushes in a repo without the pipeline config — denied', bash('git push', 'stage-pipeline:pro-review', foreign).decision === 'deny')
+  check('agent-publish m-2 legitimate: the main thread in a repo without the pipeline config — the hook stays silent', bash('git push', null, foreign).decision === 'allow')
+  // 0.29.3 review m-1: another plugin may have its own agent of the same name
+  check('agent-publish m-1 legitimate: `otherplugin:pro-review` pushes — not ours, passes', bash('git push -u origin x', 'otherplugin:pro-review').decision === 'allow')
+  check('agent-publish m-1: the bare host form `pro-review` pushes — ours, denied', bash('git push -u origin x', 'pro-review').decision === 'deny')
+  // 0.29.3 review m-3: what a checker runs without publishing anything
+  check('agent-publish m-3 legitimate: `gh --version`, `gh repo clone`, a graphql query, `git push --dry-run`, a push into a scratch remote — pass', ['gh --version', 'gh repo clone o/r /tmp/r', "gh api graphql -f query='{ viewer { login } }'", 'git push --dry-run origin x', `git -C ${foreign} push ../remote.git main`].every((command) => bash(command, 'stage-pipeline:docs-lookup').decision === 'allow'))
 
   // 0.29.3 (TODO.md, VT-16): gates run with a linked worktree's own copy of the scripts were recorded in `stage-pipeline-inline`, while the sessions
   // that run the installed plugin read `stage-pipeline-<marketplace>`; the close and run-digest did not see them

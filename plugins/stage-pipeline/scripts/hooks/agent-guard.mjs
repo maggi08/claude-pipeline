@@ -1,9 +1,8 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { CONFIRMED_LINE, MODE_WORD, NO_GATE_COMMAND } from '../markers.mjs'
 import { denyTool } from './firing.mjs'
-import { namesRepo, openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel, securityModel } from './pipeline-state.mjs'
+import { AGENTS_DIR, namesRepo, openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel, securityModel, splitAgentType, squashAgentName } from './pipeline-state.mjs'
 
 /**
  * Rules for launching subagents that the orchestrator keeps only in memory — and loses
@@ -61,10 +60,10 @@ const toolInput = input.tool_input ?? {}
 const type = String(toolInput.subagent_type ?? '')
 // The host normalizes `subagent_type` after PreToolUse (NFKC, lowercase, strip white space, dashes and `_`), so `security_review`, `Security-Review` or an en-dash spelling reach the real agent:
 // every comparison below is made on the same form, and the canonical name is mapped back where a file is read.
-const squash = (name) => name.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')
+const squash = squashAgentName
 const CANONICAL = Object.fromEntries(['pro-review', 'stage-implement', 'security-review'].map((name) => [squash(name), name]))
 // NFKC before the split (VT-16 delta M-6): a fullwidth colon (`stage-pipeline：security_review`, U+FF1A) is a plain colon to the host, and the plugin prefix stayed on the name
-const rawAgent = type.normalize('NFKC').split(':').at(-1)
+const rawAgent = splitAgentType(type).name
 const agent = CANONICAL[squash(rawAgent)] ?? rawAgent
 const generic = GENERIC_AGENTS.has(squash(rawAgent))
 if (!generic && !Object.values(CANONICAL).includes(agent)) process.exit(0)
@@ -230,7 +229,7 @@ async function planVerdict(state, task, stage, prompt, tree = state.worktree) {
 
 function agentModel(name) {
   try {
-    const file = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../agents', `${name}.md`), 'utf8')
+    const file = readFileSync(join(AGENTS_DIR, `${name}.md`), 'utf8')
     return file.match(/^model:\s*(\S+)/m)?.[1] ?? 'inherit'
   } catch {
     return 'inherit'

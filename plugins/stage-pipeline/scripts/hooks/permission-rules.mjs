@@ -45,10 +45,10 @@ export function nameKill(line) {
 const CLI_READS = {
   gh: {
     pr: ['view', 'list', 'checks', 'diff', 'status'],
-    run: ['view', 'list', 'watch'],
-    repo: ['view'],
+    run: ['view', 'list', 'watch', 'download'],
+    repo: ['view', 'clone'],
     issue: ['view', 'list'],
-    release: ['view', 'list'],
+    release: ['view', 'list', 'download'],
     workflow: ['view', 'list'],
     auth: ['status'],
     search: null,
@@ -62,6 +62,42 @@ const CLI_READS = {
   },
 }
 const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'])
+// A help or version call of the CLI: `gh`, `gh --version`, `gh pr create --help` print text and publish nothing (0.29.3 review m-3).
+const CLI_META = new Set(['--version', '-v', 'version', 'help', '--help', '-h'])
+const PUSH_OPTIONS_WITH_VALUE = new Set(['-o', '--push-option', '--receive-pack', '--exec', '--repo'])
+
+/**
+ * A `git push` (its arguments after `push`) that leaves nothing outside the machine (0.29.3 review m-3): a dry run, or a remote that is a local path
+ * (`../remote.git`, `/tmp/x.git`, `file://…`) — a checker's probe in a scratch repo. A named remote (`origin`) is never taken for local: its URL is not in the command.
+ */
+function localPush(args) {
+  if (args.includes('-n') || args.includes('--dry-run')) return true
+  let remote = null
+  for (let i = 0; i < args.length && remote === null; i++) {
+    const arg = args[i]
+    if (arg === '--') remote = args[i + 1] ?? ''
+    else if (PUSH_OPTIONS_WITH_VALUE.has(arg)) i++
+    else if (arg.startsWith('--repo=')) remote = arg.slice('--repo='.length)
+    else if (!arg.startsWith('-')) remote = arg
+  }
+  return remote !== null && /^(?:\/|\.{1,2}(?:\/|$)|~\/|file:)/.test(remote)
+}
+
+/**
+ * `gh api graphql` arguments that write (0.29.3 review m-3): the endpoint always takes a POST, so the body decides — a `mutation` in a field, or a query the hook cannot see
+ * (`--input`, a `query=@file`). A plain query reads.
+ */
+export function graphqlWrites(args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (/^--input(?:=|$)/.test(arg)) return true
+    let value = null
+    if (/^(?:-[fF]|--field|--raw-field)$/.test(arg)) value = args[++i] ?? ''
+    else value = arg.match(/^(?:--field=|--raw-field=|-[fF])(.+)$/)?.[1] ?? null
+    if (value !== null && (/\bmutation\b/i.test(value) || /^query=@/.test(value))) return true
+  }
+  return false
+}
 
 /** `gh api` / `glab api` arguments that write: a method other than GET, or a body (`-f`, `-F`, `--field`, `--raw-field`, `--input` switch the default to POST). */
 export function apiWrites(args) {
@@ -90,14 +126,16 @@ export function forceNever(line) {
     if (name === 'git') {
       let i = 1
       while (i < words.length && words[i].startsWith('-')) i += GIT_OPTIONS_WITH_VALUE.has(words[i]) ? 2 : 1
-      if (words[i] === 'push') return words.join(' ')
+      if (words[i] === 'push' && !localPush(words.slice(i + 1))) return words.join(' ')
       continue
     }
     const reads = CLI_READS[name]
     if (!reads) continue
     const [group, sub] = words.slice(1)
+    if (group === undefined || CLI_META.has(group) || words.includes('--help') || words.includes('-h')) continue
     if (group === 'api') {
-      if (apiWrites(words.slice(2))) return words.join(' ')
+      const args = words.slice(2)
+      if (args.includes('graphql') ? graphqlWrites(args) : apiWrites(args)) return words.join(' ')
       continue
     }
     if (!(group in reads) || (reads[group] !== null && !reads[group].includes(sub))) return words.join(' ')

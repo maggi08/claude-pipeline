@@ -134,16 +134,14 @@ export function worktreeTwinDataDir() {
   if (process.env.STAGE_PIPELINE_DATA_DIR || process.env.CLAUDE_PLUGIN_DATA) return null
   const here = dirname(fileURLToPath(import.meta.url))
   try {
-    // the worktree root is the nearest directory with a `.git` FILE (`gitdir: <main>/.git/worktrees/<name>`); a `.git` directory is a main tree
+    // the worktree root is the nearest directory with a `.git` file; a `.git` directory is a main tree
     let top = here
     while (!isFile(join(top, '.git'))) {
       if (isDir(join(top, '.git')) || dirname(top) === top) return null
       top = dirname(top)
     }
-    const gitdir = resolve(top, readFileSync(join(top, '.git'), 'utf8').match(/^gitdir:\s*(.+?)\s*$/m)?.[1] ?? '')
-    const common = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim())
-    if (basename(common) !== '.git') return null
-    const twin = dataDirFor(join(dirname(common), relative(top, here)))
+    const main = linkedMainTree(top)
+    const twin = main && dataDirFor(join(main, relative(top, here)))
     return twin && twin !== pluginDataDir() ? twin : null
   } catch {
     return null
@@ -937,19 +935,48 @@ export function hasPipelineConfig(cwd) {
     const dotGit = join(dir, '.git')
     if (isDir(dotGit)) return false
     if (isFile(dotGit)) {
-      // Both are one-line pointers: read bounded, as a config is.
-      const pointer = readConfigFile(dotGit)
-      const gitDir = resolve(dir, pointer?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() ?? '')
-      const commondir = pointer === null ? null : readConfigFile(join(gitDir, 'commondir'))
       // a submodule or a broken link: no main tree to look at, as in configRoot
-      if (commondir === null) return false
-      const common = resolve(gitDir, commondir.trim())
-      return basename(common) === '.git' && isFile(join(dirname(common), '.claude/pipeline.config.md'))
+      const main = linkedMainTree(dir)
+      return main !== null && isFile(join(main, '.claude/pipeline.config.md'))
     }
     const up = dirname(dir)
     if (up === dir) return false
     dir = up
   }
+}
+
+/** An agent name the way the host normalizes `subagent_type` after PreToolUse: NFKC, lowercase, no white space, dashes or `_` (agent-guard and force-guard compare this form). */
+export const squashAgentName = (name) => String(name).normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')
+
+/** The `<plugin>:` prefix and the agent name of a `subagent_type` / `agent_type`, split after NFKC (VT-16 M-6: a fullwidth colon is a colon to the host); `plugin` is null for a bare name. */
+export function splitAgentType(type) {
+  const parts = String(type ?? '').normalize('NFKC').split(':')
+  return { plugin: parts.length > 1 ? parts.slice(0, -1).join(':') : null, name: parts.at(-1) }
+}
+
+/** The directory of the plugin's agent files, `agents/<name>.md`. */
+export const AGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../agents')
+
+/** The plugin's agent names as their files spell them (`pro-review`); none when the directory cannot be read. */
+export function pluginAgentNames() {
+  try {
+    return readdirSync(AGENTS_DIR).filter((file) => file.endsWith('.md')).map((file) => file.slice(0, -3))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The main tree of the linked worktree whose root is `top` (its `.git` is a file `gitdir: <main>/.git/worktrees/<name>`), from the file system alone; null for a submodule,
+ * a broken link or a main tree that is not `<dir>/.git`. Both files are one-line pointers: read bounded, as a config is.
+ */
+function linkedMainTree(top) {
+  const pointer = readConfigFile(join(top, '.git'))
+  const gitDir = resolve(top, pointer?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() ?? '')
+  const commondir = pointer === null ? null : readConfigFile(join(gitDir, 'commondir'))
+  if (commondir === null) return null
+  const common = resolve(gitDir, commondir.trim())
+  return basename(common) === '.git' ? dirname(common) : null
 }
 
 /**

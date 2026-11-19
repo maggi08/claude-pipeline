@@ -103,12 +103,16 @@
         "agent-publish incident: the pro-review agent runs `git push` outside a force run — denied, the agent named",
         "agent-publish incident: the security-review agent runs `gh pr create` — denied",
         "agent-publish incident: the maker, host-normalized spelling, runs `git -C <dir> push` — denied",
-        "agent-publish incident: api-verify runs a POST `gh api` — denied"
+        "agent-publish incident: api-verify runs a POST `gh api` — denied",
+        "agent-publish m-2: a plugin agent pushes in a repo without the pipeline config — denied",
+        "agent-publish m-1: the bare host form `pro-review` pushes — ours, denied"
       ],
       "legitimate": [
         "agent-publish legitimate: the same push from the main thread outside a force run — passes",
         "agent-publish legitimate: a general-purpose subagent — not the plugin",
-        "agent-publish legitimate: reads by the pro-review agent"
+        "agent-publish legitimate: reads by the pro-review agent",
+        "agent-publish m-1 legitimate: `otherplugin:pro-review` pushes — not ours, passes",
+        "agent-publish m-3 legitimate: `gh --version`, `gh repo clone`, a graphql query"
       ],
       "head": "an agent of the pipeline never publishes"
     },
