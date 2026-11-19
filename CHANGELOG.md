@@ -5,6 +5,19 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.29.3 — 2026-11-19
+
+### The plugin's agents never push or write to GitHub, and gates run from a worktree's copy of the scripts reach the installed plugin
+
+What changes against 0.29.2: one new force-guard rule and where `run-check` records a gate. No config key, skill or agent text changes.
+
+- **A plugin agent cannot publish.** A subagent that is one of the plugin's agents (a checker such as `pro-review` or `security-review`, or the maker `stage-implement`) is denied a `git push` and every `gh` / `glab` call that is not a read, in a force run or not. The whole-branch pro-review of the 0.29.1 fix pushed its branch by itself on 2026-11-18; only its prompt stood in the way. Push and PR stay with the orchestrator (in this repo, after the run) or with you. Reads (`gh pr view`, `gh pr checks`, a GET `gh api`) pass. The rule holds in a repo without a pipeline config too, since the plugin's agents run there as well. The main thread and other agents (general-purpose, another plugin's agent even with the same name) are not touched. The hook knows the caller from the `agent_id` and `agent_type` that Claude Code puts into the hook input of a subagent's tool call.
+- **Fewer false "publishes outside the repo".** The detector of pushes and GitHub / GitLab writes, the same in a force run, no longer counts a help or version call (`gh --version`, `gh pr create --help`), `gh repo clone`, `gh run download` / `gh release download`, a `gh api graphql` query that is not a mutation, `git push --dry-run`, or a push to a local path (`../remote.git`, `file://…`).
+- **Gates run with a worktree's own copy of the scripts count.** `node plugins/stage-pipeline/scripts/ci-gates.mjs --run` inside a linked worktree of the plugin's repo recorded the gates in `stage-pipeline-inline`, while the sessions that run the installed plugin read `stage-pipeline-<marketplace>`; the close and `run-digest` showed the gates as never run (VT-16). Now such a copy records each gate in both directories and `run-check` prints one line saying so. A `--plugin-dir` session on the worktree still reads `-inline`, so neither kind of session loses the record. Under `STAGE_PIPELINE_DATA_DIR` (evals, a lane barred from the live directory) only that directory is written, as before.
+- **One `{files…}` placeholder.** `run-check.mjs` and `backend-detect.mjs` read the placeholder with one shared pattern (`FILES_PLACEHOLDER` in `markers.mjs`). An unknown form such as `{files:bad-token}` is now left as it is by both; before, backend-detect replaced it while run-check did not.
+
+**Dev repo only:** `scripts/hooks-test.mjs` has a new unit `todogroup1` (the publish rule with its incident and legitimate pairs, the twin data directory on a real linked worktree under a fake `HOME`, the placeholder); `scripts/hook-rules.json` names the rule `force-guard/agent-publish`. agent-guard and force-guard share one reading of an agent name (`squashAgentName`, `splitAgentType`, `pluginAgentNames` in `pipeline-state.mjs`), and the `.git` pointer of a linked worktree is read in one place (`linkedMainTree`).
+
 ## 0.29.2 — 2026-11-19
 
 ### Fixes from the backlog: a moved file no longer inflates a delta review, plugin scripts print under a symlinked path, a maker started from the main tree is recorded for its task

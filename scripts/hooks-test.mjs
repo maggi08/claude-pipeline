@@ -192,6 +192,7 @@ const UNITS = [
   { id: 'vt15s8', weight: 1 }, // VT-15 stage 8: the api-verify-owner-check pending case — its finding regexes against correct and wrong sample lines, the fixture settings can log in
   { id: 'vt15f1', weight: 3 }, // VT-15 final-checks fix rounds 1–2 and their follow-ups (d-6, d2-2, d2-3): weakForm through ledgerViolations with a backend path, STAGING_DONE case, API_CONTROL qualifier, api-verify rerun, backendFileMatcher bad glob, maskSecrets
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
+  { id: 'todogroup1', weight: 2 }, // 0.29.3 (TODO.md): the plugin's agents never publish, gate records of a linked worktree's copy reach the installed plugin's directory, one {files} placeholder
   { id: 'todominors', weight: 2 }, // 0.29.2 (TODO.md minors): main guards through a symlinked path, the maker spawn of a task in a linked worktree from a main-tree session, the api-verify no-rerun text
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
@@ -1064,6 +1065,20 @@ const NEVER = [
   ['echo "gh pr create later"', null],
   ['grep -rn "git push" plugins/', null],
   ['ghost pr create', null],
+  // 0.29.3 review m-3: help, version, a clone, a download, a graphql query, a dry run and a push to a local path publish nothing
+  ['gh --version', null],
+  ['gh pr create --help', null],
+  ['gh repo clone o/r /tmp/r', null],
+  ['gh run download 41 -n logs', null],
+  ["gh api graphql -f query='{ viewer { login } }'", null],
+  ["gh api graphql -f query='mutation { addStar(input: {}) { clientMutationId } }'", 'gh api graphql -f query=mutation { addStar(input: {}) { clientMutationId } }'],
+  ['gh api graphql -F query=@q.graphql', 'gh api graphql -F query=@q.graphql'],
+  ['git push --dry-run origin x', null],
+  ['git push origin HEAD -n', null],
+  ['git -C /tmp/scratch push ../remote.git main', null],
+  ['git push file:///tmp/r.git HEAD', null],
+  ['git push origin main', 'git push origin main'],
+  ['git push --repo=origin', 'git push --repo=origin'],
 ]
 for (const [command, want] of NEVER) check(`force never ${JSON.stringify(command).slice(0, 60)} → ${want}`, forceNever(command) === want, `got ${forceNever(command)}`)
 
@@ -11250,6 +11265,95 @@ if (unit('todominors')) {
   check('no-rerun m-3: an api-verify `fixed` citing a screenshot path — still no-rerun', jc.rerunViolations(screenCited, 'api-verify-1.md')[0]?.rule === 'no-rerun')
   check('no-rerun m-3 legitimate: a devtools-verify `fixed` citing the same screenshot path — clean', jc.rerunViolations(screenCited, 'devtools-verify-1.md').length === 0)
   check('no-rerun nit legitimate: the devtools-verify message keeps the screenshot path and the page', /or a `checks\/screens\/` path \(stage-check, Step 3\.2\)\. `fixed: file:line` shows the code changed, not that the page behaves\./.test(pageText), pageText)
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('todogroup1')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'todogroup1-')))
+  // 0.29.3 (TODO.md): the whole-branch pro-review of the 0.29.1 fix pushed its branch by itself; only its prompt stood in the way
+  const app = join(root, 'app')
+  repoAt(app, 'main')
+  write(app, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n' })
+  const bash = (command, agent = null, cwd = app) =>
+    runHook('force-guard.mjs', { cwd, tool_name: 'Bash', tool_input: { command }, ...(agent ? { agent_id: `agent-${bashCalls++}`, agent_type: agent } : {}) })
+  const pushed = bash('git push -u origin fix/mask-secrets', 'stage-pipeline:pro-review')
+  check('agent-publish incident: the pro-review agent runs `git push` outside a force run — denied, the agent named', pushed.decision === 'deny' && /an agent of the pipeline never publishes/.test(pushed.text) && /stage-pipeline:pro-review/.test(pushed.text), pushed.text)
+  check('agent-publish incident: the security-review agent runs `gh pr create` — denied', bash('gh pr create --title x --body y', 'stage-pipeline:security-review').decision === 'deny')
+  check('agent-publish incident: the maker, host-normalized spelling, runs `git -C <dir> push` — denied', bash(`git -C ${app} push origin HEAD`, 'stage-pipeline:Stage_Implement').decision === 'deny')
+  check('agent-publish incident: api-verify runs a POST `gh api` — denied', bash('gh api repos/o/r/issues -X POST -f title=x', 'stage-pipeline:api-verify').decision === 'deny')
+  check('agent-publish incident: a push chained after a read in one call — denied', bash('git status && git push', 'stage-pipeline:dead-code').decision === 'deny')
+  check('agent-publish legitimate: the same push from the main thread outside a force run — passes (the user is nearby)', bash('git push -u origin fix/mask-secrets').decision === 'allow')
+  check('agent-publish legitimate: a general-purpose subagent — not the plugin\'s agent, passes', bash('git push -u origin fix/x', 'general-purpose').decision === 'allow')
+  check('agent-publish legitimate: reads by the pro-review agent (`gh pr view`, `gh pr checks`, a GET `gh api`, `git log`) — pass', ['gh pr view 32', 'gh pr checks 32', 'gh api repos/o/r/pulls/32', 'git log --oneline origin/main..HEAD'].every((command) => bash(command, 'stage-pipeline:pro-review').decision === 'allow'))
+  check('agent-publish legitimate: "git push" quoted in an echo by the agent — passes', bash('echo "do not git push"', 'stage-pipeline:pro-review').decision === 'allow')
+  // 0.29.3 review m-2: the plugin's agents run in repos without a pipeline config too (pro-review, docs-lookup)
+  const foreign = join(root, 'plain')
+  repoAt(foreign, 'main')
+  check('agent-publish m-2: a plugin agent pushes in a repo without the pipeline config — denied', bash('git push', 'stage-pipeline:pro-review', foreign).decision === 'deny')
+  check('agent-publish m-2 legitimate: the main thread in a repo without the pipeline config — the hook stays silent', bash('git push', null, foreign).decision === 'allow')
+  // 0.29.3 review m-1: another plugin may have its own agent of the same name
+  check('agent-publish m-1 legitimate: `otherplugin:pro-review` pushes — not ours, passes', bash('git push -u origin x', 'otherplugin:pro-review').decision === 'allow')
+  check('agent-publish m-1: the bare host form `pro-review` pushes — ours, denied', bash('git push -u origin x', 'pro-review').decision === 'deny')
+  // 0.29.3 review m-3: what a checker runs without publishing anything
+  check('agent-publish m-3 legitimate: `gh --version`, `gh repo clone`, a graphql query, `git push --dry-run`, a push into a scratch remote — pass', ['gh --version', 'gh repo clone o/r /tmp/r', "gh api graphql -f query='{ viewer { login } }'", 'git push --dry-run origin x', `git -C ${foreign} push ../remote.git main`].every((command) => bash(command, 'stage-pipeline:docs-lookup').decision === 'allow'))
+
+  // 0.29.3 (TODO.md, VT-16): gates run with a linked worktree's own copy of the scripts were recorded in `stage-pipeline-inline`, while the sessions
+  // that run the installed plugin read `stage-pipeline-<marketplace>`; the close and run-digest did not see them
+  const home = join(root, 'home')
+  const market = join(root, 'market')
+  const wt = join(root, 'market-wt')
+  mkdirSync(join(market, 'plugins'), { recursive: true })
+  cpSync(join(PLUGIN, '..'), join(market, 'plugins', 'stage-pipeline'), { recursive: true })
+  git(market, 'init', '-q', '-b', 'main')
+  git(market, 'config', 'user.email', 'test@example.com')
+  git(market, 'config', 'user.name', 'test')
+  git(market, 'add', '-A')
+  git(market, 'commit', '-qm', 'plugin')
+  git(market, 'worktree', 'add', '-q', '-b', 'fix/x', wt)
+  write(home, { '.claude/plugins/known_marketplaces.json': JSON.stringify({ mk: { source: { source: 'directory', path: market }, installLocation: market } }) })
+  const dataRoot = join(home, '.claude/plugins/data')
+  const env = (extra = {}) => {
+    const next = { ...process.env, HOME: home, STAGE_PIPELINE_LOCK_DIR: join(root, 'lock'), ...extra }
+    delete next.CLAUDE_PLUGIN_DATA
+    if (!('STAGE_PIPELINE_DATA_DIR' in extra)) delete next.STAGE_PIPELINE_DATA_DIR
+    return next
+  }
+  const dirsOf = (tree, extra) => {
+    const url = pathToFileURL(join(tree, 'plugins/stage-pipeline/scripts/hooks/pipeline-state.mjs')).href
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', `const m = await import(${JSON.stringify(url)}); console.log(JSON.stringify([m.pluginDataDir(), m.worktreeTwinDataDir()]))`], { encoding: 'utf8', env: env(extra) })
+    try {
+      return JSON.parse(run.stdout)
+    } catch {
+      return [run.stdout, run.stderr]
+    }
+  }
+  const fromWt = dirsOf(wt)
+  check('gate records incident: the worktree copy resolves -inline and names the installed plugin\'s directory as its twin', fromWt[0] === join(dataRoot, 'stage-pipeline-inline') && fromWt[1] === join(dataRoot, 'stage-pipeline-mk'), JSON.stringify(fromWt))
+  const fromMain = dirsOf(market)
+  check('gate records legitimate: the marketplace\'s own copy — its directory, no twin', fromMain[0] === join(dataRoot, 'stage-pipeline-mk') && fromMain[1] === null, JSON.stringify(fromMain))
+  const overridden = dirsOf(wt, { STAGE_PIPELINE_DATA_DIR: join(root, 'scratch-data') })
+  check('gate records legitimate: under STAGE_PIPELINE_DATA_DIR (an eval, a lane barred from the live directory) — the override, no twin', overridden[0] === join(root, 'scratch-data') && overridden[1] === null, JSON.stringify(overridden))
+  const gated = join(root, 'gated')
+  repoAt(gated, 'main')
+  write(gated, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n\n## CI gates\n\n| gate | command |\n|--|--|\n| unit | `true` |\n' })
+  const gateFiles = (dir) => {
+    try {
+      return readdirSync(join(dataRoot, dir, 'gates'))
+    } catch {
+      return []
+    }
+  }
+  const recorded = spawnSync(process.execPath, [join(wt, 'plugins/stage-pipeline/scripts/run-check.mjs'), '--', 'true'], { cwd: gated, encoding: 'utf8', env: env() })
+  check('gate records incident: run-check of the worktree copy records the gate in both directories and says so', gateFiles('stage-pipeline-inline').length === 1 && gateFiles('stage-pipeline-mk').length === 1 && /recorded in .*stage-pipeline-inline and .*stage-pipeline-mk/.test(recorded.stdout), JSON.stringify([recorded.stdout, recorded.stderr]))
+  rmSync(dataRoot, { recursive: true, force: true })
+  const mainRun = spawnSync(process.execPath, [join(market, 'plugins/stage-pipeline/scripts/run-check.mjs'), '--', 'true'], { cwd: gated, encoding: 'utf8', env: env() })
+  check('gate records legitimate: run-check of the marketplace\'s own copy — one directory, no extra line', gateFiles('stage-pipeline-mk').length === 1 && gateFiles('stage-pipeline-inline').length === 0 && !/recorded in/.test(mainRun.stdout), JSON.stringify([mainRun.stdout, mainRun.stderr]))
+
+  // 0.29.3 (TODO.md, VT-15 delta nit): one spelling of the `{files…}` placeholder for run-check and backend-detect
+  const { FILES_PLACEHOLDER } = await import(join(PLUGIN, 'markers.mjs'))
+  check('files placeholder: `{files}` and `{files:rel+py}` match, the token list is group 1', FILES_PLACEHOLDER?.exec('eslint {files}') !== null && FILES_PLACEHOLDER?.exec('eslint {files}')?.[1] === undefined && FILES_PLACEHOLDER?.exec('pytest {files:rel+py}')?.[1] === 'rel+py')
+  const ownSpellings = readdirSync(PLUGIN).filter((name) => name.endsWith('.mjs') && name !== 'markers.mjs' && /\/\\\{files/.test(readFileSync(join(PLUGIN, name), 'utf8')))
+  check('files placeholder: no plugin script spells its own `{files` regex', ownSpellings.length === 0, ownSpellings.join(', '))
   rmSync(root, { recursive: true, force: true })
 }
 

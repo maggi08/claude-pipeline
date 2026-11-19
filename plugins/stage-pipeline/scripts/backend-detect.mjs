@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMain } from './main-guard.mjs'
 import { backendConfig, backendFileMatcher, readConfig } from './hooks/pipeline-state.mjs'
-import { globToRegExp } from './markers.mjs'
+import { FILES_PLACEHOLDER, globToRegExp } from './markers.mjs'
 import { bashRulePattern, permissionRules, settingsFiles, subcommands } from './hooks/permission-rules.mjs'
 import { shellQuote } from './ci-gates.mjs'
 import { loadProfile, overriddenBy } from './permission-profile.mjs'
@@ -427,7 +427,6 @@ function commandAllowed(command, lists) {
   return { ok: true }
 }
 
-const FILES_TOKEN = /\{files[^}]*\}/g
 const dockerWords = (words) => (words[0] === 'docker' || words[0] === 'docker-compose' ? words : null)
 
 /**
@@ -438,7 +437,7 @@ const dockerWords = (words) => (words[0] === 'docker' || words[0] === 'docker-co
 function dockerProbe(d, cfg, plan) {
   if (cfg?.test) {
     // the permission is judged on a real path in place of `{files…}`; the rows show the config's own line (VT-15 delta nit: they printed `app/models.py`)
-    const words = subcommands(cfg.test.replace(FILES_TOKEN, 'app/models.py')).map(dockerWords).find(Boolean)
+    const words = subcommands(cfg.test.replace(new RegExp(FILES_PLACEHOLDER.source, 'g'), 'app/models.py')).map(dockerWords).find(Boolean)
     if (!words) return null
     const shown = subcommands(cfg.test).map(dockerWords).find(Boolean)?.join(' ')
     return { command: words.join(' '), shown, note: 'the tests run in docker', compose1: words[0] === 'docker-compose' }
