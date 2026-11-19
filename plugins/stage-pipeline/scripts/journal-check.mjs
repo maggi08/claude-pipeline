@@ -783,9 +783,10 @@ export const apiVerifyCriteria = (taskDir) => taggedCriteria(taskDir, (rest) => 
 
 /**
  * The read-back or control line of an api-verify criterion (either language): the label stands with its colon. The qualifier after `as` / `in` (and the Russian
- * prepositions) takes no negation word in either language (VT-15 d2-3): «read-back as A not done:» says the proof is missing.
+ * prepositions) takes no negated action in either language (VT-15 d2-3): «read-back as A not done:» says the proof is missing. A plain negation word stays allowed,
+ * since the controls the skill prescribes carry one: «control as A (not the owner):», «control in a request with no token:» and the Russian «without a filter».
  */
-const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])(?!\p{L})(?:\s+(?:as|под|in|в)\s(?:(?!(?<![\p{L}\p{N}])(?:not|no|skipped|не|нет|без)(?![\p{L}\p{N}]))[^:\n]){0,30})?\s*:/iu
+const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])(?!\p{L})(?:\s+(?:as|под|in|в)\s(?:(?!(?<![\p{L}\p{N}])(?:not\s+(?:done|run|made|performed|checked)|skipped|omitted|не\s+(?:дела|сдела|выполн|став|провод|провер)\p{L}*)(?![\p{L}\p{N}]))[^:\n]){0,30})?\s*:/iu
 
 /**
  * VT-15 (stage 5): a PASS in an api-verify report on a `[verify: api-verify]` criterion names the request (`METHOD /path → status`) and a read-back or control (`read-back:` / `control:`).
@@ -833,12 +834,14 @@ function ownPrefixes(name) {
  */
 function citedRerun(entry, name, taskDir) {
   const own = ownPrefixes(name)
+  // an api-verify finding is re-run by a recheck report only: a screenshot shows a page, not what the endpoint saved (0.29.2 review m-3)
+  const screens = reportChecker(name) !== 'api-verify'
   for (const word of entry.split(/[^\p{L}\p{N}_./-]+/u).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
     if (word.length > 200) continue
     const base = word.split('/').pop()
     const prefix = own?.find((candidate) => base.startsWith(candidate))
     if (prefix && (word === base || word === `checks/${base}`) && RERUN_SUFFIX.test(base.slice(prefix.length)) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
-    if (RERUN_SCREEN.test(word) && (!taskDir || screenExists(taskDir, base))) return word
+    if (screens && RERUN_SCREEN.test(word) && (!taskDir || screenExists(taskDir, base))) return word
   }
   return null
 }

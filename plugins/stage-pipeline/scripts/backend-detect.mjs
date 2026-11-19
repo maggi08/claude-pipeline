@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMain } from './main-guard.mjs'
-import { backendConfig, backendFileMatcher } from './hooks/pipeline-state.mjs'
+import { backendConfig, backendFileMatcher, readConfig } from './hooks/pipeline-state.mjs'
 import { globToRegExp } from './markers.mjs'
 import { bashRulePattern, permissionRules, settingsFiles, subcommands } from './hooks/permission-rules.mjs'
 import { shellQuote } from './ci-gates.mjs'
@@ -472,8 +472,13 @@ export function doctor(repoArg, { settingsFiles: files } = {}) {
 
   const cfgText = read(join(d.repo, '.claude/pipeline.config.md'))
   const cfg = cfgText ? backendConfig(cfgText, d.repo)?.repos?.[0] : null
-  // VT-15 d-6: a glob the hooks refuse is skipped there without a word, and the files it names are never judged as backend code
-  for (const { glob, reason } of backendFileMatcher(cfg).skipped) row('fail', `api_files glob \`${glob}\``, `${reason}; until then the hooks skip it and do not treat its files as backend code`)
+  // VT-15 d-6: a glob the hooks refuse is skipped there without a word, and the files it names are never judged as backend code. Read as the hooks read it:
+  // the local config over the shared one, every repo of the section (a frontend repo's `###` blocks of its backend repos too)
+  const hookRepos = backendConfig(readConfig(d.repo), d.repo)?.repos ?? []
+  for (const repo of hookRepos) {
+    const where = hookRepos.length > 1 && repo.name ? ` (${repo.name})` : ''
+    for (const { glob, reason } of backendFileMatcher(repo).skipped) row('fail', `api_files glob \`${glob}\`${where}`, `${reason}; until then the hooks skip it and do not treat its files as backend code`)
+  }
   const plan = collectCommand(d, cfg?.testFull)
   const probe = dockerProbe(d, cfg, plan)
   if (probe) {

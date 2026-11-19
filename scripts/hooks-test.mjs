@@ -3309,6 +3309,11 @@ if (unit('receipts')) {
     check('delta TODO B9 legitimate: a move that rewrites every line — counted by its edits, over the bound, denied', verdict(movedEdited) && /over the bound of 400/.test(movedEdited.text), movedEdited.text)
     const promoted = deltaFx('delta-moved-out-of-task', { before: (fx) => ({ [`.claude/tasks/${fx.ticket}/notes/big.ts`]: bigFile }), round: (fx) => { mkdirSync(join(fx.dir, 'src/promoted'), { recursive: true }); git(fx.dir, 'mv', `.claude/tasks/${fx.ticket}/notes/big.ts`, 'src/promoted/big.ts') } }).close()
     check('delta TODO B9 legitimate: a file moved out of the task directory into the code — counts whole (never reviewed as code), over the bound, denied', verdict(promoted) && /over the bound of 400/.test(promoted.text), promoted.text)
+    // 0.29.2 review m-1: a move of code into the task directory removes it from the code, counted whole like a `git rm` (the first -M version counted 0)
+    const parked = deltaFx('delta-moved-into-task', { before: () => ({ 'src/big.ts': bigFile }), round: (fx) => { mkdirSync(join(fx.tdir, 'notes'), { recursive: true }); git(fx.dir, 'mv', 'src/big.ts', `.claude/tasks/${fx.ticket}/notes/big.ts`) } }).close()
+    check('delta m-1: code moved into the task directory — counts whole as deleted, over the bound, denied', verdict(parked) && /over the bound of 400/.test(parked.text), parked.text)
+    const insideTask = deltaFx('delta-moved-inside-task', { before: (fx) => ({ [`.claude/tasks/${fx.ticket}/notes/big.ts`]: bigFile }), round: (fx) => { mkdirSync(join(fx.tdir, 'old'), { recursive: true }); git(fx.dir, 'mv', `.claude/tasks/${fx.ticket}/notes/big.ts`, `.claude/tasks/${fx.ticket}/old/big.ts`) } }).close()
+    check('delta m-1 legitimate: a move inside the task directory — counts nothing, accepted', !verdict(insideTask), insideTask.text)
     const rebased = deltaFx('delta-rebased', { rewrite: true }).close()
     check('delta AC-1.2: the base is not an ancestor of HEAD (a rebase) — denied, named, a full review asked', verdict(rebased) && proReviewOnly(rebased) && /not an ancestor of HEAD/.test(rebased.text) && /full review/.test(rebased.text), rebased.text)
     const noHead = deltaFx('delta-full-no-head', { fullHeader: () => '' }).close()
@@ -10941,7 +10946,7 @@ if (unit('vt15f1')) {
   for (const bad of ['read-back not done: later', 'перечитывание не делалось: потом', 'the controller returns: 200']) check(`vt15r2 d-4: "${bad}" is no-api-proof`, jc.apiProofViolations(api(bad), 'api-verify-1.md', dir)[0]?.rule === 'no-api-proof')
   // VT-15 d2-3: the qualifier after `as` / `in` (and the Russian prepositions) took a negation, so a read-back that was not done still counted as the proof
   for (const bad of ['read-back as A not done: no GET', 'перечитывание в этой пробе не делалось: нет GET-эндпоинта', 'control in this run skipped: one role only', 'контроль в пробе не ставился: одна роль']) check(`d2-3 incident: "${bad}" is no-api-proof`, jc.apiProofViolations(api(bad), 'api-verify-1.md', dir)[0]?.rule === 'no-api-proof')
-  for (const good of ['read-back as A: text changed', 'control в том же тесте: 403', 'read-back: ok', 'контроль: 403', 'read-back as owner B: GET /api/notes/1/ → 200', 'перечитывание под A: текст изменился']) check(`vt15r2 d-4 / d2-3 legitimate: "${good}" is clean`, jc.apiProofViolations(api(good), 'api-verify-1.md', dir).length === 0)
+  for (const good of ['read-back as A: text changed', 'control в том же тесте: 403', 'read-back: ok', 'контроль: 403', 'read-back as owner B: GET /api/notes/1/ → 200', 'перечитывание под A: текст изменился', 'control as A (not the owner): 403', 'control in a request with no token: 401', 'контроль в том же запросе без фильтра: 5 заметок']) check(`vt15r2 d-4 / d2-3 legitimate: "${good}" is clean`, jc.apiProofViolations(api(good), 'api-verify-1.md', dir).length === 0)
   check('vt15r2 d-5: `[X]` closes a staging criterion without an observation', jc.stagingViolation('- [X] `AC-2.1` WHEN a deal is sent THEN it is stored [verify: staging]')?.rule === 'staging-no-observation')
   rmSync(dir, { recursive: true, force: true })
   const { backendFileMatcher } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
@@ -10978,6 +10983,13 @@ if (unit('vt15f1')) {
     const badGlob = doctorRun()
     check('d-6 incident: a 5-wildcard api_files glob — a fail row names it and the wildcard limit, exit 1', /^fail — api_files glob `a\/\*\/\*\/\*\/\*\/\*\/b\.py` — more than \d+ wildcards/m.test(badGlob.stdout) && badGlob.status === 1, badGlob.stdout)
     check('d-6 legitimate: the good glob of the same line gets no row', !/api_files glob `app\/views\.py`/.test(badGlob.stdout), badGlob.stdout)
+    // 0.29.2 review m-2: the row read only the first repo of the shared config; the hooks read the local config over it and every `###` repo
+    write(fx, { '.claude/pipeline.config.md': '## Backend\n- framework: django\n\n### core\n- path: ../core\n- api_files: app/views.py\n\n### upselling\n- path: ../upselling\n- api_files: x/*/*/*/*/*/y.py\n' })
+    const second = doctorRun()
+    check('d-6 m-2: a bad glob under the second `###` repo — a fail row naming the repo', /^fail — api_files glob `x\/\*\/\*\/\*\/\*\/\*\/y\.py` \(upselling\) — /m.test(second.stdout), second.stdout)
+    write(fx, { '.claude/pipeline.config.md': '## Backend\n- framework: django\n- api_files: app/views.py\n', '.claude/pipeline.config.local.md': '## Backend\n- framework: django\n- api_files: z/*/*/*/*/*/w.py\n' })
+    const local = doctorRun()
+    check('d-6 m-2: a bad glob in pipeline.config.local.md (which the hooks read first) — a fail row', /^fail — api_files glob `z\/\*\/\*\/\*\/\*\/\*\/w\.py` — /m.test(local.stdout), local.stdout)
     rmSync(fx, { recursive: true, force: true })
   }
   const compound = maskSecrets('PGPASSWORD=a1 GITHUBTOKEN=a2 NPM_AUTHTOKEN=a3 CLIENTSECRET=a4 MYSQLPASSWD=a5 _SECRET=a6 docker run --env=DB_PASSWORD=a7 --build-arg=PIP_TOKEN=a8 pytest')
@@ -11233,6 +11245,10 @@ if (unit('todominors')) {
   const apiText = jc.rerunViolations(fixedReport, 'api-verify-1.md')[0]?.message ?? ''
   const pageText = jc.rerunViolations(fixedReport, 'devtools-verify-1.md')[0]?.message ?? ''
   check('no-rerun nit: the api-verify message names the endpoint and no screenshot path', /not that the endpoint answers as the criterion says/.test(apiText) && !/screens|the page behaves/.test(apiText), apiText)
+  // 0.29.2 review m-3: a screenshot path closed an api-verify finding as fixed, though the message names the recheck report only
+  const screenCited = fixedReport.replace('app/views.py:3', 'app/views.py:3 — checks/screens/after-fix.png')
+  check('no-rerun m-3: an api-verify `fixed` citing a screenshot path — still no-rerun', jc.rerunViolations(screenCited, 'api-verify-1.md')[0]?.rule === 'no-rerun')
+  check('no-rerun m-3 legitimate: a devtools-verify `fixed` citing the same screenshot path — clean', jc.rerunViolations(screenCited, 'devtools-verify-1.md').length === 0)
   check('no-rerun nit legitimate: the devtools-verify message keeps the screenshot path and the page', /or a `checks\/screens\/` path \(stage-check, Step 3\.2\)\. `fixed: file:line` shows the code changed, not that the page behaves\./.test(pageText), pageText)
   rmSync(root, { recursive: true, force: true })
 }

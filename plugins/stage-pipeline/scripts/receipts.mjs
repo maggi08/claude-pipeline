@@ -395,8 +395,9 @@ function dirtyTracked(worktree, taskDir) {
 
 /**
  * Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory; a binary file counts 0 (S1-D2); null when git fails.
- * A rename counts by its edits only (`-M`): a `git mv` of reviewed code adds nothing to review (VT-13 B9: 18 moved eval cases read as 666 lines). A move out of the
- * task directory counts as a whole new file, since the task directory is never reviewed as code; a move into it counts nothing.
+ * A rename counts by its edits only (`-M`): a `git mv` of reviewed code adds nothing to review (VT-13 B9: 18 moved eval cases read as 666 lines). A move across the
+ * edge of the task directory counts its code side whole, as before: out of it — the new file as added (the task directory is never reviewed as code); into it — the
+ * removed code as deleted, the same as a `git rm`. A move inside the task directory counts nothing.
  */
 function changedLinesSince(worktree, taskDir, base, head = 'HEAD') {
   const taskRel = taskRelPath(worktree, taskDir)
@@ -404,23 +405,27 @@ function changedLinesSince(worktree, taskDir, base, head = 'HEAD') {
   if (out === null) return null
   const count = (added, deleted) => (Number(added) || 0) + (Number(deleted) || 0)
   let sum = 0
-  // -z: `added\tdeleted\tpath\0`; a rename is `added\tdeleted\t\0source\0destination\0`
+  // -z: `added\tdeleted\tpath\0` (a path may hold a tab); a rename is `added\tdeleted\t\0source\0destination\0`
   const fields = out.split('\0')
   for (let i = 0; i < fields.length; i++) {
     if (!fields[i]) continue
-    const [added, deleted, path] = fields[i].split('\t')
+    const [added, deleted, ...rest] = fields[i].split('\t')
+    const path = rest.join('\t')
     if (path) {
       if (!inTaskDir(taskRel, path)) sum += count(added, deleted)
       continue
     }
     const source = fields[++i]
     const destination = fields[++i]
-    if (!destination || inTaskDir(taskRel, destination)) continue
-    if (!inTaskDir(taskRel, source)) {
+    if (!source || !destination) continue
+    const fromTask = inTaskDir(taskRel, source)
+    const intoTask = inTaskDir(taskRel, destination)
+    if (fromTask && intoTask) continue
+    if (!fromTask && !intoTask) {
       sum += count(added, deleted)
       continue
     }
-    const whole = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, head, '--', `:(literal)${destination}`)
+    const whole = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, head, '--', `:(literal)${fromTask ? destination : source}`)
     if (whole === null) return null
     for (const line of whole.trim().split('\n').filter(Boolean)) sum += count(...line.split('\t'))
   }

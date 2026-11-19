@@ -397,7 +397,7 @@ export function topLevelText(events) {
   return events.filter((event) => event.type === 'assistant' && !event.parent_tool_use_id).flatMap((event) => event.message?.content ?? []).filter((part) => part.type === 'text').map((part) => part.text).join('\n')
 }
 
-/** A temp directory under its real path: on macOS tmpdir() is under the /var -> /private/var symlink, and the plugin scripts' `import.meta.url === pathToFileURL(argv[1])` main guard is then false (the script exits 0 silently). */
+/** A temp directory under its real path: on macOS tmpdir() is under the /var -> /private/var symlink, and paths the cases compare and print stay real paths (before 0.29.2 the plugin scripts' main guard was also false there and they exited 0 silently; `main-guard.mjs` fixed that). */
 export function tempDir(prefix) {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)))
 }
