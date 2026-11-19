@@ -17,6 +17,8 @@ What changes against 0.29.3: the text of three skills and of the devtools-verify
 
 `scripts/rule-enforcers.json`: two new prose-only rules (the one-command rule of api-verify and the refused-line rule of devtools-verify), the baseline raised from 219 to 221 on purpose — no hook can hold how an agent reacts to a refusal; the eval cases do.
 
+Evals (2026-11-19, Claude Code 2.1.328; these runs cost about $3.5): `devtools-verify-repro-seats` leaves `evals/pending/` — 3 of 3 on this release, 0 of 3 on v0.29.3 on the same host (it reads `app.js` and names the cause), recorded as `provenFailing`. `root-cause-repro-first` 3 of 3 (1 of 3 at 0.26.0 on 2.1.314; v0.29.3 was not re-run on 2.1.328, so part of that gain may be the host). `devtools-verify-mapped-cart`, `devtools-verify-storefront` and `api-verify-owner-check` 1 of 1 each.
+
 ## 0.29.3 — 2026-11-19
 
 ### The plugin's agents never push or write to GitHub, and gates run from a worktree's copy of the scripts reach the installed plugin
