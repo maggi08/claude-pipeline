@@ -19,7 +19,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { EXIT, TICKET, acquirePidLock, findOnPath, gitOk, numberFlag, prepareRun, prepareWorktree, runLoop, taskReadiness, ticketLockFile, waitUntil } from './force-run.mjs'
 import { blockerGate, lastForceBlock, openBlockers } from './journal-check.mjs'
 import { digestFilePath } from './run-digest.mjs'
@@ -441,4 +442,4 @@ async function main(argv) {
   return usage()
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))

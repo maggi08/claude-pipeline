@@ -22,7 +22,9 @@
         "security_model: opus — security-review on sonnet denied",
         "S-1: security_model: opus — `stage-pipeline:security_review` on sonnet denied",
         "S-1: security_model: opus — `Security-Review` and an en-dash spelling on sonnet denied",
-        "S-1: security_model: opus — a trailing newline in the agent name on sonnet denied"
+        "S-1: security_model: opus — a trailing newline in the agent name on sonnet denied",
+        "M-7 incident: security_model: opus[1m] — security-review on sonnet denied",
+        "M-6 incident: `stage-pipeline：security_review` (fullwidth colon) on sonnet — denied"
       ],
       "legitimate": [
         "security_model: opus — security-review on opus passes",
@@ -35,7 +37,10 @@
         "S-1: security_model: opus — a differently named agent on sonnet passes",
         "security_model: none — security-review on sonnet passes",
         "security_model: - — security-review on sonnet passes",
-        "security_model: n/a — security-review on sonnet passes"
+        "security_model: n/a — security-review on sonnet passes",
+        "M-7 legitimate: security_model: opus[1m] — security-review on opus passes",
+        "M-7 legitimate: the init placeholder `<opus | —>` still reads as no key — sonnet passes",
+        "M-6 legitimate: the same spelling on opus passes"
       ],
       "head": "the security review runs on security_model"
     },
@@ -43,7 +48,8 @@
       "incident": [
         "general-purpose security review — denied, the security-review agent named",
         "general-purpose agent following the ds-parity skill — denied, the ds-parity agent named",
-        "one general-purpose call for both checks — denied, split into two agents"
+        "one general-purpose call for both checks — denied, split into two agents",
+        "S-1: a general-purpose spelling `General_Purpose` — security review denied"
       ],
       "legitimate": [
         "the security-review agent itself — passes",
@@ -55,10 +61,12 @@
     },
     "agent-guard/no-confirmed": {
       "incident": [
-        "EN stage-implement: new Force block without \"Confirmed:\" — denied"
+        "EN stage-implement: new Force block without \"Confirmed:\" — denied",
+        "maker spawn VT-16: the found task brings its rules — a Force block without \"Confirmed:\" is denied from the main tree too"
       ],
       "legitimate": [
-        "EN stage-implement: \"Confirmed:\" is there — passes"
+        "EN stage-implement: \"Confirmed:\" is there — passes",
+        "maker spawn VT-16 legitimate: a prompt that names no ticket — no task, as before"
       ],
       "head": "(stage-force, Step 0)"
     },

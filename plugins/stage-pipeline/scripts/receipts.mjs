@@ -28,7 +28,7 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync,
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { LEGIT_REASON, backendGate, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
 import { PATH_LINE } from './dismissals.mjs'
-import { siblingRepos, taskRepos } from './plan-check.mjs'
+import { hasBackendRepos, taskRepos } from './plan-check.mjs'
 import { OPEN_STATUS, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, taskBranches, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, forceKey, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
@@ -393,17 +393,41 @@ function dirtyTracked(worktree, taskDir) {
   return (dirtyPaths(worktree) ?? []).filter((file) => !inTaskDir(taskRel, file))
 }
 
-/** Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory (a move out of it counts by its destination); a binary file counts 0 (S1-D2); null when git fails. */
+/**
+ * Added plus deleted lines of `git diff --numstat <base> HEAD` outside the task directory; a binary file counts 0 (S1-D2); null when git fails.
+ * A rename counts by its edits only (`-M`): a `git mv` of reviewed code adds nothing to review (VT-13 B9: 18 moved eval cases read as 666 lines). A move across the
+ * edge of the task directory counts its code side whole, as before: out of it — the new file as added (the task directory is never reviewed as code); into it — the
+ * removed code as deleted, the same as a `git rm`. A move inside the task directory counts nothing.
+ */
 function changedLinesSince(worktree, taskDir, base, head = 'HEAD') {
   const taskRel = taskRelPath(worktree, taskDir)
-  const out = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, head)
+  const out = gitTry(worktree, 'diff', '--numstat', '-z', '-M', base, head)
   if (out === null) return null
+  const count = (added, deleted) => (Number(added) || 0) + (Number(deleted) || 0)
   let sum = 0
-  for (const line of out.trim().split('\n').filter(Boolean)) {
-    const [added, deleted, ...rest] = line.split('\t')
+  // -z: `added\tdeleted\tpath\0` (a path may hold a tab); a rename is `added\tdeleted\t\0source\0destination\0`
+  const fields = out.split('\0')
+  for (let i = 0; i < fields.length; i++) {
+    if (!fields[i]) continue
+    const [added, deleted, ...rest] = fields[i].split('\t')
     const path = rest.join('\t')
-    if (inTaskDir(taskRel, path)) continue
-    sum += (Number(added) || 0) + (Number(deleted) || 0)
+    if (path) {
+      if (!inTaskDir(taskRel, path)) sum += count(added, deleted)
+      continue
+    }
+    const source = fields[++i]
+    const destination = fields[++i]
+    if (!source || !destination) continue
+    const fromTask = inTaskDir(taskRel, source)
+    const intoTask = inTaskDir(taskRel, destination)
+    if (fromTask && intoTask) continue
+    if (!fromTask && !intoTask) {
+      sum += count(added, deleted)
+      continue
+    }
+    const whole = gitTry(worktree, 'diff', '--numstat', '--no-renames', base, head, '--', `:(literal)${fromTask ? destination : source}`)
+    if (whole === null) return null
+    for (const line of whole.trim().split('\n').filter(Boolean)) sum += count(...line.split('\t'))
   }
   return sum
 }
@@ -460,11 +484,10 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
   const dirty = dirtyTracked(worktree, taskDir)
   // VT-15 (stage 7): a task of several repos needs a whole-branch pro-review report of every other repo too, `checks/pro-review-branch-<repo>.md`, for a Force block
   // of the backend rules (not in `backendSeen`); a task of one repo asks nothing more (AC-7.2). A repo's report is not the main repo's report.
-  const config = readConfig(configRoot(worktree, worktree) ?? worktree)
-  // The rule is a backend one (D1): a task with no `## Backend` in its repo's config or a sibling's closes as before.
   const root = configRoot(worktree, worktree) ?? worktree
-  const hasBackend = Boolean(backendConfig(config)?.repos.length) || siblingRepos(config, root).some((sibling) => Boolean(backendConfig(readConfig(sibling))?.repos.length))
-  const others = !hasBackend || backendGate(dataDir, taskDir).seen.has(forceKey(run.block.heading))
+  const config = readConfig(root)
+  // The rule is a backend one (D1): a task with no `## Backend` in its repo's config or a sibling's closes as before.
+  const others = !hasBackendRepos(config, root) || backendGate(dataDir, taskDir).seen.has(forceKey(run.block.heading))
     ? []
     : taskRepos(config, worktree, taskBranches(run.stages)).filter((repo) => !repo.primary)
   const ofRepo = (repo, name) => new RegExp(`^pro-review-branch-${repo.name.replace(/[^\w]/g, '\\$&')}(?:\\.md$|-delta-|-fresh|-\\d)`).test(name)

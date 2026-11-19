@@ -26,9 +26,10 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import { pathToFileURL, fileURLToPath } from 'node:url'
+import { pathToFileURL } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { parseRepoRules, repoRuleApplies } from './markers.mjs'
 
 const MAX_PER_FIX = 12
@@ -319,4 +320,4 @@ async function main() {
   process.exit(result.proven ? 0 : result.noEslint ? 3 : result.invalid ? 2 : 1)
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]) && existsSync(process.argv[1])) await main()
+if (isMain(import.meta.url)) await main()

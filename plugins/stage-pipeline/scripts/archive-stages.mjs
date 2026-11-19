@@ -20,8 +20,8 @@
  * task language (taskLanguage; unknown → ru, as before). Both forms are read back. Console output is always English.
  */
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { dirname, join } from 'node:path'
+import { isMain } from './main-guard.mjs'
 import { taskLanguage } from './hooks/pipeline-state.mjs'
 import {
   ARCHIVED_STUB,
@@ -223,4 +223,4 @@ function main([stagesPath, ...flags]) {
   console.log(`\nArchive: ${archivePath}\nBackup: ${stagesPath}.bak`)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))

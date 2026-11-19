@@ -27,7 +27,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { baselineName } from './baseline-file.mjs'
 import { decisionViolations } from './decisions.mjs'
 import { likeViolation, releaseGate } from './journal-check.mjs'
@@ -55,7 +55,7 @@ import {
   stageBlocksOf,
   stripQuoted,
 } from './markers.mjs'
-import { contractPath, integrationBase, mainRoot, pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/pipeline-state.mjs'
+import { backendConfig, contractPath, integrationBase, mainRoot, pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/pipeline-state.mjs'
 
 const AC_START = /^[ \t]*(?:[-*][ \t]*|\|[ \t]*)?(?:\[[ xX]\][ \t]*)?(?:✅[ \t]*)?\**`?(AC-[\w.]*\w)`?\**(?=[\s:.,—–|)-]|$)/
 const VERIFIER_TAG = /\[(?:verify|live):/i
@@ -204,6 +204,10 @@ export function siblingRepos(config, root) {
     return existsSync(beside) ? beside : own
   })
 }
+
+/** "A backend in the task": a `## Backend` repo in this config or in the config of a sibling repo it names (a frontend task with a sibling backend repo). Read by journal-gate and the close receipts. */
+export const hasBackendRepos = (config, root) =>
+  Boolean(backendConfig(config)?.repos.length) || siblingRepos(config, root).some((sibling) => Boolean(backendConfig(readConfig(sibling))?.repos.length))
 
 /**
  * The repos of a task (VT-15, stage 7): the task's own repo (`root`) plus each sibling repo of the config that has a local branch of the task (`branches` — `taskBranches`)
@@ -642,4 +646,4 @@ function main(args) {
   process.exitCode = result.problems.length ? 1 : 0
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))

@@ -245,7 +245,7 @@ const { backendGate, baselineInfo, fingerprint, forceCloseViolations, lastForceB
 const { gateCloseViolations, taskWorktree } = await import('../ci-gates.mjs')
 const { finalReviewViolations } = await import('../receipts.mjs')
 const { CLOSED_WORD, forceHeadings, forceKey } = await import('../markers.mjs')
-const { siblingRepos } = await import('../plan-check.mjs')
+const { hasBackendRepos, siblingRepos } = await import('../plan-check.mjs')
 const { mapReadme, mapRoots } = await import('../verify-map.mjs')
 const { publishDigest, recordBrowserCleanup, taskRepo } = await import('../run-digest.mjs')
 
@@ -256,14 +256,9 @@ const at = new Date().toISOString()
 // the same roots the verify-map CLI looks in: the worktree, the config root, the main tree
 let roots = null
 const rootsOnce = () => (roots ??= mapRoots(state.worktree))
-// "a backend in the task": a `## Backend` repo in this repo's config or in the config of a related repo it names (a frontend task with a sibling backend repo).
+// "a backend in the task" (plan-check `hasBackendRepos`), read once
 let hasBackend = null
-const taskHasBackend = () => {
-  if (hasBackend !== null) return hasBackend
-  const own = configRoot(state.worktree, state.worktree) ?? state.worktree
-  hasBackend = Boolean(backendConfig(state.config)?.repos.length) || siblingRepos(state.config, own).some((sibling) => Boolean(backendConfig(readConfig(sibling))?.repos.length))
-  return hasBackend
-}
+const taskHasBackend = () => (hasBackend ??= hasBackendRepos(state.config, configRoot(state.worktree, state.worktree) ?? state.worktree))
 // the matcher of the backend repos' `api_files` globs (this config and the sibling configs): a path it accepts is backend code, no proof that our code handles the finding
 let backendMatcher = null
 const taskBackendPath = () => {

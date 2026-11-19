@@ -2,7 +2,8 @@
 import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, resolve, sep } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { alive, ancestors, commandOf, cwdOf, descendants, identityOf, processTable } from './processes.mjs'
 
 /**
@@ -301,7 +302,7 @@ function listing({ from = process.pid, under = null, psTimeout = 3000 } = {}) {
   return out.join('\n')
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
   const args = process.argv.slice(2)
   const at = args.indexOf('--under')
   const under = at === -1 ? null : args[at + 1]

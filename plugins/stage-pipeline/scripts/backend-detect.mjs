@@ -3,7 +3,8 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { backendConfig } from './hooks/pipeline-state.mjs'
+import { isMain } from './main-guard.mjs'
+import { backendConfig, backendFileMatcher, readConfig } from './hooks/pipeline-state.mjs'
 import { globToRegExp } from './markers.mjs'
 import { bashRulePattern, permissionRules, settingsFiles, subcommands } from './hooks/permission-rules.mjs'
 import { shellQuote } from './ci-gates.mjs'
@@ -436,9 +437,11 @@ const dockerWords = (words) => (words[0] === 'docker' || words[0] === 'docker-co
  */
 function dockerProbe(d, cfg, plan) {
   if (cfg?.test) {
+    // the permission is judged on a real path in place of `{files…}`; the rows show the config's own line (VT-15 delta nit: they printed `app/models.py`)
     const words = subcommands(cfg.test.replace(FILES_TOKEN, 'app/models.py')).map(dockerWords).find(Boolean)
     if (!words) return null
-    return { command: words.join(' '), note: 'the tests run in docker', compose1: words[0] === 'docker-compose' }
+    const shown = subcommands(cfg.test).map(dockerWords).find(Boolean)?.join(' ')
+    return { command: words.join(' '), shown, note: 'the tests run in docker', compose1: words[0] === 'docker-compose' }
   }
   const text = [cfg?.testFull, d.testFull, d.makeRecipe].filter(Boolean).join('\n')
   if ((cfg?.testFull ?? d.testFull) === './pytest.sh') return { command: 'docker build', note: '`./pytest.sh` builds an image and runs it' }
@@ -448,7 +451,7 @@ function dockerProbe(d, cfg, plan) {
   return null
 }
 
-export function doctor(repoArg, { settingsFiles } = {}) {
+export function doctor(repoArg, { settingsFiles: files } = {}) {
   const d = detect(repoArg)
   const rows = []
   const row = (status, check, todo) => rows.push(maskSecrets(`${status} — ${check} — ${todo}`))
@@ -469,13 +472,20 @@ export function doctor(repoArg, { settingsFiles } = {}) {
 
   const cfgText = read(join(d.repo, '.claude/pipeline.config.md'))
   const cfg = cfgText ? backendConfig(cfgText, d.repo)?.repos?.[0] : null
+  // VT-15 d-6: a glob the hooks refuse is skipped there without a word, and the files it names are never judged as backend code. Read as the hooks read it:
+  // the local config over the shared one, every repo of the section (a frontend repo's `###` blocks of its backend repos too)
+  const hookRepos = backendConfig(readConfig(d.repo), d.repo)?.repos ?? []
+  for (const repo of hookRepos) {
+    const where = hookRepos.length > 1 && repo.name ? ` (${repo.name})` : ''
+    for (const { glob, reason } of backendFileMatcher(repo).skipped) row('fail', `api_files glob \`${glob}\`${where}`, `${reason}; until then the hooks skip it and do not treat its files as backend code`)
+  }
   const plan = collectCommand(d, cfg?.testFull)
   const probe = dockerProbe(d, cfg, plan)
   if (probe) {
-    const verdict = commandAllowed(probe.command, settingsLists(d.repo, settingsFiles))
-    if (verdict.ok) row('ok', 'permissions', `\`${probe.command}\` is allowed in the Claude settings`)
+    const verdict = commandAllowed(probe.command, settingsLists(d.repo, files))
+    if (verdict.ok) row('ok', 'permissions', `\`${probe.shown ?? probe.command}\` is allowed in the Claude settings`)
     else {
-      const why = verdict.beatenBy ? `the ${verdict.beatenBy.key} rule \`${verdict.beatenBy.rule}\` beats the allow entry (remove it or keep the question knowingly)` : `no allow entry covers \`${probe.command}\``
+      const why = verdict.beatenBy ? `the ${verdict.beatenBy.key} rule \`${verdict.beatenBy.rule}\` beats the allow entry (remove it or keep the question knowingly)` : `no allow entry covers \`${probe.shown ?? probe.command}\``
       const fix = verdict.beatenBy ? '' : probe.compose1 ? ': add `Bash(docker-compose *)` to the allow list by hand (the docker group covers only `docker compose`)' : `: node ${shellQuote(fileURLToPath(new URL('./permissions.mjs', import.meta.url)))} --apply --groups ${[...loadProfile(resolve(dirname(fileURLToPath(import.meta.url)), '..')).defaultGroups, 'docker'].join(',')}`
       row('fail', 'permissions', `${probe.note} and ${why}, so api-verify stops on a permission question${fix}`)
     }
@@ -511,7 +521,7 @@ function printDetection(d) {
   return lines.join('\n')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   const args = process.argv.slice(2)
   const repoArg = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--language')
   const language = args.includes('--language') ? args[args.indexOf('--language') + 1] : null

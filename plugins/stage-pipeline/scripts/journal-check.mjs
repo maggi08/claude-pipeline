@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { BASELINE_VERSION, baselineName, snapshotCurrent } from './baseline-file.mjs'
 import {
   AUTH_LINE,
@@ -781,8 +781,12 @@ function proofViolations(text, name, taskDir, { checker, wanted, proofs, rule, t
 /** The AC ids the task tags `[verify: api-verify]` (VT-15, stage 5): a criterion definition line whose verifier tag names api-verify. */
 export const apiVerifyCriteria = (taskDir) => taggedCriteria(taskDir, (rest) => /\[verify:[^\][]*\bapi-verify\b[^\][]*\]/i.test(rest))
 
-/** The read-back or control line of an api-verify criterion (either language): the label stands with its colon. */
-const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])(?!\p{L})(?:\s+(?:as|под|in|в)\s[^:\n]{0,30})?\s*:/iu
+/**
+ * The read-back or control line of an api-verify criterion (either language): the label stands with its colon. The qualifier after `as` / `in` (and the Russian
+ * prepositions) takes no negated action in either language (VT-15 d2-3): «read-back as A not done:» says the proof is missing. A plain negation word stays allowed,
+ * since the controls the skill prescribes carry one: «control as A (not the owner):», «control in a request with no token:» and the Russian «without a filter».
+ */
+const API_CONTROL = /(?:read[- ]?back|перечитывани[ея]|control|контрол[ья])(?!\p{L})(?:\s+(?:as|под|in|в)\s(?:(?!(?<![\p{L}\p{N}])(?:not\s+(?:done|run|made|performed|checked)|skipped|omitted|не\s+(?:дела|сдела|выполн|став|провод|провер)\p{L}*)(?![\p{L}\p{N}]))[^:\n]){0,30})?\s*:/iu
 
 /**
  * VT-15 (stage 5): a PASS in an api-verify report on a `[verify: api-verify]` criterion names the request (`METHOD /path → status`) and a read-back or control (`read-back:` / `control:`).
@@ -830,12 +834,14 @@ function ownPrefixes(name) {
  */
 function citedRerun(entry, name, taskDir) {
   const own = ownPrefixes(name)
+  // an api-verify finding is re-run by a recheck report only: a screenshot shows a page, not what the endpoint saved (0.29.2 review m-3)
+  const screens = reportChecker(name) !== 'api-verify'
   for (const word of entry.split(/[^\p{L}\p{N}_./-]+/u).map((part) => part.replace(/(?<!\.)\.+$/, ''))) {
     if (word.length > 200) continue
     const base = word.split('/').pop()
     const prefix = own?.find((candidate) => base.startsWith(candidate))
     if (prefix && (word === base || word === `checks/${base}`) && RERUN_SUFFIX.test(base.slice(prefix.length)) && base !== name && (!taskDir || existsSync(join(taskDir, 'checks', base)))) return word
-    if (RERUN_SCREEN.test(word) && (!taskDir || screenExists(taskDir, base))) return word
+    if (screens && RERUN_SCREEN.test(word) && (!taskDir || screenExists(taskDir, base))) return word
   }
   return null
 }
@@ -857,6 +863,8 @@ export function rerunViolations(text, name, taskDir = null, backendRules = true)
   const checker = reportChecker(name)
   if (checker !== 'devtools-verify' && !(checker === 'api-verify' && backendRules)) return []
   const found = []
+  // VT-15 delta nit: an api-verify finding has no screenshot and no page — the message names its own re-run and what it proves
+  const [orScreens, behaves] = checker === 'api-verify' ? ['', 'the endpoint answers as the criterion says'] : [', or a `checks/screens/` path', 'the page behaves']
   for (const entry of ledgerEntries(text) ?? []) {
     if (disposition(entry) !== 'fixed' || citedRerun(entry, name, taskDir)) continue
     const shown = entry.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').slice(0, 90)
@@ -864,8 +872,8 @@ export function rerunViolations(text, name, taskDir = null, backendRules = true)
       rule: 'no-rerun',
       id: name,
       message:
-        `checks/${name}: "${shown}" — a runtime finding is closed as fixed only with a re-run artifact: the recheck report \`checks/${checker}-<stage>-r<k>.md\` (or \`-fresh.md\`) that exists, ` +
-        'or a `checks/screens/` path (stage-check, Step 3.2). `fixed: file:line` shows the code changed, not that the page behaves.',
+        `checks/${name}: "${shown}" — a runtime finding is closed as fixed only with a re-run artifact: the recheck report \`checks/${checker}-<stage>-r<k>.md\` (or \`-fresh.md\`) that exists` +
+        `${orScreens} (stage-check, Step 3.2). \`fixed: file:line\` shows the code changed, not that ${behaves}.`,
     })
   }
   return found
@@ -1343,4 +1351,4 @@ function main(args) {
   process.exit(found.length || reports.length ? 1 : 0)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))

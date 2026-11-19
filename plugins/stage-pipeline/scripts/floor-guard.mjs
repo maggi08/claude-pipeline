@@ -442,7 +442,7 @@ if (json) {
   }
   // Once per run, not once per line: a row that cannot be used is a problem of the config, and the rows after it still ran.
   if (repoRules.problems.length) {
-    console.log(`⚠ config problem: ${repoRules.problems.length} in the Repo rules table (a row that did not run, or a table that could not be parsed):`)
+    console.log(`⚠ config problem: ${repoRules.problems.length} problem(s) in the Repo rules table (a row that did not run, or a table that could not be parsed):`)
     for (const problem of repoRules.problems) console.log(`  - ${problem}`)
   }
   if (accepted.length) {

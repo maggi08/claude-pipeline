@@ -29,7 +29,7 @@
  */
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import {
   baselineInfo,
   blockerGate,
@@ -491,7 +491,7 @@ function section(text, heading) {
   return end === -1 ? body : body.slice(0, end)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
   const args = process.argv.slice(2)
   const target = args.find((arg) => !arg.startsWith('--'))
   if (!target || !existsSync(target)) {
