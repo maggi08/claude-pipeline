@@ -20,5 +20,5 @@ Called by `root-cause` (Step 1 and Step 5) when the defect is a runtime one. The
 3. **Not both** → write `not reproduced (2 attempts, <route>)` (the same form the dismissals check wants, in the task language from `language.md`) and what differed between the attempts. Do not build a cause on a symptom that did not reproduce.
 4. **After the fix, the same path twice** with the same readings. The correct state both times is the cross-check of `root-cause` Step 5; the original broken reading must not appear. This report is the re-run artifact the `fixed` line cites (`checks/devtools-verify-<stage>-r<k>.md`); the before-fix `-repro` report is not one (the hook does not accept it as a re-run). Both are partial runs of named findings: the hook skips the geometry and style-diff rules for `-r<k>` and `-repro` reports and keeps `doctor:` and `auth:`.
 
-You observe and report; the cause and the edit stay with the orchestrator.
+You observe and report; the cause and the edit stay with the orchestrator. In this mode do not read the app's source and do not write a cause, a "likely cause" or an "observation for root-cause" section: a cause the checker guessed from the code reaches the fix round as a fact nobody checked. The two readings are the hand-over.
 
