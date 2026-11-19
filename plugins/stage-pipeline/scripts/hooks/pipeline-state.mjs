@@ -120,7 +120,38 @@ export function pluginDataDir() {
   const override = process.env.STAGE_PIPELINE_DATA_DIR
   if (override && isAbsolute(override)) return override
   if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA
+  // A script outside every install and marketplace (a `--plugin-dir` run, a worktree): the hooks of that session get `-inline`.
+  return dataDirFor(dirname(fileURLToPath(import.meta.url))) ?? join(homedir(), '.claude/plugins/data', 'stage-pipeline-inline')
+}
+
+/**
+ * The data directory of the installed plugin for a copy of the scripts that lies in a linked git worktree of a marketplace repo connected as a directory (0.29.3), else null.
+ * That copy resolves `-inline` (`pluginDataDir`), right for a session started with `--plugin-dir` on the worktree, while a session that runs the installed plugin reads
+ * `stage-pipeline-<marketplace>`: VT-16's gates, run with the worktree's own `ci-gates.mjs`, were green where neither the close nor run-digest looked. A writer of facts that
+ * any session may judge (the CI gate records) writes into both. Null under an override or `CLAUDE_PLUGIN_DATA`, outside a linked worktree, and when the main tree's copy is not installed either.
+ */
+export function worktreeTwinDataDir() {
+  if (process.env.STAGE_PIPELINE_DATA_DIR || process.env.CLAUDE_PLUGIN_DATA) return null
   const here = dirname(fileURLToPath(import.meta.url))
+  try {
+    // the worktree root is the nearest directory with a `.git` FILE (`gitdir: <main>/.git/worktrees/<name>`); a `.git` directory is a main tree
+    let top = here
+    while (!isFile(join(top, '.git'))) {
+      if (isDir(join(top, '.git')) || dirname(top) === top) return null
+      top = dirname(top)
+    }
+    const gitdir = resolve(top, readFileSync(join(top, '.git'), 'utf8').match(/^gitdir:\s*(.+?)\s*$/m)?.[1] ?? '')
+    const common = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf8').trim())
+    if (basename(common) !== '.git') return null
+    const twin = dataDirFor(join(dirname(common), relative(top, here)))
+    return twin && twin !== pluginDataDir() ? twin : null
+  } catch {
+    return null
+  }
+}
+
+/** The `stage-pipeline-<marketplace>` directory for scripts that lie in `here` (an install, its cache, a marketplace's source directory), or null when none holds it. */
+function dataDirFor(here) {
   const root = join(homedir(), '.claude/plugins/data')
   const under = (dir) => typeof dir === 'string' && dir !== '' && (here === dir || here.startsWith(dir.replace(/[/\\]+$/, '') + sep))
   const named = (marketplace) => join(root, `stage-pipeline-${marketplace.replace(/[^\w.-]/g, '-')}`)
@@ -156,8 +187,7 @@ export function pluginDataDir() {
   } catch {
     // no list of marketplaces of a shape we read
   }
-  // A script outside every install and marketplace (a `--plugin-dir` run, a worktree): the hooks of that session get `-inline`.
-  return join(root, 'stage-pipeline-inline')
+  return null
 }
 
 /** The bare `…/stage-pipeline` directory next to a `stage-pipeline-<marketplace>` one: where scripts from Bash used to write. Read after the main one, so nothing written earlier is lost. */

@@ -28,7 +28,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { UNRECORDED, isGateCommand, recordGate, shellQuote, treeState } from './ci-gates.mjs'
-import { configRoot, pathList, pluginDataDir, readConfig } from './hooks/pipeline-state.mjs'
+import { configRoot, pathList, pluginDataDir, readConfig, worktreeTwinDataDir } from './hooks/pipeline-state.mjs'
+import { FILES_PLACEHOLDER } from './markers.mjs'
 import { alive } from './processes.mjs'
 
 const args = process.argv.slice(2)
@@ -59,7 +60,7 @@ if (/(^|[;&|(]\s*|\s)git\s/.test(` ${command}`)) fail('run-check is only for che
 
 const CODE = /\.(m?[jt]sx?|cjs|cts|mts|vue|svelte|astro|py|go|rb|kt|swift|java|php|rs|cs)$/
 const SKIP_PATH = /(^|\/)(node_modules|dist|build|\.next|\.nuxt|\.output|coverage|vendor|__generated__)\//
-const placeholder = command.match(/\{files(?::([\w+.]+))?\}/)
+const placeholder = command.match(FILES_PLACEHOLDER)
 let finalCommand = command
 if (placeholder) {
   const tokens = placeholder[1]?.split('+').map((ext) => ext.replace(/^\./, ''))
@@ -99,7 +100,15 @@ child.on('exit', (code, signal) => {
   console.log(`run-check: code ${code ?? signal} in ${seconds} s`)
   if (before?.clean && before.tree) {
     const after = treeState(root)
-    if (after.clean && after.tree === before.tree) recordGate(pluginDataDir(), root, command, code ?? 1, before.tree)
+    if (after.clean && after.tree === before.tree) {
+      recordGate(pluginDataDir(), root, command, code ?? 1, before.tree)
+      // 0.29.3: this copy lies in a linked worktree of an installed marketplace repo — the sessions that run the installed plugin read the other directory
+      const twin = worktreeTwinDataDir()
+      if (twin) {
+        recordGate(twin, root, command, code ?? 1, before.tree)
+        if (isGate()) console.log(`run-check: recorded in ${pluginDataDir()} and ${twin} — this copy of the scripts lies in a linked worktree of the installed plugin's repo`)
+      }
+    }
     else if (isGate()) console.log('run-check: not recorded for the CI gates — tracked files or HEAD changed during the run')
   } else if (before?.dirty?.length && isGate()) {
     // Said only for a gate: a whole type_check of an uncommitted stage is not one, and the line would be noise there.

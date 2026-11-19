@@ -1,3 +1,6 @@
+import { readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { denyTool } from './firing.mjs'
 import { askMatch, askRules, forceNever, nameKill } from './permission-rules.mjs'
 import { dataDirReason, pluginDataDir, readHookInput, readPipelineState, writesDataDir } from './pipeline-state.mjs'
@@ -24,7 +27,10 @@ import { dataDirReason, pluginDataDir, readHookInput, readPipelineState, writesD
  *   that is new by the first look: a run already going keeps the rules it started with (D7). The guard catches the habit, not a determined workaround: a path built at run time still reaches the files,
  *   and a rejection is not a reason to look for one (stage-force, Step 2). The plugin's own scripts are run by `${CLAUDE_PLUGIN_ROOT}`, which is not the data directory.
  * An Edit / Write / MultiEdit of a file there is denied the same way by journal-gate's PreToolUse run (R-2).
- * Outside force and outside a repo with the pipeline the hook stays silent: the user is nearby there, and a
+ * - a push, or a `gh` / `glab` call that is not a read, from a subagent that is one of the plugin's agents (0.29.3) — in and out of force: a checker or the maker never
+ *   publishes, push and PR are the orchestrator's or the user's. The whole-branch pro-review of the 0.29.1 fix pushed its branch by itself (2026-11-18), and only its
+ *   prompt stood in the way. The host marks a call from a subagent with `agent_id` and names the agent in `agent_type`; the main thread and other agents are not touched.
+ * Outside force (but for the plugin's agents) and outside a repo with the pipeline the hook stays silent: the user is nearby there, and a
  * question is a normal part of the work.
  * The task is only the current branch's, as in git-guard.
  */
@@ -37,10 +43,21 @@ const killer = nameKill(command)
 const asked = killer ? null : askMatch(command, askRules(process.env.CLAUDE_PROJECT_DIR ?? cwd))
 const published = killer || asked ? null : forceNever(command)
 const dataDir = !killer && !asked && !published && writesDataDir(command)
-if (!killer && !asked && !published && !dataDir) process.exit(0)
+const agent = pluginAgent(input)
+const agentPublishes = agent ? forceNever(command) : null
+if (!killer && !asked && !published && !dataDir && !agentPublishes) process.exit(0)
 
 const state = readPipelineState(cwd)
-const task = state?.tasks.find((candidate) => candidate.current)
+if (!state) process.exit(0)
+const task = state.tasks.find((candidate) => candidate.current)
+if (agentPublishes) {
+  deny(
+    'force-guard/agent-publish',
+    `stage-pipeline: \`${agentPublishes}\` publishes outside the repo (a push, a PR or MR, a GitHub / GitLab write), and the call comes from the subagent \`${agent}\`: ` +
+      "an agent of the pipeline never publishes, in a force run or not — push and PR are the orchestrator's or the user's. Reads (`gh pr view`, `gh pr checks`, `gh run view`, a GET `gh api`) pass. " +
+      'Do not look for another command that does the same: name what should be published in your report or summary and go on with your own job.',
+  )
+}
 if (!task?.forceActive) process.exit(0)
 
 // K11b.2: only a run that is new by the first look is denied — a run already going when this version came keeps the rules it started with (D7), as the maker rules do
@@ -85,6 +102,20 @@ async function runIsNew(task) {
   }
 }
 
+/** The plugin's agent a call comes from (`agent_type` as the host names it, e.g. `stage-pipeline:pro-review`), or null: the main thread has no `agent_id`, and another plugin's or a built-in agent is not ours. */
+function pluginAgent(hookInput) {
+  if (!hookInput.agent_id || typeof hookInput.agent_type !== 'string') return null
+  // the host's own normalization of a name (NFKC, lowercase, no white space, dashes or `_`), as in agent-guard
+  const squash = (name) => name.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')
+  const name = squash(hookInput.agent_type.normalize('NFKC').split(':').at(-1))
+  try {
+    const ours = readdirSync(join(dirname(fileURLToPath(import.meta.url)), '../../agents')).filter((file) => file.endsWith('.md')).map((file) => squash(file.slice(0, -3)))
+    return ours.includes(name) ? hookInput.agent_type : null
+  } catch {
+    return null
+  }
+}
+
 function deny(rule, reason) {
-  denyTool(rule, reason, { input, task: task.ticket, repo: state.worktree })
+  denyTool(rule, reason, { input, task: task?.ticket, repo: state.worktree })
 }

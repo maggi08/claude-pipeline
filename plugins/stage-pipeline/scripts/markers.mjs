@@ -558,6 +558,9 @@ export const MAP_TEXT = {
 }
 /** A config value meaning "none" (the same words as NO_GATE_COMMAND, whole value). */
 export const NO_VALUE = /^(?:—|-|–|none|no|нет|n\/a)$/i
+
+/** The changed-files placeholder of a check command: `{files}`, `{files:ts+tsx}`, `{files:rel+py}`; group 1 is the token list. run-check substitutes it, backend-detect reads around it. */
+export const FILES_PLACEHOLDER = /\{files(?::([\w+.]+))?\}/
 /** The FEATURE-MAP "Entry points" heading and the route / files columns of its table, both languages. */
 export const ENTRY_POINTS_HEADING = /^##\s*(?:Entry points|Точки входа)\s*$/i
 export const ENTRY_ROUTE_COLUMN = /^(?:Route|Маршрут|Роут)/i
