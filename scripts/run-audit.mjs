@@ -39,6 +39,7 @@ import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from '
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isMain } from '../plugins/stage-pipeline/scripts/main-guard.mjs'
 import { matchScreenshotReads, savedScreenshotPath, textOf } from './eval-lib.mjs'
 import { HOOKS, rulesByHead } from './hook-rules.mjs'
 
@@ -818,7 +819,7 @@ function parseArgs(argv) {
   return o
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMain(import.meta.url)) {
   const o = parseArgs(process.argv.slice(2))
   if (o.help || !o.tasks.length || (!o.repos.length && !o.taskDirs.length)) {
     console.error('usage: node scripts/run-audit.mjs --repo <path>... [--task-dir <dir>...] --task <name>... [--transcripts <dir|file>...] [--session <file>...] [--after-days N] [--out file] [--json]\nSee the header of scripts/run-audit.mjs.')

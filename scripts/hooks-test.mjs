@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { availableParallelism, getPriority, homedir, loadavg, setPriority, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const SELF = fileURLToPath(import.meta.url)
 // process.exit right after a large write drops what a pipe has not taken yet — wait until both streams have flushed.
@@ -190,8 +190,9 @@ const UNITS = [
   { id: 'vt15s5', weight: 3 }, // VT-15 stage 5: force commit needs an api-verify report for backend files (skip only "no behaviour change"), .html is not UI without a front, no-api-proof, backend dismissals, old Force blocks keep the old rules
   { id: 'vt15s8a', weight: 1 }, // VT-15 stage 8a: uv run / poetry run in js-toolchain, --doctor permissions row for a docker test command (settings files pointed at temp files)
   { id: 'vt15s8', weight: 1 }, // VT-15 stage 8: the api-verify-owner-check pending case — its finding regexes against correct and wrong sample lines, the fixture settings can log in
-  { id: 'vt15f1', weight: 3 }, // VT-15 final-checks fix round 1: weakForm through ledgerViolations with a backend path, STAGING_DONE case, API_CONTROL qualifier, api-verify rerun, backendFileMatcher bad glob, maskSecrets
+  { id: 'vt15f1', weight: 3 }, // VT-15 final-checks fix rounds 1–2 and their follow-ups (d-6, d2-2, d2-3): weakForm through ledgerViolations with a backend path, STAGING_DONE case, API_CONTROL qualifier, api-verify rerun, backendFileMatcher bad glob, maskSecrets
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
+  { id: 'todominors', weight: 2 }, // 0.29.2 (TODO.md minors): main guards through a symlinked path, the maker spawn of a task in a linked worktree from a main-tree session, the api-verify no-rerun text
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -824,7 +825,16 @@ write(app, { '.claude/pipeline.config.local.md': '- security_model: -\n' })
 check('security_model: - — security-review on sonnet passes', agentHook('stage-pipeline:security-review', 'Ticket T-7.', 'sonnet') === 'allow')
 write(app, { '.claude/pipeline.config.local.md': '- security_model: n/a   # none\n' })
 check('security_model: n/a — security-review on sonnet passes', agentHook('stage-pipeline:security-review', 'Ticket T-7.', 'sonnet') === 'allow')
+// VT-16 delta M-7: a value with a suffix read as no key, and the pin silently went off
+write(app, { '.claude/pipeline.config.local.md': '- security_model: opus[1m]\n' })
+check('M-7 incident: security_model: opus[1m] — security-review on sonnet denied (it read as no key)', agentHook('stage-pipeline:security-review', 'Ticket T-7.', 'sonnet') === 'deny')
+check('M-7 legitimate: security_model: opus[1m] — security-review on opus passes', agentHook('stage-pipeline:security-review', 'Ticket T-7.', 'opus') === 'allow')
+write(app, { '.claude/pipeline.config.local.md': '- security_model: <opus | —>\n' })
+check('M-7 legitimate: the init placeholder `<opus | —>` still reads as no key — sonnet passes', agentHook('stage-pipeline:security-review', 'Ticket T-7.', 'sonnet') === 'allow')
+// VT-16 delta M-6: the split on `:` ran before NFKC, so a fullwidth colon kept the prefix on the name and no rule matched it
 write(app, { '.claude/pipeline.config.local.md': '- security_model: opus\n' })
+check('M-6 incident: `stage-pipeline：security_review` (fullwidth colon) on sonnet — denied', agentHook('stage-pipeline：security_review', 'Ticket T-7.', 'sonnet') === 'deny')
+check('M-6 legitimate: the same spelling on opus passes', agentHook('stage-pipeline：security_review', 'Ticket T-7.', 'opus') === 'allow')
 rmSync(join(app, '.claude/pipeline.config.local.md'))
 const withForce = (heading, body) => write(app, { '.claude/tasks/T-7/STAGES.md': journal('', `${heading}\n${body}\n\n`) })
 withForce('## Force-прогон 2026-10-05', 'Режим: автономный.\nОтветы интервью: ветка — от dev')
@@ -3248,10 +3258,14 @@ if (unit('receipts')) {
   // VT-7 stage 1: a delta review counts only on top of a full whole-branch review that records its commit (`head:`), within DELTA_MAX_LINES since it.
   // Tree timeline: full review of the anchor commit at +4h, the fix commit (the tree HEAD has now) at +6h, the delta report at +8h; each rule has its incident and its legitimate form.
   {
-    const deltaFx = (name, { lines = 5, fullHeader = (anchor) => `head: ${anchor}\n`, fullFile = 'pro-review-branch.md', deltaFile = 'pro-review-branch-delta-1.md', deltaHeader, deltaHours = 8, rewrite = false, skipDelta = false } = {}) => {
+    const deltaFx = (name, { lines = 5, fullHeader = (anchor) => `head: ${anchor}\n`, fullFile = 'pro-review-branch.md', deltaFile = 'pro-review-branch-delta-1.md', deltaHeader, deltaHours = 8, rewrite = false, skipDelta = false, before = () => ({}), round = null } = {}) => {
       const fx = fixture(name, { stages: '' })
       fx.report('pro-review-1.md', 'pro-review', 2)
-      fx.commit({ 'src/a.ts': 'export const a = 2\n' }, 3)
+      const extra = before(fx)
+      // the fixture's .gitignore holds `.claude/`: a task-directory file of the anchor commit is added by force
+      write(fx.dir, extra)
+      for (const path of Object.keys(extra)) if (path.startsWith('.claude/')) git(fx.dir, 'add', '-f', path)
+      fx.commit({ 'src/a.ts': 'export const a = 2\n', ...extra }, 3)
       const anchor = git(fx.dir, 'rev-parse', 'HEAD').trim()
       const put = (file, header, hours) => {
         write(fx.dir, { [`.claude/tasks/${fx.ticket}/checks/${file}`]: `# pro-review\nFindings: critical 0 · major 1 · minor 0\n${header}### 🟠 M-1 a.ts:1 — x\n## Findings outcome\n- M-1 — fixed: a.ts:2\n` })
@@ -3259,7 +3273,8 @@ if (unit('receipts')) {
       }
       put(fullFile, fullHeader(anchor), 4)
       if (rewrite) git(fx.dir, 'reset', '-q', '--hard', 'main')
-      write(fx.dir, { 'src/a.ts': Array.from({ length: lines }, (_, i) => `export const v${i} = ${i}`).join('\n') + '\n' })
+      if (round) round(fx)
+      else write(fx.dir, { 'src/a.ts': Array.from({ length: lines }, (_, i) => `export const v${i} = ${i}`).join('\n') + '\n' })
       git(fx.dir, 'add', '-A')
       gitAt(fx.dir, 6, 'commit', '-qm', 'fix round')
       const newHead = git(fx.dir, 'rev-parse', 'HEAD').trim()
@@ -3286,6 +3301,14 @@ if (unit('receipts')) {
     check('delta AC-1.2 legit: exactly DELTA_MAX_LINES changed lines since the base — accepted', !verdict(atBound.close()), atBound.close().text)
     const over = deltaFx('delta-over', { lines: rc.DELTA_MAX_LINES + 100 }).close()
     check('delta AC-1.2: over the bound — denied, the message names the count and the bound and asks for a full review', verdict(over) && proReviewOnly(over) && /over the bound of 400/.test(over.text) && /full review/.test(over.text), over.text)
+    // TODO.md (VT-13 B9): a `git mv` counted as a delete plus an add, so a pure move of reviewed code read as twice its size and the delta was refused.
+    const bigFile = Array.from({ length: rc.DELTA_MAX_LINES + 100 }, (_, i) => `export const m${i} = ${i}`).join('\n') + '\n'
+    const moved = deltaFx('delta-moved', { before: () => ({ 'src/big.ts': bigFile }), round: (fx) => { mkdirSync(join(fx.dir, 'lib')); git(fx.dir, 'mv', 'src/big.ts', 'lib/big.ts') } }).close()
+    check('delta TODO B9 incident: a pure `git mv` of a file over the bound — counts 0 lines, accepted (it read as 2 × the file)', !verdict(moved), moved.text)
+    const movedEdited = deltaFx('delta-moved-edited', { before: () => ({ 'src/big.ts': bigFile }), round: (fx) => { mkdirSync(join(fx.dir, 'lib')); git(fx.dir, 'mv', 'src/big.ts', 'lib/big.ts'); write(fx.dir, { 'lib/big.ts': bigFile.replace(/= (\d+)$/gm, '= $1 + 1') }) } }).close()
+    check('delta TODO B9 legitimate: a move that rewrites every line — counted by its edits, over the bound, denied', verdict(movedEdited) && /over the bound of 400/.test(movedEdited.text), movedEdited.text)
+    const promoted = deltaFx('delta-moved-out-of-task', { before: (fx) => ({ [`.claude/tasks/${fx.ticket}/notes/big.ts`]: bigFile }), round: (fx) => { mkdirSync(join(fx.dir, 'src/promoted'), { recursive: true }); git(fx.dir, 'mv', `.claude/tasks/${fx.ticket}/notes/big.ts`, 'src/promoted/big.ts') } }).close()
+    check('delta TODO B9 legitimate: a file moved out of the task directory into the code — counts whole (never reviewed as code), over the bound, denied', verdict(promoted) && /over the bound of 400/.test(promoted.text), promoted.text)
     const rebased = deltaFx('delta-rebased', { rewrite: true }).close()
     check('delta AC-1.2: the base is not an ancestor of HEAD (a rebase) — denied, named, a full review asked', verdict(rebased) && proReviewOnly(rebased) && /not an ancestor of HEAD/.test(rebased.text) && /full review/.test(rebased.text), rebased.text)
     const noHead = deltaFx('delta-full-no-head', { fullHeader: () => '' }).close()
@@ -10915,10 +10938,10 @@ if (unit('vt15f1')) {
   check('vt15f1 m-4: api-verify `fixed:` citing the existing -r1 report — clean', jc.rerunViolations(fixedReport.replace('app/views.py:3', 'app/views.py:3 — recheck api-verify-1-r1.md'), 'api-verify-1.md', dir).length === 0)
   check('vt15f1 m-4: the rerun rule of api-verify is off outside the backend gate', jc.rerunViolations(fixedReport, 'api-verify-1.md', dir, false).length === 0)
   check('vt15f1 m-4: a `[verify: api-verify]` criterion closed ✅ without naming the checker — ac-checker', jc.acViolation('- `AC-1.1` WHEN PATCH THEN saved [verify: api-verify] ✅ pro-review: code')?.rule === 'ac-checker')
-  const apiR2 = api
-  const dirR2 = dir
-  for (const bad of ['read-back not done: later', 'перечитывание не делалось: потом', 'the controller returns: 200']) check(`vt15r2 d-4: "${bad}" is no-api-proof`, jc.apiProofViolations(apiR2(bad), 'api-verify-1.md', dirR2)[0]?.rule === 'no-api-proof')
-  for (const good of ['read-back as A: text changed', 'control в том же тесте: 403', 'read-back: ok', 'контроль: 403']) check(`vt15r2 d-4: "${good}" is clean`, jc.apiProofViolations(apiR2(good), 'api-verify-1.md', dirR2).length === 0)
+  for (const bad of ['read-back not done: later', 'перечитывание не делалось: потом', 'the controller returns: 200']) check(`vt15r2 d-4: "${bad}" is no-api-proof`, jc.apiProofViolations(api(bad), 'api-verify-1.md', dir)[0]?.rule === 'no-api-proof')
+  // VT-15 d2-3: the qualifier after `as` / `in` (and the Russian prepositions) took a negation, so a read-back that was not done still counted as the proof
+  for (const bad of ['read-back as A not done: no GET', 'перечитывание в этой пробе не делалось: нет GET-эндпоинта', 'control in this run skipped: one role only', 'контроль в пробе не ставился: одна роль']) check(`d2-3 incident: "${bad}" is no-api-proof`, jc.apiProofViolations(api(bad), 'api-verify-1.md', dir)[0]?.rule === 'no-api-proof')
+  for (const good of ['read-back as A: text changed', 'control в том же тесте: 403', 'read-back: ok', 'контроль: 403', 'read-back as owner B: GET /api/notes/1/ → 200', 'перечитывание под A: текст изменился']) check(`vt15r2 d-4 / d2-3 legitimate: "${good}" is clean`, jc.apiProofViolations(api(good), 'api-verify-1.md', dir).length === 0)
   check('vt15r2 d-5: `[X]` closes a staging criterion without an observation', jc.stagingViolation('- [X] `AC-2.1` WHEN a deal is sent THEN it is stored [verify: staging]')?.rule === 'staging-no-observation')
   rmSync(dir, { recursive: true, force: true })
   const { backendFileMatcher } = await import(join(PLUGIN, 'hooks/pipeline-state.mjs'))
@@ -10939,14 +10962,22 @@ if (unit('vt15f1')) {
   const wide = maskSecrets('SECRET_KEY=a1 DJANGO_SECRET_KEY=a2 AUTH_KEY=a3 STRIPE_SK=a4 pip_token=a5 docker run -e DB_PASS=a6 x --password a7 --token=a8 PASSWD="two words" APIKEY=a9 pytest')
   check('vt15f2 S-4: SECRET_KEY / DJANGO_SECRET_KEY / AUTH_KEY / STRIPE_SK / pip_token / -e DB_PASS / --password x / --token=x / a quoted value / APIKEY are masked', !/a[1-9]|two|words/.test(wide) && /pytest$/.test(wide) && /PASSWD=\*\*\*/.test(wide), wide)
   {
-    const { spawnSync: sp } = await import('node:child_process')
     const fx = realpathSync(mkdtempSync(join(tmpdir(), 'vt15r2-')))
-    writeFileSync(join(fx, 'Makefile'), 'test:\n\tAPI_TOKEN=x echo 3 tests collected pytest\n')
+    // VT-15 d2-2: the recipe's script fails without the token the recipe sets, so only a run of the real recipe reports the tests (an `echo` passed any way)
+    writeFileSync(join(fx, 'Makefile'), 'test:\n\tAPI_TOKEN=x sh stub.sh pytest\n')
+    writeFileSync(join(fx, 'stub.sh'), '[ "$API_TOKEN" = x ] || { echo "no API_TOKEN" >&2; exit 4; }\necho 3 tests collected\n')
     writeFileSync(join(fx, 'pyproject.toml'), '[project]\nname = "x"\ndependencies = ["django", "pytest"]\n')
     mkdirSync(join(fx, 'app'), { recursive: true })
     writeFileSync(join(fx, 'app/views.py'), '')
-    const dr = sp(process.execPath, [join(PLUGIN, 'backend-detect.mjs'), fx, '--doctor'], { encoding: 'utf8' })
+    const doctorRun = () => spawnSync(process.execPath, [join(PLUGIN, 'backend-detect.mjs'), fx, '--doctor'], { encoding: 'utf8' })
+    const dr = doctorRun()
     check('vt15r2 d-1: --doctor runs the real recipe (API_TOKEN=x in it) — the collect row is ok, the token is not printed', /^ok — tests collect/m.test(dr.stdout) && !/API_TOKEN=x/.test(dr.stdout), dr.stdout)
+    check('d2-2 legitimate: no api_files glob row while the config has none', !/api_files glob/.test(dr.stdout), dr.stdout)
+    // VT-15 d-6: a glob the hooks refuse was skipped without a word (`matcher.skipped` had no reader)
+    write(fx, { '.claude/pipeline.config.md': '## Backend\n- framework: django\n- api_files: a/*/*/*/*/*/b.py, app/views.py\n' })
+    const badGlob = doctorRun()
+    check('d-6 incident: a 5-wildcard api_files glob — a fail row names it and the wildcard limit, exit 1', /^fail — api_files glob `a\/\*\/\*\/\*\/\*\/\*\/b\.py` — more than \d+ wildcards/m.test(badGlob.stdout) && badGlob.status === 1, badGlob.stdout)
+    check('d-6 legitimate: the good glob of the same line gets no row', !/api_files glob `app\/views\.py`/.test(badGlob.stdout), badGlob.stdout)
     rmSync(fx, { recursive: true, force: true })
   }
   const compound = maskSecrets('PGPASSWORD=a1 GITHUBTOKEN=a2 NPM_AUTHTOKEN=a3 CLIENTSECRET=a4 MYSQLPASSWD=a5 _SECRET=a6 docker run --env=DB_PASSWORD=a7 --build-arg=PIP_TOKEN=a8 pytest')
@@ -11032,7 +11063,8 @@ if (unit('vt15s8a')) {
   // m-1: api-verify runs `test`; the pms/worker-pms shape has test_full: ./pytest.sh next to a docker compose test
   writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker compose run -T --rm --no-deps api python -m pytest {files:rel+py}\n- test_full: ./pytest.sh\n')
   const buildOnly = rowOf([put('f.json', ['Bash(docker build *)'])])
-  check('vt15f2 m-1: test = docker compose run, allow only docker build — fail naming docker compose run', /^fail — permissions — .*`docker compose run -T --rm --no-deps api python -m pytest app\/models\.py`/.test(buildOnly ?? ''), buildOnly)
+  // VT-15 delta nit: the row shows the config's own line, `{files…}` and all (it printed the path substituted for the permission check, `app/models.py`)
+  check('vt15f2 m-1: test = docker compose run, allow only docker build — fail naming docker compose run as the config writes it', /^fail — permissions — .*`docker compose run -T --rm --no-deps api python -m pytest \{files:rel\+py\}`/.test(buildOnly ?? ''), buildOnly)
   check('vt15f2 m-1: Bash(docker compose *) — ok', /^ok — permissions/.test(rowOf([put('g.json', ['Bash(docker compose *)'])]) ?? ''))
   check('vt15f2 m-1: Bash(docker compose run -T *) — ok (the whole command is checked, not three words)', /^ok — permissions/.test(rowOf([put('h.json', ['Bash(docker compose run -T *)'])]) ?? ''))
   writeFileSync(join(repo, '.claude/pipeline.config.md'), '## Backend\n- framework: django\n- test: docker-compose run --rm api pytest {files:rel+py}\n')
@@ -11139,6 +11171,69 @@ if (unit('vt15s4')) {
   check('api-verify skill: frontmatter name and the report parts (Stage criteria, Could not verify, read-back, role matrix, migration)', /^name: api-verify$/m.test(skillText) && ['## Stage criteria', '## Could not verify', 'read-back', 'Role matrix', 'Migration'].every((part) => skillText.includes(part)))
   check('api-verify skill: the faulthandler substitution rule (tail replaced, prefix kept, -p no:faulthandler, -p no:cacheprovider, --reuse-db)', ['replaced by `python -c', '-p no:faulthandler', '-p no:cacheprovider', '--reuse-db', 'the prefix'].every((part) => skillText.includes(part)))
   check('api-verify skill: the cleanup rule (clear first, ls .api-verify, absolute path and cleanup command when deletion is refused)', ['Clear it first', 'empty file', 'leftover', 'PYTHONDONTWRITEBYTECODE', 'ls <abs repo>/.api-verify', 'cleanup command'].every((part) => skillText.includes(part)))
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('todominors')) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'todominors-')))
+  // TODO.md (VT-13 stage 6): under a symlinked path node resolves the main module and argv[1] does not, so the scripts' main guard was false and they exited 0 without output
+  symlinkSync(join(PLUGIN, '..'), join(root, 'plugin'))
+  const viaLink = spawnSync(process.execPath, [join(root, 'plugin', 'scripts', 'plan-check.mjs')], { encoding: 'utf8' })
+  check('main guard incident: plan-check.mjs run through a symlinked plugin path prints its usage (it printed nothing)', /^Usage: node plan-check\.mjs/m.test(viaLink.stdout + viaLink.stderr), JSON.stringify([viaLink.status, viaLink.stdout, viaLink.stderr]))
+  const imported = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(join(PLUGIN, 'plan-check.mjs')).href)}); console.log('imported')`], { encoding: 'utf8' })
+  check('main guard legitimate: plan-check.mjs imported by another module does not run its main', imported.stdout.trim() === 'imported', JSON.stringify([imported.stdout, imported.stderr]))
+  const oldGuard = /import\.meta\.url === pathToFileURL\(resolve\(process\.argv\[1\]\)\)|=== resolve\(process\.argv\[1\]\)|resolve\(process\.argv\[1\]\) ===|=== process\.argv\[1\]/
+  const scripts = [PLUGIN, dirname(SELF)].flatMap((dir) => readdirSync(dir).map((name) => join(dir, name)))
+  const stale = scripts.filter((file) => file.endsWith('.mjs') && file !== SELF && oldGuard.test(readFileSync(file, 'utf8')))
+  check('main guard: no plugin or repo script compares argv[1] without real paths', stale.length === 0, stale.join(', '))
+
+  // VT-16 (2026-11-17): a session in the main tree on main spawned the maker of a task whose code is in a linked worktree; the spawn went under no ticket
+  // with the main tree's root, and git-guard's maker rule then refused all the maker's code
+  const base = join(root, 'app')
+  const wt = join(root, 'app-mw2')
+  repoAt(base, 'main')
+  write(base, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n' })
+  git(base, 'worktree', 'add', '-q', wt, '-b', 'MW-2/feat')
+  const tick = '`'
+  const stagesFor = (ticket, confirmed = true) =>
+    `# ${ticket}: task\nBranch: ${tick}${ticket}/feat${tick}\nLanguage: en\n\n## Status: stage 1\n\n## Force run 2026-11-18\nMode: autonomous.\n` +
+    `${confirmed ? 'Confirmed: 2026-11-18 — no questions\n' : ''}\n## Stages\n\n### Stage 1: model  [status: todo]  logic-only\nAcceptance criteria:\n` +
+    `- ${tick}AC-1.1${tick} WHEN a THEN b — [verify: pro-review]\n`
+  write(base, { '.claude/tasks/MW-2/STAGES.md': stagesFor('MW-2') })
+  runHook('session-start.mjs', { cwd: base })
+  const { readSnapshot } = await import(join(PLUGIN, 'maker.mjs'))
+  const spawnLines = (ticket) => {
+    try {
+      return readFileSync(join(DATA, 'maker', `${ticket}.spawns.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    } catch {
+      return []
+    }
+  }
+  const spawnFrom = (cwd, session, prompt) => runHook('agent-guard.mjs', { cwd, session_id: session, tool_name: 'Agent', tool_input: { subagent_type: 'stage-pipeline:stage-implement', prompt } })
+  const named = spawnFrom(base, 'sess-todo-main-1', 'Ticket MW-2, stage 1, mode: implement')
+  const snapshot = readSnapshot(DATA, 'sess-todo-main-1')
+  check(
+    'maker spawn VT-16 incident: from the main tree, a prompt naming MW-2 — allowed, recorded under MW-2 with the worktree as its root (it went under no ticket, the main tree)',
+    named.decision === 'allow' && snapshot?.ticket === 'MW-2' && snapshot?.root === realpathSync(wt) && spawnLines('MW-2').some((line) => line.session === 'sess-todo-main-1' && line.roots[0] === realpathSync(wt)),
+    JSON.stringify([named, snapshot?.ticket, snapshot?.root]),
+  )
+  const unnamed = spawnFrom(base, 'sess-todo-main-2', 'Stage 1, mode: implement')
+  check('maker spawn VT-16 legitimate: a prompt that names no ticket — no task, as before (recorded under no ticket)', unnamed.decision === 'allow' && readSnapshot(DATA, 'sess-todo-main-2')?.ticket === null && !spawnLines('MW-2').some((line) => line.session === 'sess-todo-main-2'))
+  write(base, { '.claude/tasks/MW-2/STAGES.md': stagesFor('MW-2', false) })
+  const unconfirmed = spawnFrom(base, 'sess-todo-main-3', 'Ticket MW-2, stage 1, mode: implement')
+  check('maker spawn VT-16: the found task brings its rules — a Force block without "Confirmed:" is denied from the main tree too (it passed with no task)', unconfirmed.decision === 'deny' && /no `Confirmed:` line/.test(unconfirmed.text), unconfirmed.text)
+  write(base, { '.claude/tasks/MW-2/STAGES.md': stagesFor('MW-2'), '.claude/tasks/MW-3/STAGES.md': stagesFor('MW-3') })
+  const both = spawnFrom(base, 'sess-todo-main-4', 'Ticket MW-2 after MW-3, stage 1, mode: implement')
+  check('maker spawn VT-16 legitimate: a prompt naming two tasks with open Force blocks — no task, as before', both.decision === 'allow' && readSnapshot(DATA, 'sess-todo-main-4')?.ticket === null)
+  const inTree = spawnFrom(wt, 'sess-todo-wt', 'Ticket MW-2, stage 1, mode: implement')
+  check('maker spawn legitimate: from the worktree itself — the current task, as before', inTree.decision === 'allow' && readSnapshot(DATA, 'sess-todo-wt')?.ticket === 'MW-2' && readSnapshot(DATA, 'sess-todo-wt')?.root === realpathSync(wt))
+
+  // VT-15 delta nit: the api-verify no-rerun message ended in "the page behaves" and offered a screenshot path
+  const fixedReport = '# r\nFindings: critical 0 · major 1 · minor 0\n\n## Findings outcome\n- M-1 — fixed: app/views.py:3\n'
+  const apiText = jc.rerunViolations(fixedReport, 'api-verify-1.md')[0]?.message ?? ''
+  const pageText = jc.rerunViolations(fixedReport, 'devtools-verify-1.md')[0]?.message ?? ''
+  check('no-rerun nit: the api-verify message names the endpoint and no screenshot path', /not that the endpoint answers as the criterion says/.test(apiText) && !/screens|the page behaves/.test(apiText), apiText)
+  check('no-rerun nit legitimate: the devtools-verify message keeps the screenshot path and the page', /or a `checks\/screens\/` path \(stage-check, Step 3\.2\)\. `fixed: file:line` shows the code changed, not that the page behaves\./.test(pageText), pageText)
   rmSync(root, { recursive: true, force: true })
 }
 

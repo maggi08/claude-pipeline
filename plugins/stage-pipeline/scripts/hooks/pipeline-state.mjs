@@ -390,7 +390,8 @@ export function securityModel(config) {
   // the value is read up to white space or `#`; the "no value" words (markers.mjs NO_VALUE, `off`) read as no key
   const raw = config.match(/^[ \t]*-[ \t]*security_model:[ \t]*[`*]*([^\s#`*]+)/m)?.[1]
   if (!raw || NO_VALUE.test(raw) || /^off$/i.test(raw)) return null
-  return /^[\w.-]+$/.test(raw) ? raw.toLowerCase() : null
+  // the leading model name (VT-16 delta M-7): `opus[1m]` and `opus,` pin opus; the init placeholder `<opus | —>` starts with no name and reads as no key
+  return raw.match(/^[\w.-]+/)?.[0].toLowerCase() ?? null
 }
 
 /**

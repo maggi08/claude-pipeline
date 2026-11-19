@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMain } from '../plugins/stage-pipeline/scripts/main-guard.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const ROOT = join(HERE, '..')
@@ -191,7 +192,7 @@ export function updatedTable(extracted, table, { raise = false } = {}) {
 
 export const writeTable = (table, path = TABLE_PATH) => writeFileSync(path, `${JSON.stringify(table, null, 2)}\n`)
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta.url)) {
   const extracted = extractAll()
   const table = readTable()
   if (process.argv.includes('--update')) {

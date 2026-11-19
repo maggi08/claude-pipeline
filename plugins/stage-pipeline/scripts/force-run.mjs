@@ -28,7 +28,7 @@ import { randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { lastForceBlock } from './journal-check.mjs'
 import { taskWorktree } from './ci-gates.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE } from './markers.mjs'
@@ -766,4 +766,4 @@ async function main(argv) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))

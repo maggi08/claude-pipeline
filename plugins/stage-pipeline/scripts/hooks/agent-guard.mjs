@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CONFIRMED_LINE, MODE_WORD, NO_GATE_COMMAND } from '../markers.mjs'
 import { denyTool } from './firing.mjs'
-import { openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel, securityModel } from './pipeline-state.mjs'
+import { namesRepo, openForceBlock, pluginDataDir, readHookInput, readPipelineState, reviewModel, securityModel } from './pipeline-state.mjs'
 
 /**
  * Rules for launching subagents that the orchestrator keeps only in memory — and loses
@@ -54,6 +54,8 @@ const CHECKER_JOBS = [
 
 // the spawn the pending line was written for (K11b.1); a deny closes it with a `denied` line
 let spawned = null
+// the task of a maker spawn (`spawnTask`): the deny log names it too
+let makerTask = null
 const input = await readHookInput()
 const toolInput = input.tool_input ?? {}
 const type = String(toolInput.subagent_type ?? '')
@@ -61,7 +63,8 @@ const type = String(toolInput.subagent_type ?? '')
 // every comparison below is made on the same form, and the canonical name is mapped back where a file is read.
 const squash = (name) => name.normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')
 const CANONICAL = Object.fromEntries(['pro-review', 'stage-implement', 'security-review'].map((name) => [squash(name), name]))
-const rawAgent = type.split(':').at(-1)
+// NFKC before the split (VT-16 delta M-6): a fullwidth colon (`stage-pipeline：security_review`, U+FF1A) is a plain colon to the host, and the plugin prefix stayed on the name
+const rawAgent = type.normalize('NFKC').split(':').at(-1)
 const agent = CANONICAL[squash(rawAgent)] ?? rawAgent
 const generic = GENERIC_AGENTS.has(squash(rawAgent))
 if (!generic && !Object.values(CANONICAL).includes(agent)) process.exit(0)
@@ -118,11 +121,14 @@ if (agent === 'security-review') {
 
 // One block for the maker spawn (K11a.8 m-3): the task and the stage are looked up once and passed down; the order is the code's — deny first, record only an allowed spawn.
 if (agent === 'stage-implement') {
-  const task = state.tasks.find((candidate) => candidate.current)
   const prompt = toolInput.prompt ?? ''
+  const task = (makerTask = spawnTask(state, prompt))
+  // VT-16: a session in the main tree runs a task whose code is in a linked worktree — the maker's tree is that worktree, so the snapshot and the plan refs are read there
+  const tree = task && !task.current ? await taskTree(state.worktree, task) : state.worktree
+  const cwd = tree === state.worktree ? input.cwd ?? process.cwd() : tree
   const session = typeof input.session_id === 'string' && input.session_id ? input.session_id : null
   // K11b.1 (B2): the `pending` line of this spawn goes first, before any check: a hook killed from here on leaves a spawn with no `done` line, and the commit rule fails open
-  spawned = session ? await startSpawn(state, task, session, input.cwd ?? process.cwd()) : null
+  spawned = session ? await startSpawn(state, task, session, cwd) : null
   const block = task && openForceBlock(task.stages)
   if (block && (block.date ? block.date >= CONFIRM_SINCE : block.unreadDate) && !CONFIRMED_LINE.test(block.body)) {
     deny(
@@ -134,12 +140,34 @@ if (agent === 'stage-implement') {
   }
   // M-2: the one stage parser (plan-check's `stageForSpawn`, the Russian form included) is read once, for the plan check and for the snapshot alike
   const stage = task ? await stageOfSpawn(task, prompt) : null
-  const verdict = task && !task.unreadable ? await planVerdict(state, task, stage, prompt) : null
+  const verdict = task && !task.unreadable ? await planVerdict(state, task, stage, prompt, tree) : null
   if (verdict) deny('agent-guard/plan-problems', verdict)
   // K11.1 (VT-1 stage 11): the spawn is allowed — the tree is recorded for the stop hook to compare the hand-back with. A denied spawn records nothing.
-  if (session) await recordSpawn(state, task, stage, session, input.cwd ?? process.cwd())
+  if (session) await recordSpawn(state, task, stage, session, cwd)
 }
 process.exit(0)
+
+/**
+ * The task of a maker spawn: the session's current task; else the one task with an open Force block whose ticket the prompt names as a word of its own (VT-16, 2026-11-17).
+ * A run orchestrated from a session in the main tree, with the code in the task's linked worktree, has no current task: its spawns were recorded under no ticket,
+ * and git-guard's maker rule then refused all the maker's code. Two named tasks, or none: no task, as before.
+ */
+function spawnTask(state, prompt) {
+  const current = state.tasks.find((candidate) => candidate.current)
+  if (current) return current
+  const named = state.tasks.filter((candidate) => candidate.forceActive && !candidate.unreadable && namesRepo(prompt, candidate.ticket))
+  return named.length === 1 ? named[0] : undefined
+}
+
+/** The worktree that holds the code of a task that is not current here (ci-gates' `taskWorktree`: the `Branch:` header, a worktree STAGES.md names, the ticket in a branch); `worktree` when none or on a failure. */
+async function taskTree(worktree, task) {
+  try {
+    const { taskWorktree } = await import('../ci-gates.mjs')
+    return taskWorktree(worktree, task)
+  } catch {
+    return worktree
+  }
+}
 
 /** The first line of the spawn (maker.mjs, `startSpawn`): `{ spawn, close }` — `close` writes the `denied` line, null when none was written. Never throws. */
 async function startSpawn(state, task, session, cwd) {
@@ -182,12 +210,12 @@ async function stageOfSpawn(task, prompt) {
  * The stage comes from the prompt (`Stage N`, `stage number: N`), else the first stage that is not done. Fix-mode spawns are not checked,
  * and a crash or an unreadable file never denies. The import is lazy: pro-review spawns do not pay for it.
  */
-async function planVerdict(state, task, stage, prompt) {
+async function planVerdict(state, task, stage, prompt, tree = state.worktree) {
   try {
     if (stage === null || /(?:\bmode|режим)\s*(?::\s*)?\**fix\b|\bfix\s+mode\b/i.test(prompt)) return null
     const { checkPlan, format } = await import('../plan-check.mjs')
     // M-1: the worktree where the code is first, then the repo that holds the config (a linked worktree usually has no config of its own)
-    const result = checkPlan(task.stages, { taskDir: task.dir, dataDir: pluginDataDir(), roots: [...new Set([state.worktree, state.root].filter(Boolean))], config: state.config, stage })
+    const result = checkPlan(task.stages, { taskDir: task.dir, dataDir: pluginDataDir(), roots: [...new Set([tree, state.root].filter(Boolean))], config: state.config, stage })
     if (!result.problems.length) return null
     const lines = result.problems.map(format)
     return (
@@ -212,6 +240,6 @@ function agentModel(name) {
 function deny(rule, reason) {
   // K11b.1: a spawn that was denied never counts as an unfinished one
   if (spawned) spawned.close()
-  const task = state.tasks.find((candidate) => candidate.current)
+  const task = makerTask ?? state.tasks.find((candidate) => candidate.current)
   denyTool(rule, reason, { input, task: task?.ticket, repo: state.worktree })
 }

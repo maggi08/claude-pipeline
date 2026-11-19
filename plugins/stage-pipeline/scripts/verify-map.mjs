@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { configRoot, mainRoot, parseDevServer, readBounded, readConfig } from './hooks/pipeline-state.mjs'
 import { ENTRY_FILES_COLUMN, ENTRY_POINTS_HEADING, ENTRY_ROUTE_COLUMN, MAP_FEATURE_SECTIONS, MAP_ROUTES_FIELD, MAP_STATUS_FIELD, MAP_TEXT, NO_VALUE } from './markers.mjs'
 
@@ -780,4 +780,4 @@ function main(args) {
   process.exit(2)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))

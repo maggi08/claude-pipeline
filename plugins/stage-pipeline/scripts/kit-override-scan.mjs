@@ -33,7 +33,7 @@
 import { execFileSync } from 'node:child_process'
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { readConfig, readPipelineState, taskLanguage } from './hooks/pipeline-state.mjs'
 import { KIT_OVERRIDES_OFF, LEDGER_HEADING } from './markers.mjs'
 
@@ -410,4 +410,4 @@ function main(args) {
   process.exit(found.length ? 1 : 0)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))

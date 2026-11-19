@@ -26,8 +26,9 @@
 import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { isMain } from './main-guard.mjs'
 import { baselineInfo, blockerGate, fingerprint, lastForceBlock, openBlockers, readTaskFile } from './journal-check.mjs'
 import { dirtyPaths, isCurrentTask, pathList, pluginDataDir, readDataFiles, readPipelineState, realOr } from './hooks/pipeline-state.mjs'
 import { CI_GATES_HEADING, CLOSED_WORD, NO_GATE_COMMAND, WITH_BLOCKERS } from './markers.mjs'
@@ -319,4 +320,4 @@ function main(args) {
   process.exit(gates.every(gateAccepted) ? 0 : 1)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main(process.argv.slice(2))
+if (isMain(import.meta.url)) main(process.argv.slice(2))
