@@ -37,6 +37,8 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Section | `## Final checks (after all stages)` | `## Финальные проверки (после всех этапов)` |
 | Section | `## Design source coverage` | `## Покрытие дизайн-источника` |
 | Section, backend task only | `## Contract coverage` | `## Покрытие контракта` |
+| Section, only with a `PRODUCT-HANDOFF.md` | `## Product handoff coverage` | `## Покрытие продуктовой передачи` |
+| Table header of that section | `Handoff criterion` / `Stage / AC` | `Критерий передачи` / `Этап / AC` |
 | Section | `## Shared elements (stage overlaps)` | `## Общие элементы (пересечения этапов)` |
 | Section | `## ⚠ Awaiting user confirmation` | `## ⚠ Ожидают подтверждения пользователя` |
 | Section | `## Not included in the plan` | `## Не включено в план` |

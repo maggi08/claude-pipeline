@@ -266,6 +266,8 @@ export const STATE_ACTION_FIELD = /(?:^|\n)[ \t]*(?:[-*][ \t]*)?\**(?:State\s*[�
 export const COVERAGE_SECTION = /^## (?:Design source coverage|Покрытие дизайн-источника)/m
 /** The "Contract coverage" section of a backend task's plan (VT-15): one row per contract endpoint, event and migration. */
 export const CONTRACT_COVERAGE_SECTION = /^## (?:Contract coverage|Покрытие контракта)/m
+/** The "Product handoff coverage" section of a plan made from a product handoff (PP-1): one row per `H<n>` of the handoff's Criteria. */
+export const HANDOFF_COVERAGE_SECTION = /^## (?:Product handoff coverage|Покрытие продуктовой передачи)/m
 export const SHARED_SECTION = /^## (?:Shared elements|Общие элементы)/m
 
 /** The word "mode" in a subagent prompt: `Mode: whole-branch` (or the Russian form). */
@@ -556,6 +558,8 @@ export const MAP_TEXT = {
     none: 'пока нет — feature-checker добавит `- [<id>](features/<id>.md) — <маршрут>`',
   },
 }
+/** A tracker key: a folder name or a task id such as `PROJ-12`, case-sensitive (a slug like `an-epic-2` is not one). */
+export const TICKET_KEY = /^[A-Z][A-Z0-9]*-\d+$/
 /** A config value meaning "none" (the same words as NO_GATE_COMMAND, whole value). */
 export const NO_VALUE = /^(?:—|-|–|none|no|нет|n\/a)$/i
 

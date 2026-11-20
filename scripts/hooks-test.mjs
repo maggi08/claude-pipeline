@@ -194,6 +194,7 @@ const UNITS = [
   { id: 'vt15s3', weight: 2 }, // VT-15 stage 3: plan-check contract rules (empty Contract coverage stage ru/en, api-verify without the section, staging one-sided), journal-check staging-no-observation, contractPath
   { id: 'todogroup1', weight: 2 }, // 0.29.3 (TODO.md): the plugin's agents never publish, gate records of a linked worktree's copy reach the installed plugin's directory, one {files} placeholder
   { id: 'todominors', weight: 2 }, // 0.29.2 (TODO.md minors): main guards through a symlinked path, the maker spawn of a task in a linked worktree from a main-tree session, the api-verify no-rerun text
+  { id: 'pp1s5', weight: 2 }, // PP-1 stage 5: plan-check reads PRODUCT-HANDOFF.md (H<n> coverage, unknown version, no file = no requirement) and --input (no input stops, any one of four passes); stage-plan and docs-lookup text
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -11205,6 +11206,133 @@ if (unit('vt15s4')) {
   }
   check('api-verify skill: the cleanup rule (clear first, ls .api-verify, absolute path and cleanup command when deletion is refused)', ['Clear it first', 'empty file', 'leftover', 'PYTHONDONTWRITEBYTECODE', 'ls <abs repo>/.api-verify', 'cleanup command'].every((part) => skillText.includes(part)))
   rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('pp1s5')) {
+  const { checkPlan, handoffOf } = await import(join(PLUGIN, 'plan-check.mjs'))
+  const stage = (n, ru = false) => `${ru ? `### Этап ${n}: первый  [status: todo]  logic-only\nЧто есть:\nКритерии приёмки:` : `### Stage ${n}: first  [status: todo]  logic-only\nWhat exists:\nAcceptance criteria:`}\n- \`AC-${n}.1\` WHEN x THEN y — [verify: pro-review]\n\n`
+  const plan = (rows, ru = false, stages = stage(1, ru) + stage(2, ru)) => `# P-1: task\n\n${stages}${rows === null ? '' : `## ${ru ? 'Покрытие продуктовой передачи' : 'Product handoff coverage'}\n| ${ru ? 'Критерий передачи | Этап / AC' : 'Handoff criterion | Stage / AC'} |\n|---|---|\n${rows.map(([id, cell]) => `| ${id} | ${cell} |`).join('\n')}\n\n`}`
+  const handoff = (marker = '<!-- product-handoff 1 -->') => `${marker}\n# P-1: task\n\nType: [FE app]\n\n## Criteria\n- \`H1\` WHEN a THEN b\n- \`H2\` WHEN c THEN d\n- \`H3\` WHEN e THEN f\n\n## Decisions\n- H4 is not a criterion here\n`
+  const run = (text, rows, opts = {}, ru = false) => checkPlan(plan(rows, ru), { handoffFile: text, ...opts })
+  const rulesOf = (result) => result.problems.map((finding) => finding.rule)
+  const partial = run(handoff(), [['H1', '1 / AC-1.1'], ['H3', '2 / AC-2.1']])
+  check('PP-1 plan-check incident: H1..H3 with rows for H1 and H3 — H2 is a handoff-coverage-missing-row problem naming H2', rulesOf(partial).join() === 'handoff-coverage-missing-row' && /`H2`/.test(partial.problems[0].message), JSON.stringify(partial.problems.map((x) => x.message)))
+  check('PP-1 plan-check legitimate: every H has a row — clean', run(handoff(), [['H1', '1 / AC-1.1'], ['H2', '1 / AC-1.1, AC-2.1'], ['H3', '2 / AC-2.1']]).problems.length === 0)
+  check('PP-1 plan-check legitimate: the Russian section, header and a stage word — clean', run(handoff(), [['H1', 'Этап 1 / AC-1.1'], ['H2', '1'], ['H3', 'не в плане — позже']], {}, true).problems.length === 0)
+  check('PP-1 plan-check: no coverage section at all — every H is a missing row', rulesOf(run(handoff(), null)).join() === 'handoff-coverage-missing-row,handoff-coverage-missing-row,handoff-coverage-missing-row')
+  check('PP-1 plan-check incident: a row whose stage is not in the plan (`9`, empty, `not in plan` without a reason) — handoff-coverage-unknown-stage', [['9'], [''], ['not in plan']].every(([cell]) => rulesOf(run(handoff(), [['H1', cell], ['H2', '1'], ['H3', '1']])).join() === 'handoff-coverage-unknown-stage'))
+  check('PP-1 plan-check legitimate: `not in plan — <reason>` and an AC-only cell — covered', run(handoff(), [['H1', 'not in plan — later'], ['H2', 'AC-2.1'], ['H3', '1 / AC-1.1']]).problems.length === 0)
+  check('PP-1 plan-check: a cancelled H needs no row; H ids outside Criteria are not read', handoffOf(handoff().replace('- `H3` WHEN e THEN f', '- `H3` [cancelled: dropped] WHEN e THEN f')).ids.join() === 'H1,H2' && handoffOf(handoff()).ids.join() === 'H1,H2,H3')
+  check('PP-1 plan-check legitimate: no handoff file — no requirement (a plan without the section is clean)', run(null, null).problems.length === 0)
+  const v2 = run(handoff('<!-- product-handoff 2 -->'), [['H1', '1'], ['H2', '1'], ['H3', '1']])
+  check('PP-1 plan-check incident: marker version 2 — handoff-unknown-version, "unknown handoff version"', rulesOf(v2).join() === 'handoff-unknown-version' && /unknown handoff version "2"/.test(v2.problems[0].message), JSON.stringify(v2.problems))
+  check('PP-1 plan-check incident: no marker line — handoff-unknown-version', rulesOf(run(handoff('').replace(/^\n/, ''), [['H1', '1'], ['H2', '1'], ['H3', '1']])).join() === 'handoff-unknown-version')
+
+  check('PP-1 plan-check incident: marker on the third line, not the first — handoff-unknown-version', rulesOf(run(handoff('').replace(/^\n/, '# P-1: task\n\n<!-- product-handoff 1 -->'), [['H1', '1'], ['H2', '1'], ['H3', '1']])).join() === 'handoff-unknown-version')
+  check('PP-1 plan-check incident: a handoff without `## Criteria` (a Russian heading is not read, H ids elsewhere are not taken) — one handoff-no-criteria problem', ['## Критерии', '## Open questions'].every((heading) => rulesOf(run(handoff().replace('## Criteria', heading).replace('## Decisions\n- H4 is not a criterion here', '## Decisions\n- H7: who answers?'), [['H1', '1']])).join() === 'handoff-no-criteria'))
+  const lettered = (rows) => checkPlan(plan(rows, false, stage('1') + stage('2a') + stage('2b')), { handoffFile: handoff() })
+  check('PP-1 plan-check legitimate: lettered stages and their criteria (`2a / AC-2a.1`, `Stage 2b`) — clean', lettered([['H1', '2a / AC-2a.1'], ['H2', 'Stage 2b'], ['H3', '1, 2a / AC-1.1, AC-2a.1']]).problems.length === 0, JSON.stringify(lettered([['H1', '2a / AC-2a.1'], ['H2', 'Stage 2b'], ['H3', '1, 2a / AC-1.1, AC-2a.1']]).problems.map((x) => x.message)))
+  check('PP-1 plan-check incident: one bad stage token (`1, 9 / AC-1.1`), a criterion the plan has not (`1 / AC-1.9`, `1 / AC-3.1`), a stage letter it has not (`2c`) — handoff-coverage-unknown-stage each', [['1, 9 / AC-1.1'], ['1 / AC-1.9'], ['1 / AC-3.1'], ['2c / AC-1.1']].every(([cell]) => rulesOf(run(handoff(), [['H1', cell], ['H2', '1'], ['H3', '1']])).join() === 'handoff-coverage-unknown-stage'))
+  // the spec's routing: an open decision is an Awaiting line and a `[blocked: …]` tag; a `[Gap] … until it closes` is an open fork
+  const routed = `# P-1: task\n\n${stage(1)}- \`AC-1.2\` WHEN a refund is asked THEN the window applies [blocked: product decision — refund window]\n\n## Product handoff coverage\n| Handoff criterion | Stage / AC |\n|---|---|\n| H1 | 1 / AC-1.1 |\n| H2 | 1 / AC-1.2 |\n| H3 | not in plan — later |\n\n## ⚠ Awaiting user confirmation\n- the refund window — open, waits for data: the payment provider's limit (PRODUCT-HANDOFF.md)\n`
+  check('PP-1 stage-plan routing legitimate: a plan written by the spec\'s routing (Awaiting line + `[blocked: …]` criterion, no `[Gap]`) — plan-check clean', checkPlan(routed, { handoffFile: handoff() }).problems.length === 0, JSON.stringify(checkPlan(routed, { handoffFile: handoff() }).problems.map((x) => x.message)))
+  check('PP-1 stage-plan routing incident: `[Gap] … until it closes` on a new stage is an open-fork problem', rulesOf(checkPlan(routed.replace('[blocked: product decision — refund window]', '[Gap] the refund window waits for the open product decision until it closes'), { handoffFile: handoff() })).includes('open-fork'))
+
+  // m-1: one reading of the cell for both coverage tables — markup, ranges, words
+  const forms = [['backticked AC', '2 / `AC-2.1`'], ['bold stage', '**2** / AC-2.1'], ['range with an en dash', '1–2'], ['range with a hyphen', '1-2'], ['English words', 'Stages 1, 2 / AC-1.1, AC-2.1'], ['Russian words', 'Этапы 1, 2 / AC-1.1, AC-2.1'], ['и', '1 и 2 / AC-1.1'], ['and', '1 and 2'], ['dash before the AC', '2 — AC-2.1'], ['colon after the stage', 'Stage 2: AC-2.1']]
+  for (const [label, cell] of forms) {
+    const result = run(handoff(), [['H1', cell], ['H2', '1'], ['H3', '1']])
+    check(`PP-1 plan-check legitimate: the cell form "${label}" (\`${cell}\`) — clean`, result.problems.length === 0, JSON.stringify(result.problems.map((x) => x.message)))
+  }
+  check('PP-1 plan-check incident: an AC-only cell that is not the plan\'s (`AC-9.1`) — handoff-coverage-unknown-stage', rulesOf(run(handoff(), [['H1', 'AC-9.1'], ['H2', '1'], ['H3', '1']])).join() === 'handoff-coverage-unknown-stage')
+  check('PP-1 plan-check incident: a range into a stage the plan has not (`1–3`) — handoff-coverage-unknown-stage', rulesOf(run(handoff(), [['H1', '1–3'], ['H2', '1'], ['H3', '1']])).join() === 'handoff-coverage-unknown-stage')
+  const upper = checkPlan(plan([['H1', 'A0 / AC-A0.1'], ['H2', 'Stage A0'], ['H3', '1']], false, stage('A0') + stage(1)), { handoffFile: handoff() })
+  check('PP-1 plan-check legitimate: an upper-case stage id (`### Stage A0`, `A0 / AC-A0.1`) — clean', upper.problems.length === 0, JSON.stringify(upper.problems.map((x) => x.message)))
+  // the contract coverage table reads its cell the same way and reports nothing new on these forms
+  const contractPlan = (cell) => `# P-1: task\n\n${stage(1) + stage(2)}## Contract coverage\n| Item | Stage |\n|---|---|\n| E1 | ${cell} |\n`
+  check('PP-1 plan-check: the contract coverage cell reads the same forms (`**2**`, `1–2`, `Stages 1, 2`, the Russian stage word, "and" in Russian, backticks) — clean; `9` and `1–3` — contract-coverage-unknown-stage', ['**2**', '`2`', '1–2', 'Stages 1, 2', '\u042d\u0442\u0430\u043f\u044b 1, 2', '1 \u0438 2', '2'].every((cell) => checkPlan(contractPlan(cell), { contractFile: null }).problems.length === 0) && ['9', '1–3', 'backend'].every((cell) => rulesOf(checkPlan(contractPlan(cell), { contractFile: null })).join() === 'contract-coverage-unknown-stage'))
+  // M-1: a closed stage's criteria are history — archiving folds them away, the coverage cell keeps naming them
+  const closedPlan = (rows, body = stage(1).replace('[status: todo]', '[status: done]') + stage(2)) => plan(rows, false, body)
+  const cellsOpen = [['H1', '1 / AC-1.1'], ['H2', '2 / AC-2.1'], ['H3', '1, 2 / AC-1.1, AC-2.1']]
+  const archDir = realpathSync(mkdtempSync(join(tmpdir(), 'pp1s5a-')))
+  const padded = stage(1).replace('[status: todo]', '[status: done]').replace('What exists:', `What exists:\n${Array.from({ length: 14 }, (_, i) => `- filler line ${i} of a closed stage`).join('\n')}`)
+  writeFileSync(join(archDir, 'STAGES.md'), closedPlan(cellsOpen, padded + stage(2)))
+  const archived = spawnSync(process.execPath, [join(PLUGIN, 'archive-stages.mjs'), join(archDir, 'STAGES.md'), '--apply'], { encoding: 'utf8' })
+  const folded = readFileSync(join(archDir, 'STAGES.md'), 'utf8')
+  check('PP-1 plan-check incident: after archive-stages --apply the closed stage keeps no AC line, and `1 / AC-1.1`, `1, 2 / AC-1.1, AC-2.1` stay clean', archived.status === 0 && !/- `AC-1\.1`/.test(folded) && checkPlan(folded, { handoffFile: handoff() }).problems.length === 0, JSON.stringify([archived.status, checkPlan(folded, { handoffFile: handoff() }).problems.map((x) => x.message)]))
+  const foldedBad = folded.replace('| H2 | 2 / AC-2.1 |', '| H2 | 2 / AC-2.9 |')
+  check('PP-1 plan-check incident: after the fold a criterion of an OPEN stage that does not exist (`2 / AC-2.9`) is still handoff-coverage-unknown-stage', rulesOf(checkPlan(foldedBad, { handoffFile: handoff() })).join() === 'handoff-coverage-unknown-stage')
+  check('PP-1 plan-check incident: a closed stage does not excuse a criterion of a stage the plan has not (`AC-7.1`)', rulesOf(checkPlan(folded.replace('| H2 | 2 / AC-2.1 |', '| H2 | 1 / AC-7.1 |'), { handoffFile: handoff() })).join() === 'handoff-coverage-unknown-stage')
+  rmSync(archDir, { recursive: true, force: true })
+  const handFolded = `# P-1: task\n\n### Stage 1: first  [status: done]  logic-only\nFull record: STAGES-ARCHIVE.md — «first»\n\n${stage(2)}## Product handoff coverage\n| Handoff criterion | Stage / AC |\n|---|---|\n| H1 | 1 / AC-1.1 |\n| H2 | 2 / AC-2.1 |\n| H3 | 1 / AC-1.3 |\n`
+  check('PP-1 plan-check legitimate: a hand-folded stage (heading + archive link) — its `AC-1.1` and `AC-1.3` are accepted', checkPlan(handFolded, { handoffFile: handoff() }).problems.length === 0, JSON.stringify(checkPlan(handFolded, { handoffFile: handoff() }).problems.map((x) => x.message)))
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pp1s5-')))
+  const cli = (...args) => spawnSync(process.execPath, [join(PLUGIN, 'plan-check.mjs'), ...args], { encoding: 'utf8', cwd: root })
+  const folder = (name) => { const dir = join(root, 'tasks', name); mkdirSync(dir, { recursive: true }); return dir }
+  const empty = cli('--input', folder('an-epic'))
+  check('PP-1 plan-check --input incident: a folder named `an-epic` with nothing — exit 1, the /product-intake pointer', empty.status === 1 && /nothing found/.test(empty.stdout) && /\/product-intake/.test(empty.stdout), JSON.stringify([empty.status, empty.stdout, empty.stderr]))
+  const keyed = cli('--input', folder('PROJ-12'))
+  check('PP-1 plan-check --input legitimate: a ticket key in the folder name — exit 0, listed', keyed.status === 0 && /- ticket: PROJ-12/.test(keyed.stdout), JSON.stringify([keyed.status, keyed.stdout]))
+  const figma = cli('--input', folder('an-epic'), '--figma', 'https://figma.com/design/abc')
+  check('PP-1 plan-check --input legitimate: --figma alone — exit 0, design source listed', figma.status === 0 && /- design source: --figma https:\/\/figma\.com\/design\/abc/.test(figma.stdout))
+  const contractDir = folder('an-epic-c')
+  writeFileSync(join(contractDir, 'CONTRACT.md'), '### E1 — GET /a/\n')
+  const withContract = cli('--input', contractDir)
+  check('PP-1 plan-check --input legitimate: CONTRACT.md alone — exit 0, contract listed', withContract.status === 0 && /- contract: .*CONTRACT\.md/.test(withContract.stdout), JSON.stringify([withContract.status, withContract.stdout]))
+  const handDir = folder('an-epic-h')
+  writeFileSync(join(handDir, 'PRODUCT-HANDOFF.md'), handoff())
+  const withHandoff = cli('--input', handDir)
+  check('PP-1 plan-check --input legitimate: PRODUCT-HANDOFF.md alone — exit 0, handoff listed', withHandoff.status === 0 && /- product handoff: .*PRODUCT-HANDOFF\.md/.test(withHandoff.stdout))
+  write(root, { '.claude/pipeline.config.md': '- task_path: tasks/\n- design_source: ../prototypes/app\n' })
+  const withConfig = cli('--input', folder('an-epic-d'))
+  check('PP-1 plan-check --input legitimate: `design_source` in the config alone — exit 0, design source listed', withConfig.status === 0 && /- design source: design_source: \.\.\/prototypes\/app/.test(withConfig.stdout), JSON.stringify([withConfig.status, withConfig.stdout]))
+  write(root, { '.claude/pipeline.config.md': '- task_path: tasks/\n- design_source: none\n' })
+  check('PP-1 plan-check --input: `design_source: none` is not a source — exit 1', cli('--input', folder('an-epic-n')).status === 1)
+  for (const [label, line] of [['`нет`', '- design_source: нет\n'], ['an empty value before the next line', '- design_source:\n- language: ru\n'], ['an empty value before a heading', '- design_source:\n## Commands\n'], ['a `<…>` placeholder', '- design_source: <absolute or ../relative path to the design repo>\n']]) {
+    write(root, { '.claude/pipeline.config.md': `- task_path: tasks/\n${line}` })
+    const r = cli('--input', folder(`not-a-key-${label.length}`))
+    check(`PP-1 plan-check --input incident: design_source ${label} is not a source — exit 1, nothing found`, r.status === 1 && /nothing found/.test(r.stdout) && !/- design source:/.test(r.stdout), JSON.stringify([r.status, r.stdout]))
+  }
+  write(root, { '.claude/pipeline.config.md': '- task_path: tasks/\n' })
+  check('PP-1 plan-check --input incident: a slug with a number (`an-epic-2`, `stage-5`) and a lower-case key (`proj-12`) are not tickets — exit 1; `PROJ-12` is', ['an-epic-2', 'stage-5', 'proj-12'].every((name) => cli('--input', folder(name)).status === 1) && cli('--input', join(root, 'tasks', 'PROJ-12')).status === 0)
+  check('PP-1 plan-check --input: a one-letter key (`A-1`) is a ticket key (pipeline-state shares the pattern)', cli('--input', folder('A-1')).status === 0)
+  check('PP-1 plan-check --input: the pointer says it asks one question (the model reads it while working)', /one question/.test(empty.stdout), empty.stdout)
+  const outer = folder('P-9')
+  const outside = join(root, 'product', 'handoff')
+  mkdirSync(outside, { recursive: true })
+  writeFileSync(join(outside, 'PROJ-7.md'), handoff())
+  symlinkSync(join(outside, 'PROJ-7.md'), join(outer, 'PRODUCT-HANDOFF.md'))
+  writeFileSync(join(outer, 'STAGES.md'), plan(null))
+  const refused = cli(join(outer, 'STAGES.md'))
+  check('PP-1 plan-check incident: a PRODUCT-HANDOFF.md that is a symlink outside the task folder — one handoff-unreadable problem naming the file and why (it was silently skipped)', refused.status === 1 && /Problems \(1\)/.test(refused.stdout) && /PRODUCT-HANDOFF\.md cannot be read: its real path is outside the task directory/.test(refused.stdout), JSON.stringify([refused.status, refused.stdout]))
+  const refusedInput = cli('--input', outer)
+  check('PP-1 plan-check --input incident: the same refused handoff is not listed as found — "refused — …" with the reason, exit 0 only for the ticket key `P-9`', /product handoff: refused — PRODUCT-HANDOFF\.md cannot be read/.test(refusedInput.stdout) && !/product handoff: \/.*PRODUCT-HANDOFF\.md$/m.test(refusedInput.stdout), refusedInput.stdout)
+  const big = folder('P-10')
+  writeFileSync(join(big, 'PRODUCT-HANDOFF.md'), handoff() + 'x'.repeat(4 * 1024 * 1024 + 10))
+  writeFileSync(join(big, 'STAGES.md'), plan(null))
+  const bigRun = cli(join(big, 'STAGES.md'))
+  check('PP-1 plan-check incident: an oversize PRODUCT-HANDOFF.md — one problem, "over the … limit"', bigRun.status === 1 && /Problems \(1\)/.test(bigRun.stdout) && /PRODUCT-HANDOFF\.md cannot be read: it is .* over the .* limit/.test(bigRun.stdout), bigRun.stdout)
+  check('PP-1 plan-check --input: no folder argument — exit 2 with the usage', (() => { const r = cli('--input'); return r.status === 2 && /--input <task_dir>/.test(r.stderr) })())
+  const disk = folder('P-1')
+  writeFileSync(join(disk, 'PRODUCT-HANDOFF.md'), handoff())
+  writeFileSync(join(disk, 'STAGES.md'), plan([['H1', '1'], ['H3', '2']]))
+  const viaCli = cli(join(disk, 'STAGES.md'))
+  check('PP-1 plan-check CLI: STAGES.md next to a PRODUCT-HANDOFF.md is read from the ticket folder — H2 reported, exit 1', viaCli.status === 1 && /`H2`/.test(viaCli.stdout), JSON.stringify([viaCli.status, viaCli.stdout]))
+  rmSync(root, { recursive: true, force: true })
+
+  const read = (rel) => readFileSync(join(PLUGIN, '..', rel), 'utf8')
+  const stagePlan = read('skills/stage-plan/SKILL.md')
+  check('PP-1 stage-plan: Input runs plan-check --input first, writes no STAGES.md on exit ≠ 0, points to /product-intake; the handoff maps H to AC, decisions, out of scope, open questions; the template has the coverage table', ['plan-check.mjs --input <task_dir>/<TICKET>', 'is not a stop by itself: ask the user one question', 'Input: stated in chat', 'Only the product route stops', '/product-intake', '`H<n>` criteria → the stages\' `AC-*`', '## Product handoff coverage', '| Handoff criterion | Stage / AC |', 'Not included in the plan', 'Awaiting user confirmation'].every((part) => stagePlan.includes(part)))
+  check('PP-1 stage-plan: handoff routing lives in the spec only (a Routing section; the skill refers to it, restates no destination); no client names in plugin text', read('references/product-handoff.md').includes('## Routing') && !read('references/product-handoff.md').includes('until it closes') && stagePlan.includes('"Routing" section') && !/made or recommended/.test(stagePlan) && !/upselling|UP-485/i.test(stagePlan + readFileSync(join(PLUGIN, 'plan-check.mjs'), 'utf8')))
+  const lang = read('references/language.md')
+  check('PP-1 language.md: the Russian section and table header of the handoff coverage', lang.includes('`## Покрытие продуктовой передачи`') && lang.includes('`Критерий передачи` / `Этап / AC`'))
+  const spec = read('references/product-handoff.md')
+  check('PP-1 product-handoff spec: version-1 marker on the first line, the header fields and the four sections', spec.split('\n')[0] === '<!-- product-handoff 1 -->' && ['Type:', 'App/Repo:', 'From:', 'Design source:', 'Contract:', '## Criteria', '## Decisions', '## Out of scope', '## Open questions', '`H<n>`'].every((part) => spec.includes(part)))
+  const docs = read('agents/docs-lookup.md')
+  check('PP-1 docs-lookup: a 403, a login wall or a captcha is retried in the plugin\'s chrome-devtools before "not verified"; a refused or unavailable tool is still the end of the work', docs.includes('answered 403, a login wall or a captcha') && docs.includes('mcp__plugin_stage-pipeline_chrome-devtools__navigate_page') && docs.includes('never a project\'s') && /A refused or unavailable tool .* is not a 403 and gets no browser retry: with no package that is step 4/.test(docs) && Buffer.byteLength(docs) < 8192, String(Buffer.byteLength(docs)))
+  check('PP-1 docs-lookup: with the package installed a refused tool leaves one line "not verified", not "is not installed"', docs.includes('with the package installed, what it did not cover is one line "not verified"'))
+  check('PP-1 README: the /stage-plan input line names the handoff and plan-check --input and says it asks one question (not a hard stop)', read('README.md').includes('PRODUCT-HANDOFF.md') && read('README.md').includes('plan-check.mjs --input') && read('README.md').includes('asks one question') && !read('README.md').includes('it writes no plan and points'))
 }
 
 if (unit('todominors')) {

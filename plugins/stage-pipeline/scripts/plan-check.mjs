@@ -3,6 +3,7 @@
  * plan-check — the plan is linted before work starts (VT-5 stage 10).
  *
  *   node plan-check.mjs <STAGES.md> [--stage N] [--root <repo>] [--json]
+ *   node plan-check.mjs --input <task_dir>/<TICKET> [--figma <url>]
  *
  * Prints a summary line per stage (AC count, verifier spread, visual reference, state × action, references resolved N/M), then the problems,
  * then the warnings; exit code 1 when there are problems. `--stage N` narrows the problems to stage N plus the open Force block.
@@ -14,6 +15,7 @@
  * - the same AC id twice; an AC without `[verify: …]` / `[live: …]`; an open `[Gap]` / `[Ambiguity]` (no closing form on its line);
  * - a `dir/file.ext:line` that resolves neither in the repo nor in a sibling repo the config names (a sibling missing on this machine makes it a warning);
  * - a UI stage (not `logic-only`) without a `Visual reference:`;
+ * - a `PRODUCT-HANDOFF.md` in the ticket folder: a marker that is not `product-handoff 1`; an `H<n>` of its Criteria with no row in "Product handoff coverage" or a row whose stage is not in the plan (`--input` mode: exit 1 when the folder has no ticket key, design source, contract or handoff);
  * - an empty Stage cell in "Design source coverage"; a "Shared elements" table with no rows and no `Pairs checked: N`;
  * - in a NEW Force block: no `Stage dependencies:` line, a `Taxonomy:` line that does not name all 12 categories, an assumption with no rollback.
  * Warnings only: the "state × action" heuristic, "0 runtime AC" on a UI stage.
@@ -28,6 +30,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { isMain } from './main-guard.mjs'
+import { configValue } from './verify-map.mjs'
 import { baselineName } from './baseline-file.mjs'
 import { decisionViolations } from './decisions.mjs'
 import { likeViolation, releaseGate } from './journal-check.mjs'
@@ -39,6 +42,7 @@ import {
   CONTRACT_COVERAGE_SECTION,
   COVERAGE_SECTION,
   FORCE_FIELD_LINE,
+  HANDOFF_COVERAGE_SECTION,
   NO_VISUAL_REFERENCE,
   PAIRS_CHECKED,
   SHARED_SECTION,
@@ -46,6 +50,7 @@ import {
   STATE_ACTION_FIELD,
   TAXONOMY_CATEGORIES,
   TAXONOMY_LINE,
+  TICKET_KEY,
   forceBlockBody,
   forceHeadings,
   forceKey,
@@ -55,7 +60,7 @@ import {
   stageBlocksOf,
   stripQuoted,
 } from './markers.mjs'
-import { backendConfig, contractPath, integrationBase, mainRoot, pluginDataDir, readConfig, readDataFiles, readTaskFile } from './hooks/pipeline-state.mjs'
+import { backendConfig, contractPath, integrationBase, mainRoot, pluginDataDir, readConfig, readDataFiles, readTaskFile, taskFile, unreadableMessage } from './hooks/pipeline-state.mjs'
 
 const AC_START = /^[ \t]*(?:[-*][ \t]*|\|[ \t]*)?(?:\[[ xX]\][ \t]*)?(?:✅[ \t]*)?\**`?(AC-[\w.]*\w)`?\**(?=[\s:.,—–|)-]|$)/
 const VERIFIER_TAG = /\[(?:verify|live):/i
@@ -359,11 +364,63 @@ function contractFileOf(taskDir, config, roots) {
   return null
 }
 
+// PP-1: a product handoff (`references/product-handoff.md`) in the ticket folder — every `H<n>` of its Criteria has a row in "Product handoff coverage".
+const HANDOFF_FILE = 'PRODUCT-HANDOFF.md'
+const HANDOFF_VERSION = 1
+const HANDOFF_MARKER = /^\s*<!--\s*product-handoff\s+(\S+?)\s*-->/i
+const HANDOFF_ID = /^[ \t]*(?:[-*][ \t]*)?\**`?(H\d+)`?\**(?=[\s:.,—–|)-]|$)/
+/** The ticket folder's handoff as `taskFile` reads it: `{ text }`, or `{ problem }` (`missing` — there is none, so the check is skipped; any other — refused, see `unreadableMessage`). */
+function handoffFileOf(taskDir) {
+  return taskDir ? taskFile(taskDir, HANDOFF_FILE) : { problem: 'missing' }
+}
+/**
+ * `{ version, ids, noCriteria }` of a handoff text: the marker's version (null when there is no marker) and the ids of its `## Criteria` in order, a cancelled one left out.
+ * The skeleton is English (spec), so only `## Criteria` is read; a file without it is `noCriteria`, never read whole.
+ */
+export function handoffOf(text) {
+  const version = text.match(HANDOFF_MARKER)?.[1] ?? null
+  const section = sectionText(capLines(text), /^##\s+Criteria\b/im)
+  if (section === null) return { version, ids: [], noCriteria: true }
+  const ids = []
+  for (const line of section.split('\n')) {
+    const id = line.match(HANDOFF_ID)?.[1]
+    if (id && !/\[cancelled:/i.test(line) && !ids.includes(id)) ids.push(id)
+  }
+  return { version, ids, noCriteria: false }
+}
+const stageKey = (token) => (/^\d+$/.test(token) ? String(Number(token)) : token.toLowerCase())
+/**
+ * The references of a coverage "Stage" cell, one reading for both coverage tables: `{ stages, acs }`. `*` and backticks are dropped, a range `1–2` / `1-2` is expanded,
+ * words (`Stage(s)`, the Russian stage word, "and" in either language) are skipped: a stage token is one that starts with a digit (`2`, `2a`, `3.1`) or is a stage id of the plan (`known`, e.g. `A0`).
+ * `acs` are the `AC-…` ids in lower case. A cell with neither names nothing.
+ */
+export function cellRefs(cell, known = new Set()) {
+  const clean = cell.replace(/[*`]/g, '')
+  const acs = [...clean.matchAll(/\bAC-[\w.]*\w/gi)].map((match) => match[0].toLowerCase())
+  const rest = clean.replace(/\bAC-[\w.]*\w/gi, ' ').replace(/(\d+)\s*[–-]\s*(\d+)/g, (whole, from, to) => {
+    const [low, high] = [Number(from), Number(to)]
+    return high >= low && high - low <= 50 ? Array.from({ length: high - low + 1 }, (_, index) => low + index).join(' ') : whole
+  })
+  const stages = rest.split(/[\s,;/()+:—–]+/).map((token) => token.replace(/^[.:-]+|[.:-]+$/g, '')).filter((token) => /^\d[\w.]*$/.test(token) || known.has(stageKey(token))).map(stageKey)
+  return { stages, acs }
+}
+/**
+ * Whether a handoff coverage "Stage / AC" cell names only stages and criteria of the plan: stage tokens against the plan's stage ids (`stageIds`, as written),
+ * every `AC-…` against the criteria the plan still shows (`acIds`, lower case) or the criteria of a closed stage (`closedStages`, lower case ids: a folded stage keeps no AC lines,
+ * its `AC-1.1` is history, not a typo). A cell of AC ids alone is covered by them. `not in plan — <reason>` is the caller's.
+ */
+export function cellNamesPlan(cell, stageIds, acIds, closedStages = new Set()) {
+  const known = new Set([...stageIds].map(stageKey))
+  const { stages, acs } = cellRefs(cell, known)
+  if (!stages.length && !acs.length) return false
+  return stages.every((id) => known.has(id)) && acs.every((id) => acIds.has(id) || closedStages.has(id.match(/^ac-([^.]+)\./)?.[1] ?? ''))
+}
+
 // ── the check ─────────────────────────────────────────────────────────────────
 
 /**
  * Lints a plan. `options`: `taskDir`, `dataDir` (the first-sight gate and the plan snapshot; without both everything is new), `roots` (repo roots the references are
- * resolved in), `config` (the config text, for sibling repos), `contractFile` (the contract text, for tests; null = none), `stage` (narrow the problems), `context` (a ready `planContext`, for tests).
+ * resolved in), `config` (the config text, for sibling repos), `contractFile` (the contract text, for tests; null = none), `handoffFile` (the handoff text, for tests; null = none), `stage` (narrow the problems), `context` (a ready `planContext`, for tests).
  * Returns `{ stages: [{ number, heading, isNew, summary, line }], problems, warnings }`; a finding is `{ level, rule, scope: 'stage' | 'force' | 'plan', stage, block, message }`.
  */
 export function checkPlan(planText, options = {}) {
@@ -483,8 +540,9 @@ export function checkPlan(planText, options = {}) {
         if (!cell) {
           note(planHard, { ...plan, rule: 'contract-coverage-empty-stage', message: `"Contract coverage": the row "${label}" has an empty Stage cell — every endpoint (E*), event (EV*) and migration (MG*) of the contract has a stage, or an explicit "out of plan" reason.` })
         } else if (!OUT_OF_PLAN.test(cell)) {
-          const numbers = [...cell.matchAll(/\d+/g)].map((match) => String(Number(match[0])))
-          if (!numbers.length || numbers.some((number) => !known.has(number))) {
+          const keys = new Set([...known].map(stageKey))
+          const { stages: named } = cellRefs(cell, keys)
+          if (!named.length || named.some((id) => !keys.has(id))) {
             note(planHard, { ...plan, rule: 'contract-coverage-unknown-stage', message: `"Contract coverage": the row "${label}" has the Stage cell "${cell.slice(0, 40)}", which is not a stage of this plan (${[...known].join(', ') || 'none'}) — name an existing stage, or \`not in plan — <reason>\` (or its Russian equivalent).` })
           }
         }
@@ -500,6 +558,39 @@ export function checkPlan(planText, options = {}) {
     }
   } else if (stages.some((entry) => entry.summary.verifiers['api-verify'])) {
     note(planHard, { ...plan, rule: 'contract-coverage-missing', message: 'the plan has `[verify: api-verify]` criteria but no "Contract coverage" section — a row per endpoint (E*), event (EV*) and migration (MG*) of the contract, each with a stage (stage-plan, "Backend task").' })
+  }
+  // PP-1: a product handoff in the ticket folder — an unknown version is a problem; every `H<n>` needs a coverage row with a stage of the plan. No handoff file — no requirement.
+  const handoffRead = options.handoffFile !== undefined ? (options.handoffFile === null ? { problem: 'missing' } : { text: options.handoffFile }) : handoffFileOf(taskDir)
+  if (handoffRead.problem && handoffRead.problem !== 'missing') {
+    note(planHard, { ...plan, rule: 'handoff-unreadable', message: `${unreadableMessage(HANDOFF_FILE, handoffRead)} The handoff coverage is not checked until it can be read.` })
+  } else if (handoffRead.text !== undefined) {
+    const handoff = handoffOf(handoffRead.text)
+    if (handoff.version !== String(HANDOFF_VERSION)) {
+      note(planHard, { ...plan, rule: 'handoff-unknown-version', message: `${HANDOFF_FILE}: unknown handoff version ${handoff.version === null ? '(no \`<!-- product-handoff N -->\` marker on the first line)' : `"${handoff.version.slice(0, 20)}"`} — this plugin reads version ${HANDOFF_VERSION}; ask the product side for a handoff of that version (references/product-handoff.md).` })
+    } else if (handoff.noCriteria) {
+      note(planHard, { ...plan, rule: 'handoff-no-criteria', message: `${HANDOFF_FILE}: no \`## Criteria\` section — the handoff's behavior is listed there as \`H<n>\` lines (references/product-handoff.md); ask the product side for it.` })
+    } else if (handoff.ids.length) {
+      const section = sectionText(text, HANDOFF_COVERAGE_SECTION)
+      const { header, body } = section === null ? { header: null, body: [] } : tableRows(section)
+      const column = header?.findIndex((cell) => /^(?:stage|этап)/i.test(cell)) ?? -1
+      const known = new Set(stages.map((entry) => entry.number))
+      const rows = body.filter((cells) => cells.some(Boolean) && !cells.every((cell) => /^<.*>$/.test(cell)))
+      const covered = new Set()
+      const closedStages = new Set(stages.filter((entry) => entry.closed).map((entry) => entry.number.toLowerCase()))
+      for (const row of rows) {
+        const cell = (row[column >= 0 ? column : 1] ?? '').trim()
+        const ids = [...(row[0] ?? '').matchAll(/\bH\d+\b/g)].map((match) => match[0])
+        // The cell is "<stage> / <AC ids>": stages and criteria of this plan, as written (`2a`, `AC-2a.1`), or only AC ids.
+        const real = OUT_OF_PLAN.test(cell) || cellNamesPlan(cell, known, new Set(seenIds.keys()), closedStages)
+        for (const id of ids) {
+          if (real) covered.add(id)
+          else note(planHard, { ...plan, rule: 'handoff-coverage-unknown-stage', message: `"Product handoff coverage": the row "${id}" has ${cell ? `the cell "${cell.slice(0, 40)}", which names no stage or criterion of this plan (stages: ${[...known].join(', ') || 'none'})` : 'an empty Stage cell'} — name existing stages and criteria (\`<stage> / <AC ids>\`), or \`not in plan — <reason>\` (or its Russian equivalent).` })
+        }
+      }
+      for (const id of handoff.ids.filter((entry) => !covered.has(entry) && !rows.some((cells) => new RegExp(`\\b${entry}\\b`).test(cells[0] ?? '')))) {
+        note(planHard, { ...plan, rule: 'handoff-coverage-missing-row', message: `"Product handoff coverage": ${HANDOFF_FILE} has \`${id}\` but the table has no row for it — add \`| ${id} | <stage> / <AC ids> |\`, or an explicit "not in plan — <reason>".` })
+      }
+    }
   }
   const shared = sectionText(text, SHARED_SECTION)
   if (shared !== null) {
@@ -603,6 +694,25 @@ export function formatReport(result, name = '') {
   return lines.join('\n')
 }
 
+export const NO_INPUT_POINTER = 'No ticket key, design source, contract or handoff found for /stage-plan. Ask the user one question: a task stated here in chat (plan it), or a product ask (go to /product-intake in the product repo, product-pipeline plugin, when installed; without it: give a ticket, a design or a contract).'
+
+/**
+ * What input a task folder has (`--input`): `{ found: [{ kind, detail }], none }`. `taskDir` is `<task_dir>/<TICKET>`; `figma` is the `--figma` value; `config` is the repo's config text.
+ */
+export function inputOf(taskDir, { figma = null, config = '', root = '' } = {}) {
+  const found = []
+  const name = basename(resolve(taskDir))
+  if (TICKET_KEY.test(name)) found.push({ kind: 'ticket', detail: name })
+  const design = figma?.trim() || configValue(config, 'design_source')
+  if (design) found.push({ kind: 'design source', detail: `${figma?.trim() ? '--figma ' : 'design_source: '}${design.slice(0, 120)}` })
+  const contract = contractPath(config, dirname(resolve(taskDir)), name, root)
+  if (existsSync(contract)) found.push({ kind: 'contract', detail: contract })
+  const handoff = taskFile(taskDir, HANDOFF_FILE)
+  if (handoff.text !== undefined) found.push({ kind: 'product handoff', detail: join(taskDir, HANDOFF_FILE) })
+  else if (handoff.problem !== 'missing') found.push({ kind: 'product handoff', detail: `refused — ${unreadableMessage(HANDOFF_FILE, handoff)}` })
+  return { found, none: found.length === 0 }
+}
+
 /** The git toplevel of the working directory (the worktree the code is in), else null. */
 function worktreeOf() {
   try {
@@ -628,10 +738,24 @@ function main(args) {
     const at = args.indexOf(name)
     return at === -1 ? null : args[at + 1]
   }
+  if (args.includes('--input')) {
+    const dir = flag('--input')
+    if (!dir || dir.startsWith('--')) {
+      console.error('Usage: node plan-check.mjs --input <task_dir>/<TICKET> [--figma <url>]')
+      process.exit(2)
+    }
+    const root = rootFor(join(resolve(dir), 'STAGES.md'))
+    const result = inputOf(dir, { figma: flag('--figma'), config: readConfig(root), root })
+    console.log(`plan-check --input ${dir}:`)
+    for (const entry of result.found) console.log(`- ${entry.kind}: ${entry.detail}`)
+    if (result.none) console.log(`- nothing found\n${NO_INPUT_POINTER}`)
+    process.exitCode = result.none ? 1 : 0
+    return
+  }
   const used = new Set(['--stage', '--root'].flatMap((name) => (args.includes(name) ? [args.indexOf(name) + 1] : [])))
   const target = args.find((arg, index) => !arg.startsWith('--') && !used.has(index))
   if (!target || !existsSync(target)) {
-    console.error('Usage: node plan-check.mjs <STAGES.md> [--stage N] [--root <repo>] [--json]')
+    console.error('Usage: node plan-check.mjs <STAGES.md> [--stage N] [--root <repo>] [--json]\n       node plan-check.mjs --input <task_dir>/<TICKET> [--figma <url>]')
     process.exit(2)
   }
   const file = resolve(target)

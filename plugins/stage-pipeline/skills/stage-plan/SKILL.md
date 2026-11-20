@@ -18,6 +18,13 @@ Decide the task language first (Step 4, `${CLAUDE_PLUGIN_ROOT}/references/langua
 - Figma URL of the task's file/page.
 - Ticket and description.
 - `<task_dir>/<TICKET>/FEATURE-MAP.md` — if missing, run /feature-checker first.
+- `<task_dir>/<TICKET>/PRODUCT-HANDOFF.md` — when present: what the product side hands over (spec: `${CLAUDE_PLUGIN_ROOT}/references/product-handoff.md`). Optional; without it everything below works as before.
+
+**First step: is there any input at all.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs --input <task_dir>/<TICKET> [--figma <url>]` before anything else (before the inventory). It lists what exists: a ticket key (the folder name), a design source (`--figma` or `design_source` in the config), `CONTRACT.md`, `PRODUCT-HANDOFF.md`. Exit code ≠ 0 means there is none of the four, and it is not a stop by itself: ask the user one question — "a task stated here in chat: plan it", or "a product ask: go to `/product-intake`" (when the product-pipeline plugin is installed; otherwise "give a ticket, a design or a contract"). Record the answer in one line of the STAGES.md header (`Input: stated in chat — user <date>`). Only the product route stops, with no STAGES.md written. The branch is the user's: a plan made from nothing covers only what the repo already shows (a plan made for an epic folder with no ticket covered only the screens the repo already had).
+
+**With a handoff file.** Read it whole before Step 1. It adds to the design source and FEATURE-MAP and lists the behavior the product side expects:
+- `H<n>` criteria → the stages' `AC-*`: one `H` may become one or more `AC`, and every `H<n>` appears in the "Product handoff coverage" table (Step 4), a row each; an `H` the plan leaves out is `not in plan — <reason>`. Reword nothing: a criterion is taken as written, an unclear one is a question to the user.
+- Decisions, Out of scope and Open questions → their place in STAGES.md is set in one place, the "Routing" section of `${CLAUDE_PLUGIN_ROOT}/references/product-handoff.md`. `Type: [BE]` → Step 2.2 (stage 1 is the contract); `Design source` → Step 1.
 
 ## Step 1. Figma inventory
 
@@ -145,7 +152,7 @@ Pipeline:
 - [ ] dead-code: what was orphaned across the whole task (`${CLAUDE_PLUGIN_ROOT}/skills/dead-code`)
 - [ ] i18n-sweep: copy and locale completeness across the whole branch (`${CLAUDE_PLUGIN_ROOT}/skills/i18n-sweep`)
 - [ ] deps-audit: what the task dragged into the manifest and assets (`${CLAUDE_PLUGIN_ROOT}/skills/deps-audit`)
-- [ ] coverage: the "Design source coverage" table (and, in a backend task, "Contract coverage") has no rows without a stage; `[verify: staging]` criteria stay open until the staging observation and are listed in TEST-PLAN; every `AC-*` is closed by its verifier or deferred in the honest form `[live: user-side — <prerequisite>; <route> → <observed>]` decided at check time; no criterion is pre-marked `[live: user-side]` at plan time
+- [ ] coverage: the "Design source coverage" table (and, in a backend task, "Contract coverage"; with a handoff, "Product handoff coverage") has no rows without a stage; `[verify: staging]` criteria stay open until the staging observation and are listed in TEST-PLAN; every `AC-*` is closed by its verifier or deferred in the honest form `[live: user-side — <prerequisite>; <route> → <observed>]` decided at check time; no criterion is pre-marked `[live: user-side]` at plan time
 - [ ] task-converge: the code on HEAD against the intent of the whole task — `missing`/`partial`/`contradicts`/`unrequested` (`${CLAUDE_PLUGIN_ROOT}/skills/task-converge`); the only pass that sees an uncovered criterion and a silently widened scope, because it does not look at the diff. If there are findings → a "Catch-up" block and a rerun until it converges
 - [ ] test-plan: TEST-PLAN.md — assembled from the `AC-*` of all stages (ID → scenario → how to check) + recipes for simulating states (throttle/block/offline/crash) on all platforms
 - [ ] confirmations: the "Awaiting user confirmation" block is empty
@@ -156,6 +163,13 @@ Pipeline:
 | <name — node-id / screen-id> | empty, error | 2 |
 <a row for EVERY non-service frame/screen-id from the registry. An empty "Stage" cell = a hole in the plan,
 not "we'll do it along the way". A paired table to "Not included in the plan": there are the service items, here the working ones.>
+
+## Product handoff coverage
+<only when `<task_dir>/<TICKET>/PRODUCT-HANDOFF.md` exists; omit the section otherwise>
+| Handoff criterion | Stage / AC |
+|---|---|
+| <H1> | 2 / AC-2.1, AC-2.2 |
+<a row for EVERY `H<n>` of the handoff's Criteria. The cell names a stage of the plan and its criteria; the explicit way out is `not in plan — <reason>`.>
 
 ## Contract coverage
 <only for a backend task (Step 2.2); omit the section otherwise>
@@ -187,6 +201,6 @@ Pairs checked: <N — the number of stage pairs the Step 2.1 scan went through; 
 
 ## Step 5. Agreement
 
-Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs <STAGES.md>` and fix what it reports as a problem (a criterion without `[verify:]`, a `path:line` that does not resolve, an empty Stage cell in the coverage table, an empty "Shared elements" without `Pairs checked: N`); what it reports as a warning goes to the user with the table. Then show the user a compact table of stages (name, screens, size, order) and ask whether they agree with the split BEFORE considering the plan final. After edits, update STAGES.md.
+Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs <STAGES.md>` and fix what it reports as a problem (a criterion without `[verify:]`, a `path:line` that does not resolve, an empty Stage cell in the coverage table, an `H<n>` of the handoff with no row in "Product handoff coverage" or an unknown handoff version, an empty "Shared elements" without `Pairs checked: N`); what it reports as a warning goes to the user with the table. Then show the user a compact table of stages (name, screens, size, order) and ask whether they agree with the split BEFORE considering the plan final. After edits, update STAGES.md.
 
 Rules for maintaining the file: update statuses and the "Journal" at every change; never delete stages — mark cancelled ones; do not use relative dates, only absolute ones. **Keep STAGES.md compact** — every session reads it: fold done/cancelled stages down to the heading and the "Commit"/`Decisions:` lines, full records go to `STAGES-ARCHIVE.md` next to it (the archiving rule is in /stage-check, Step 4.2); journal entries are 3–6 lines with links to `checks/*.md`; word statuses neutrally and descriptively, without imperatives and commands.

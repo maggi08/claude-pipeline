@@ -113,7 +113,7 @@ In a repo with a `## Backend` section the plan starts with a contract stage: end
 ## 1. Once per task
 
 1. **`/feature-checker <ticket/feature>`** → `FEATURE-MAP.md` — a map of what already exists (reuse vs write from scratch). Needed for planning.
-2. **`/stage-plan`** → `STAGES.md` — splitting into stages (1 screen + its states = 1 stage), WHEN/THEN acceptance criteria, the order. Requires FEATURE-MAP.
+2. **`/stage-plan`** → `STAGES.md` — splitting into stages (1 screen + its states = 1 stage), WHEN/THEN acceptance criteria, the order. Requires FEATURE-MAP. Input: a ticket, a design source, a contract and/or a `PRODUCT-HANDOFF.md` from the product side (`references/product-handoff.md`; its criteria `H<n>` map to `AC-*` in a "Product handoff coverage" table). With none of them (`plan-check.mjs --input`) it asks one question: plan the task stated in chat, or go to the product side (the intake command of product-pipeline; without it a ticket, design or contract); only the product route writes no plan.
 
 Criteria are numbered (`AC-<stage>.<n>`) and carry a verifier tag — who is able to check them: `figma-compare`, `devtools-verify`, `pro-review`, `user-review`. A criterion that only the user can reach is never pre-tagged at plan time: the checker defers it with `[live: user-side — <prerequisite>; <route> → <observed>]` after it tried (force asks for the login up front). This gives three things that would not exist otherwise: a design source coverage table (no screen is lost silently), ID references in checker reports (the fix-loop knows what it rechecks) and a mechanical assembly of TEST-PLAN.md instead of rereading all stages. A criterion without a verifier is a defect of the plan: there is nothing to check it with.
 
