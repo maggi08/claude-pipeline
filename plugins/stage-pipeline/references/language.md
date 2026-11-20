@@ -30,6 +30,7 @@ The markers that scripts and hooks read from STAGES.md, `checks/`, the Force run
 | Header, branch value: none | `none` | `нет` |
 | Header, words after a branch name | `from`, `off`, `cut from`, `branched`, `rebased onto`, `base`, `merged` | `от`, `из`, `срезана`, `отведена`, `пересажена`, `база`, `влита` |
 | Header | `Contexts:`, `Updated:` | `Контексты:`, `Обновлено:` |
+| Header, optional line | `Input: stated in chat — user <date>` | `Вход: задана в чате — пользователь <дата>` |
 | Status heading | `## Status: stage N of M — …` | `## Статус: этап N из M — …` |
 | Status line, force run closed / open | `force run … completed` / `not completed` | `force-прогон … завершён` / `не завершён` |
 | Section | `## Journal` | `## Журнал` |

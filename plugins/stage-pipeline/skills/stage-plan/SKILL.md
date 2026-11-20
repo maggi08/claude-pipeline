@@ -20,7 +20,7 @@ Decide the task language first (Step 4, `${CLAUDE_PLUGIN_ROOT}/references/langua
 - `<task_dir>/<TICKET>/FEATURE-MAP.md` — if missing, run /feature-checker first.
 - `<task_dir>/<TICKET>/PRODUCT-HANDOFF.md` — when present: what the product side hands over (spec: `${CLAUDE_PLUGIN_ROOT}/references/product-handoff.md`). Optional; without it everything below works as before.
 
-**First step: is there any input at all.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs --input <task_dir>/<TICKET> [--figma <url>]` before anything else (before the inventory). It lists what exists: a ticket key (the folder name), a design source (`--figma` or `design_source` in the config), `CONTRACT.md`, `PRODUCT-HANDOFF.md`. Exit code ≠ 0 means there is none of the four, and it is not a stop by itself: ask the user one question — "a task stated here in chat: plan it", or "a product ask: go to `/product-intake`" (when the product-pipeline plugin is installed; otherwise "give a ticket, a design or a contract"). Record the answer in one line of the STAGES.md header (`Input: stated in chat — user <date>`). Only the product route stops, with no STAGES.md written. The branch is the user's: a plan made from nothing covers only what the repo already shows (a plan made for an epic folder with no ticket covered only the screens the repo already had).
+**First step: is there any input at all.** Run `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs --input <task_dir>/<TICKET> [--figma <url>]` before anything else (before the inventory). It lists what exists: a ticket key (the folder name), a design source (`--figma` or `design_source` in the config), `CONTRACT.md`, `PRODUCT-HANDOFF.md`. Exit code ≠ 0 means there is none of the four, and it is not a stop by itself: ask the user one question — "a task stated here in chat: plan it", or "a product ask: go to `/product-intake`" (when the product-pipeline plugin is installed; otherwise "give a ticket, a design or a contract"). Record the answer in one line of the STAGES.md header (`Input: stated in chat — user <date>`, in a `ru` task in the form of the `language.md` marker table). Only the product route stops, with no STAGES.md written. The branch is the user's: a plan made from nothing covers only what the repo already shows (a plan made for an epic folder with no ticket covered only the screens the repo already had).
 
 **With a handoff file.** Read it whole before Step 1. It adds to the design source and FEATURE-MAP and lists the behavior the product side expects:
 - `H<n>` criteria → the stages' `AC-*`: one `H` may become one or more `AC`, and every `H<n>` appears in the "Product handoff coverage" table (Step 4), a row each; an `H` the plan leaves out is `not in plan — <reason>`. Reword nothing: a criterion is taken as written, an unclear one is a question to the user.
@@ -102,6 +102,7 @@ Save to `<task_dir>/<TICKET>/STAGES.md`. The language of the task is chosen by t
 # <TICKET>: <task name>
 Figma: <url>  Branch: `<branch>`  Contexts: desktop | adaptive | webview
 Language: <en | ru>
+Input: <stated in chat — user <date>>   (optional: only when the first step asked the question)
 Updated: <date>
 
 ## Status: stage N of M — <short phrase on what is happening>

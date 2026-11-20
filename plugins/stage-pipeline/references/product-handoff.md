@@ -84,4 +84,5 @@ This is the one place that says it; `/stage-plan` follows it.
 
 - It does not rewrite or "fix" the handoff: a wrong or unclear line is a question to the user, and the file changes on the product side.
 - It does not treat the handoff as a design: screens, states and pixel values come from the design source; the handoff says what must be true, not how it looks.
+- It does not reread a handoff that changed after the plan: when `PRODUCT-HANDOFF.md` is newer than the plan (the product side handed the task over again), run a full `plan-check <STAGES.md>` (stage mode drops plan-level findings); a new `H<n>` is a missing row of "Product handoff coverage": a stage, or `not in plan — <reason>`.
 - It does not require the file: without it `/stage-plan` takes its input from the ticket, the design and the contract, as before. With none of the four (ticket key, design source, contract, handoff) `plan-check.mjs --input` exits 1 and `/stage-plan` asks the user once: plan a task stated in chat, or go to the product side; only the product route stops.
