@@ -19,7 +19,9 @@ What changes against 0.29.4: the text of `stage-plan` and of the `docs-lookup` a
 
 **Dev repo only:** `scripts/hooks-test.mjs` covers the handoff reading, the coverage rules and `--input`; the README table lists the new plugin.
 
-Evals: <filled by the orchestrator>
+Evals (2026-11-20, Claude Code 2.1.328, one run each, about $0.40 with an earlier run on an uncommitted tree): `docs-lookup-version-mismatch` 1 of 1. `docs-lookup-not-installed` 0 of 1, on the length of the agent's summary only (`L1`: 10 lines against a cap of 6); its behaviour marks pass — no claims, no links, the version and the install advice, and a refused WebFetch ends the work without a browser retry. The same length mark failed 3 of 3 at 0.23.0 on 2.1.314 (invocation `20261030T102038-02dd`), so it predates this release; it stays in `TODO.md`.
+
+eval: skipped docs-lookup — `docs-lookup-not-installed` fails only its summary-length mark `L1`, which failed the same way at 0.23.0 before this release touched the agent; the behaviour this release changed (a refused tool still ends the work, no browser retry) passes, and `docs-lookup-version-mismatch` passes 1 of 1.
 
 ## 0.29.4 — 2026-11-19
 
