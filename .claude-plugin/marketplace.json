@@ -40,6 +40,19 @@
         "repo": "maggi08/design-pipeline",
         "ref": "v0.1.0"
       }
+    },
+    {
+      "name": "product-pipeline",
+      "description": "Product work before code, for the product owner: intake of a stakeholder's ask, discovery with sourced facts, a brief with a lint and a clean-context review, stakeholder decisions, the split into tickets, Jira (manual mode first), and a handoff that stage-pipeline's /stage-plan reads",
+      "category": "product",
+      "author": {
+        "name": "Magzhan Mussaiyn"
+      },
+      "source": {
+        "source": "github",
+        "repo": "maggi08/product-pipeline",
+        "ref": "v0.1.0"
+      }
     }
   ]
 }

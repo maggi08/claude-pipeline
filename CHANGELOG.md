@@ -5,6 +5,22 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.30.0 — 2026-11-20
+
+### /stage-plan reads a product handoff and asks when it has no input, docs-lookup retries a refused page in the browser, and product-pipeline joins the marketplace
+
+What changes against 0.29.4: the text of `stage-plan` and of the `docs-lookup` agent, one new reference, two marker rows in `references/language.md`, a paragraph in the plugin README, and `plan-check`. No hook and no config key changes; with a ticket, a design source or a contract and no handoff, `/stage-plan` works as before (with none of them it first asks one question, below) and needs no second plugin.
+
+- **`/stage-plan` reads `PRODUCT-HANDOFF.md`.** When the ticket folder holds one, the plan is built from it: the spec is `references/product-handoff.md` (a `<!-- product-handoff 1 -->` marker, header fields, `H<n>` criteria, decisions, out of scope, open questions). The plan gets a "Product handoff coverage" section, one row per `H<n>` with the stage and the criteria that cover it, or `not in plan — <reason>`. `plan-check` checks it: an unknown version, a missing `## Criteria`, an `H<n>` without a row and a row that names no stage or criterion of the plan are problems. The file is written by the new `product-pipeline` plugin (`/product-handoff`), or by hand to the same spec.
+- **`/stage-plan` with no input asks one question.** `plan-check --input <task_dir>/<TICKET>` looks for a ticket key, a design source, a contract and a handoff. When it finds none, the skill does not plan silently: it asks once whether the task is stated here in chat (plan it) or is a product ask (go to `/product-intake`, or give a ticket, a design or a contract when product-pipeline is not installed). The answer goes into the STAGES.md header.
+- **`plan-check` reads the "Contract coverage" Stage cell the way it reads the handoff coverage cell.** `AC-…` ids, words and ranges no longer count as stage numbers, so a cell like `1 / AC-1.4` is no longer a false `contract-coverage-unknown-stage`.
+- **`docs-lookup` retries a refused page in the browser.** A page that answered 403, a login wall or a captcha was reported "not verified" although the page opens in a browser. The agent now retries it once in the plugin's Chrome DevTools browser before giving up; a fetch that failed for another reason still ends the work as before.
+- **New sibling plugin `product-pipeline`.** The `magzhan` marketplace lists it next to `design-pipeline`, pinned to `v0.1.0`: the product owner's steps before a task exists — intake, discovery with sourced facts, a brief with a lint and a clean-context review, stakeholder decisions, the split into tickets, Jira (manual mode first) and the handoff above. Install: `claude plugin install product-pipeline@magzhan`. Each plugin is useful without the other.
+
+**Dev repo only:** `scripts/hooks-test.mjs` covers the handoff reading, the coverage rules and `--input`; the README table lists the new plugin.
+
+Evals: <filled by the orchestrator>
+
 ## 0.29.4 — 2026-11-19
 
 ### Checkers keep working after a refused Bash call, api-verify runs one command per call, and devtools-verify names no cause in repro mode
