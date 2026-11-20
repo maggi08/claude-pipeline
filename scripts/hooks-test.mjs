@@ -11197,6 +11197,12 @@ if (unit('vt15s4')) {
   check('api-verify agent: frontmatter name, model sonnet, points at its skill', /^name: api-verify$/m.test(agentText) && /^model: sonnet$/m.test(agentText) && agentText.includes('skills/api-verify/SKILL.md'))
   check('api-verify skill: frontmatter name and the report parts (Stage criteria, Could not verify, read-back, role matrix, migration)', /^name: api-verify$/m.test(skillText) && ['## Stage criteria', '## Could not verify', 'read-back', 'Role matrix', 'Migration'].every((part) => skillText.includes(part)))
   check('api-verify skill: the faulthandler substitution rule (tail replaced, prefix kept, -p no:faulthandler, -p no:cacheprovider, --reuse-db)', ['replaced by `python -c', '-p no:faulthandler', '-p no:cacheprovider', '--reuse-db', 'the prefix'].every((part) => skillText.includes(part)))
+  check('0.29.4 api-verify skill: one command per Bash call is unconditional, probe files through Write, the cleanup starts from the empty overwrite', ['**One command per Bash call, always**', 'written with the Write tool, not a heredoc', 'through the Write tool (start there'].every((part) => skillText.includes(part)) && !skillText.includes('when a session guard refuses compound commands'))
+  {
+    const read = (rel) => readFileSync(join(PLUGIN, '..', rel), 'utf8')
+    check('0.29.4 devtools-verify: a refused compound line is rerun as plain calls (skill), repro mode reads no source and names no cause (agent and reference)', read('skills/devtools-verify/SKILL.md').includes('A refused compound Bash line is rerun as plain calls') && read('agents/devtools-verify.md').includes('read no source, name no cause') && read('skills/devtools-verify/references/effects-and-repro.md').includes("do not read the app's source"))
+    check('0.29.4 root-cause: no edit before the repro report, a refused call is rerun as plain calls', read('skills/root-cause/SKILL.md').includes('**No edit before the repro report**'))
+  }
   check('api-verify skill: the cleanup rule (clear first, ls .api-verify, absolute path and cleanup command when deletion is refused)', ['Clear it first', 'empty file', 'leftover', 'PYTHONDONTWRITEBYTECODE', 'ls <abs repo>/.api-verify', 'cleanup command'].every((part) => skillText.includes(part)))
   rmSync(root, { recursive: true, force: true })
 }

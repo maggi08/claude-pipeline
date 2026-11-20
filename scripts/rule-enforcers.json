@@ -1,6 +1,11 @@
 {
-  "proseBaseline": 219,
+  "proseBaseline": 221,
   "rules": {
+    "api-verify#302c6b07e6": {
+      "to": "prose",
+      "text": "one command per bash call, always: the exclude line, the mkdir of the folder and each cleanup step are calls o",
+      "baseline": true
+    },
     "dead-code#d0f5092819": {
       "to": "prose",
       "text": "everything else is pre-existing debt, outside the scope; mention it in one line at the end of the report and d",
@@ -67,6 +72,11 @@
     "devtools-verify#0720e4825b": {
       "to": "hook:frames-guard/navigation-no-verdict",
       "text": "doctor: error — the doctor itself failed: report its line, do not navigate."
+    },
+    "devtools-verify#8d7b32fb61": {
+      "to": "prose",
+      "text": "a refused compound bash line is rerun as plain calls (one command, absolute paths); only a refused plain call ",
+      "baseline": true
     },
     "devtools-verify#32caa7b9db": {
       "to": "prose",

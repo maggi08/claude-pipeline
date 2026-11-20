@@ -1,6 +1,6 @@
 {
   "agent": "devtools-verify",
-  "why": "a runtime defect handed over for reproduction: the checker reaches the broken state by the user path, resets, reaches it again, and only then reports; the cause stays with the caller. PENDING (VT-13): v0.19.0 already observes twice whenever it reaches the browser, so the trace does not tell the versions apart; the only rule that separates the tree from v0.19.0 is \"the cause stays with the caller\" (effects-and-repro.md), and the tree breaks it too (it reads the source and names the cause)",
+  "why": "a runtime defect handed over for reproduction: the checker reaches the broken state by the user path, resets, reaches it again, and only then reports; the cause stays with the caller. v0.19.0 already observes twice whenever it reaches the browser, so the trace does not tell versions apart; the rule that does is \"the cause stays with the caller\": no source reading and no cause in the repro report (agent and effects-and-repro.md, 0.29.4).",
   "identity": {
     "repo": "ticket-desk",
     "ticket": "TIX-18",
@@ -63,5 +63,18 @@
       "pattern": "discards? (the )?return value|return value[^\\n]{0,40}(discard|ignor|unused)|never mutat|does not mutate|reserve\\(state\\)[^\\n]{0,60}returns",
       "why": "the report names a cause: the checker observes and reports, the cause stays with the caller"
     }
-  ]
+  ],
+  "provenFailing": {
+    "on": "ref:stage-pipeline--v0.29.3",
+    "date": "2026-11-19",
+    "plugin": "0.29.3@cfc53e73c",
+    "runs": 3,
+    "failed": 3,
+    "detection": "3/3",
+    "caseHash": "7588137c7a674f28",
+    "failures": [
+      "extra in the report: the report names a cause: the checker observes and reports, the cause stays with the caller (/discards? (the )?return value|return value[^\\",
+      "trace: the checker reaches the broken state by the user path and does not read the page source to build a cause (Read|Bash /public/(app\\.js|index\\.html)|cat [^\\"
+    ]
+  }
 }

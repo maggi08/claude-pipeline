@@ -5,6 +5,20 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.29.4 — 2026-11-19
+
+### Checkers keep working after a refused Bash call, api-verify runs one command per call, and devtools-verify names no cause in repro mode
+
+What changes against 0.29.3: the text of three skills and of the devtools-verify agent. No hook, script or config key changes.
+
+- **api-verify: one command per Bash call, always.** The rule used to apply "when a session guard refuses compound commands", so the agent learned it only from two refusals, and a refused `rm` left the probe folder uncleaned. Now the exclude line, the `mkdir` and each cleanup step are calls of their own, probe files are written with the Write tool, and leftovers are cleared by overwriting them with an empty file first.
+- **devtools-verify and root-cause: a refused Bash call does not end the work.** devtools-verify stopped the whole check after one refused `node …/verify-doctor.mjs; cd …` and opened no page; root-cause edited the code without the repro after the same refusal. Both now rerun a refused compound line as plain calls, and root-cause makes no edit before the repro report.
+- **devtools-verify repro mode names no cause.** The checker read the page's source and wrote a "likely cause" into the repro report, against "the cause stays with the orchestrator". The agent and the repro reference now say it in so many words: no source reading, no cause, the readings are the hand-over.
+
+`scripts/rule-enforcers.json`: two new prose-only rules (the one-command rule of api-verify and the refused-line rule of devtools-verify), the baseline raised from 219 to 221 on purpose — no hook can hold how an agent reacts to a refusal; the eval cases do.
+
+Evals (2026-11-19, Claude Code 2.1.328; these runs cost about $3.5): `devtools-verify-repro-seats` leaves `evals/pending/` — 3 of 3 on this release, 0 of 3 on v0.29.3 on the same host (it reads `app.js` and names the cause), recorded as `provenFailing`. `root-cause-repro-first` 3 of 3 (1 of 3 at 0.26.0 on 2.1.314; v0.29.3 was not re-run on 2.1.328, so part of that gain may be the host). `devtools-verify-mapped-cart`, `devtools-verify-storefront` and `api-verify-owner-check` 1 of 1 each.
+
 ## 0.29.3 — 2026-11-19
 
 ### The plugin's agents never push or write to GitHub, and gates run from a worktree's copy of the scripts reach the installed plugin
