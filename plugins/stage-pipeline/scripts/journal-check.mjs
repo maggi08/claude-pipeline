@@ -398,8 +398,21 @@ const NOT_FIXED_YET =
   /(?:\bnot|n['’]t)\s+(?:(?:yet|fully|been|completely|properly)\s+)*(?:fix(?:ing|ed)|resolved)\b|\b(?:will|to)\s+be\s+(?:fixed|resolved|addressed)\b|(?<![а-яё])не\s+(?:(?:ещ[её]|полностью)\s+)*(?:исправлен|починен)|(?:исправим|починим|поправим)(?![а-яё])|будет\s+(?:исправлен|починен)/i
 // "FINDINGS" (the file name) is case-sensitive: the plain word "findings" is the plugin's own vocabulary, and "to findings" — a forbidden outcome.
 const PARKED_FILE = /\bFINDINGS(?:\.md)?\b/
-const PARKED =
-  /оставля|оставлен|компромисс|ожида[а-яё]*\s+подтвержд|не\s+чин|в\s+кит(?![а-яё])|(?:в|to|into)\s+findings\b|отдельн[а-яё]*\s+задач|позже|потом(?![а-яё])|принят[а-яё]*\s+как|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|вне\s+(?:скоуп|границ)|не\s+в\s+скоуп|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|\bleft\s+as\b|\bkeep(?:ing)\b|\bkept\s+as\b|compromise|awaiting\s+(?:user\s+)?confirmation|\bwon['’]?t\s+fix|\b(?:to|into)\s+the\s+kit\b|separate\s+task|\blater\b|\bafterwards\b|\bdeferred\b|\bpostponed\b|accepted\s+as\b|question\s+(?:for|to)\s+(?:the\s+)?(?:product|design|backend|reviewer|qa)\b|out\s+of\s+scope|not\s+in\s+scope|outside\s+(?:the\s+)?(?:scope|boundaries)/i
+// The Russian "later" and "out of scope" name a deferral only in their deferral forms: "for later", "<fix verb> later", "later" closing the clause; "is out of scope",
+// "— out of scope" closing the clause, "out of scope for this task". The Russian "first X, then Y" (the same word) is an order, and "Out of scope" in the middle of a line names a section
+// (a template's "Out of scope" heading): outcome lines of 2026-11-20 that fixed both were refused as "a decision not to fix" (PP-1).
+const LATER_RU =
+  /на\s+потом|потом\s+(?:исправ|поправ|почин|доде|сдела|займ|верн|разбер|посмотр|допиш)|(?:исправ|поправ|почин|доде|сдела|займ|верн|разбер|посмотр|допиш)[а-яё]*\s+(?:\S+\s+){0,2}потом(?![а-яё])|(?:^\s*|[—–,:]\s*)потом\s*[.;)]?\s*$/
+const OUT_OF_SCOPE =
+  /(?:\b(?:is|are|stays?|remains?|left|kept|goes|went|moved|considered|deemed|marked|as)\s+(?:\S+\s+){0,2}out\s+of\s+scope|(?:^\s*|[—–,:]\s*|\s-\s+)out\s+of\s+scope\s*[.;)]?\s*$|out\s+of\s+scope\s+(?:for|of)\s+(?:this|the)\b)/
+// What stays refused, as before 0.30.1: the Russian "later" closing its clause (followed by punctuation or the end, not by a word), the Russian
+// "the rest ... later", and a lower-case "out of scope" (a template names its section with a capital letter; Node 22 has no inline (?-i:), so it is tested apart).
+const LATER_TAIL_RU =
+  /(?<![а-яё])потом\s*(?:[.;!,(—–]|$)|остальн[а-яё]{0,4}[^.;]{0,40}потом(?![а-яё])|отдельн[а-яё]*\s+(?:PR|MR|коммит|этап)/
+const OUT_OF_SCOPE_LC = /out\s+of\s+scope/
+const PARKED_WORDS =
+  /оставля|оставлен|компромисс|ожида[а-яё]*\s+подтвержд|не\s+чин|в\s+кит(?![а-яё])|(?:в|to|into)\s+findings\b|отдельн[а-яё]*\s+задач|позже|принят[а-яё]*\s+как|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|вне\s+(?:скоуп|границ)|не\s+в\s+скоуп|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|\bleft\s+as\b|\bkeep(?:ing)\b|\bkept\s+as\b|compromise|awaiting\s+(?:user\s+)?confirmation|\bwon['’]?t\s+fix|\b(?:to|into)\s+the\s+kit\b|separate\s+task|\blater\b|\bafterwards\b|\bdeferred\b|\bpostponed\b|accepted\s+as\b|question\s+(?:for|to)\s+(?:the\s+)?(?:product|design|backend|reviewer|qa)\b|not\s+in\s+scope|outside\s+(?:the\s+)?(?:scope|boundaries)/i
+const PARKED = new RegExp(`${PARKED_WORDS.source}|${LATER_RU.source}|${LATER_TAIL_RU.source}|${OUT_OF_SCOPE.source}`, 'i')
 const PRE_EXISTING = /давн|не\s+регресс|pre-?existing|было\s+до|до\s+задачи|long-?standing|not\s+a\s+regression|existed\s+before|(?:was|were)\s+(?:already\s+)?there\s+before|before\s+this\s+task|predat(?:es|ed)/i
 const BASE_EVIDENCE = /\b[0-9a-f]{7,40}\b|https?:\/\/|(?<![а-яё])прод(?![а-яё])|\bprod\b|на\s+базе|\bproduction\b|\bon\s+(?:the\s+)?base\b/i
 
@@ -408,15 +421,16 @@ const FIXED_WORD = /исправлен|починен|удал[её]н|(?<!\bnot
 const NEGATED_FIXED = /(?:\bnot|n['’]t|\bcannot|\bcan\s+not)\s+(?:(?:be|been|yet|fully|completely|properly)\s+)*(?:fixed|removed|resolved|repaired)\b|(?<![а-яё])не\s+(?:(?:может|могут|будет|было)\s+(?:быть\s+)?)?(?:исправлен|починен|удал[её]н)/gi
 // An outcome that opens with `false` or its Russian form (at the start of the line, after a dash, or the id): decided before any fixed word that follows it.
 const FALSE_OUTCOME = /(?:^\s*(?:[-*]|\d+\.)?\s*|[—–]\s*|\s-\s+)(?:false|ложн[\wа-яё]*)\s*[:(—–-]/i
-const refused = (text) => PARKED.test(text) || PARKED_FILE.test(text) || NOT_FIXED_YET.test(text)
+const refused = (text) => PARKED.test(text) || OUT_OF_SCOPE_LC.test(text) || PARKED_FILE.test(text) || NOT_FIXED_YET.test(text)
 // The description of a fix may say "later" or "keeping" about the code; only an explicit deferral of a remainder makes the outcome parked:
 // "fixed: a.ts:1, fix the tests later", "fixed: a.ts:1 — the rest is out of scope", and the Russian forms.
-const DEFERRED_REST =
-  /\bwill\s+be\s+(?:fixed|resolved|addressed|done)\b|(?<!\bused\s)\bto\s+be\s+(?:fixed|resolved|addressed|done)\b|\b(?:fix(?:es|ing)?|do(?:ing)?|handle|handling|address(?:ing)?|cover(?:ing)?)\s+(?:\S+\s+){0,3}later\b|\brest\b[^.;]{0,40}\b(?:later|as\s+is)\b|separate\s+task|\bfollow-?up\s+(?:PR|MR|task|ticket|issue|commit|stage)\b|\b(?:in|into|to)\s+a\s+follow-?up\b|out\s+of\s+scope|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|(?:исправим|починим|поправим)(?![а-яё])|будет\s+(?:исправлен|починен)|отдельн[а-яё]{0,4}\s+задач|вне\s+(?:скоуп|границ)|остальн[а-яё]{0,4}[^.;]{0,40}(?:позже|потом)(?![а-яё])|оставля[а-яё]{0,4}\s+как\s+есть/i
+const DEFERRED_WORDS =
+  /\bwill\s+be\s+(?:fixed|resolved|addressed|done)\b|(?<!\bused\s)\bto\s+be\s+(?:fixed|resolved|addressed|done)\b|\b(?:fix(?:es|ing)?|do(?:ing)?|handle|handling|address(?:ing)?|cover(?:ing)?)\s+(?:\S+\s+){0,3}later\b|\brest\b[^.;]{0,40}\b(?:later|as\s+is)\b|separate\s+task|\bfollow-?up\s+(?:PR|MR|task|ticket|issue|commit|stage)\b|\b(?:in|into|to)\s+a\s+follow-?up\b|\bleav(?:e|es|ing)\s+(?:it|this|that|them|as)\b|(?:исправим|починим|поправим)(?![а-яё])|будет\s+(?:исправлен|починен)|отдельн[а-яё]{0,4}\s+задач|вне\s+(?:скоуп|границ)|остальн[а-яё]{0,4}[^.;]{0,40}(?:позже|потом)(?![а-яё])|оставля[а-яё]{0,4}\s+как\s+есть/i
+const DEFERRED_REST = new RegExp(`${DEFERRED_WORDS.source}|${OUT_OF_SCOPE.source}|${LATER_TAIL_RU.source}`, 'i')
 // The forbidden outcomes of references/checker-report.md that cannot describe code, and a short "<one or two words> later" closing the clause ("— tests later").
 const REFUSED_REST =
   /компромисс|\bcompromise\b|\bwon['’]?t\s+fix|не\s+чин|(?:в|to|into)\s+findings\b|вопрос[а-яё]*\s+(?:к\s+)?(?:продукт|дизайн|бэкенд|backend|ревьюер|qa)|question\s+(?:for|to)\s+(?:the\s+)?(?:product|design|backend|reviewer|qa)\b|принят[а-яё]*\s+как|accepted\s+as\b|ожида[а-яё]*\s+подтвержд|awaiting\s+(?:user\s+)?confirmation|не\s+в\s+скоуп|not\s+in\s+scope|outside\s+(?:the\s+)?(?:scope|boundaries)|в\s+кит(?![а-яё])|(?:to|into)\s+the\s+kit\b|(?:^|[—–,]\s*)(?:[^\s.;,—–]+\s+){0,2}(?:later|afterwards|позже|потом)\s*$/i
-const deferredRest = (text) => DEFERRED_REST.test(text) || REFUSED_REST.test(text) || PARKED_FILE.test(text)
+const deferredRest = (text) => DEFERRED_REST.test(text) || OUT_OF_SCOPE_LC.test(text) || REFUSED_REST.test(text) || PARKED_FILE.test(text)
 /** The wording of an outcome: the clause up to the first ":" or dash after the outcome word ("fixed: a.ts:10 — the promise is not resolved twice" → "fixed"). The description of the fix is not the outcome. */
 function outcomeHead(clause) {
   const word = FIXED_WORD.exec(clause)

@@ -34,7 +34,8 @@ A short view with no `Session browser:` line at all comes from an older plugin i
 - A delta sees the round's diff and its radius, not the whole branch. What it does not check: whether a finding of the first review that the round did not touch still holds, and a defect that lies in the unchanged code around the round. Those stay with the full review.
 - An autonomous run is exactly the mode where an uncovered criterion or a silently widened scope will be caught by no one along the way, hence the mandatory `task-converge`.
 - A delta re-run caused only by staleness (a report older than HEAD's tree) is not a new round: the round counts stay as they were.
-- Minors of a delta are not fixed in the run; they go to «Not included in the plan» as next-version items.
+- A delta is written after the round's commit: one written before it is older than HEAD's tree and is refused.
+- A minor: a one-line fix of a final check goes into fix round 1; a one-line fix of a delta goes into the next round only when that delta opens one (it has a critical or major), because a commit after the last delta makes its report and `task-converge` stale and the close is refused. Any other minor stays one line in «Not included in the plan» of this task. It opens no follow-up task and enters no backlog file of the repo. A backlog entry is kept for what already got in the way of real work. Why: in one run (PP-1, 2026-11-20) about fifteen opus reviews left a minor tail after every round, and the tails grew faster than they were closed, crowding out feature work.
 - A fix of the final checks that touches the pro-review agent or skill reruns the pro-review eval cases within the budget the Force block names (S2-D6 of VT-7).
 
 ## Mid-run (Step 2)
