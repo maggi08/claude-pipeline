@@ -56,6 +56,8 @@ if (MODE === 'worker') {
 const DATA = (MODE === 'worker' && process.env.HOOKS_TEST_UNIT_DATA) || mkdtempSync(join(tmpdir(), 'hooks-test-data-'))
 delete process.env.HOOKS_TEST_UNIT_DATA
 process.env.CLAUDE_PLUGIN_DATA = DATA
+// run-check registers its heavy command in the machine's registry (heavy-queue.mjs): a temporary one, never the real ~/.claude/stage-pipeline.
+process.env.STAGE_PIPELINE_LOCK_DIR = join(DATA, 'heavy-lock')
 // A force close in journal-gate closes the MCP browser of the Claude Code session above it — run inside a session, the close fixtures would close that
 // session's real browser. Only the stage 5b fixtures turn it on, under a throwaway `claude` process of their own.
 process.env.STAGE_PIPELINE_BROWSER_CLEANUP = 'off'
@@ -135,7 +137,7 @@ const UNITS = [
   { id: 'v014', weight: 4 }, // 0.14: findings outcome, unverified, frames
   { id: 'v015', weight: 17 }, // 0.15: criteria in the plan, the kit view, CI gates, work after "done" + English twin of t…
   { id: 'v016', weight: 6, serial: true }, // 0.16: English phrase heuristics and the report language
-  { id: 'heavy', weight: 2 }, // heavy checks: scope by the diff and the machine queue
+  { id: 'heavy', weight: 16 }, // heavy checks: scope by the diff; the machine's balancer (VT-17 stage 1: admission by memory, priority with aging, pause, background under load)
   { id: 'archive', weight: 3 }, // STAGES.md archiving + 0.16 (AC-3.3): texts that scripts write into task files — in the ta…
   { id: 'showcase', weight: 2 }, // validate.mjs: the "N skills / N agents" count in a showcase, Russian and English forms (A…
   { id: 'xref', weight: 2 }, // validate.mjs: cross-references and Cyrillic outside the allowlist (AC-15.4)
@@ -2444,13 +2446,269 @@ check('run-check: the mode from resources in the config', (() => {
   write(rcRepo, { '.claude/pipeline.config.local.md': '- resources: normal\n' })
   return /^normal/.test(rc(['--mode']).stdout)
 })())
-const first = spawnSync('/bin/sh', ['-c', `STAGE_PIPELINE_RESOURCES=low STAGE_PIPELINE_LOCK_DIR='${locks}' '${process.execPath}' '${RUN_CHECK}' -- 'sleep 2; date +%s%N' & sleep 0.5; STAGE_PIPELINE_RESOURCES=low STAGE_PIPELINE_LOCK_DIR='${locks}' '${process.execPath}' '${RUN_CHECK}' -- 'date +%s%N'; wait`], { cwd: rcRepo, encoding: 'utf8' })
-const stamps = first.stdout.match(/^\d{15,}$/gm) ?? []
-check('run-check: in low the second run waits for the first (a machine queue)', /waiting in the queue/.test(first.stdout) && stamps.length === 2 && Number(stamps[1]) >= Number(stamps[0]), first.stdout)
-mkdirSync(join(locks, 'heavy.lock'), { recursive: true })
-writeFileSync(join(locks, 'heavy.lock', 'owner.json'), JSON.stringify({ pid: 999999, repo: 'x', command: 'y', started: Date.now() }))
-const stale = rc(['--', 'echo ok'], { STAGE_PIPELINE_RESOURCES: 'low' })
-check('run-check: the lock of a dead process is taken over', stale.status === 0 && /ok/.test(stale.stdout) && !/жду/.test(stale.stdout), stale.stdout)
+// VT-17 stage 1: the balancer replaces the one-slot lock. The second run starts at once while memory allows (it used to wait for the first: a stagnation D13 forbids);
+// what waits, and in what order, is shown under a substituted memory pressure (STAGE_PIPELINE_PROBE) — never by the real machine's state.
+const hqNap = (ms) => new Promise((done) => setTimeout(done, ms))
+const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+const { identityOf: hqIdentity } = await import(join(PLUGIN, 'processes.mjs'))
+const HQ_CLI = join(PLUGIN, 'heavy-queue.mjs')
+const GB = 1024 ** 3
+const rcReal = realpathSync(rcRepo)
+const hqScene = (name, probe, extra = {}) => {
+  const dir = join(rcRoot, name)
+  mkdirSync(dir, { recursive: true })
+  const probeFile = join(dir, 'probe.json')
+  writeFileSync(probeFile, JSON.stringify(probe))
+  return { dir, probeFile, env: { STAGE_PIPELINE_RESOURCES: 'low', STAGE_PIPELINE_LOCK_DIR: join(dir, 'lock'), STAGE_PIPELINE_DATA_DIR: join(dir, 'data'), STAGE_PIPELINE_PROBE: probeFile, STAGE_PIPELINE_BALANCE_POLL_MS: '100', STAGE_PIPELINE_BALANCE_TICK_MS: '150', ...extra } }
+}
+const hqRun = (scene, args, cwd = rcRepo) => {
+  const child = spawn(process.execPath, [RUN_CHECK, ...args], { cwd, env: { ...process.env, ...scene.env } })
+  let out = ''
+  child.stdout.on('data', (data) => { out += data })
+  child.stderr.on('data', (data) => { out += data })
+  return { child, output: () => out, done: new Promise((done) => child.on('close', (status) => done({ status, stdout: out }))) }
+}
+const hqCli = (scene, ...args) => spawnSync(process.execPath, [HQ_CLI, ...args], { encoding: 'utf8', env: { ...process.env, ...scene.env } })
+const hqEntry = (scene, dir, pid, patch = {}) => {
+  mkdirSync(join(scene.dir, 'lock', dir), { recursive: true })
+  writeFileSync(join(scene.dir, 'lock', dir, `${pid}.json`), JSON.stringify({ pid, identity: hqIdentity(pid), key: 'other#T-1', repo: '/other', command: 'yarn type-check', kind: 'check', started: Date.now() - 300_000, // an established command: past the ramp window
+     since: Date.now(), expectedBytes: 1.5 * GB, background: false, paused: false, ...patch }))
+}
+const holder = spawn('sleep', ['120'], { stdio: 'ignore' })
+const cfg = { reserveBytes: 1.5 * GB, defaultBytes: 1.5 * GB, browserBytes: 0.8 * GB, agingSeconds: 60, lowLoadFactor: 0.8, busySeconds: 30 }
+const NOW = 1_000_000_000_000
+const waiter = (pid, key, waitedS, gb = 1.4) => ({ pid, key, since: NOW - waitedS * 1000, expectedBytes: gb * GB })
+const busyOne = [{ pid: 1, key: 'c#T-9', started: NOW - 5000, expectedBytes: 1.5 * GB }]
+const verdictOf = (self, waiters, memory, running = busyOne, order = ['B', 'A'], paused = []) => hq.decide({ self, waiters, running, memory, order, paused, now: NOW, cfg })
+const fits = { pressure: 'normal', availableBytes: 8 * GB }
+const tight = { pressure: 'normal', availableBytes: 3 * GB }
+// AC-1.1: normal pressure and the memory fits → starts at once, other tasks' commands run, the task has the last place (or none)
+check('heavy-queue AC-1.1: pressure normal and the memory fits — it starts at once beside running commands, whatever its place', verdictOf(waiter(10, 'last'), [], fits, busyOne, ['x', 'y', 'last']).admit && verdictOf(waiter(10, 'nowhere'), [], fits).admit)
+// AC-1.2: B (place 1) comes later than A (place 2): B first; A that waited past the aging threshold is first
+const pair = (aWaited, bWaited) => [waiter(11, 'A', aWaited), waiter(12, 'B', bWaited)]
+check('heavy-queue AC-1.2: memory for one — B (place 1) starts first, A waits', verdictOf(pair(10, 0)[1], pair(10, 0), tight).admit && !verdictOf(pair(10, 0)[0], pair(10, 0), tight).admit)
+check('heavy-queue AC-1.2: A that waited past the aging threshold goes before the just-arrived B', verdictOf(pair(61, 0)[0], pair(61, 0), tight).admit && !verdictOf(pair(61, 0)[1], pair(61, 0), tight).admit && hq.effectivePriority(waiter(1, 'A', 61), ['B', 'A'], NOW, cfg) < hq.effectivePriority(waiter(2, 'B', 0), ['B', 'A'], NOW, cfg))
+check('heavy-queue AC-1.2: a waiter that does not fit does not hold back the smaller one behind it (no stagnation)', verdictOf(waiter(13, 'A', 0, 0.5), [waiter(14, 'B', 0, 9), waiter(13, 'A', 0, 0.5)], tight).admit)
+// AC-1.12 / D15
+check('heavy-queue AC-1.12: nothing runs — the first waiter starts at any pressure, even critical and too big', verdictOf(waiter(20, 'A', 0, 40), [], { pressure: 'critical', availableBytes: 0 }, []).admit)
+check('heavy-queue AC-1.12: critical — one at a time: with a command running nobody starts', !verdictOf(waiter(20, 'A', 0, 0.1), [], { pressure: 'critical', availableBytes: 50 * GB }).admit && /pressure: critical/.test(verdictOf(waiter(20, 'A', 0, 0.1), [], { pressure: 'critical', availableBytes: 50 * GB }).reason))
+check('heavy-queue AC-1.12: warn — the next one starts only when its memory fits the available minus the reserve', verdictOf(waiter(21, 'A', 0, 1.4), [], { pressure: 'warn', availableBytes: 3 * GB }).admit && !verdictOf(waiter(21, 'A', 0, 1.6), [], { pressure: 'warn', availableBytes: 3 * GB }).admit && /pressure: warn; memory: needs ~1\.6 GB, 1\.5 GB available/.test(verdictOf(waiter(21, 'A', 0, 1.6), [], { pressure: 'warn', availableBytes: 3 * GB }).reason))
+check('heavy-queue AC-1.12: a command the user paused does not keep the machine "busy" — the first waiter still starts', verdictOf(waiter(22, 'A', 0, 9), [], { pressure: 'critical', availableBytes: 0 }, [{ ...busyOne[0], paused: true }]).admit)
+check('heavy-queue: a paused task\'s waiter never starts; no memory readings — no admission', !verdictOf(waiter(23, 'A', 0), [], fits, busyOne, ['A'], ['A']).admit && verdictOf(waiter(23, 'A', 0, 99), [], null).admit)
+// AC-1.3 / AC-1.8: nice by place
+check('heavy-queue AC-1.3: nice = min(10 + N - 1, 19), 19 without a place', same([1, 2, 3, 10, 12].map((n) => hq.niceFor(Array.from({ length: 12 }, (_, i) => `k${i + 1}`), `k${n}`)), [10, 11, 12, 19, 19]) && hq.niceFor(['a'], 'nowhere') === 19)
+// `nice -n N` adds N to the niceness the process already has (the test run may itself be niced), capped at 20
+const niceBase = Number(spawnSync('ps', ['-o', 'ni=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout) || 0
+const niceOf = (scene) => /^(\d+)$/m.exec(spawnSync(process.execPath, [RUN_CHECK, '--', 'ps -o ni= -p $$'], { cwd: rcRepo, encoding: 'utf8', env: { ...process.env, ...scene.env } }).stdout.replace(/ /g, ''))?.[1]
+const nice1 = hqScene('nice-low', { pressure: 'normal', availableGB: 8 })
+mkdirSync(join(nice1.dir, 'data'), { recursive: true })
+writeFileSync(join(nice1.dir, 'data', 'priorities.json'), JSON.stringify({ order: ['elsewhere', rcReal] }))
+check('heavy-queue AC-1.3: a command of the task on place 2 in low runs with nice 11, a task without a place with 19', niceOf(nice1) === String(Math.min(niceBase + 11, 20)) && niceOf(hqScene('nice-none', { pressure: 'normal', availableGB: 8 })) === String(Math.min(niceBase + 19, 20)))
+const nice2 = hqScene('nice-normal', { pressure: 'critical', availableGB: 0 }, { STAGE_PIPELINE_RESOURCES: 'normal' })
+mkdirSync(join(nice2.dir, 'data'), { recursive: true })
+writeFileSync(join(nice2.dir, 'data', 'priorities.json'), JSON.stringify({ order: [rcReal] }))
+hqEntry(nice2, 'running', holder.pid)
+const normalBusy = spawnSync(process.execPath, [RUN_CHECK, '--', 'ps -o ni= -p $$'], { cwd: rcRepo, encoding: 'utf8', timeout: 20000, env: { ...process.env, ...nice2.env } })
+check('heavy-queue AC-1.8: in normal there is no admission (a critical machine with a running command: no wait), nice by place', new RegExp(`^\\s*${Math.min(niceBase + 10, 20)}\\s*$`, 'm').test(normalBusy.stdout) && !/balance:/.test(normalBusy.stdout), normalBusy.stdout + normalBusy.stderr)
+// AC-1.6 pure part
+check('heavy-queue AC-1.6: busy cores for 30 s put the lower half into the background; below 0.8 × cores it is taken off; free cores — never', (() => {
+  const busyStart = { busySince: null, background: false }
+  const t0 = hq.nextBackground(busyStart, { load: 12, cores: 10, now: NOW, lowerHalf: true, cfg })
+  const t29 = hq.nextBackground(t0, { load: 12, cores: 10, now: NOW + 29000, lowerHalf: true, cfg })
+  const t31 = hq.nextBackground(t0, { load: 12, cores: 10, now: NOW + 31000, lowerHalf: true, cfg })
+  const upper = hq.nextBackground(t0, { load: 12, cores: 10, now: NOW + 31000, lowerHalf: false, cfg })
+  const mid = hq.nextBackground(t31, { load: 9, cores: 10, now: NOW + 40000, lowerHalf: true, cfg })
+  const off = hq.nextBackground(t31, { load: 7.9, cores: 10, now: NOW + 40000, lowerHalf: true, cfg })
+  const free = hq.nextBackground(busyStart, { load: 3, cores: 10, now: NOW + 99000, lowerHalf: true, cfg })
+  return !t0.background && !t29.background && t31.background && !upper.background && mid.background && !off.background && !free.background
+})())
+const ranked = [{ pid: 1, key: 'a', started: 1 }, { pid: 2, key: 'b', started: 2 }, { pid: 3, key: 'c', started: 3 }]
+check('heavy-queue AC-1.6: the lower half of the running commands by place (a lone command is in the upper one)', !hq.inLowerHalf(ranked.slice(0, 1), 1, []) && !hq.inLowerHalf(ranked, 1, ['a', 'b', 'c']) && !hq.inLowerHalf(ranked, 2, ['a', 'b', 'c']) && hq.inLowerHalf(ranked, 3, ['a', 'b', 'c']) && hq.inLowerHalf(ranked, 1, ['c', 'b', 'a']))
+// the second run starts when memory allows (replaces "in low the second run waits for the first")
+const free2 = hqScene('free', { pressure: 'normal', availableGB: 8 })
+const firstRun = hqRun(free2, ['--', 'sleep 2; date +%s%N'])
+await hqNap(500)
+const secondRun = await hqRun(free2, ['--', 'date +%s%N']).done
+const firstDone = await firstRun.done
+const stamps = [...firstDone.stdout.matchAll(/^\d{15,}$/gm)].map((m) => Number(m[0])).concat([...secondRun.stdout.matchAll(/^\d{15,}$/gm)].map((m) => Number(m[0])))
+check('heavy-queue AC-1.1: in low the second run starts at once while memory allows — it ends before the first, nobody waited', stamps.length === 2 && stamps[1] < stamps[0] && !/balance:/.test(firstDone.stdout + secondRun.stdout), firstDone.stdout + secondRun.stdout)
+// AC-1.4, 1.9, 1.10, 1.5: a waiting command under warn pressure
+const warn = hqScene('warn', { pressure: 'warn', availableGB: 1.6 }, { STAGE_PIPELINE_BALANCE_WAIT_CAP_S: '2.5', STAGE_PIPELINE_BALANCE_ANNOUNCE_S: '1' })
+mkdirSync(join(warn.dir, 'data'), { recursive: true })
+writeFileSync(join(warn.dir, 'data', 'heavy-peaks.json'), JSON.stringify({ [`${rcReal}\necho ok`]: 2.4 * GB }))
+hqEntry(warn, 'running', holder.pid)
+const waiting = hqRun(warn, ['--', 'echo ok'])
+await hqNap(900)
+const status = hqCli(warn, 'status')
+const waitedResult = await waiting.done
+const waitingLines = waitedResult.stdout
+check('heavy-queue AC-1.9: status prints the running command, the waiting one with the reason and the order', /running \(1\)[\s\S]*other#T-1[\s\S]*yarn type-check/.test(status.stdout) && /waiting \(1\)[\s\S]*echo ok[\s\S]*pressure: warn; memory: needs ~2\.4 GB, 0\.1 GB available/.test(status.stdout) && /paused: none/.test(status.stdout), status.stdout + status.stderr)
+check('heavy-queue AC-1.5: admission counts by the recorded peak of the same repo and command (2.4 GB, not the 1.5 default)', /needs ~2\.4 GB/.test(waitingLines), waitingLines)
+check('heavy-queue AC-1.10: a waiting run prints `balance: waiting <s> s — <reason>; ahead: <keys>`', /balance: waiting \d+ s — pressure: warn; memory: needs ~2\.4 GB, 0\.1 GB available; ahead: none/.test(waitingLines) && (waitingLines.match(/balance: waiting/g) ?? []).length >= 2, waitingLines)
+check('heavy-queue AC-1.4: past the wait cap it starts with `balance: waited <s> s, starting without admission (<reason>)`, code 0', waitedResult.status === 0 && /balance: waited \d+ s, starting without admission \(pressure: warn; memory: needs/.test(waitedResult.stdout) && /^ok$/m.test(waitedResult.stdout), waitedResult.stdout)
+// AC-1.5: the peak is recorded after the command
+const peak = hqScene('peak', { pressure: 'normal', availableGB: 8 })
+await hqRun(peak, ['--', 'sleep 1.2']).done
+const peaks = JSON.parse(readFileSync(join(peak.dir, 'data', 'heavy-peaks.json'), 'utf8'))
+check('heavy-queue AC-1.5: after the command its peak RSS is recorded per repo and command', peaks[`${rcReal}\nsleep 1.2`] > 0, JSON.stringify(peaks))
+// AC-1.11: stale entries
+const stale = hqScene('stale', { pressure: 'warn', availableGB: 1.6 }, { STAGE_PIPELINE_BALANCE_WAIT_CAP_S: '30' })
+hqEntry(stale, 'running', 999999, { identity: 'x' })
+hqEntry(stale, 'running', process.pid, { identity: 'Thu Jan  1 00:00:00 1970 reused-pid' })
+const staleRun = await hqRun(stale, ['--', 'echo fresh']).done
+check('heavy-queue AC-1.11: a dead process\'s entry and an entry whose PID changed identity are removed and hold no memory (the run starts at once)', staleRun.status === 0 && !/balance:/.test(staleRun.stdout) && !existsSync(join(stale.dir, 'lock', 'running', '999999.json')) && !existsSync(join(stale.dir, 'lock', 'running', `${process.pid}.json`)), staleRun.stdout)
+// AC-1.12: nothing runs, critical pressure — starts
+const crit = hqScene('crit', { pressure: 'critical', availableGB: 0 })
+const critRun = await hqRun(crit, ['--', 'echo hi']).done
+check('heavy-queue AC-1.12: with no heavy command running, a run starts even under critical pressure', critRun.status === 0 && /^hi$/m.test(critRun.stdout) && !/balance:/.test(critRun.stdout), critRun.stdout)
+// AC-1.7: a pause by hand stops the tree, resume continues it; exit code and the time line are as without a pause
+const pausing = hqScene('pause', { pressure: 'normal', availableGB: 8 })
+const paused = hqRun(pausing, ['--', 'sleep 2; echo woke; exit 3'])
+await hqNap(700)
+check('heavy-queue AC-1.7: without the pause button nothing is stopped (the command runs)', !/^woke$/m.test(paused.output()) && !readPausedKeys(pausing).length)
+function readPausedKeys(scene) {
+  try {
+    return JSON.parse(readFileSync(join(scene.dir, 'data', 'priorities.json'), 'utf8')).paused
+  } catch {
+    return []
+  }
+}
+const pauseOut = hqCli(pausing, 'pause', rcReal)
+await hqNap(900)
+const runEntry = JSON.parse(readFileSync(join(pausing.dir, 'lock', 'running', `${paused.child.pid}.json`), 'utf8'))
+const stopped = spawnSync('ps', ['-o', 'stat=', '-p', String(runEntry.childPid)], { encoding: 'utf8' }).stdout
+check('heavy-queue AC-1.7: pause — the command\'s tree gets SIGSTOP, status shows [paused]', /T/.test(stopped) && runEntry.paused === true && /\[paused\]/.test(hqCli(pausing, 'status').stdout) && /paused/.test(pauseOut.stdout), `${stopped} ${pauseOut.stdout}`)
+await hqNap(2200)
+check('heavy-queue AC-1.7: a stopped command does not finish while paused', !/^woke$/m.test(paused.output()))
+hqCli(pausing, 'resume', rcReal)
+const pausedDone = await paused.done
+check('heavy-queue AC-1.7: after resume the command goes on; exit code 3 and the `code … in … s` line are as without a pause', pausedDone.status === 3 && /^woke$/m.test(pausedDone.stdout) && /run-check: code 3 in \d+ s/.test(pausedDone.stdout), pausedDone.stdout)
+// AC-1.6 integration: the background class goes on only under load, off when it drops (a stub instead of /usr/sbin/taskpolicy)
+const bgLog = join(rcRoot, 'taskpolicy.log')
+const stub = join(rcRoot, 'taskpolicy-stub.sh')
+writeFileSync(stub, `#!/bin/sh\necho "$@" >> '${bgLog}'\n`, { mode: 0o755 })
+const calm = hqScene('bg-calm', { pressure: 'normal', availableGB: 8, load: 1, cores: 10 }, { STAGE_PIPELINE_TASKPOLICY: stub, STAGE_PIPELINE_BALANCE_BUSY_S: '0', STAGE_PIPELINE_BALANCE_LOAD_EVERY_S: '0' })
+const calmA = hqRun(calm, ['--', 'sleep 1.5'])
+const calmB = hqRun(calm, ['--', 'sleep 1.5; true'])
+await Promise.all([calmA.done, calmB.done])
+check('heavy-queue AC-1.6: while the cores are free nobody goes into the background', !existsSync(bgLog))
+const loaded = hqScene('bg-load', { pressure: 'normal', availableGB: 8, load: 25, cores: 10 }, { STAGE_PIPELINE_TASKPOLICY: stub, STAGE_PIPELINE_BALANCE_BUSY_S: '0', STAGE_PIPELINE_BALANCE_LOAD_EVERY_S: '0' })
+const loadA = hqRun(loaded, ['--', 'sleep 4'])
+await hqNap(300)
+const loadB = hqRun(loaded, ['--', 'sleep 3.5; true'])
+await hqNap(1500)
+const onLines = existsSync(bgLog) ? readFileSync(bgLog, 'utf8') : ''
+writeFileSync(loaded.probeFile, JSON.stringify({ pressure: 'normal', availableGB: 8, load: 2, cores: 10 }))
+await hqNap(1200)
+const offLines = existsSync(bgLog) ? readFileSync(bgLog, 'utf8') : ''
+await Promise.all([loadA.done, loadB.done])
+check('heavy-queue AC-1.6: under load the later (lower) command goes to the background (-b), at load < 0.8 × cores it comes back (-B)', /-b -p \d+/.test(onLines) && !/-B/.test(onLines) && /-B -p \d+/.test(offLines), `${onLines}|${offLines}`)
+// AC-1.9 / D4: the CLI keeps the order and the pause
+const cliScene = hqScene('cli', { memory: null })
+hqCli(cliScene, 'order', 'a#T-1', 'b#T-2', 'a#T-1')
+hqCli(cliScene, 'pause', 'b#T-2')
+const cliState = JSON.parse(readFileSync(join(cliScene.dir, 'data', 'priorities.json'), 'utf8'))
+check('heavy-queue: order / pause / resume write priorities.json atomically (order without duplicates, the paused set)', same(cliState.order, ['a#T-1', 'b#T-2']) && same(cliState.paused, ['b#T-2']) && (hqCli(cliScene, 'resume', 'b#T-2'), same(readPausedKeys(cliScene), [])) && hqCli(cliScene, 'bogus').status === 2)
+// pro-review round 1: the ramp, the priorities format, the lock, task keys, signals, pause in normal
+const rampNow = Date.now()
+const young = [{ pid: 1, key: 'c#T-9', started: rampNow - 5000, expectedBytes: 2 * GB, childPid: 2 }, { pid: 3, key: 'd#T-1', started: rampNow - 90_000, expectedBytes: 2 * GB, childPid: 4 }]
+const rampRows = [{ pid: 2, ppid: 1, rss: 0.5 * GB }, { pid: 4, ppid: 3, rss: 0.1 * GB }]
+const rampBytes = hq.rampOf(young, rampNow, { rampSeconds: 30 }, rampRows)
+check('heavy-queue AC-1.1: what a command admitted moments ago still lacks (expected − RSS) is held back, falling linearly to 0 over the window; an old one is not', Math.abs(rampBytes - 1.5 * GB * (25 / 30)) < 0.01 * GB && hq.rampOf(young, rampNow, { rampSeconds: 30 }, [{ pid: 2, ppid: 1, rss: 3 * GB }]) === 0 && hq.rampOf([{ ...young[0], started: rampNow - 29_000 }], rampNow, { rampSeconds: 30 }, rampRows) < 0.1 * GB)
+check('heavy-queue AC-1.1: with the ramp held back the third command does not see the same `available` as the first', verdictOf(waiter(30, 'A', 0, 1.4), [], { pressure: 'normal', availableBytes: 4 * GB }).admit && !hq.decide({ self: waiter(30, 'A', 0, 1.4), waiters: [], running: busyOne, memory: { pressure: 'normal', availableBytes: 4 * GB }, order: ['A'], rampBytes, now: NOW, cfg }).admit)
+const fmt = hqScene('format', { memory: null })
+mkdirSync(join(fmt.dir, 'data'), { recursive: true })
+writeFileSync(join(fmt.dir, 'data', 'priorities.json'), JSON.stringify({ version: 1, order: ['a#T-1', 'b#T-2'], boundary: 1, paused: [] }))
+const oldRead = hq.readPriorities(join(fmt.dir, 'data'))
+hq.ensureTask('c#T-3', join(fmt.dir, 'data'))
+hq.ensureTask(rcReal, join(fmt.dir, 'data'))
+const fmtState = JSON.parse(readFileSync(join(fmt.dir, 'data', 'priorities.json'), 'utf8'))
+check('heavy-queue D4: no `boundary` — an old file reads fine, a new task and a task-less root are appended at the end, the file has {version, order, paused}', same(oldRead.order, ['a#T-1', 'b#T-2']) && !('boundary' in oldRead) && same(fmtState.order, ['a#T-1', 'b#T-2', 'c#T-3', rcReal]) && same(Object.keys(fmtState).sort(), ['order', 'paused', 'version']))
+const hashDir = join(rcRoot, 'repo#with-hash')
+mkdirSync(hashDir, { recursive: true })
+const hashInfo = hq.taskInfo(hashDir)
+check('heavy-queue: a repo path with `#` and no task is a root key, not a task', hashInfo.task === false && hashInfo.key === hashDir)
+const lockData = join(fmt.dir, 'lockdata')
+mkdirSync(lockData, { recursive: true })
+writeFileSync(join(lockData, 'priorities.json.lock'), '999999')
+hq.setOrder(['x'], lockData)
+writeFileSync(join(lockData, 'priorities.json.lock'), '999999')
+writeFileSync(join(lockData, 'priorities.json.lock.takeover'), '999999')
+const staleGuard = new Date(Date.now() - 60_000)
+utimesSync(join(lockData, 'priorities.json.lock.takeover'), staleGuard, staleGuard)
+hq.setOrder(['y'], lockData)
+check('heavy-queue: a dead owner\'s lock (and a dead taker\'s guard) is taken over; the lock is released after', same(JSON.parse(readFileSync(join(lockData, 'priorities.json'), 'utf8')).order, ['y']) && !existsSync(join(lockData, 'priorities.json.lock')))
+// a signal during the wait for admission leaves no waiting entry (the handlers stand before the wait)
+const sigWait = hqScene('sig-wait', { pressure: 'warn', availableGB: 0.1 })
+hqEntry(sigWait, 'running', holder.pid)
+const sigWaiting = hqRun(sigWait, ['--', 'echo never'])
+await hqNap(700)
+const queuedBefore = readdirSync(join(sigWait.dir, 'lock', 'queue')).length
+sigWaiting.child.kill('SIGHUP')
+const sigWaitDone = await sigWaiting.done
+check('heavy-queue AC-1.4: SIGHUP during the wait — the waiting entry is removed, exit 129', queuedBefore === 1 && sigWaitDone.status === 129 && !readdirSync(join(sigWait.dir, 'lock', 'queue')).length && !/^never$/m.test(sigWaitDone.stdout), `${queuedBefore}|${sigWaitDone.status}|${sigWaitDone.stdout}`)
+// run-check killed while its command is paused: the tree is continued first, no stopped orphan is left
+const sigPause = hqScene('sig-pause', { pressure: 'normal', availableGB: 8 })
+const sigPaused = hqRun(sigPause, ['--', 'sleep 30'])
+await hqNap(700)
+hqCli(sigPause, 'pause', rcReal)
+await hqNap(900)
+const sigChild = JSON.parse(readFileSync(join(sigPause.dir, 'lock', 'running', `${sigPaused.child.pid}.json`), 'utf8')).childPid
+const stoppedBefore = spawnSync('ps', ['-o', 'stat=', '-p', String(sigChild)], { encoding: 'utf8' }).stdout
+sigPaused.child.kill('SIGTERM')
+const sigPausedDone = await sigPaused.done
+await hqNap(500)
+const stateAfter = spawnSync('ps', ['-o', 'stat=', '-p', String(sigChild)], { encoding: 'utf8' }).stdout.trim()
+check('heavy-queue AC-1.7: SIGTERM to run-check with a paused command — it was stopped, then continued and terminated (no stopped orphan), exit 143, entry removed', /T/.test(stoppedBefore) && !/T/.test(stateAfter) && sigPausedDone.status === 143 && !readdirSync(join(sigPause.dir, 'lock', 'running')).length, `${stoppedBefore}|${stateAfter}|${sigPausedDone.status}`)
+check('heavy-queue AC-1.5: a run ended by a signal does not write a peak', !existsSync(join(sigPause.dir, 'data', 'heavy-peaks.json')))
+// pro-review round 2 (N1): the signal reaches the whole tree — a compound command's grandchildren do not live on as orphans
+const sigTree = hqScene('sig-tree', { pressure: 'normal', availableGB: 8 })
+const sigTreed = hqRun(sigTree, ['--', 'sleep 37.11 & sleep 37.12; wait'])
+await hqNap(900)
+hqCli(sigTree, 'pause', rcReal)
+await hqNap(900)
+const treeBefore = spawnSync('pgrep', ['-f', 'sleep 37\\.1[12]'], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean).length
+sigTreed.child.kill('SIGTERM')
+await sigTreed.done
+await hqNap(600)
+const treeAfter = spawnSync('pgrep', ['-f', 'sleep 37\\.1[12]'], { encoding: 'utf8' }).stdout.trim()
+check('heavy-queue AC-1.7: SIGTERM during a pause reaches the grandchildren of a compound command (none left)', treeBefore >= 2 && treeAfter === '', `${treeBefore}|${treeAfter}`)
+// N2: the ramp is wired into admission and named in the reason
+const rampScene = hqScene('ramp-wire', { pressure: 'normal', availableGB: 4 }, { STAGE_PIPELINE_BALANCE_WAIT_CAP_S: '1.5', STAGE_PIPELINE_BALANCE_ANNOUNCE_S: '0.5' })
+hqEntry(rampScene, 'running', holder.pid, { started: Date.now(), expectedBytes: 3 * GB })
+const rampRun = await hqRun(rampScene, ['--', 'echo ramped']).done
+check('heavy-queue AC-1.1: a command admitted moments ago with memory still expected holds the next one — `ramp: ~X GB still expected` in the reason', /balance: waiting \d+ s — ramp: ~\d\.\d GB still expected/.test(rampRun.stdout), rampRun.stdout)
+check('heavy-queue AC-1.1: the ramp reason is the decide verdict when only the ramp blocks', (() => {
+  const r = hq.decide({ self: waiter(50, 'A', 0, 1.4), waiters: [], running: busyOne, memory: { pressure: 'normal', availableBytes: 4 * GB }, order: ['A'], rampBytes: 1.2 * GB, now: NOW, cfg })
+  return !r.admit && /^ramp: ~1\.2 GB still expected/.test(r.reason)
+})())
+// N4: an entry in both running/ and queue/ is counted once
+check('heavy-queue AC-1.11: a waiter whose PID is already in running is not counted a second time as one ahead', hq.decide({ self: waiter(60, 'B', 0, 1.4), waiters: [waiter(61, 'A', 30, 1.4)], running: [...busyOne, { pid: 61, key: 'A', started: NOW, expectedBytes: 1.4 * GB }], memory: tight, order: ['A', 'B'], now: NOW, cfg }).admit)
+// N6: on Windows a paused key holds nothing
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+Object.defineProperty(process, 'platform', { value: 'win32' })
+const winVerdict = verdictOf(waiter(70, 'A', 0), [], fits, busyOne, ['A'], ['A']).admit
+Object.defineProperty(process, 'platform', realPlatform)
+check('heavy-queue D16: on win32 `decide` ignores the pause', winVerdict)
+// N7: a fresh guard of another taker is not removed by a stale-guard check
+const guardData = join(rcRoot, 'guard-data')
+mkdirSync(guardData, { recursive: true })
+const guardFile = join(guardData, 'priorities.json.lock')
+writeFileSync(guardFile, '999999')
+writeFileSync(`${guardFile}.takeover`, String(process.pid)) // fresh, held by a live taker
+hq.setOrder(['q'], guardData) // finds the lock dead, the guard fresh: must not delete the guard
+check('heavy-queue: a fresh takeover guard of a live taker survives the stale-guard check', existsSync(`${guardFile}.takeover`) && readdirSync(guardData).every((name) => !name.includes('.stale-')), readdirSync(guardData).join(','))
+rmSync(`${guardFile}.takeover`, { force: true })
+// D3 in normal: a task already on pause does not start its next command until the resume (admission is skipped, the pause is not)
+const normalPause = hqScene('normal-pause', { pressure: 'critical', availableGB: 0 }, { STAGE_PIPELINE_RESOURCES: 'normal' })
+hqCli(normalPause, 'pause', rcReal)
+const heldRun = hqRun(normalPause, ['--', 'echo started'])
+await hqNap(1200)
+const heldOut = heldRun.output()
+hqCli(normalPause, 'resume', rcReal)
+const heldDone = await heldRun.done
+check('heavy-queue D3: in normal the next command of a paused task is held until the resume, then runs with no admission', !/^started$/m.test(heldOut) && heldDone.status === 0 && /^started$/m.test(heldDone.stdout), `${heldOut}|${heldDone.stdout}`)
+holder.kill()
 rmSync(rcRoot, { recursive: true, force: true })
 }
 

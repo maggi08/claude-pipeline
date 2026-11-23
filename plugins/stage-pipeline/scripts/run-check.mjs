@@ -15,22 +15,21 @@
  *   `{files:ts+vue}` — only these extensions (joined with `+`: a comma in braces would be expanded by the shell);
  *   the token `rel` among them (`{files:rel}`, `{files:rel+py}`) — paths relative to the repo root instead of absolute ones.
  *   No files — the command is not run, code 0.
- * - `low` mode (`resources: low` in pipeline.config.local.md, otherwise automatically at RAM ≤ 16 GB) — runs
- *   of all the machine's projects go one by one through a shared lock and at a lower priority (`nice`): two type
- *   checks at once on 8 GB are swap, not parallelism.
+ * - `low` mode (`resources: low` in pipeline.config.local.md, otherwise automatically at RAM ≤ 16 GB) — a command of any project is admitted by
+ *   the machine's memory (heavy-queue.mjs): it starts at once while the expected memory fits, otherwise it waits (at most 5 minutes) and the task
+ *   with the higher priority goes first; at least one command always runs. `nice` by the task's place goes in both modes.
  * - the time and exit code in the last line — for the stage journal.
  * - the whole command (without `{files}` and `--base`) on a clean tree — the result is written by the commit tree:
  *   by it the force-run closing hook sees whether the CI gates are green on the current HEAD (`ci-gates.mjs`).
  * Exit code is the command's code; 2 — the script itself could not run (not a git repo, no command).
  */
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, totalmem } from 'node:os'
+import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { UNRECORDED, isGateCommand, recordGate, shellQuote, treeState } from './ci-gates.mjs'
 import { configRoot, pathList, pluginDataDir, readConfig, worktreeTwinDataDir } from './hooks/pipeline-state.mjs'
 import { FILES_PLACEHOLDER } from './markers.mjs'
-import { alive } from './processes.mjs'
+import { admit, dropEntries, resourceMode } from './heavy-queue.mjs'
 
 const args = process.argv.slice(2)
 const baseIndex = args.indexOf('--base')
@@ -49,7 +48,7 @@ try {
   fail('not a git repository')
 }
 
-const mode = resourceMode()
+const mode = resourceMode(root)
 if (args.includes('--mode')) {
   console.log(`${mode.name} — ${mode.why}`)
   process.exit(0)
@@ -78,24 +77,32 @@ if (placeholder) {
   console.log(`run-check: ${mode.name} · ${command}`)
 }
 
-const release = mode.name === 'low' ? await acquireLock() : () => {}
+// The signals are taken before the wait for admission: a kill during it leaves no waiting entry. A command stopped by the pause is continued first,
+// otherwise the signal stays pending on a stopped orphan; a run cut short by a signal does not write its (partial) peak.
+let slot = null
+let child = null
+const SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 }
+for (const [signal, number] of Object.entries(SIGNALS)) {
+  process.on(signal, () => {
+    if (slot) {
+      slot.terminate(child, signal)
+      slot.finish({ record: false })
+    } else dropEntries()
+    process.exit(128 + number)
+  })
+}
+slot = await admit({ cwd: process.cwd(), repo: root, command, mode })
 const started = Date.now()
 // A run of the whole repo on a clean tree is evidence for the CI gates; a run by diff or with edits in progress is not.
 const whole = !placeholder && !base
 const before = whole ? treeState(root) : null
-const lowPriority = mode.name === 'low' && process.platform !== 'win32'
-const child = spawn('/bin/sh', ['-c', lowPriority ? `nice -n 10 /bin/sh -c ${shellQuote(finalCommand)}` : finalCommand], { stdio: 'inherit' })
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    child.kill(signal)
-    release()
-    process.exit(130)
-  })
-}
+// `nice` by the task's place in priorities.json (10 for place 1, +1 per place, at most 19), in both modes: it works only while the cores are busy.
+child = spawn('/bin/sh', ['-c', slot.nice === null ? finalCommand : `nice -n ${slot.nice} /bin/sh -c ${shellQuote(finalCommand)}`], { stdio: 'inherit' })
+slot.watch(child)
 // A linked worktree whose `.claude/` is excluded reads the main tree's config, the way the hooks find it.
 const isGate = () => isGateCommand(readConfig(configRoot(root, root) ?? root), command)
 child.on('exit', (code, signal) => {
-  release()
+  slot.finish({ record: signal === null && code === 0 }) // a failed run often stops early: its partial peak would lower the recorded one
   const seconds = ((Date.now() - started) / 1000).toFixed(0)
   console.log(`run-check: code ${code ?? signal} in ${seconds} s`)
   if (before?.clean && before.tree) {
@@ -130,65 +137,6 @@ function changedFiles() {
   const tracked = git('diff', '--name-only', '--diff-filter=ACMR', '--no-renames', '-z', against, '--').split('\0')
   const untracked = git('ls-files', '--others', '--exclude-standard', '-z').split('\0')
   return [...new Set([...tracked, ...untracked])].filter((path) => path && isFile(join(root, path)))
-}
-
-/**
- * `resources:` from pipeline.config.local.md / pipeline.config.md (the machine's layout goes in local), otherwise by memory:
- * at 16 GB and less the dev server, browser, IDE and Claude Code already share memory, and a second heavy check is swap.
- */
-function resourceMode() {
-  const override = process.env.STAGE_PIPELINE_RESOURCES
-  if (override === 'low' || override === 'normal') return { name: override, why: 'STAGE_PIPELINE_RESOURCES' }
-  const configured = readConfig(root).match(/^\s*-\s*resources:\s*`?(low|normal)\b/m)?.[1]
-  if (configured) return { name: configured, why: 'resources in pipeline.config' }
-  const gb = Math.round(totalmem() / 1024 ** 3)
-  return gb <= 16 ? { name: 'low', why: `${gb} GB RAM (≤ 16) — heavy checks one by one` } : { name: 'normal', why: `${gb} GB RAM` }
-}
-
-/**
- * A lock per machine, not per repo: the queue is needed exactly between projects. The directory is created atomically;
- * if the owner is dead or holds the lock for more than 30 minutes, the lock is taken over. We wait at most 20 minutes, then go without a queue.
- */
-async function acquireLock() {
-  const dir = process.env.STAGE_PIPELINE_LOCK_DIR ?? join(homedir(), '.claude', 'stage-pipeline')
-  const lock = join(dir, 'heavy.lock')
-  mkdirSync(dir, { recursive: true })
-  const deadline = Date.now() + 20 * 60 * 1000
-  let announced = false
-  while (Date.now() < deadline) {
-    try {
-      mkdirSync(lock)
-      writeFileSync(join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, repo: root, command, started: Date.now() }))
-      return () => rmSync(lock, { recursive: true, force: true })
-    } catch (error) {
-      if (error.code !== 'EEXIST') return () => {}
-    }
-    const owner = readOwner(lock)
-    if (!owner || !alive(owner.pid) || Date.now() - owner.started > 30 * 60 * 1000) {
-      rmSync(lock, { recursive: true, force: true })
-      continue
-    }
-    if (!announced) {
-      console.log(`run-check: waiting in the queue — ${owner.repo}: ${owner.command}`)
-      announced = true
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-  }
-  console.log('run-check: the queue did not clear in 20 minutes — running without it')
-  return () => {}
-}
-
-function readOwner(lock) {
-  try {
-    return JSON.parse(readFileSync(join(lock, 'owner.json'), 'utf8'))
-  } catch {
-    // The directory was just created, owner.json is still being written — count it as busy if the directory is fresh.
-    try {
-      return Date.now() - lstatSync(lock).mtimeMs < 5000 ? { pid: process.pid, repo: '?', command: '?', started: Date.now() } : null
-    } catch {
-      return null
-    }
-  }
 }
 
 function isFile(path) {
