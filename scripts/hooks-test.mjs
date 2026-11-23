@@ -199,6 +199,7 @@ const UNITS = [
   { id: 'pp1s5', weight: 2 }, // PP-1 stage 5: plan-check reads PRODUCT-HANDOFF.md (H<n> coverage, unknown version, no file = no requirement) and --input (no input stops, any one of four passes); stage-plan and docs-lookup text
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
   { id: 'vt17s3', weight: 2 }, // VT-17 stage 3: monitor.mjs — tasks of the registry, sessions, the tree split by kind, one ps and one lsof per session, the balancer's states, the table
+  { id: 'vt17s4', weight: 2 }, // VT-17 stage 4: the session-wait hook (turn-ended, question, permission, elicitation, cleared, subagent, never blocks) and the waiting field of monitor.mjs
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
 const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
@@ -11960,6 +11961,265 @@ if (unit('vt17s3')) {
   const parsed = ps.parseStatRows('  42     1   501  12.5  204800   10   4 Ss    01:02:03 1-02:03:04 /usr/bin/claude --resume x\nnot a row\n  43 42 0 0.0 10 - - Z 5:00 0:01.50 (defunct)\n')
   check('monitor AC-3.3: ps time= (cumulative CPU time) parses on Linux and macOS shapes', parsed.get(42).cpuSeconds === 93784 && parsed.get(43).cpuSeconds === 1.5 && ps.cpuSecondsOf('12:34.56') === 754.56 && ps.cpuSecondsOf('x') === null)
   check('monitor: parseStatRows reads %CPU, RSS, nice, PRI, state and age; a bad row is skipped', parsed.size === 2 && parsed.get(42).cpu === 12.5 && parsed.get(42).rssKb === 204800 && parsed.get(42).pri === 4 && parsed.get(42).age === 3723 && parsed.get(43).nice === null)
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-17 stage 4: session-wait hook and the waiting state in monitor.mjs ────
+// Temporary data dirs and fake transcripts only: never the real data dir or ~/.claude/projects.
+if (unit('vt17s4')) {
+  const sw = await import(join(PLUGIN, 'hooks', 'session-wait.mjs'))
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-wait-'))
+  const dataDir = join(root, 'data')
+  const sessionsDir = join(dataDir, 'sessions')
+  const env = { ...process.env, STAGE_PIPELINE_DATA_DIR: dataDir }
+  const fire = (input, options = {}) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'session-wait.mjs')], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: options.env ?? env })
+  const stateOf = (id) => { try { return JSON.parse(readFileSync(join(sessionsDir, `${id}.json`), 'utf8')) } catch { return null } }
+  const sid = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const transcript = join(root, 'transcript.jsonl')
+  const assistant = (text) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }, { type: 'text', text }] } })
+  const base = { session_id: sid, cwd: '/work/repo', transcript_path: transcript }
+
+  // AC-4.1: Stop → turn-ended, the text is the end of the last answer (the field, else the transcript tail)
+  const long = `${'a'.repeat(2500)}END`
+  const first = fire({ ...base, hook_event_name: 'Stop', last_assistant_message: long })
+  const s1 = stateOf(sid)
+  check('hook AC-4.1: Stop sets turn-ended with the end of last_assistant_message, capped at 2000 characters; no output, exit 0', first.status === 0 && first.stdout === '' && s1?.kind === 'turn-ended' && s1.text.length === 2000 && s1.text.endsWith('END') && s1.cwd === '/work/repo' && s1.transcript === transcript && typeof s1.since === 'number', JSON.stringify(s1)?.slice(0, 200))
+  writeFileSync(transcript, `${assistant('old answer')}\n{"type":"user","message":{"content":"hi"}}\n${assistant('the final answer')}\n{"type":"system","x":1}\nnot json\n`)
+  fire({ ...base, hook_event_name: 'Stop' })
+  check('hook AC-4.1: without last_assistant_message the text comes from the last assistant text of the transcript', stateOf(sid)?.text === 'the final answer', JSON.stringify(stateOf(sid)))
+  writeFileSync(transcript, `${'x'.repeat(400_000)}\n${assistant('tail only')}\n`)
+  fire({ ...base, hook_event_name: 'Stop' })
+  check('hook AC-4.1: the transcript read is bounded (a 400 KB line before the tail is not parsed whole) and still finds the tail', stateOf(sid)?.text === 'tail only')
+
+  // AC-4.2: AskUserQuestion
+  const questions = [{ question: 'Which store?', header: 'Store', options: [{ label: 'Redis', description: 'fast' }, { label: 'SQLite', description: 'file' }], multiSelect: false }]
+  fire({ ...base, hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  const q = stateOf(sid)
+  check('hook AC-4.2: PreToolUse AskUserQuestion sets question with the question text and the option labels', q?.kind === 'question' && q.text === 'Which store?' && q.options.join() === 'Redis,SQLite', JSON.stringify(q))
+  fire({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } })
+  check('hook AC-4.2: a PreToolUse of another tool changes nothing', stateOf(sid)?.kind === 'question')
+  fire({ ...base, hook_event_name: 'PostToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  check('hook AC-4.2: after the answer (PostToolUse AskUserQuestion) the state is cleared', stateOf(sid)?.kind === null && sw.stateFor({ hook_event_name: 'PostToolUse', tool_name: 'Bash' }) === null)
+
+  // AC-4.3: permission through both paths, elicitation
+  fire({ ...base, hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })
+  check('hook AC-4.3: PermissionRequest sets permission with the tool and the command', stateOf(sid)?.kind === 'permission' && stateOf(sid).text === 'Bash rm -rf build', JSON.stringify(stateOf(sid)))
+  fire({ ...base, hook_event_name: 'PermissionRequest', tool_name: 'Edit', tool_input: { file_path: '/work/repo/a.ts' } })
+  check('hook AC-4.3: a file tool shows its path', stateOf(sid)?.text === 'Edit /work/repo/a.ts')
+  fire({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'ok' })
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' })
+  check('hook AC-4.3: Notification permission_prompt sets permission when there is no state', stateOf(sid)?.kind === 'permission' && /needs your permission/.test(stateOf(sid).text))
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'elicitation_dialog', message: 'other' })
+  check('hook AC-4.3: a Notification does not replace a state that is already set; idle_prompt is ignored', stateOf(sid)?.kind === 'permission' && stateOf(sid).text !== 'other')
+  fire({ ...base, hook_event_name: 'UserPromptSubmit' })
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'idle_prompt', message: 'idle' })
+  check('hook AC-4.3: idle_prompt sets nothing', stateOf(sid)?.kind === null)
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'elicitation_dialog', message: 'Fill the form' })
+  check('hook AC-4.3: Notification elicitation_dialog sets elicitation', stateOf(sid)?.kind === 'elicitation' && stateOf(sid).text === 'Fill the form')
+  fire({ ...base, hook_event_name: 'Elicitation', mcp_server_name: 'figma', message: 'Sign in' })
+  check('hook: Elicitation sets elicitation with the server and the message', stateOf(sid)?.kind === 'elicitation' && stateOf(sid).text === 'figma: Sign in', JSON.stringify(stateOf(sid)))
+
+  // AC-4.4: cleared by a prompt, removed by the end of the session
+  fire({ ...base, hook_event_name: 'UserPromptSubmit' })
+  const cleared = stateOf(sid)
+  check('hook AC-4.4: UserPromptSubmit clears the state (the file stays for the process id)', cleared?.kind === null && cleared.text === '')
+  fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'done' })
+  fire({ ...base, hook_event_name: 'SessionEnd', reason: 'other' })
+  check('hook AC-4.4: SessionEnd removes the file; a prompt in a session with no file creates none', stateOf(sid) === null && (fire({ session_id: 'nofile', hook_event_name: 'UserPromptSubmit' }), stateOf('nofile') === null))
+
+  // AC-4.6: a subagent's event changes nothing
+  fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'main' })
+  for (const event of [{ hook_event_name: 'Stop', last_assistant_message: 'sub' }, { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'x' } }, { hook_event_name: 'UserPromptSubmit' }, { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } }, { hook_event_name: 'SessionEnd' }]) fire({ ...base, ...event, agent_id: 'agent-1' })
+  check('hook AC-4.6: events with agent_id (a subagent) change nothing, whatever they are', stateOf(sid)?.kind === 'turn-ended' && stateOf(sid).text === 'main')
+  fire({ session_id: 'sub-only', hook_event_name: 'Stop', agent_id: 'a' })
+  check('hook AC-4.6: and create no file', stateOf('sub-only') === null)
+
+  // AC-4.7: never blocks, never prints, exit 0 within 1 s
+  const bad = [fire('not json at all'), fire(''), fire('{}'), fire({ session_id: '../../evil', hook_event_name: 'Stop' }), fire({ session_id: 'x', hook_event_name: 'NoSuchEvent' })]
+  check('hook AC-4.7: unparseable or empty data, no session id, a path-like id, an unknown event — exit 0 and no output', bad.every((r) => r.status === 0 && r.stdout === '' && r.stderr === '') && !existsSync(join(dataDir, 'evil.json')) && !existsSync(join(root, 'evil.json')), JSON.stringify(bad.map((r) => [r.status, r.stdout, r.stderr])))
+  const blocked = join(root, 'blocked')
+  writeFileSync(blocked, 'a file where the data dir should be')
+  const t0 = Date.now()
+  const noWrite = fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'x' }, { env: { ...process.env, STAGE_PIPELINE_DATA_DIR: join(blocked, 'data') } })
+  check('hook AC-4.7: a file that cannot be written — exit 0, no output, under 1 s', noWrite.status === 0 && noWrite.stdout === '' && noWrite.stderr === '' && Date.now() - t0 < 1000, `${noWrite.status} ${Date.now() - t0} ms`)
+  const hookTimes = []
+  for (let i = 0; i < 3; i++) { const t = Date.now(); fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'x' }); hookTimes.push(Date.now() - t) }
+  check('hook AC-4.7: a run with the process lookup takes well under 1 s', hookTimes.every((ms) => ms < 1000), hookTimes.join(','))
+  check('hook: the state file holds no temp leftovers and is written whole', readdirSync(sessionsDir).every((name) => name.endsWith('.json')) && Object.keys(stateOf(sid)).sort().join() === 'claudePid,cwd,kind,options,since,source,text,transcript')
+
+  // claudePid: resolved once per session, kept in the file, one lookup
+  const dir2 = join(root, 'pid')
+  let lookups = 0
+  const rec = (input, extra = {}) => sw.record({ session_id: 'pidsess', cwd: '/c', ...input }, { dir: dir2, pidOf: () => { lookups++; return 4242 }, aliveOf: () => true, commandOf: () => '/usr/local/bin/claude --resume x', ...extra })
+  rec({ hook_event_name: 'Stop', last_assistant_message: 'a' })
+  rec({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } })
+  rec({ hook_event_name: 'UserPromptSubmit' })
+  rec({ hook_event_name: 'Stop', last_assistant_message: 'b' })
+  check('hook: claudePid is looked up once per session and kept across events and a clear', lookups === 1 && JSON.parse(readFileSync(join(dir2, 'pidsess.json'), 'utf8')).claudePid === 4242)
+  const own = sw.claudePidOf(process.pid)
+  check('hook: claudePid of the real process is a number or null (this test may not run under claude), from one ps call', own === null || Number.isInteger(own))
+
+  // claudePid after a resume (same session id, new process): a dead pid, a pid that is no longer a claude and a null are looked up again
+  const dir3 = join(root, 'pid3')
+  let looks = 0
+  const rec3 = (extra) => sw.record({ session_id: 'resumed', cwd: '/c', hook_event_name: 'Stop', last_assistant_message: 'a' }, { dir: dir3, pidOf: () => { looks++; return 7 }, aliveOf: () => true, commandOf: () => 'claude', ...extra })
+  const pid3 = () => JSON.parse(readFileSync(join(dir3, 'resumed.json'), 'utf8')).claudePid
+  rec3({ pidOf: () => 5 })
+  rec3({ aliveOf: (pid) => pid !== 5 })
+  check('hook AC-4.5: a stored claudePid whose process is dead is resolved again (a session resumed in a new process)', pid3() === 7 && looks === 1, `${pid3()} ${looks}`)
+  rec3({ commandOf: () => '/bin/zsh' })
+  check('hook AC-4.5: a stored claudePid that is no longer a claude (a reused pid) is resolved again', looks === 2, String(looks))
+  rec3({ pidOf: () => null, aliveOf: () => false })
+  rec3({})
+  check('hook AC-4.5: a null claudePid (a failed ps) is resolved again at the next event; a live claude one is kept without a lookup', pid3() === 7 && looks === 3, `${pid3()} ${looks}`)
+
+  // AC-4.3: an approved permission is cleared from journal-gate's PostToolUse path; other states stay
+  const dir4 = join(root, 'clear')
+  const seed = (kind) => { mkdirSync(dir4, { recursive: true }); writeFileSync(join(dir4, 'cc.json'), JSON.stringify({ kind, text: 'Bash ls', options: ['x'], since: 1, cwd: '/c', transcript: null, claudePid: 9 })) }
+  const kindOf = () => JSON.parse(readFileSync(join(dir4, 'cc.json'), 'utf8'))
+  seed('permission')
+  const cleared1 = sw.clearApproved('cc', { dir: dir4, now: 50 })
+  check('hook AC-4.3: clearApproved sets a permission to null (text and options emptied, since moved, pid kept)', cleared1 === true && kindOf().kind === null && kindOf().text === '' && kindOf().since === 50 && kindOf().claudePid === 9)
+  seed('elicitation')
+  sw.clearApproved('cc', { dir: dir4 })
+  const afterEl = kindOf().kind
+  seed('question')
+  const noQ = sw.clearApproved('cc', { dir: dir4 })
+  seed('turn-ended')
+  const noT = sw.clearApproved('cc', { dir: dir4 })
+  check('hook AC-4.3: an elicitation is cleared; a question and a turn-ended are not; a missing file or a bad id is false', afterEl === null && noQ === false && noT === false && kindOf().kind === 'turn-ended' && sw.clearApproved('absent', { dir: dir4 }) === false && sw.clearApproved('../x', { dir: dir4 }) === false)
+  // through the real PostToolUse hook: journal-gate
+  const gateDir = join(root, 'gate-data')
+  mkdirSync(join(gateDir, 'sessions'), { recursive: true })
+  const gateEnv = { ...process.env, STAGE_PIPELINE_DATA_DIR: gateDir }
+  const gateFile = join(gateDir, 'sessions', 'gate-sess.json')
+  const gateSeed = (kind) => writeFileSync(gateFile, JSON.stringify({ kind, text: 'Bash sleep 180', options: [], since: 1, cwd: root, transcript: null, claudePid: 9 }))
+  const gate = (extra) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'journal-gate.mjs')], { input: JSON.stringify({ session_id: 'gate-sess', cwd: root, tool_name: 'Bash', tool_input: { command: 'sleep 180' }, ...extra }), encoding: 'utf8', env: gateEnv })
+  gateSeed('permission')
+  const gPost = gate({ hook_event_name: 'PostToolUse' })
+  check('hook AC-4.3: the PostToolUse run of journal-gate clears a permission; no output, exit 0', gPost.status === 0 && gPost.stdout === '' && JSON.parse(readFileSync(gateFile, 'utf8')).kind === null, gPost.stdout + gPost.stderr)
+  gateSeed('permission')
+  gate({ hook_event_name: 'PreToolUse' })
+  const stillPerm = JSON.parse(readFileSync(gateFile, 'utf8')).kind
+  gateSeed('question')
+  gate({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, 'a.txt') } })
+  check('hook AC-4.3: the PreToolUse run does not clear it; a question survives a PostToolUse of an Edit (which clears a permission too)', stillPerm === 'permission' && JSON.parse(readFileSync(gateFile, 'utf8')).kind === 'question')
+  gateSeed('permission')
+  gate({ hook_event_name: 'PostToolUse', agent_id: 'sub-1' })
+  const afterSub = JSON.parse(readFileSync(gateFile, 'utf8')).kind
+  gate({ hook_event_name: 'PostToolUse' })
+  check('hook AC-4.6: a subagent\'s PostToolUse (agent_id) leaves the main session\'s permission; the main session\'s own PostToolUse clears it', afterSub === 'permission' && JSON.parse(readFileSync(gateFile, 'utf8')).kind === null, String(afterSub))
+  const t1 = Date.now()
+  for (let i = 0; i < 5; i++) gate({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, 'a.txt') } })
+  console.log(`  [info] journal-gate PostToolUse Edit with a session file: ${Math.round((Date.now() - t1) / 5)} ms per run`)
+
+  // AC-4.2: a PermissionRequest for AskUserQuestion does not replace the question; a Notification of the same kind refreshes
+  const dir5 = join(root, 'q')
+  const rec5 = (input) => sw.record({ session_id: 'qq', cwd: '/c', ...input }, { dir: dir5, pidOf: () => 1, aliveOf: () => true, commandOf: () => 'claude' })
+  const st5 = () => JSON.parse(readFileSync(join(dir5, 'qq.json'), 'utf8'))
+  rec5({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  rec5({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  const afterPerm = st5()
+  rec5({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } })
+  rec5({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'needs permission' })
+  check('hook AC-4.2: PermissionRequest for AskUserQuestion (and any PermissionRequest / Notification while a question is shown) leaves the question with its options', afterPerm.kind === 'question' && afterPerm.options.join() === 'Redis,SQLite' && st5().kind === 'question' && st5().options.length === 2, JSON.stringify(st5()))
+  rec5({ hook_event_name: 'UserPromptSubmit' })
+  rec5({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'first' })
+  rec5({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'second' }, 0)
+  check('hook AC-4.3: a Notification of the same kind refreshes the text (the second permission of a turn)', st5().kind === 'permission' && st5().text === 'second', JSON.stringify(st5()))
+  rec5({ hook_event_name: 'Notification', notification_type: 'elicitation_dialog', message: 'other' })
+  check('hook AC-4.3: a Notification of another kind does not replace a set state', st5().kind === 'permission' && st5().text === 'second')
+
+  // a PermissionRequest keeps its richer text and `since` when a Notification of the same kind follows
+  const dir7 = join(root, 'rich')
+  const rec7 = (input, now) => sw.record({ session_id: 'rr', cwd: '/c', ...input }, { dir: dir7, now, pidOf: () => 1, aliveOf: () => true, commandOf: () => 'claude' })
+  const st7 = () => JSON.parse(readFileSync(join(dir7, 'rr.json'), 'utf8'))
+  rec7({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'yarn test' } }, 1000)
+  rec7({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission' }, 2000)
+  check('hook AC-4.3: a Notification after a PermissionRequest keeps the richer text and the original since', st7().text === 'Bash yarn test' && st7().since === 1000 && st7().source === 'PermissionRequest', JSON.stringify(st7()))
+  rec7({ hook_event_name: 'PermissionRequest', tool_name: 'Edit', tool_input: { file_path: '/a.txt' } }, 3000)
+  check('hook AC-4.3: a new PermissionRequest still replaces the state', st7().text === 'Edit /a.txt' && st7().since === 3000)
+
+  // a failed pid lookup (ps and commandOf both fail under load) keeps a live old pid, and replaces it only with a positive answer
+  const dir8 = join(root, 'pidkeep')
+  const rec8 = (extra) => sw.record({ session_id: 'pk', cwd: '/c', hook_event_name: 'Stop', last_assistant_message: 'a' }, { dir: dir8, aliveOf: () => true, ...extra })
+  const pid8 = () => JSON.parse(readFileSync(join(dir8, 'pk.json'), 'utf8')).claudePid
+  rec8({ pidOf: () => 5, commandOf: () => 'claude' })
+  rec8({ pidOf: () => null, commandOf: () => null })
+  const keptPid = pid8()
+  rec8({ pidOf: () => null, commandOf: () => null, aliveOf: () => false })
+  const goneNull = pid8()
+  rec8({ pidOf: () => 5, commandOf: () => 'claude' })
+  rec8({ pidOf: () => 8, commandOf: () => null })
+  check('hook AC-4.5: a failed lookup keeps a live old claudePid, drops a dead one to null, and a positive answer replaces it', keptPid === 5 && goneNull === null && pid8() === 8, `${keptPid} ${goneNull} ${pid8()}`)
+
+  // stale state files: the monitor skips them, the hook deletes them at most once an hour
+  const dir6 = join(root, 'stale', 'sessions')
+  mkdirSync(dir6, { recursive: true })
+  const old = new Date(Date.now() - 8 * 24 * 3600 * 1000)
+  writeFileSync(join(dir6, 'dead.json'), JSON.stringify({ kind: 'turn-ended', text: 'x', since: 1, claudePid: 5 }))
+  utimesSync(join(dir6, 'dead.json'), old, old)
+  writeFileSync(join(dir6, 'fresh.json'), JSON.stringify({ kind: 'turn-ended', text: 'x', since: 1, claudePid: 6 }))
+  check('monitor: readWaitStates skips a state file untouched for 7 days and reads a fresh one', mon.readWaitStates(dir6).map((x) => x.sessionId).join() === 'fresh')
+  const rec6 = () => sw.record({ session_id: 'live', cwd: '/c', hook_event_name: 'Stop', last_assistant_message: 'a' }, { dir: dir6, pidOf: () => 1, aliveOf: () => true, commandOf: () => 'claude' })
+  rec6()
+  check('hook: a state write deletes the stale file of another session, keeps the fresh one and its own', !existsSync(join(dir6, 'dead.json')) && existsSync(join(dir6, 'fresh.json')) && existsSync(join(dir6, 'live.json')))
+  writeFileSync(join(dir6, 'dead2.json'), '{}')
+  utimesSync(join(dir6, 'dead2.json'), old, old)
+  rec6()
+  check('hook: the sweep runs at most once an hour (a marker file next to the directory)', existsSync(join(dir6, 'dead2.json')) && existsSync(join(dir6, '..', 'sessions.swept')))
+
+  // monitor: the waiting field (AC-4.1..4.5)
+  const now = 10_000_000
+  const tfile = join(root, 'mon-transcript.jsonl')
+  writeFileSync(tfile, '{}\n')
+  const mtime = 5_000_000
+  const sess = (pid, sessionId, age = 600) => ({ pid, sessionId, age, cwd: '/work/repo', task: '/work/repo#T-1', ticket: 'T-1', root: '/work/repo', subagents: 0 })
+  const st = (id, extra) => ({ sessionId: id, kind: 'permission', text: 'Bash ls', options: [], since: now - 60_000, claudePid: 100, transcript: tfile, ...extra })
+  const run = (sessions, states, mtimeOf = () => now - 100_000) => ({ list: mon.attachWaiting(sessions, states, { now, mtimeOf }), sessions })
+  let r = run([sess(100, null)], [st('idA')])
+  check('monitor AC-4.3: a session without --resume matches its state by claudePid and takes the session id from the file', r.sessions[0].sessionId === 'idA' && r.sessions[0].waiting?.kind === 'permission' && r.sessions[0].waiting.text === 'Bash ls', JSON.stringify(r.sessions[0]))
+  r = run([sess(100, 'idB')], [st('idB', { claudePid: 999 })])
+  check('monitor: a session with --resume matches by session id', r.sessions[0].waiting?.kind === 'permission')
+  r = run([sess(100, 'idB')], [st('idB', { claudePid: 999, kind: null })])
+  check('monitor AC-4.4: a cleared state is no waiting', r.sessions[0].waiting === null && r.list.length === 0)
+  r = run([sess(100, null)], [st('idA', { claudePid: 777 })])
+  check('monitor AC-4.5: a state of another process (a dead session) matches no live session', r.sessions[0].waiting === null && r.sessions[0].sessionId === null)
+  r = run([sess(100, null, 30)], [st('idA', { since: now - 600_000 })])
+  check('monitor AC-4.5: a state written before this process started (a reused pid) is not its state', r.sessions[0].waiting === null)
+  r = run([sess(100, 'idA')], [st('idA')], () => now - 60_000 + 5_001)
+  check('monitor AC-4.5: a transcript changed more than 5 s after since drops the state', r.sessions[0].waiting === null)
+  r = run([sess(100, 'idA')], [st('idA')], () => now - 60_000 + 4_999)
+  check('monitor AC-4.5: a transcript changed within 5 s of since keeps it (the turn\'s own last write)', r.sessions[0].waiting?.kind === 'permission')
+  r = run([sess(100, 'idA')], [st('idA')], () => { throw new Error('gone') })
+  check('monitor AC-4.5: an unreadable transcript does not hide the state', r.sessions[0].waiting?.kind === 'permission')
+  r = run([sess(100, 'old-id')], [st('old-id', { since: now - 120_000, kind: 'turn-ended' }), st('new-id', { since: now - 30_000, kind: 'question', text: 'Which?', options: ['A', 'B'] })])
+  check('monitor: the newer state of the process wins and gives its session id (a session after /clear)', r.sessions[0].sessionId === 'new-id' && r.sessions[0].waiting.kind === 'question' && r.sessions[0].waiting.options.join() === 'A,B')
+  r = run([sess(1, null), sess(2, null), sess(3, null)], [st('a', { claudePid: 1, since: now - 10_000, kind: 'turn-ended' }), st('b', { claudePid: 2, since: now - 90_000, kind: 'question' })])
+  check('monitor: the top-level waiting list holds the waiting sessions only, oldest since first, with the session id, pid, task and the kind', r.list.length === 2 && r.list[0].sessionId === 'b' && r.list[1].sessionId === 'a' && r.list[0].kind === 'question' && r.list[0].pid === 2 && r.list[0].ticket === 'T-1' && r.sessions[2].waiting === null, JSON.stringify(r.list))
+  // an approved permission whose command runs: the Bash shell (shell-snapshots source) of the session's tree, started after since, ends the wait
+  const shellArgs = '/bin/zsh -c source /Users/u/.claude/shell-snapshots/snapshot-zsh-1.sh && eval "sleep 180"'
+  const treeOf = (shellAge, args = shellArgs, ppid = 100) => new Map([[100, { pid: 100, ppid: 1, age: 600, args: '/usr/local/bin/claude' }], [200, { pid: 200, ppid, age: shellAge, args }]])
+  const waitAt = (table) => mon.attachWaiting([sess(100, null)], [st('idA')], { now, mtimeOf: () => now - 100_000, table })[0]
+  check('monitor AC-4.3: a Bash shell child younger than the permission state means the approved command runs: not waiting', waitAt(treeOf(30)) === undefined)
+  check('monitor AC-4.3: an older shell (a background shell from before), another command line, a shell outside the tree and no table still wait', waitAt(treeOf(300))?.kind === 'permission' && waitAt(treeOf(30, '/bin/zsh -c ls'))?.kind === 'permission' && waitAt(treeOf(30, shellArgs, 1))?.kind === 'permission' && waitAt(null)?.kind === 'permission')
+  const question = mon.attachWaiting([sess(100, null)], [st('idA', { kind: 'question' })], { now, mtimeOf: () => now - 100_000, table: treeOf(30) })
+  check('monitor AC-4.3: a running shell does not hide a question', question[0]?.kind === 'question')
+  // read from disk, collect: nothing deleted, bad files skipped
+  const dirR = join(root, 'read')
+  mkdirSync(dirR, { recursive: true })
+  writeFileSync(join(dirR, 'idX.json'), JSON.stringify({ kind: 'turn-ended', text: 't', since: 1, claudePid: 5 }))
+  writeFileSync(join(dirR, 'broken.json'), '{ half')
+  writeFileSync(join(dirR, 'note.txt'), 'x')
+  const read = mon.readWaitStates(dirR)
+  check('monitor: readWaitStates reads <id>.json with the id from the file name, skips broken and foreign files, deletes nothing; no directory is no state', read.length === 1 && read[0].sessionId === 'idX' && readdirSync(dirR).length === 3 && mon.readWaitStates(join(root, 'none')).length === 0)
+  const fakeTable = new Map([[100, { pid: 100, ppid: 1, uid: 501, cpu: 1, rssKb: 1, nice: 0, pri: 31, stat: 'S', age: 600, cpuSeconds: 1, args: '/usr/local/bin/claude' }]])
+  const snap = mon.collect({ table: fakeTable, taskDirs: [], cwdOf: () => '/work/repo', taskOf: () => ({ key: '/work/repo', task: false, root: '/work/repo' }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: { memory: null, swap: null, load: null }, waitStates: [st('idZ', { since: Date.now() - 1000, transcript: null })] })
+  check('monitor: collect gives sessions their waiting and a top-level waiting list', snap.sessions[0].waiting?.kind === 'permission' && snap.sessions[0].sessionId === 'idZ' && snap.waiting.length === 1 && snap.waiting[0].sessionId === 'idZ' && snap.problem === null, JSON.stringify([snap.waiting, snap.problem]))
+  const hooksJson = JSON.parse(readFileSync(join(PLUGIN, '../hooks/hooks.json'), 'utf8')).hooks
+  const wiredTo = (event, matcher) => (hooksJson[event] ?? []).some((entry) => entry.matcher === matcher && entry.hooks.some((hook) => /session-wait\.mjs/.test(hook.command) && hook.timeout <= 5))
+  check('hook: hooks.json wires session-wait for Stop, UserPromptSubmit, PermissionRequest, Notification, Elicitation, SessionEnd and AskUserQuestion before and after, with a timeout of 5 s at most', ['Stop', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Elicitation', 'SessionEnd'].every((event) => wiredTo(event, undefined)) && wiredTo('PreToolUse', 'AskUserQuestion') && wiredTo('PostToolUse', 'AskUserQuestion'))
   rmSync(root, { recursive: true, force: true })
 }
 

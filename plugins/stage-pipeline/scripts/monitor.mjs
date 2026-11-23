@@ -16,15 +16,17 @@ import { cpus, homedir, totalmem } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { isBrowserMain, isClaude, isMcpServer } from './browser-cleanup.mjs'
 import { isMain } from './main-guard.mjs'
-import { processStats, cwdOf as readCwd } from './processes.mjs'
+import { descendants, processStats, cwdOf as readCwd } from './processes.mjs'
 import { placeOf, readLoad, readMemory, readPriorities, readRunning, readWaiting, taskInfo } from './heavy-queue.mjs'
 import { STATUS_LINE } from './markers.mjs'
 import { nextAction, resumeState, stageList } from './resume-point.mjs'
+import { WAIT_STATE_MAX_AGE_MS } from './hooks/session-wait.mjs'
 import { devServerConfig, findConfigRoot, forceActive, knownTaskDirs, OPEN_STATUS, pluginDataDir, readPipelineState, taskFile, unreadableMessage } from './hooks/pipeline-state.mjs'
 
 const GB = 1024 ** 3
 export const SUBAGENT_FRESH_MS = 60_000
 export const KINDS = ['check', 'browser', 'dev-server', 'other']
+export const WAIT_TRANSCRIPT_GRACE_MS = 5000 // a transcript that changed later than this after the state was written: the session went on (D11)
 
 // ── tasks ────────────────────────────────────────────────────────────────────
 
@@ -245,7 +247,7 @@ export function classifyTree(table, pid, { devPort = null, platform = process.pl
 
 // ── sessions ─────────────────────────────────────────────────────────────────
 
-/** The session id from `--resume <uuid>` / `--resume=<uuid>` (stage 4 adds the hook-recorded mapping for the rest); null without one. */
+/** The session id from `--resume <uuid>` / `--resume=<uuid>`; null without one (`attachWaiting` takes it from the hook-recorded state then). */
 export function sessionIdOf(args) {
   return /(?:^|\s)--resume[= ]([0-9a-f]{8}-[0-9a-f-]{27})(?:\s|$)/i.exec(args)?.[1] ?? null
 }
@@ -345,6 +347,63 @@ export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchO
   return rows.sort((a, b) => a.pid - b.pid)
 }
 
+/** The state files of the session-wait hook (stage 4): `sessions/<id>.json` of the data dir, each with its `sessionId` (the file name). Unreadable files and files untouched for 7 days are skipped; nothing is deleted here. */
+export function readWaitStates(dir = join(pluginDataDir(), 'sessions'), { now = Date.now() } = {}) {
+  const states = []
+  try {
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith('.json')) continue
+      try {
+        if (now - statSync(join(dir, name)).mtimeMs > WAIT_STATE_MAX_AGE_MS) continue // a killed session never sent SessionEnd; the hook deletes such files
+        const value = JSON.parse(readFileSync(join(dir, name), 'utf8'))
+        if (value && typeof value === 'object') states.push({ ...value, sessionId: name.slice(0, -5) })
+      } catch {
+        // a half-written or foreign file
+      }
+    }
+  } catch {
+    // no directory: no state
+  }
+  return states
+}
+
+const transcriptMoved = (state, mtimeOf) => {
+  if (!state.transcript) return false
+  try {
+    return mtimeOf(state.transcript) > state.since + WAIT_TRANSCRIPT_GRACE_MS
+  } catch {
+    return false
+  }
+}
+
+/** An approved permission whose command runs: the Bash tool's shell (its args carry `shell-snapshots/snapshot-`) started after `since` is in the session's process tree; PostToolUse comes only when the command ends. */
+const approvedAndRunning = (state, session, table, now) =>
+  state.kind === 'permission' && Boolean(table) && descendants(table, session.pid).some((entry) => /shell-snapshots\/snapshot-/.test(entry.args) && now - (entry.age ?? 0) * 1000 >= state.since - 1000)
+
+/**
+ * Gives every session `waiting` ({ kind, text, options, since } or null) from the hook's state files (AC-4.5, D11). A state belongs to a session when its id is the session's
+ * `--resume` id, or when its `claudePid` is the session's process and it was written after that process started (a reused pid keeps no old state). The newest state of a session wins and
+ * its id becomes the session's `sessionId` when the session has none (no `--resume`) or an older one. A state is dropped when its transcript changed more than 5 s after `since`; a state
+ * of a process that is not in the table (a dead session) matches nothing. Returns the waiting list too, oldest `since` first (the page's "waiting for you" block).
+ */
+export function attachWaiting(sessions, states, { now = Date.now(), mtimeOf = (path) => statSync(path).mtimeMs, table = null } = {}) {
+  const waiting = []
+  for (const session of sessions) {
+    const started = now - (session.age ?? 0) * 1000 - 2000
+    const own = states
+      .filter((state) => (session.sessionId && state.sessionId === session.sessionId) || (state.claudePid === session.pid && state.since >= started))
+      .sort((a, b) => b.since - a.since)
+    const latest = own[0]
+    if (latest && latest.sessionId !== session.sessionId && (!session.sessionId || latest.claudePid === session.pid)) session.sessionId = latest.sessionId
+    const state = own.find((item) => item.sessionId === session.sessionId) ?? latest
+    session.waiting = state?.kind && !transcriptMoved(state, mtimeOf) && !approvedAndRunning(state, session, table, now) ? { kind: state.kind, text: state.text ?? '', options: state.options ?? [], since: state.since } : null
+    if (session.waiting) {
+      waiting.push({ ...session.waiting, sessionId: session.sessionId, pid: session.pid, cwd: session.cwd, task: session.task, ticket: session.ticket, root: session.root })
+    }
+  }
+  return waiting.sort((a, b) => a.since - b.since)
+}
+
 // ── the balancer and the machine ─────────────────────────────────────────────
 
 /** The place of a task key in the balancer's order, 1 first; null when it is not in the order (`placeOf` of heavy-queue.mjs answers `length + 1` there, which is a `nice` rule, not a place). */
@@ -442,9 +501,15 @@ export function collect({ table, ...seams } = {}) {
   const tasks = guarded('tasks', () => taskRows(seams.taskDirs), [])
   const processes = table === undefined ? processStats() : table
   let sessions = []
+  let waiting = []
   if (processes === null) problems.push('ps is missing or did not answer in time: no processes in the snapshot')
   else {
     sessions = guarded('sessions', () => sessionRows(processes, seams), [])
+    const known = new Map(sessions.map((session) => [session, session.sessionId]))
+    waiting = guarded('waiting', () => attachWaiting(sessions, seams.waitStates ?? readWaitStates(), { now: seams.now, mtimeOf: seams.mtimeOf, table: processes }), [])
+    for (const session of sessions) {
+      if (session.sessionId !== known.get(session)) session.subagents = activeSubagents(session.sessionId, session.cwd, { projectsDir: seams.projectsDir, now: seams.now })
+    }
     if (sessions.some((session) => session.cwd === null)) problems.push('lsof is missing or did not answer: the folder of some sessions is unknown')
   }
   tasks.push(...guarded('session tasks', () => unregisteredRows(sessions, tasks), []))
@@ -453,7 +518,7 @@ export function collect({ table, ...seams } = {}) {
   const load = seams.machine && 'load' in seams.machine ? seams.machine.load ?? noLoad : guarded('load', () => readLoad(), noLoad)
   const balance = guarded('balance', () => balanceRows({ running: readRunning(), waiting: readWaiting(), priorities, load, sessions, platform: seams.platform }), { heavy: [], paused: [], pauseSupported: true, order: [] })
   const machine = guarded('machine', () => machineRow({ load: seams.machine && 'load' in seams.machine ? seams.machine.load : load, ...seams.machine }), null)
-  return { at: new Date().toISOString(), tasks, sessions, balance, machine, problem: problems.length ? problems.join('; ') : null }
+  return { at: new Date().toISOString(), tasks, sessions, waiting, balance, machine, problem: problems.length ? problems.join('; ') : null }
 }
 
 // ── the table ────────────────────────────────────────────────────────────────
