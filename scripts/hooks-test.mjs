@@ -198,6 +198,7 @@ const UNITS = [
   { id: 'todominors', weight: 2 }, // 0.29.2 (TODO.md minors): main guards through a symlinked path, the maker spawn of a task in a linked worktree from a main-tree session, the api-verify no-rerun text
   { id: 'pp1s5', weight: 2 }, // PP-1 stage 5: plan-check reads PRODUCT-HANDOFF.md (H<n> coverage, unknown version, no file = no requirement) and --input (no input stops, any one of four passes); stage-plan and docs-lookup text
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
+  { id: 'vt17s3', weight: 2 }, // VT-17 stage 3: monitor.mjs — tasks of the registry, sessions, the tree split by kind, one ps and one lsof per session, the balancer's states, the table
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
 const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
@@ -11842,6 +11843,123 @@ if (unit('todogroup1')) {
   check('files placeholder: `{files}` and `{files:rel+py}` match, the token list is group 1', FILES_PLACEHOLDER?.exec('eslint {files}') !== null && FILES_PLACEHOLDER?.exec('eslint {files}')?.[1] === undefined && FILES_PLACEHOLDER?.exec('pytest {files:rel+py}')?.[1] === 'rel+py')
   const ownSpellings = readdirSync(PLUGIN).filter((name) => name.endsWith('.mjs') && name !== 'markers.mjs' && /\/\\\{files/.test(readFileSync(join(PLUGIN, name), 'utf8')))
   check('files placeholder: no plugin script spells its own `{files` regex', ownSpellings.length === 0, ownSpellings.join(', '))
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-17 stage 3: monitor.mjs ───────────────────────────────────────────────
+// A fake process table and temporary roots only: never the real ps, lsof, data dir or ~/.claude/projects.
+if (unit('vt17s3')) {
+  const GB = 1024 ** 3
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const ps = await import(join(PLUGIN, 'processes.mjs'))
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-monitor-'))
+  const tasksDir = join(root, 'repo', '.claude', 'tasks')
+  write(join(root, 'repo'), {
+    '.claude/tasks/RU-1/STAGES.md': '# Задача\n## Статус: этап 1 из 2\n### Этап 1: первый  [status: in-progress]\n### Этап 2: второй  [status: todo]\n',
+    '.claude/tasks/EN-1/STAGES.md': '# Task\n## Status: stage 1 of 2 done\n### Stage 1: first  [status: done]\n### Stage 2: second  [status: todo]\n',
+  })
+  mkdirSync(join(tasksDir, 'BAD-1', 'STAGES.md'), { recursive: true }) // a directory where the journal should be
+  const rows = mon.taskRows([tasksDir])
+  const byTicket = Object.fromEntries(rows.map((row) => [row.ticket, row]))
+  check('monitor AC-3.1: every task of the directory has key, repo, ticket, status line, stages with statuses and the next item', ['RU-1', 'EN-1'].every((t) => byTicket[t]?.key === `${join(root, 'repo')}#${t}` && byTicket[t].repo === 'repo' && byTicket[t].status && byTicket[t].stages.length === 2 && byTicket[t].next) && byTicket['RU-1'].stages[0].status === 'in-progress' && byTicket['EN-1'].stages[0].done === true, JSON.stringify(rows))
+  check('monitor AC-3.1: the stage N of M and the next item — in progress (ru), kickoff of the next stage (en)', byTicket['RU-1'].stageNumber === 1 && byTicket['RU-1'].stageTotal === 2 && /Этап 1 in progress/.test(byTicket['RU-1'].next) && byTicket['EN-1'].stageNumber === 2 && /kickoff Stage 2/.test(byTicket['EN-1'].next), JSON.stringify([byTicket['RU-1'].next, byTicket['EN-1'].next]))
+  check('monitor AC-3.1: an unreadable STAGES.md stays in the list with a problem', Boolean(byTicket['BAD-1']?.problem) && byTicket['BAD-1'].stages.length === 0, JSON.stringify(byTicket['BAD-1']))
+
+  const uuid = '11111111-2222-3333-4444-555555555555'
+  const row = (pid, ppid, args, extra = {}) => [pid, { pid, ppid, uid: 501, cpu: 1, rssKb: 1024, nice: 0, pri: 31, stat: 'S', age: 100, cpuSeconds: 2, args, ...extra }]
+  const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  const profile = '--user-data-dir=/Users/x/.cache/chrome-devtools-mcp/profile'
+  const table = new Map([
+    row(100, 1, `/usr/local/bin/claude --resume ${uuid}`, { cpu: 2, rssKb: 100_000, nice: 10, pri: 4 }),
+    row(101, 100, '/bin/zsh -c yarn vitest'),
+    row(102, 101, `node ${root}/scripts/run-check.mjs -- yarn vitest related --run a.ts`, { cpu: 5, rssKb: 10_000, pri: 4 }),
+    row(103, 102, 'node /repo/node_modules/.bin/vitest related --run a.ts', { cpu: 90, rssKb: 800_000, pri: 4, cpuSeconds: 30.5 }),
+    row(110, 100, 'npm exec chrome-devtools-mcp@1.6.0 --isolated', { cpu: 0.5, rssKb: 50_000 }),
+    row(111, 110, 'node /x/chrome-devtools-mcp --isolated', { rssKb: 60_000 }),
+    row(112, 111, `${CHROME} ${profile}`, { cpu: 10, rssKb: 200_000 }),
+    row(113, 112, `${CHROME} --type=renderer ${profile}`, { cpu: 20, rssKb: 300_000 }),
+    row(120, 100, 'node /repo/node_modules/.bin/vite --port 3000', { cpu: 7, rssKb: 150_000 }),
+    row(130, 1, '/usr/local/bin/claude --chrome-native-host'),
+    row(200, 1, '/usr/local/bin/claude', { stat: 'T' }),
+    row(201, 200, 'sleep 100', { stat: 'T' }),
+  ])
+  const calls = { cwd: [], ps: 0 }
+  const taskOf = (cwd) => (cwd === '/work/repo' ? { key: '/work/repo#T-1', task: true, root: '/work/repo', ticket: 'T-1', taskDir: '/work/repo/.claude/tasks' } : { key: cwd, task: false, root: cwd })
+  const sessions = mon.sessionRows(table, { cwdOf: (pid) => { calls.cwd.push(pid); return pid === 100 ? '/work/repo' : '/work/other' }, taskOf, branchOf: () => 'feat/t-1', devPortOf: () => '3000', platform: 'darwin', projectsDir: join(root, 'none') })
+  const first = sessions.find((session) => session.pid === 100)
+  check('monitor AC-3.2: a session has pid, folder, branch, task key (null off a task) and the id from --resume; chrome-native-host is not a session', sessions.length === 2 && first.cwd === '/work/repo' && first.branch === 'feat/t-1' && first.task === '/work/repo#T-1' && first.sessionId === uuid && sessions.find((s) => s.pid === 200).task === null && !sessions.some((s) => s.pid === 130), JSON.stringify(sessions.map((s) => [s.pid, s.task])))
+  check('monitor AC-3.4: the folder is read once per session (the only lsof)', calls.cwd.length === 2 && new Set(calls.cwd).size === 2, calls.cwd.join(','))
+  const kinds = first.load.kinds
+  check('monitor AC-3.3: run-check, the DevTools MCP Chrome with its helper and the dev server are split into check, browser, dev-server', kinds.check.count === 2 && kinds.check.cpu === 95 && kinds.browser.count === 2 && kinds.browser.cpu === 30 && kinds.browser.rssBytes === 500_000 * 1024 && kinds['dev-server'].count === 1 && kinds['dev-server'].cpu === 7 && kinds.other.count === 4, JSON.stringify(kinds))
+  check('monitor AC-3.3: the session total, nice, background (PRI 4 on darwin), the check kind in the background and the browser not', first.load.cpu === 136.5 && first.load.nice === 10 && first.load.background === true && kinds.check.background === true && kinds.browser.background === false, JSON.stringify(first.load))
+  check('monitor AC-3.3: cumulative CPU time (cpuSeconds) per process, per tree and per kind', first.load.cpuSeconds === 46.5 && first.load.kinds.check.cpuSeconds === 32.5 && first.load.procs.length === 9 && first.load.procs.find((p) => p.pid === 103).cpuSeconds === 30.5 && first.load.procs.find((p) => p.pid === 103).age === 100 && first.load.procs.find((p) => p.pid === 103).kind === 'check', JSON.stringify(first.load))
+  const devCmd = (args) => mon.isDevServer(args, '3000')
+  check('monitor AC-3.3: isDevServer true for launchers as the command word, with or without npx/yarn/pnpm/npm run/node/a shell', ['vite', 'node /r/node_modules/.bin/vite --port 4000', 'npx next dev', 'yarn dev', 'pnpm run dev:web', 'npm start', 'nuxi dev', 'bun run dev', '/bin/zsh -c yarn dev', 'PORT=5000 node server.js', 'storybook dev -p 6006', 'next dev -p 3001', 'astro dev'].every((args) => mon.isDevServer(args, null) || args.startsWith('PORT=') && mon.isDevServer(args, '5000')) && ['node server.js --port 3000', 'python -m http.server -p 3000', 'PORT=3000 node s.js'].every((args) => devCmd(args)))
+  check('monitor AC-3.3: isDevServer false for a launcher word elsewhere in a command (rg, git log, vite build, curl of the port)', ['rg next src/dev', 'git log next..dev', 'vite build --mode dev', 'curl http://localhost:3000/health', 'yarn vitest related --run a.ts', 'next build', 'npx tsc --noEmit'].every((args) => !devCmd(args)), ['rg next src/dev', 'git log next..dev', 'vite build --mode dev', 'curl http://localhost:3000/health'].map((a) => [a, devCmd(a)]).join(';'))
+  check('monitor: a tree where every process is stopped is stopped; a live tree is not', sessions.find((s) => s.pid === 200).load.stopped === true && first.load.stopped === false)
+  check('monitor: PRI 4 is not the background off macOS', mon.classifyTree(table, 100, { platform: 'linux' }).background === false)
+
+  const projects = join(root, 'projects')
+  const subs = join(projects, '-work-repo', uuid, 'subagents')
+  mkdirSync(subs, { recursive: true })
+  writeFileSync(join(subs, 'fresh.jsonl'), '{}')
+  writeFileSync(join(subs, 'old.jsonl'), '{}')
+  const longAgo = new Date(Date.now() - 600_000)
+  utimesSync(join(subs, 'old.jsonl'), longAgo, longAgo)
+  check('monitor AC-3.2: active subagents are transcripts younger than 60 s; none without a session id', mon.activeSubagents(uuid, '/work/repo', { projectsDir: projects }) === 1 && mon.activeSubagents(null, '/work/repo', { projectsDir: projects }) === 0 && mon.activeSubagents(uuid, '/elsewhere', { projectsDir: projects }) === 1)
+
+  const gitRoot = join(root, 'gitrepo')
+  mkdirSync(join(gitRoot, '.git'), { recursive: true })
+  mkdirSync(join(gitRoot, 'sub'), { recursive: true })
+  writeFileSync(join(gitRoot, '.git', 'HEAD'), 'ref: refs/heads/feat/x#1\n')
+  const linked = join(root, 'linked')
+  mkdirSync(linked, { recursive: true })
+  mkdirSync(join(root, 'gitdirs', 'wt'), { recursive: true })
+  writeFileSync(join(linked, '.git'), `gitdir: ${join(root, 'gitdirs', 'wt')}\n`)
+  writeFileSync(join(root, 'gitdirs', 'wt', 'HEAD'), 'ref: refs/heads/wt-branch\n')
+  const detached = join(root, 'detached')
+  mkdirSync(join(detached, '.git'), { recursive: true })
+  writeFileSync(join(detached, '.git', 'HEAD'), '0123456789abcdef0123456789abcdef01234567\n')
+  check('monitor: the branch is read from .git/HEAD (a subfolder, a linked worktree\'s gitdir), null when detached or off a checkout — no git process', mon.branchOfCwd(join(gitRoot, 'sub')) === 'feat/x#1' && mon.branchOfCwd(linked) === 'wt-branch' && mon.branchOfCwd(detached) === null && mon.branchOfCwd(join(root, 'no-such')) === null)
+  const seenCwd = { task: [], branch: [] }
+  const twice = mon.sessionRows(new Map([row(300, 1, '/bin/claude'), row(301, 1, '/bin/claude')]), { cwdOf: () => '/work/repo', taskOf: (cwd) => { seenCwd.task.push(cwd); return taskOf(cwd) }, branchOf: (cwd) => { seenCwd.branch.push(cwd); return 'b' }, devPortOf: () => null, projectsDir: join(root, 'none') })
+  check('monitor AC-3.4: the task, the branch and the dev port of a folder are read once per distinct folder, and root comes from the task info', seenCwd.task.length === 1 && seenCwd.branch.length === 1 && twice.length === 2 && twice[1].root === '/work/repo' && twice[1].taskDir === '/work/repo/.claude/tasks')
+  const hashed = mon.sessionRows(new Map([row(310, 1, '/bin/claude')]), { cwdOf: () => '/w/a#b', taskOf: () => ({ key: '/w/a#b#T-1', task: true, root: '/w/a#b', ticket: 'T-1', taskDir: '/w/a#b/t' }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none') })
+  check('monitor AC-3.2: a repo path with # keeps its root', hashed[0].root === '/w/a#b' && hashed[0].task === '/w/a#b#T-1')
+
+  const prio = { order: ['/work/repo#T-1', 'b#T-2'], paused: ['b#T-2'] }
+  const entry = (pid, key, patch = {}) => ({ pid, key, command: 'yarn vitest', kind: 'check', expectedBytes: 1.5 * GB, since: Date.now() - 5000, ...patch })
+  const bal = mon.balanceRows({ running: [entry(102, '/work/repo#T-1'), entry(7, 'x#T-3', { background: true }), entry(8, 'b#T-2')], waiting: [entry(9, 'y#T-4', { reason: 'memory: needs ~1.6 GB, 1.5 GB available' }), entry(10, 'b#T-2')], priorities: prio, load: { load: 9.5, cores: 10 }, sessions })
+  const stateOf = (pid) => bal.heavy.find((item) => item.pid === pid)
+  check('monitor AC-3.7: running, throttled (cpu: load L of N), waiting (the balancer reason) and paused, with the order and the paused keys', stateOf(102).state === 'running' && stateOf(102).session === 100 && stateOf(7).state === 'throttled' && stateOf(7).reason === 'cpu: load 9.5 of 10' && stateOf(9).state === 'waiting' && stateOf(9).reason === 'memory: needs ~1.6 GB, 1.5 GB available' && stateOf(8).state === 'paused' && stateOf(10).state === 'paused' && bal.paused[0] === 'b#T-2' && bal.order.length === 2, JSON.stringify(bal.heavy.map((i) => [i.pid, i.state, i.reason])))
+
+  check('monitor AC-3.7: the place is one answer — 1-based in the order, null outside it (the heavy rows and the helper)', stateOf(102).place === 1 && stateOf(8).place === 2 && stateOf(7).place === null && mon.placeIn(prio.order, 'zzz') === null && mon.placeIn(prio.order, 'b#T-2') === 2)
+  const onWin = mon.balanceRows({ running: [entry(8, 'b#T-2', { paused: true })], waiting: [entry(10, 'b#T-2')], priorities: prio, load: { load: 1, cores: 10 }, sessions, platform: 'win32' })
+  check('monitor D16: on win32 there is no pause — no paused keys, no paused state', onWin.paused.length === 0 && onWin.pauseSupported === false && onWin.heavy.every((item) => item.state !== 'paused'), JSON.stringify(onWin))
+  check('monitor D16: the table has no pause value on win32', !/paused|stopped/.test(mon.renderTable({ tasks: [], balance: { heavy: [], paused: [], pauseSupported: false, order: [] }, sessions: [{ ...sessions[1], load: { ...sessions[1].load, stopped: true } }], machine: null, problem: null }).split('\n').slice(1).join('\n')))
+  const machineSeam = { memory: null, swap: null, load: null }
+  const snap = mon.collect({ table, taskDirs: [tasksDir], cwdOf: () => '/work/repo', taskOf, branchOf: () => null, devPortOf: () => null, platform: 'darwin', projectsDir: projects, machine: { memory: { pressure: 'warn', availableBytes: 3 * GB }, swap: { used: 2 * GB, total: 4 * GB } } })
+  check('monitor: the snapshot has tasks, sessions, balance and machine (pressure, available, swap, load, cores)', snap.tasks.length === 3 && snap.sessions.length === 2 && snap.balance && snap.machine.pressure === 'warn' && snap.machine.swapUsedBytes === 2 * GB && snap.machine.cores > 0 && snap.problem === null, JSON.stringify(snap.problem))
+  const text = mon.renderTable({ ...snap, tasks: [{ key: '/work/repo#T-1', repo: 'repo', ticket: 'T-1', stageNumber: 2, stageTotal: 5 }], balance: { ...bal, paused: [] }, sessions })
+  check('monitor AC-3.6: the table has task, stage, session, heavy now, CPU, memory, place, pause and a machine line', /TASK\s+STAGE\s+SESSION\s+HEAVY NOW\s+CPU\s+MEMORY\s+PLACE\s+PAUSE/.test(text) && /repo#T-1\s+2\/5\s+100\s+check:running\s+136\.5%\s+1\.\d GB\s+1/.test(text) && /^machine: /m.test(text) && /throttled: x#T-3/.test(text), text)
+
+  const noPs = mon.collect({ table: null, taskDirs: [tasksDir], projectsDir: join(root, 'none'), machine: machineSeam })
+  check('monitor AC-3.5: no ps — the tasks, no sessions and a problem line', noPs.tasks.length === 3 && noPs.sessions.length === 0 && /ps/.test(noPs.problem))
+  const noLsof = mon.collect({ table, taskDirs: [], cwdOf: () => undefined, taskOf, branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam })
+  check('monitor AC-3.5: no lsof — the sessions stay with an unknown folder and a problem line', noLsof.sessions.length === 2 && noLsof.sessions.every((s) => s.cwd === null && s.task === null) && /lsof/.test(noLsof.problem))
+  const outside = join(root, 'other-repo', '.claude', 'tasks')
+  write(join(root, 'other-repo'), { '.claude/tasks/UP-1/STAGES.md': '# Task\n## Status: stage 1 of 2\n### Stage 1: a  [status: in-progress]\n### Stage 2: b  [status: todo]\n' })
+  const unreg = mon.collect({ table: new Map([row(400, 1, '/bin/claude')]), taskDirs: [tasksDir], cwdOf: () => join(root, 'other-repo'), taskOf: () => ({ key: `${join(root, 'other-repo')}#UP-1`, task: true, root: join(root, 'other-repo'), ticket: 'UP-1', taskDir: outside }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam })
+  const unregRow = unreg.tasks.find((t) => t.ticket === 'UP-1')
+  check('monitor AC-3.1: a session\'s task outside the known task directories gets a row (registered: false) with its stage; no machine readings with a null seam', unregRow?.registered === false && unregRow.key === `${join(root, 'other-repo')}#UP-1` && unregRow.stageNumber === 1 && unreg.tasks.filter((t) => t.registered !== false).length === 3 && unreg.machine.pressure === null && unreg.machine.load === null, JSON.stringify(unreg.tasks.map((t) => [t.key, t.registered])))
+  const cli = spawnSync(process.execPath, [join(PLUGIN, 'monitor.mjs'), '--json'], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'no-bin'), STAGE_PIPELINE_DATA_DIR: join(root, 'data'), STAGE_PIPELINE_LOCK_DIR: join(root, 'lock') } })
+  const cliSnap = (() => { try { return JSON.parse(cli.stdout) } catch { return null } })()
+  check('monitor AC-3.5: the CLI without ps in PATH exits 0 and prints the JSON with the problem', cli.status === 0 && cliSnap?.sessions.length === 0 && /ps/.test(cliSnap.problem ?? ''), cli.stdout + cli.stderr)
+  const cliTable = spawnSync(process.execPath, [join(PLUGIN, 'monitor.mjs')], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'no-bin'), STAGE_PIPELINE_DATA_DIR: join(root, 'data'), STAGE_PIPELINE_LOCK_DIR: join(root, 'lock') } })
+  check('monitor AC-3.6: the CLI without flags prints the table and exits 0', cliTable.status === 0 && /^TASK\s+STAGE/m.test(cliTable.stdout) && /^machine: /m.test(cliTable.stdout), cliTable.stdout + cliTable.stderr)
+  const parsed = ps.parseStatRows('  42     1   501  12.5  204800   10   4 Ss    01:02:03 1-02:03:04 /usr/bin/claude --resume x\nnot a row\n  43 42 0 0.0 10 - - Z 5:00 0:01.50 (defunct)\n')
+  check('monitor AC-3.3: ps time= (cumulative CPU time) parses on Linux and macOS shapes', parsed.get(42).cpuSeconds === 93784 && parsed.get(43).cpuSeconds === 1.5 && ps.cpuSecondsOf('12:34.56') === 754.56 && ps.cpuSecondsOf('x') === null)
+  check('monitor: parseStatRows reads %CPU, RSS, nice, PRI, state and age; a bad row is skipped', parsed.size === 2 && parsed.get(42).cpu === 12.5 && parsed.get(42).rssKb === 204800 && parsed.get(42).pri === 4 && parsed.get(42).age === 3723 && parsed.get(43).nice === null)
   rmSync(root, { recursive: true, force: true })
 }
 

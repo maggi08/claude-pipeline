@@ -255,7 +255,10 @@ export function taskKey(cwd) {
   return taskInfo(cwd).key
 }
 
-/** `{ key, task }`: `task` is true when the key has a ticket (a structured answer: a repo path may contain `#`); stage 3 of VT-17 reads `.task`, keep it. */
+/**
+ * `{ key, task, root, ticket, taskDir }`: `task` is true when the key has a ticket; `root` is the repo root, `ticket` the current task's ticket and `taskDir` the task directory of the config
+ * (null off a pipeline repo). A structured answer, never split from `key`: a repo path may contain `#`. Stage 3 of VT-17 reads all of it, keep it.
+ */
 export function taskInfo(cwd) {
   let state = null
   try {
@@ -265,7 +268,7 @@ export function taskInfo(cwd) {
   }
   const root = state?.root ?? cwd
   const task = state?.tasks?.find((item) => item.current)
-  return { key: task ? `${root}#${task.ticket}` : root, task: Boolean(task) }
+  return { key: task ? `${root}#${task.ticket}` : root, task: Boolean(task), root, ticket: task?.ticket ?? null, taskDir: state?.taskDir ?? null }
 }
 
 // ── the registry: running commands and waiters ───────────────────────────────
