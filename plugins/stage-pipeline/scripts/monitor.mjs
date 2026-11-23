@@ -6,8 +6,9 @@
  *   node monitor.mjs          # a compact table
  *   node monitor.mjs --json   # the snapshot, for the page (stage 5)
  *   node monitor.mjs serve [--port N] [--new-token]   # the page: http://127.0.0.1:7317/?t=<token>
+ *   node monitor.mjs browsers pause|resume <key>      # SIGSTOP / SIGCONT to a task's browsers (the pause of `heavy-queue.mjs`)
  *
- * Read-only: it signals nothing and writes nothing (the registry reads drop only dead entries, as `heavy-queue.mjs status` does). One `ps` call for the whole table and at most one
+ * Read-only (but `signalTaskBrowsers`, which pause and resume call, and the page's own writes): it signals nothing and writes nothing (the registry reads drop only dead entries, as `heavy-queue.mjs status` does). One `ps` call for the whole table and at most one
  * `lsof` per session (through `cwdOf`). Without `ps`, or when it does not answer in time, the snapshot has the tasks, no processes and a `problem` line; the exit code stays 0.
  * `serve` (stage 5) is the page: a local HTTP server on 127.0.0.1 with a token, see the section below.
  * Stages 4–6 import `sessionRows`, `classifyTree` and `balanceRows` from here: the session ↔ process link and the process kinds live in this file only.
@@ -457,6 +458,7 @@ export function balanceRows({ running, waiting, priorities, load, sessions = [],
 /** The numbers of a heavy command's own tree (the command and everything under it) from the process table: `{ count, cpu, rssBytes, procs }`; null when the command is not in the table. Added to a heavy row as `usage`. */
 function attachHeavyUsage(heavy, table) {
   for (const row of heavy) {
+    if (row.kind === 'browser') continue // its pid is the session's: the browsers' own load is the session's `browser` kind
     const head = table.get(row.pid)
     if (!head) continue
     const members = [head, ...descendants(table, row.pid, { depth: 12 }).filter((entry) => !isClaude(entry.args))]
@@ -562,6 +564,31 @@ export function collect({ table, ...seams } = {}) {
   if (processes) guarded('heavy usage', () => attachHeavyUsage(balance.heavy, processes), null)
   const machine = guarded('machine', () => machineRow({ load: seams.machine && 'load' in seams.machine ? seams.machine.load : load, ...seams.machine }), null)
   return { at: new Date().toISOString(), tasks, sessions, waiting, balance, machine, problem: problems.length ? problems.join('; ') : null }
+}
+
+// ── pause of a task's browsers (stage 6, D3) ─────────────────────────────────
+
+/**
+ * SIGSTOP (pause) or SIGCONT (resume) to the browser processes — the main one and its helpers — of every session of the task `key`. One function for `heavy-queue.mjs pause|resume` and the page's
+ * endpoints: the PIDs come from the process table, found through the sessions and their `browser` kind, never from a request. macOS and Linux only (D16). Returns the PIDs signalled;
+ * `kill` and the seams of `sessionRows` are for the tests.
+ */
+export function signalTaskBrowsers(key, signal, { table = processStats(), platform = process.platform, kill = process.kill, ...seams } = {}) {
+  if (platform === 'win32' || !table || !['SIGSTOP', 'SIGCONT'].includes(signal)) return []
+  const signalled = []
+  for (const session of sessionRows(table, seams)) {
+    if ((session.task ?? session.root) !== key) continue
+    for (const proc of session.load.procs) {
+      if (proc.kind !== 'browser') continue
+      try {
+        kill(proc.pid, signal)
+        signalled.push(proc.pid)
+      } catch {
+        // gone
+      }
+    }
+  }
+  return signalled
 }
 
 // ── the page's server (stage 5) ──────────────────────────────────────────────
@@ -691,7 +718,7 @@ export function makeState({ collectFn = collect, clock = Date.now, tableOf = pro
  * Starts the page's server on 127.0.0.1 (AC-5.6, AC-5.12, D8). Every request needs the token (`?t=` or `X-Token`); a `Host` other than 127.0.0.1/localhost with the listening port is 403;
  * a POST needs the page's own `Origin`. The server takes task keys only and checks them against the snapshot's own; it never takes a pid. Resolves with `{ server, port, token, url, close }`.
  */
-export function serve({ port = DEFAULT_PORT, newToken = false, state = makeState(), platform = process.platform } = {}) {
+export function serve({ port = DEFAULT_PORT, newToken = false, state = makeState(), platform = process.platform, signalBrowsers = signalTaskBrowsers } = {}) {
   const token = readToken({ fresh: newToken })
   const tokenBuffer = Buffer.from(token)
   const server = createServer((req, res) => {
@@ -730,7 +757,13 @@ export function serve({ port = DEFAULT_PORT, newToken = false, state = makeState
             }
             if (platform === 'win32') return reply(400, { error: 'pause is not supported on Windows' })
             if (typeof body?.key !== 'string' || !state.isKnown(body.key)) return reply(400, { error: 'unknown task key' })
-            const paused = setPaused(body.key, url.pathname === '/api/pause').paused
+            const stopping = url.pathname === '/api/pause'
+            const paused = setPaused(body.key, stopping).paused
+            try {
+              signalBrowsers(body.key, stopping ? 'SIGSTOP' : 'SIGCONT') // the task's browsers stop and continue with it
+            } catch {
+              // the pause is written; the browsers are a courtesy
+            }
             state.invalidate?.()
             return reply(200, { ok: true, paused })
           } catch {
@@ -809,6 +842,11 @@ async function main() {
       console.error(`monitor: cannot listen on 127.0.0.1:${port} — ${error?.message ?? error}`)
       process.exit(1)
     }
+    return
+  }
+  if (args[0] === 'browsers' && (args[1] === 'pause' || args[1] === 'resume') && args[2]) {
+    // what `heavy-queue.mjs pause|resume` runs: that script cannot import this one (this one imports it), so it starts this verb. Prints the number of processes signalled.
+    console.log(String(signalTaskBrowsers(args[2], args[1] === 'pause' ? 'SIGSTOP' : 'SIGCONT').length))
     return
   }
   const json = process.argv.includes('--json')

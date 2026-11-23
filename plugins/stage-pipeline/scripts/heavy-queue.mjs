@@ -24,8 +24,10 @@ import { execFileSync } from 'node:child_process'
 import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, loadavg, totalmem } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { isMain } from './main-guard.mjs'
-import { alive, descendants, identityOf } from './processes.mjs'
+import { isMcpServer, survey } from './browser-cleanup.mjs'
+import { alive, descendants, identityOf, processStats } from './processes.mjs'
 import { pluginDataDir, readConfig, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const GB = 1024 ** 3
@@ -45,6 +47,7 @@ export const limits = () => ({
   announceSeconds: number('ANNOUNCE_S', 60), // the waiting line
   busySeconds: number('BUSY_S', 30), // the cores are busy this long before the background class
   rampSeconds: number('RAMP_S', 30), // a command admitted this recently has not reached its memory yet: what it still lacks is held back
+  browserGraceSeconds: number('BROWSER_GRACE_S', 60), // an admitted browser has this long to start before its registry entry may go (stage 6)
   loadSamples: number('LOAD_EVERY_S', 5), // `vm.loadavg` look
   lowLoadFactor: number('LOW_LOAD', 0.8), // the background goes off below this × cores
 })
@@ -288,14 +291,57 @@ function liveEntries(dir) {
     return []
   }
   const entries = []
+  let table // the process table, read once per call and only when a browser entry needs it
+  const tableOnce = () => (table === undefined ? (table = tableSource.read()) : table)
   for (const name of names.filter((item) => item.endsWith('.json'))) {
     const file = join(dir, name)
     const entry = readJson(file, null)
     if (!entry || !Number.isInteger(entry.pid)) continue
-    if (sameProcess(entry)) entries.push(entry)
-    else rmSync(file, { force: true })
+    if (!sameProcess(entry)) rmSync(file, { force: true })
+    else if (entry.watch && !browserEntryLive(entry, file, tableOnce())) rmSync(file, { force: true })
+    else entries.push(entry)
   }
   return entries
+}
+
+// ── the browser's entry (VT-17 stage 6) ──────────────────────────────────────
+
+/** A browser's entries carry no command of a repo: the peak is the machine's, under this pair of the peaks file. */
+export const BROWSER_REPO = '(machine)'
+export const BROWSER_COMMAND = 'browser'
+/** Where the browser entries read the process table from: the real `ps`, a fake table in the tests. */
+export const tableSource = { read: () => processStats() }
+
+/**
+ * Whether a browser's registry entry (`watch: true`, its `pid` is the Claude session's) is still live: the session's tree holds a browser main process, or the grace after admission
+ * has not run out (the browser is starting). While it lives its peak RSS is kept in the entry; when it goes the peak is recorded for the machine and the entry is dropped by the caller.
+ * Without a process table the entry stays (fail open).
+ */
+function browserEntryLive(entry, file, table, now = Date.now()) {
+  if (!table) return true
+  const mains = survey(table, { session: entry.pid }).mine.map((browser) => browser.pid)
+  if (mains.length) {
+    const rss = mains.reduce((sum, pid) => sum + [table.get(pid), ...descendants(table, pid, { depth: 12 })].filter(Boolean).reduce((inner, row) => inner + (row.rssKb ?? 0) * 1024, 0), 0)
+    if (rss > (entry.peak ?? 0) || entry.childPid !== mains[0]) {
+      entry.peak = Math.max(rss, entry.peak ?? 0)
+      entry.childPid = mains[0]
+      writeJson(file, entry)
+    }
+    return true
+  }
+  if (now < (entry.graceUntil ?? 0)) return true
+  recordPeak(BROWSER_REPO, BROWSER_COMMAND, entry.peak ?? 0, pluginDataDir(), true)
+  return false
+}
+
+/** Registers an admitted browser as a running command of its session (`pid` — the Claude process): it stays while the session holds a browser main process. */
+export function registerBrowser({ pid, key, now = Date.now(), cfg = limits() }) {
+  const entry = {
+    pid, identity: identityOf(pid), key, repo: BROWSER_REPO, command: BROWSER_COMMAND, kind: 'browser', started: now, expectedBytes: expectedBytes(BROWSER_REPO, BROWSER_COMMAND, 'browser', cfg),
+    background: false, paused: false, childPid: -1, watch: true, graceUntil: now + cfg.browserGraceSeconds * 1000, peak: 0,
+  }
+  writeJson(entryFile(runningDir(), pid), entry)
+  return entry
 }
 
 export const readRunning = () => liveEntries(runningDir())
@@ -311,7 +357,8 @@ export function effectivePriority(waiter, order, now, cfg = limits()) {
 }
 
 const gbText = (bytes) => `${(bytes / GB).toFixed(1)} GB`
-const idle = (running) => running.filter((entry) => !entry.paused).length === 0
+/** Nothing runs for `kind`: an open browser does not hold a heavy command back (its memory still counts in the headroom); a browser waiter looks at every entry. */
+const idle = (running, kind = 'check') => running.filter((entry) => !entry.paused && (kind === 'browser' || entry.kind !== 'browser')).length === 0
 
 /**
  * May `waiter` start, and who is ahead of it. The waiters are taken in the order of effective priority; each one that fits starts (and takes its
@@ -334,7 +381,7 @@ export function decide({ self, waiters, running, memory, order, paused: pausedKe
   for (let index = 0; index < candidates.length; index += 1) {
     const { entry } = candidates[index]
     let verdict = { ok: true, reason: '' }
-    if (!idle(virtual)) {
+    if (!idle(virtual, entry.kind)) {
       const headroom = memory.availableBytes - cfg.reserveBytes - rampBytes - granted
       const need = entry.expectedBytes
       const text = rampBytes > 0 && need <= headroom + rampBytes
@@ -374,9 +421,17 @@ export function inLowerHalf(running, pid, order) {
 
 const peakKey = (repo, command) => `${repo}\n${command}`
 export const recordedPeak = (repo, command, data = pluginDataDir()) => Number(readJson(peaksFile(data), {})[peakKey(repo, command)]) || 0
-function recordPeak(repo, command, bytes, data = pluginDataDir()) {
+/**
+ * `smooth`: a browser's peak (the highest sample within the life of one browser entry) is averaged with the stored value,
+ * so one spike decays over the next browsers instead of making every later one wait the full cap.
+ */
+function recordPeak(repo, command, bytes, data = pluginDataDir(), smooth = false) {
   if (!bytes) return
-  withFileLock(peaksFile(data), () => writeJson(peaksFile(data), { ...readJson(peaksFile(data), {}), [peakKey(repo, command)]: bytes }))
+  withFileLock(peaksFile(data), () => {
+    const peaks = readJson(peaksFile(data), {})
+    const key = peakKey(repo, command)
+    writeJson(peaksFile(data), { ...peaks, [key]: smooth && Number(peaks[key]) ? Math.round(0.5 * Number(peaks[key]) + 0.5 * bytes) : bytes })
+  })
 }
 export function expectedBytes(repo, command, kind = 'check', cfg = limits()) {
   return recordedPeak(repo, command) || (kind === 'browser' ? cfg.browserBytes : cfg.defaultBytes)
@@ -470,9 +525,9 @@ export function dropEntries(pid = process.pid) {
  * Takes `run-check`'s place in the machine's queue: waits for admission in `low` mode, registers the command as running, and returns
  * `{ key, place, nice, watch(child), unstop(child), terminate(child, signal), finish({ record }) }`. In `normal` memory is not looked at (AC-1.8), but a paused task's
  * command still waits for the resume (D3). `watch` starts the command's own look (pause, the peak, the background class); `finish` removes
- * the entry and records the peak.
+ * the entry and records the peak. `passWhen` (polled on each round) lets a caller through without admission, `passed` in the result says so; `capSeconds`/`capMessage`/`capPaused` change the wait cap for a caller with its own (the browser hook: 240 s, its own line, a paused task's wait ends too).
  */
-export async function admit({ cwd, repo, command, kind = 'check', mode, say = console.log }) {
+export async function admit({ cwd, repo, command, kind = 'check', mode, say = console.log, capSeconds = null, capMessage = null, capPaused = false, passWhen = null }) {
   const cfg = limits()
   const data = pluginDataDir()
   const { key } = taskInfo(cwd)
@@ -483,6 +538,7 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
   const useMemory = mode?.name === 'low'
 
   /** Waits until the command may go. `first`: the entry in `running/` is written BEFORE the waiting one is removed, so nobody sees an empty machine in between. */
+  let passed = false
   async function waitForAdmission(first) {
     const waiter = { ...self, since: Date.now() }
     writeJson(entryFile(queueDir(), self.pid), waiter)
@@ -496,6 +552,10 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
     }
     try {
       for (;;) {
+        if (passWhen?.()) {
+          passed = true
+          return
+        }
         const now = Date.now()
         const state = readPriorities(data)
         const running = readRunning()
@@ -508,8 +568,8 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
           waiter.reason = verdict.reason
           writeJson(entryFile(queueDir(), self.pid), waiter)
         }
-        if ((process.platform === 'win32' || !state.paused.includes(key)) && waited >= cfg.waitCapSeconds) {
-          say(`balance: waited ${Math.round(waited)} s, starting without admission (${verdict.reason})`)
+        if ((capPaused || process.platform === 'win32' || !state.paused.includes(key)) && waited >= (capSeconds ?? cfg.waitCapSeconds)) {
+          say(capMessage ? capMessage(waited, verdict.reason) : `balance: waited ${Math.round(waited)} s, starting without admission (${verdict.reason})`)
           return go()
         }
         if (waited - lastAnnounce >= cfg.announceSeconds) {
@@ -636,7 +696,7 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
     if (record) recordPeak(repo, command, peak)
   }
 
-  return { key, place: placeOf(order, key), nice, watch, unstop, terminate, finish }
+  return { key, place: placeOf(order, key), nice, watch, unstop, terminate, finish, passed }
 }
 
 // ── the resource mode ────────────────────────────────────────────────────────
@@ -693,7 +753,15 @@ if (isMain(import.meta.url)) {
   if (verb === 'status') printStatus(rest.includes('--json'))
   else if ((verb === 'pause' || verb === 'resume') && keys.length === 1) {
     setPaused(keys[0], verb === 'pause')
-    console.log(`heavy-queue: ${verb === 'pause' ? 'paused' : 'resumed'} ${keys[0]}`)
+    let stopped = 0
+    try {
+      // The task's browsers (main process and helpers) stop and continue with it (D3). monitor.mjs finds their PIDs in the process table (never from the arguments); it imports this
+      // script, so it runs as a child, not as an import.
+      stopped = Number(execFileSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'monitor.mjs'), 'browsers', verb, keys[0]], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim()) || 0
+    } catch {
+      // the pause itself is written; the browsers are a courtesy
+    }
+    console.log(`heavy-queue: ${verb === 'pause' ? 'paused' : 'resumed'} ${keys[0]}${stopped ? ` (${stopped} browser process${stopped === 1 ? '' : 'es'} ${verb === 'pause' ? 'stopped' : 'continued'})` : ''}`)
   } else if (verb === 'order' && keys.length) {
     setOrder(keys)
     console.log(`heavy-queue: order — ${keys.map((key, index) => `${index + 1}. ${key}`).join('  ')}`)

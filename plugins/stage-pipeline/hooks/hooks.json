@@ -61,6 +61,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__plugin_stage-pipeline_chrome-devtools__.*|mcp__stage-pipeline-chrome__.*|mcp__chrome-devtools__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/browser-admit.mjs\"",
+            "timeout": 300
+          }
+        ]
       }
     ],
     "SubagentStop": [
