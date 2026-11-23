@@ -4,7 +4,7 @@ import { alive } from './processes.mjs'
 
 /**
  * Two helpers for the small state files of the plugin (the balancer's registry and priorities, the session states, the force queue): an atomic JSON write and a short lock around
- * one read-modify-write. One copy for every module, so a fix to the lock or to the write reaches all of them.
+ * one read-modify-write (the long process lock of a run, `acquirePidLock` in force-run.mjs, is a different thing). One copy for every module, so a fix to the lock or to the write reaches all of them.
  */
 
 /** Writes `value` as JSON through a temp file and a rename. `compact`: one line instead of the indented form; `mode` / `dirMode`: the file and the directory it makes. */
@@ -76,11 +76,11 @@ function takeOverStale(lock) {
 }
 
 /**
- * A short lock around one read-modify-write of a state file (`<file>.lock` holds the pid of the owner; a dead owner's lock is taken over).
- * After `attempts` tries (30 ms apart) the lock is still not ours: `failOpen` (the default) runs `fn` without it, `failOpen: false` throws.
+ * A short lock around one read-modify-write of a state file (`lockPath`, default `<file>.lock`, holds the pid of the owner; a dead owner's lock is taken over).
+ * After `attempts` tries (30 ms apart) the lock is still not ours: `failOpen` (the default) runs `fn` without it, `failOpen: false` throws `message`.
  */
-export function withFileLock(file, fn, { failOpen = true, attempts = 100 } = {}) {
-  const lock = `${file}.lock`
+export function withFileLock(file, fn, { failOpen = true, attempts = 100, lockPath = `${file}.lock`, message = `${file} is locked by another process — try again` } = {}) {
+  const lock = lockPath
   mkdirSync(dirname(lock), { recursive: true })
   let held = false
   for (let attempt = 0; attempt < attempts && !held; attempt += 1) {
@@ -92,7 +92,7 @@ export function withFileLock(file, fn, { failOpen = true, attempts = 100 } = {})
       if (!takeOverStale(lock)) sleepSync(30)
     }
   }
-  if (!held && !failOpen) throw new Error(`${file} is locked by another process — try again`)
+  if (!held && !failOpen) throw new Error(message)
   try {
     return fn()
   } finally {

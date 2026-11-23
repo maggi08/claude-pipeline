@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { isClaude } from '../browser-cleanup.mjs'
-import { alive, ancestors, commandOf, processTable } from '../processes.mjs'
+import { claudeOf, isClaude } from '../browser-cleanup.mjs'
+import { alive, commandOf, processTable } from '../processes.mjs'
 import { isMain } from '../main-guard.mjs'
 import { writeJsonAtomic } from '../file-state.mjs'
 import { readHookInput } from './hook-input.mjs'
@@ -119,7 +119,7 @@ const readState = (file) => {
 /** The nearest `claude` ancestor of this process: one `ps` call. Null when `ps` is missing or no ancestor is one. */
 export function claudePidOf(pid = process.pid) {
   const table = processTable({ timeout: PS_TIMEOUT_MS })
-  return table ? ancestors(table, pid).find((entry) => isClaude(entry.args))?.pid ?? null : null
+  return claudeOf(table, pid)?.pid ?? null
 }
 
 /** The stored `claudePid` against one `ps`: 'claude' (a live claude), 'other' (alive, the command line is not a claude), 'unknown' (alive, `ps` did not answer), 'dead' (null, not alive). */

@@ -27,8 +27,8 @@ import { dirname, join } from 'node:path'
 import { writeJsonAtomic, withFileLock } from './file-state.mjs'
 import { fileURLToPath } from 'node:url'
 import { isMain } from './main-guard.mjs'
-import { isClaude, survey } from './browser-cleanup.mjs'
-import { alive, ancestors, descendants, identitiesOf, identityOf, processStats, processTable } from './processes.mjs'
+import { claudeOf, survey } from './browser-cleanup.mjs'
+import { alive, descendants, identitiesOf, identityOf, processStats, processTable } from './processes.mjs'
 import { pluginDataDir, readConfig, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const GB = 1024 ** 3
@@ -196,9 +196,6 @@ export function taskInfo(cwd) {
  */
 const sessionTasksFile = (data = pluginDataDir()) => join(data, 'session-tasks.json')
 
-/** The nearest `claude` ancestor of `from` in `table`, or null. */
-export const claudeOf = (table, from = process.pid) => (table ? ancestors(table, from).find((entry) => isClaude(entry.args)) ?? null : null)
-
 /** A pair is live while its process is in `table`, did not start after the pair was written, and still has the command line it had (the identity string is `<start time> <command line>`). */
 const pairLive = (table, pid, item, now) => sameProcessIn(table, { pid, since: item?.at }, now) && (!item?.identity || !table.get(pid).args || String(item.identity).endsWith(table.get(pid).args))
 
@@ -247,10 +244,11 @@ export function sameProcessIn(table, { pid, since }, now = Date.now()) {
 }
 
 /**
- * The live entries of a directory; a dead process's or a reused PID's entry is removed on the way (AC-1.11). `given`: a process table the caller has read (the tracker's snapshot
- * makes one `ps` call for everything): the entries are judged by it and no `ps` runs here. Without it each entry is looked at by its own `ps -p`.
+ * The live entries of a directory. Without `given` each entry is looked at by its own `ps -p`, and a dead process's or a reused PID's entry is removed on the way (AC-1.11). `given`: a process
+ * table the caller has read at `readAt` (the tracker's snapshot makes one `ps` call for everything): the entries are only filtered by it and never removed, because a command that started after
+ * the table was read has no row in it yet (AC-8.1). A PID with no row is asked with signal 0 (no `ps`), a PID with a row is the same process while it did not start after the entry was written.
  */
-function liveEntries(dir, given = null) {
+function liveEntries(dir, given = null, readAt = Date.now()) {
   let names = []
   try {
     names = readdirSync(dir)
@@ -260,13 +258,19 @@ function liveEntries(dir, given = null) {
   const entries = []
   let table = given ?? undefined // the process table, read once per call and only when a browser entry needs it
   const tableOnce = () => (table === undefined ? (table = tableSource.read()) : table)
+  const judged = (entry) => {
+    if (!given) return sameProcess(entry)
+    return given.has(entry.pid) ? sameProcessIn(given, { ...entry, since: entry.since ?? entry.started }, readAt) : alive(entry.pid)
+  }
   for (const name of names.filter((item) => item.endsWith('.json'))) {
     const file = join(dir, name)
     const entry = readJson(file, null)
     if (!entry || !Number.isInteger(entry.pid)) continue
-    if (!(given ? sameProcessIn(given, { ...entry, since: entry.since ?? entry.started }) : sameProcess(entry))) rmSync(file, { force: true })
-    else if (entry.watch && !browserEntryLive(entry, file, tableOnce())) rmSync(file, { force: true })
-    else entries.push(entry)
+    if (!judged(entry)) {
+      if (!given) rmSync(file, { force: true })
+    } else if (entry.watch && !browserEntryLive(entry, file, tableOnce(), Date.now(), Boolean(given))) {
+      if (!given) rmSync(file, { force: true })
+    } else entries.push(entry)
   }
   return entries
 }
@@ -284,7 +288,7 @@ export const tableSource = { read: () => processStats() }
  * has not run out (the browser is starting). While it lives its peak RSS is kept in the entry; when it goes the peak is recorded for the machine and the entry is dropped by the caller.
  * Without a process table the entry stays (fail open).
  */
-function browserEntryLive(entry, file, table, now = Date.now()) {
+function browserEntryLive(entry, file, table, now = Date.now(), readOnly = false) {
   if (!table) return true
   const mains = survey(table, { session: entry.pid }).mine.map((browser) => browser.pid)
   if (mains.length) {
@@ -297,6 +301,7 @@ function browserEntryLive(entry, file, table, now = Date.now()) {
     return true
   }
   if (now < (entry.graceUntil ?? 0)) return true
+  if (readOnly) return false // the snapshot only filters: the peak is recorded when the entry is removed by a reader that owns the registry
   recordPeak(BROWSER_REPO, BROWSER_COMMAND, entry.peak ?? 0, pluginDataDir(), true)
   return false
 }
@@ -311,8 +316,8 @@ export function registerBrowser({ pid, key, now = Date.now(), cfg = limits() }) 
   return entry
 }
 
-export const readRunning = (table = null) => liveEntries(runningDir(), table)
-export const readWaiting = (table = null) => liveEntries(queueDir(), table)
+export const readRunning = (table = null, readAt = Date.now()) => liveEntries(runningDir(), table, readAt)
+export const readWaiting = (table = null, readAt = Date.now()) => liveEntries(queueDir(), table, readAt)
 const entryFile = (dir, pid) => join(dir, `${pid}.json`)
 
 // ── admission (pure) ─────────────────────────────────────────────────────────
@@ -600,7 +605,11 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
           save()
         } else if (!paused && stopped) {
           // After the pause a `low` command goes through admission again (a `normal` one does not look at memory); its own entry stays in the registry (a stopped command's memory is still taken).
-          await waitForAdmission(false)
+          try {
+            await waitForAdmission(false)
+          } catch {
+            // a registry that cannot be written: the tree is continued without admission (AC-8.2), the entry is only the balancer's view
+          }
           signalAll(stoppedNow(child), 'SIGCONT')
           stoppedIds.clear()
           stopped = false

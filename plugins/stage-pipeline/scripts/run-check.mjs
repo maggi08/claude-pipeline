@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { UNRECORDED, isGateCommand, recordGate, shellQuote, treeState } from './ci-gates.mjs'
 import { configRoot, pathList, pluginDataDir, readConfig, worktreeTwinDataDir } from './hooks/pipeline-state.mjs'
 import { FILES_PLACEHOLDER } from './markers.mjs'
-import { admit, dropEntries, recordSessionTask, resourceMode, taskInfo } from './heavy-queue.mjs'
+import { admit, dropEntries, niceFor, recordSessionTask, resourceMode, taskInfo } from './heavy-queue.mjs'
 
 const args = process.argv.slice(2)
 const baseIndex = args.indexOf('--base')
@@ -100,7 +100,7 @@ try {
 } catch (error) {
   safely(dropEntries)
   console.log(`balance: admission unavailable (${error?.code ?? error?.message ?? 'error'}), starting without admission`)
-  slot = { key: place.key, nice: null, watch() {}, unstop() {}, terminate: (proc, signal) => proc?.kill(signal), finish() {} }
+  slot = { key: place.key, nice: niceFor([], place.key), watch() {}, unstop() {}, terminate: (proc, signal) => proc?.kill(signal), finish() {} }
 }
 const started = Date.now()
 // A run of the whole repo on a clean tree is evidence for the CI gates; a run by diff or with edits in progress is not.

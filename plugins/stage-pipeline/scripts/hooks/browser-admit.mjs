@@ -36,18 +36,19 @@ export async function admitBrowser({ cwd, table = null, say = () => {}, waitSeco
   const session = rows ? survey(rows).session : null
   if (!session) return // not a Claude session (or no table): no browser of a session to hold
   // The session's task is the one its last `run-check` recorded (its commands may run in a linked worktree of the task), else the one of this folder.
-  const key = readSessionTasks(rows).get(session.pid)?.key ?? info.key
+  // A pair of a folder with no task does not cover the task of this folder (the same rule as the tracker's, AC-8.3).
+  const pair = readSessionTasks(rows).get(session.pid)
+  const key = pair && (pair.task || !info.task) ? pair.key : info.key
   const pausedNow = () => !win && readPriorities().paused.includes(key)
   /** `done`: the session already has a browser (or one admitted a moment ago): nothing to wait for. */
-  const look = () => {
-    const now = read()
+  const look = (now = read()) => {
     if (!now) return true
     const mine = survey(now)
     if (!mine.session) return true
     return mine.mine.length > 0 || readRunning().some((entry) => entry.pid === mine.session.pid && entry.kind === 'browser')
   }
   const paused = pausedNow()
-  if (!paused && look()) return
+  if (!paused && look(rows)) return
   const slot = await admit({
     cwd, key, repo: BROWSER_REPO, command: BROWSER_COMMAND, kind: 'browser', mode, say: () => {},
     capSeconds: Math.min(waitSeconds, limits().waitCapSeconds), capPaused: true,

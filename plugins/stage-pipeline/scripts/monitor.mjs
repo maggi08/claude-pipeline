@@ -356,7 +356,7 @@ export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchO
     const cwd = cwdOf(entry.pid) ?? null
     const { task: own, branch, devPort } = cwd ? about(cwd) : { task: { key: null, task: false }, branch: null, devPort: devPortOf(cwd) }
     const pair = pairOf(entry.pid)
-    const task = pair ?? own
+    const task = pair && (pair.task || !own.task) ? pair : own // a pair of a folder with no task does not cover the task of the session's own folder (AC-8.3)
     const placed = Boolean(pair) || Boolean(cwd)
     const sessionId = sessionIdOf(entry.args)
     rows.push({
@@ -566,6 +566,7 @@ export function collect({ table, ...seams } = {}) {
     }
   }
   const tasks = seams.tasks ? [...seams.tasks] : guarded('tasks', () => taskRows(seams.taskDirs), [])
+  const tableAt = seams.tableAt ?? Date.now() // when the process table was read: a registry entry made after it has no row in it and is not judged dead by it
   const processes = table === undefined ? processStats() : table
   let sessions = []
   let waiting = []
@@ -583,7 +584,7 @@ export function collect({ table, ...seams } = {}) {
   const priorities = guarded('priorities', () => readPriorities(), { version: 1, order: [], paused: [] })
   const noLoad = { load: 0, cores: cpus().length }
   const load = seams.machine && 'load' in seams.machine ? seams.machine.load ?? noLoad : guarded('load', () => readLoad(), noLoad)
-  const balance = guarded('balance', () => balanceRows({ running: readRunning(processes), waiting: readWaiting(processes), priorities, load, sessions, platform: seams.platform }), { heavy: [], paused: [], pauseSupported: true, order: [] })
+  const balance = guarded('balance', () => balanceRows({ running: readRunning(processes, tableAt), waiting: readWaiting(processes, tableAt), priorities, load, sessions, platform: seams.platform }), { heavy: [], paused: [], pauseSupported: true, order: [] })
   if (processes) guarded('heavy usage', () => attachHeavyUsage(balance.heavy, processes), null)
   const machine = guarded('machine', () => machineRow({ load: seams.machine && 'load' in seams.machine ? seams.machine.load : load, ...seams.machine }), null)
   return { at: new Date().toISOString(), tasks, sessions, waiting, balance, machine, problem: problems.length ? problems.join('; ') : null }
@@ -758,7 +759,7 @@ export function makeState({ collectFn = collect, clock = Date.now, tableOf = pro
       if (cwd) cwds.set(pid, { start, cwd })
       return cwd
     }
-    const snapshot = collectFn({ table, tasks: tasksCache.tasks, rowOf, cwdOf, taskOf: (cwd) => cached(abouts, `t:${cwd}`, () => taskInfo(cwd), ABOUT_TTL_MS), branchOf: (cwd) => cached(abouts, `b:${cwd}`, () => branchOfCwd(cwd), ABOUT_TTL_MS), now })
+    const snapshot = collectFn({ table, tableAt: now, tasks: tasksCache.tasks, rowOf, cwdOf, taskOf: (cwd) => cached(abouts, `t:${cwd}`, () => taskInfo(cwd), ABOUT_TTL_MS), branchOf: (cwd) => cached(abouts, `b:${cwd}`, () => branchOfCwd(cwd), ABOUT_TTL_MS), now })
     const heavyLoads = snapshot.balance.heavy.filter((row) => row.usage).map((row) => ({ row, load: { procs: row.usage.procs } }))
     samples = sampleCpu([...snapshot.sessions, ...heavyLoads], samples, now)
     for (const item of heavyLoads) if (item.live) item.row.usage.cpu = item.live.cpu // a live % from two samples replaces the ps average

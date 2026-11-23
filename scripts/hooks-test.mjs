@@ -203,6 +203,7 @@ const UNITS = [
   { id: 'vt17s5', weight: 2 }, // VT-17 stage 5: monitor.mjs serve — token, Host, Origin, port, priorities and pause endpoints, the state with the CPU delta
   { id: 'vt17s6', weight: 12 }, // VT-17 stage 6: the browser admission hook (memory, priority, cap line, paused task), the browser's registry entry and its peak, SIGSTOP/SIGCONT of a task's browsers, attachHeavyUsage and the live CPU of a heavy row, hooks.json wiring
   { id: 'vt17f2', weight: 8 }, // VT-17 final-checks fix round 2: an unwritable lock/data dir does not stop run-check, the session ↔ task pair (D9 layout), one ps per snapshot, browsers outside the lower half, no background without taskpolicy, a paused task holds the call of a session that has its browser, the peak key, the card's labels
+  { id: 'vt17f3', weight: 6 }, // VT-17 final-checks fix round 3: a snapshot with a ready table removes no registry entry, one short file lock with the caller's path and text, a pair with no task does not cover the folder's task, the resume wakes a paused tree when the registry cannot be written, nice 19 without admission
   { id: 'vt17s4', weight: 2 }, // VT-17 stage 4: the session-wait hook (turn-ended, question, permission, elicitation, cleared, subagent, never blocks) and the waiting field of monitor.mjs
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -12970,6 +12971,113 @@ if (unit('vt17f2')) {
     for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value }
     for (const child of sleepers) child.kill()
     try { chmodSync(join(root, 'ro'), 0o755) } catch { /* gone */ }
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+if (unit('vt17f3')) {
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const fs = await import(join(PLUGIN, 'file-state.mjs'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hooks-test-f3-')))
+  const envNames = ['STAGE_PIPELINE_DATA_DIR', 'STAGE_PIPELINE_LOCK_DIR', 'STAGE_PIPELINE_RESOURCES', 'STAGE_PIPELINE_BALANCE_POLL_MS', 'STAGE_PIPELINE_BALANCE_TICK_MS']
+  const saved = Object.fromEntries(envNames.map((name) => [name, process.env[name]]))
+  const dataDir = join(root, 'data')
+  const lockDir = join(root, 'lock')
+  mkdirSync(dataDir, { recursive: true })
+  process.env.STAGE_PIPELINE_DATA_DIR = dataDir
+  process.env.STAGE_PIPELINE_LOCK_DIR = lockDir
+  process.env.STAGE_PIPELINE_RESOURCES = 'low'
+  process.env.STAGE_PIPELINE_BALANCE_POLL_MS = '50'
+  process.env.STAGE_PIPELINE_BALANCE_TICK_MS = '50'
+  const sleepers = []
+  const row = (pid, ppid, args, extra = {}) => ({ pid, ppid, uid: process.getuid(), cpu: 0, rssKb: 1000, nice: 0, pri: 31, stat: 'S', age: 600, cpuSeconds: 1, args, ...extra })
+  const pause = (ms) => new Promise((done) => setTimeout(done, ms))
+  const stateOf = (pid) => spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim()
+  const until = async (fn, ms = 4000) => { const end = Date.now() + ms; while (Date.now() < end) { if (fn()) return true; await pause(50) } return fn() }
+  try {
+    // ── M-1 (AC-8.1): a snapshot with a ready table only filters the registry, it never removes an entry
+    const runDir = join(lockDir, 'running')
+    mkdirSync(runDir, { recursive: true })
+    const lateChild = spawn('sleep', ['600'], { stdio: 'ignore' })
+    sleepers.push(lateChild)
+    const deadPid = spawnSync('true').pid
+    const entryOf = (pid) => ({ pid, identity: null, key: '/r#T-1', repo: '/r', command: 'lint', kind: 'check', started: Date.now(), expectedBytes: 1, background: false, paused: false, childPid: null })
+    writeFileSync(join(runDir, `${lateChild.pid}.json`), JSON.stringify(entryOf(lateChild.pid)))
+    writeFileSync(join(runDir, `${deadPid}.json`), JSON.stringify(entryOf(deadPid)))
+    const tableBefore = new Map([[process.pid, row(process.pid, 1, 'node')]]) // read before the command started: no row for it
+    const snapshot = hq.readRunning(tableBefore, Date.now() - 1000)
+    check('heavy-queue M-1: an entry made after the table was read (a live pid with no row) survives the snapshot, a dead one is left out', snapshot.length === 1 && snapshot[0].pid === lateChild.pid, JSON.stringify(snapshot.map((e) => e.pid)))
+    check('heavy-queue M-1: the snapshot removed no file, and the next admission sees the live entry', existsSync(join(runDir, `${lateChild.pid}.json`)) && existsSync(join(runDir, `${deadPid}.json`)) && hq.readRunning().some((entry) => entry.pid === lateChild.pid))
+    check('heavy-queue M-1: a reader with no table (the admission loop) removes the dead entry', !existsSync(join(runDir, `${deadPid}.json`)))
+
+    // ── M-2: one short file lock, the lock path and the error text come from the caller
+    const target = join(root, 'q.json')
+    const custom = join(root, 'locks', 'q-file.lock')
+    mkdirSync(join(root, 'locks'), { recursive: true })
+    writeFileSync(custom, String(process.ppid))
+    let held = null
+    try { fs.withFileLock(target, () => 1, { attempts: 2, failOpen: false, lockPath: custom, message: 'q.json is locked by another process — try again' }) } catch (error) { held = error }
+    rmSync(custom, { force: true })
+    const free = fs.withFileLock(target, () => existsSync(custom), { failOpen: false, lockPath: custom })
+    check('file-state M-2: a second holder of the lock path gets the caller\'s error with failOpen: false, a free lock path is taken and released', held?.message === 'q.json is locked by another process — try again' && free === true && !existsSync(custom) && !existsSync(`${target}.lock`))
+
+    // ── m-4 (AC-8.3): a pair of a folder with no task does not cover the task of the session's own folder
+    const SESSION = 7301
+    const CLAUDE = '/usr/local/bin/claude --resume'
+    const table = () => new Map([[process.pid, row(process.pid, SESSION, 'node run-check.mjs')], [SESSION, row(SESSION, 1, CLAUDE)]])
+    const own = { key: '/fe#FE-1', task: true, root: '/fe', ticket: 'FE-1', taskDir: '/fe/.claude/tasks' }
+    const bare = { key: '/be', task: false, root: '/be', ticket: null, taskDir: null }
+    const seams = { cwdOf: () => '/fe', taskOf: () => own, branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'projects') }
+    const identity = () => `Mon Jan  1 00:00:00 2026 ${CLAUDE}`
+    hq.recordSessionTask(bare, { table: table(), identity })
+    const shown = mon.sessionRows(table(), seams).find((item) => item.pid === SESSION)
+    check('monitor m-4: the last run-check was in a repo with no task, the session sits in a task folder — it stays on the task of its own folder', shown.task === '/fe#FE-1' && shown.ticket === 'FE-1', JSON.stringify(shown))
+    const repoPair = { key: '/m#VT-17', task: true, root: '/m', ticket: 'VT-17', taskDir: '/m/.claude/tasks' }
+    hq.recordSessionTask(repoPair, { table: table(), identity })
+    check('monitor m-4: a pair with a task still wins over the folder\'s task', mon.sessionRows(table(), seams).find((item) => item.pid === SESSION).task === '/m#VT-17')
+    const adm = readFileSync(join(PLUGIN, 'hooks', 'browser-admit.mjs'), 'utf8')
+    check('browser-admit m-4: the hook applies the same rule (a pair without a task does not cover the folder\'s task) and its first look uses the table already read', /pair && \(pair\.task \|\| !info\.task\)/.test(adm) && /look\(rows\)/.test(adm))
+
+    // ── m-6 (AC-8.2): the resume of a paused command wakes its tree when the registry cannot be written
+    const ro = join(root, 'ro-queue')
+    const canWrite = (() => { mkdirSync(ro); chmodSync(ro, 0o555); try { mkdirSync(join(ro, 'probe')); return true } catch { return false } finally { chmodSync(ro, 0o755) } })()
+    if (canWrite) console.log('vt17f3: running as a user that can write into a 0555 directory — the read-only checks are skipped')
+    else {
+      const repo = join(root, 'repo')
+      mkdirSync(repo)
+      process.env.STAGE_PIPELINE_RESOURCES = 'normal'
+      const slot = await hq.admit({ cwd: repo, repo: root, command: 'resume-test', mode: { name: 'normal' }, say: () => {} })
+      const child = spawn('sleep', ['600'], { stdio: 'ignore' })
+      sleepers.push(child)
+      const stop = slot.watch(child)
+      hq.setPaused(slot.key, true)
+      const stopped = await until(() => stateOf(child.pid).startsWith('T'))
+      const queue = join(lockDir, 'queue')
+      mkdirSync(queue, { recursive: true })
+      chmodSync(queue, 0o555)
+      hq.setPaused(slot.key, false)
+      const woke = await until(() => stopped && !stateOf(child.pid).startsWith('T'))
+      chmodSync(queue, 0o755)
+      stop()
+      slot.finish({ record: false })
+      check('heavy-queue m-6 (AC-8.2): the queue directory cannot be written when the pause ends — the tree is continued without admission', stopped && woke, `${stopped} ${woke}`)
+    }
+
+    // ── m-1 (AC-8.2): a slot with no admission runs with nice 19 (outside Windows)
+    if (process.platform !== 'win32' && !canWrite) {
+      const niceRepo = join(root, 'nice-repo')
+      mkdirSync(niceRepo)
+      execFileSync('git', ['-C', niceRepo, 'init', '-q', '-b', 'main'])
+      chmodSync(ro, 0o555)
+      const nice = spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'ps -o ni= -p $$'], { cwd: niceRepo, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'low', STAGE_PIPELINE_LOCK_DIR: join(ro, 'lock'), STAGE_PIPELINE_DATA_DIR: join(ro, 'data') } })
+      chmodSync(ro, 0o755)
+      check('run-check m-1: with no admission available the command runs under nice 19 (more when this run is already niced)', Number(/^\s*(\d+)$/m.exec(nice.stdout)?.[1]) >= 19 && /admission unavailable/.test(nice.stdout), `${nice.status} ${nice.stdout}${nice.stderr}`)
+    }
+  } finally {
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value }
+    for (const child of sleepers) child.kill()
+    try { chmodSync(join(root, 'ro-queue'), 0o755) } catch { /* gone */ }
     rmSync(root, { recursive: true, force: true })
   }
 }

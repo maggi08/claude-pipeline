@@ -53,7 +53,7 @@ function psRun(names, timeout) {
 }
 
 /** The rows of any `ps` output with the columns `names` (keys of the column table above), as pid → row; a row that does not fit is skipped. */
-export function parsePsRows(out, names) {
+function parsePsRows(out, names) {
   const row = new RegExp(`^\\s*${names.map((name) => COLUMNS[name][0]).join('\\s+')}$`)
   const table = new Map()
   for (const line of String(out).split('\n')) {
