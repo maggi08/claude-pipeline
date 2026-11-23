@@ -5,19 +5,24 @@
  *
  *   node monitor.mjs          # a compact table
  *   node monitor.mjs --json   # the snapshot, for the page (stage 5)
+ *   node monitor.mjs serve [--port N] [--new-token]   # the page: http://127.0.0.1:7317/?t=<token>
  *
  * Read-only: it signals nothing and writes nothing (the registry reads drop only dead entries, as `heavy-queue.mjs status` does). One `ps` call for the whole table and at most one
  * `lsof` per session (through `cwdOf`). Without `ps`, or when it does not answer in time, the snapshot has the tasks, no processes and a `problem` line; the exit code stays 0.
+ * `serve` (stage 5) is the page: a local HTTP server on 127.0.0.1 with a token, see the section below.
  * Stages 4–6 import `sessionRows`, `classifyTree` and `balanceRows` from here: the session ↔ process link and the process kinds live in this file only.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { cpus, homedir, totalmem } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { isBrowserMain, isClaude, isMcpServer } from './browser-cleanup.mjs'
 import { isMain } from './main-guard.mjs'
 import { descendants, processStats, cwdOf as readCwd } from './processes.mjs'
-import { placeOf, readLoad, readMemory, readPriorities, readRunning, readWaiting, taskInfo } from './heavy-queue.mjs'
+import { placeOf, readLoad, readMemory, readPriorities, readRunning, readWaiting, setOrder, setPaused, taskInfo } from './heavy-queue.mjs'
 import { STATUS_LINE } from './markers.mjs'
 import { nextAction, resumeState, stageList } from './resume-point.mjs'
 import { WAIT_STATE_MAX_AGE_MS } from './hooks/session-wait.mjs'
@@ -376,9 +381,16 @@ const transcriptMoved = (state, mtimeOf) => {
   }
 }
 
-/** An approved permission whose command runs: the Bash tool's shell (its args carry `shell-snapshots/snapshot-`) started after `since` is in the session's process tree; PostToolUse comes only when the command ends. */
-const approvedAndRunning = (state, session, table, now) =>
-  state.kind === 'permission' && Boolean(table) && descendants(table, session.pid).some((entry) => /shell-snapshots\/snapshot-/.test(entry.args) && now - (entry.age ?? 0) * 1000 >= state.since - 1000)
+/**
+ * An approved Bash permission whose command runs: the state is a `PermissionRequest` for `Bash <command>`, and the Bash tool's shell (its args carry `shell-snapshots/snapshot-`) in the session's
+ * tree started at or after `since` and carries that command; PostToolUse comes only when the command ends. Any other state, another command or an older shell keeps the wait.
+ */
+// Residual: a quoted or long command may not appear verbatim in the shell's args, so the wait then stays (shows waiting) — the safe side.
+const approvedAndRunning = (state, session, table, now) => {
+  if (state.kind !== 'permission' || state.source !== 'PermissionRequest' || !table || !/^Bash \S/.test(state.text ?? '')) return false
+  const command = state.text.slice(5)
+  return descendants(table, session.pid).some((entry) => /shell-snapshots\/snapshot-/.test(entry.args) && entry.args.includes(command) && now - (entry.age ?? 0) * 1000 >= state.since)
+}
 
 /**
  * Gives every session `waiting` ({ kind, text, options, since } or null) from the hook's state files (AC-4.5, D11). A state belongs to a session when its id is the session's
@@ -417,8 +429,13 @@ export function balanceRows({ running, waiting, priorities, load, sessions = [],
   const pauseSupported = platform !== 'win32' // D16: no pause on Windows, so none is shown
   const pausedKeys = pauseSupported ? priorities.paused : []
   const owner = (pid) => sessions.find((session) => session.load.pids.includes(pid))?.pid ?? null
+  const textOf = (state, reason) => {
+    if (state === 'paused') return 'paused by you — Resume to continue'
+    if (state === 'running') return 'running'
+    return `${state}: ${reason || 'looking'}`
+  }
   const row = (entry, state, reason) => ({
-    pid: entry.pid, key: entry.key, command: entry.command, kind: entry.kind ?? 'check', state, reason, place: placeIn(priorities.order, entry.key), session: owner(entry.pid),
+    pid: entry.pid, key: entry.key, command: entry.command, kind: entry.kind ?? 'check', state, reason, text: textOf(state, reason), place: placeIn(priorities.order, entry.key), session: owner(entry.pid),
     expectedBytes: entry.expectedBytes ?? null, waitedSeconds: entry.since ? Math.round((now - entry.since) / 1000) : null,
   })
   const loadText = `cpu: load ${Number(load?.load ?? 0).toFixed(1)} of ${load?.cores ?? cpus().length}`
@@ -434,6 +451,21 @@ export function balanceRows({ running, waiting, priorities, load, sessions = [],
     paused: pausedKeys,
     pauseSupported,
     order: priorities.order,
+  }
+}
+
+/** The numbers of a heavy command's own tree (the command and everything under it) from the process table: `{ count, cpu, rssBytes, procs }`; null when the command is not in the table. Added to a heavy row as `usage`. */
+function attachHeavyUsage(heavy, table) {
+  for (const row of heavy) {
+    const head = table.get(row.pid)
+    if (!head) continue
+    const members = [head, ...descendants(table, row.pid, { depth: 12 }).filter((entry) => !isClaude(entry.args))]
+    row.usage = {
+      count: members.length,
+      cpu: round1(members.reduce((sum, entry) => sum + entry.cpu, 0)),
+      rssBytes: members.reduce((sum, entry) => sum + entry.rssKb * 1024, 0),
+      procs: members.map((entry) => ({ pid: entry.pid, kind: 'heavy', age: entry.age ?? null, cpuSeconds: entry.cpuSeconds ?? null })),
+    }
   }
 }
 
@@ -474,14 +506,24 @@ export function machineRow({ memory = readMemory(), load = readLoad(), swap = re
  * Rows for the tasks that sessions work on but the registry does not list (a repo outside `knownTaskDirs`, e.g. a repo whose task directory no session of this plugin has registered): the task directory comes
  * from the session's own config (`taskInfo`), the row has `registered: false`. Their key and root are the session's, so the table and the balancer match them.
  */
-function unregisteredRows(sessions, tasks) {
+function unregisteredRows(sessions, tasks, rowOf = (dir, ticket) => taskRows([dir]).find((item) => item.ticket === ticket)) {
   const known = new Set(tasks.map((task) => task.key))
+  const dirs = new Map(tasks.map((task) => [task.dir, task]))
   const extra = []
   for (const session of sessions) {
     if (!session.task || !session.taskDir || known.has(session.task)) continue
-    const row = taskRows([session.taskDir]).find((item) => item.ticket === session.ticket)
+    const same = dirs.get(join(session.taskDir, session.ticket ?? ''))
+    if (same) {
+      // the registry lists this task directory under another key (its config root differs from the session's): the session's key is the one heavy commands and priorities use
+      same.key = session.task
+      same.root = session.root ?? same.root
+      known.add(session.task)
+      continue
+    }
+    const row = rowOf(session.taskDir, session.ticket)
     if (!row) continue
     known.add(session.task)
+    dirs.set(row.dir, row)
     extra.push({ ...row, key: session.task, root: session.root ?? row.root, repo: basename(session.root ?? row.root), registered: false })
   }
   return extra
@@ -498,7 +540,7 @@ export function collect({ table, ...seams } = {}) {
       return fallback
     }
   }
-  const tasks = guarded('tasks', () => taskRows(seams.taskDirs), [])
+  const tasks = seams.tasks ? [...seams.tasks] : guarded('tasks', () => taskRows(seams.taskDirs), [])
   const processes = table === undefined ? processStats() : table
   let sessions = []
   let waiting = []
@@ -512,13 +554,203 @@ export function collect({ table, ...seams } = {}) {
     }
     if (sessions.some((session) => session.cwd === null)) problems.push('lsof is missing or did not answer: the folder of some sessions is unknown')
   }
-  tasks.push(...guarded('session tasks', () => unregisteredRows(sessions, tasks), []))
+  tasks.push(...guarded('session tasks', () => unregisteredRows(sessions, tasks, seams.rowOf), []))
   const priorities = guarded('priorities', () => readPriorities(), { version: 1, order: [], paused: [] })
   const noLoad = { load: 0, cores: cpus().length }
   const load = seams.machine && 'load' in seams.machine ? seams.machine.load ?? noLoad : guarded('load', () => readLoad(), noLoad)
   const balance = guarded('balance', () => balanceRows({ running: readRunning(), waiting: readWaiting(), priorities, load, sessions, platform: seams.platform }), { heavy: [], paused: [], pauseSupported: true, order: [] })
+  if (processes) guarded('heavy usage', () => attachHeavyUsage(balance.heavy, processes), null)
   const machine = guarded('machine', () => machineRow({ load: seams.machine && 'load' in seams.machine ? seams.machine.load : load, ...seams.machine }), null)
   return { at: new Date().toISOString(), tasks, sessions, waiting, balance, machine, problem: problems.length ? problems.join('; ') : null }
+}
+
+// ── the page's server (stage 5) ──────────────────────────────────────────────
+
+export const DEFAULT_PORT = 7317
+const TOKEN_FILE = 'monitor-token'
+const PAGE = join(dirname(fileURLToPath(import.meta.url)), '..', 'monitor', 'index.html')
+const POLL_COALESCE_MS = 1000 // two tabs polling at once share one snapshot
+const TASKS_MAX_AGE_MS = 30_000 // the next pipeline item of a force run comes from receipts and the tree, not only from STAGES.md
+const ABOUT_TTL_MS = 10_000
+const BODY_MAX = 64 * 1024
+const round1 = (value) => Math.round(value * 10) / 10
+
+/** The token of the data dir: reused across restarts, created (mode 0600) when missing, malformed or `fresh`. */
+export function readToken({ dir = pluginDataDir(), fresh = false } = {}) {
+  const file = join(dir, TOKEN_FILE)
+  try {
+    const saved = readFileSync(file, 'utf8').trim()
+    if (!fresh && /^[0-9a-f]{48}$/.test(saved)) {
+      if ((statSync(file).mode & 0o077) !== 0) chmodSync(file, 0o600)
+      return saved
+    }
+  } catch {
+    // none yet
+  }
+  const token = randomBytes(24).toString('hex')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  writeFileSync(file, `${token}\n`, { mode: 0o600 })
+  chmodSync(file, 0o600) // the mode of writeFileSync applies to a new file only
+  return token
+}
+
+/** Live CPU % per session and kind from two samples of `cpuSeconds`: a process counts when it has a previous sample and is the same process (its `age` did not fall, its CPU time did not drop). Returns the new samples; sets `session.live` ({ cpu, kinds } or null). */
+export function sampleCpu(sessions, previous, now) {
+  const next = new Map()
+  for (const session of sessions) {
+    const kinds = {}
+    let total = 0
+    let known = false
+    for (const proc of session.load?.procs ?? []) {
+      if (proc.cpuSeconds === null || proc.cpuSeconds === undefined) continue
+      next.set(proc.pid, { age: proc.age, cpuSeconds: proc.cpuSeconds, at: now })
+      const before = previous.get(proc.pid)
+      if (!before || before.at >= now || (proc.age ?? 0) < (before.age ?? 0) || proc.cpuSeconds < before.cpuSeconds) continue
+      const pct = ((proc.cpuSeconds - before.cpuSeconds) / ((now - before.at) / 1000)) * 100
+      known = true
+      kinds[proc.kind] = (kinds[proc.kind] ?? 0) + pct
+      total += pct
+    }
+    session.live = known ? { cpu: round1(total), kinds: Object.fromEntries(Object.entries(kinds).map(([kind, value]) => [kind, round1(value)])) } : null
+  }
+  return next
+}
+
+function tasksSignature(dirs) {
+  const parts = []
+  for (const dir of dirs) {
+    try {
+      for (const ticket of readdirSync(dir)) {
+        try {
+          const stat = statSync(join(dir, ticket, 'STAGES.md'))
+          parts.push(`${dir}/${ticket}:${stat.mtimeMs}:${stat.size}`)
+        } catch {
+          // no journal in this folder
+        }
+      }
+    } catch {
+      // no directory
+    }
+  }
+  return parts.join('|')
+}
+
+/** The snapshot for the page with its caches: the process table every call, task rows by STAGES.md mtime, the folder of a session by pid + age, its task and branch by folder for 10 s. One `collect` at a time (it is synchronous, so a second caller gets the shared result). */
+export function makeState({ collectFn = collect, clock = Date.now, tableOf = processStats, dirsOf = knownTaskDirs } = {}) {
+  let tasksCache = null
+  const rows = new Map() // `<task dir>#<ticket>` of a session task outside the registry → its row, by the same signature and age as the registry rows
+  const cwds = new Map()
+  const abouts = new Map()
+  let samples = new Map()
+  let last = null
+  let known = new Set()
+  const cached = (store, key, make, ttl) => {
+    const hit = store.get(key)
+    if (hit && clock() - hit.at < ttl) return hit.value
+    const value = make()
+    store.set(key, { at: clock(), value })
+    return value
+  }
+  const refresh = () => {
+    const now = clock()
+    if (last && now - last.at < POLL_COALESCE_MS) return last.value
+    const table = tableOf()
+    const dirs = dirsOf()
+    const signature = tasksSignature(dirs)
+    if (!tasksCache || tasksCache.signature !== signature || now - tasksCache.at > TASKS_MAX_AGE_MS) tasksCache = { signature, at: now, tasks: taskRows(dirs) }
+    const rowOf = (dir, ticket) => {
+      const key = `${dir}#${ticket}`
+      const sign = tasksSignature([dir])
+      const hit = rows.get(key)
+      if (hit && hit.signature === sign && now - hit.at <= TASKS_MAX_AGE_MS) return hit.row
+      const row = taskRows([dir]).find((item) => item.ticket === ticket)
+      rows.set(key, { signature: sign, at: now, row })
+      return row
+    }
+    const cwdOf = (pid) => {
+      const start = now - (table?.get(pid)?.age ?? 0) * 1000
+      const hit = cwds.get(pid)
+      if (hit && Math.abs(hit.start - start) < 3000) return hit.cwd
+      const cwd = readCwd(pid) ?? null
+      if (cwd) cwds.set(pid, { start, cwd })
+      return cwd
+    }
+    const snapshot = collectFn({ table, tasks: tasksCache.tasks, rowOf, cwdOf, taskOf: (cwd) => cached(abouts, `t:${cwd}`, () => taskInfo(cwd), ABOUT_TTL_MS), branchOf: (cwd) => cached(abouts, `b:${cwd}`, () => branchOfCwd(cwd), ABOUT_TTL_MS), now })
+    const heavyLoads = snapshot.balance.heavy.filter((row) => row.usage).map((row) => ({ row, load: { procs: row.usage.procs } }))
+    samples = sampleCpu([...snapshot.sessions, ...heavyLoads], samples, now)
+    for (const item of heavyLoads) if (item.live) item.row.usage.cpu = item.live.cpu // a live % from two samples replaces the ps average
+    known = new Set([...snapshot.tasks.map((task) => task.key), ...snapshot.sessions.map((session) => session.root).filter(Boolean)])
+    for (const pid of cwds.keys()) if (!table?.has(pid)) cwds.delete(pid)
+    last = { at: now, value: snapshot }
+    return snapshot
+  }
+  return { refresh, invalidate: () => { last = null }, isKnown: (key) => known.has(key) || readPriorities().order.includes(key) }
+}
+
+/**
+ * Starts the page's server on 127.0.0.1 (AC-5.6, AC-5.12, D8). Every request needs the token (`?t=` or `X-Token`); a `Host` other than 127.0.0.1/localhost with the listening port is 403;
+ * a POST needs the page's own `Origin`. The server takes task keys only and checks them against the snapshot's own; it never takes a pid. Resolves with `{ server, port, token, url, close }`.
+ */
+export function serve({ port = DEFAULT_PORT, newToken = false, state = makeState(), platform = process.platform } = {}) {
+  const token = readToken({ fresh: newToken })
+  const tokenBuffer = Buffer.from(token)
+  const server = createServer((req, res) => {
+    const reply = (code, body, type = 'application/json; charset=utf-8') => {
+      res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" })
+      res.end(typeof body === 'string' ? body : JSON.stringify(body))
+    }
+    const listening = server.address().port
+    const hosts = [`127.0.0.1:${listening}`, `localhost:${listening}`]
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const given = Buffer.from(String(url.searchParams.get('t') ?? req.headers['x-token'] ?? ''))
+    if (!hosts.includes(String(req.headers.host ?? '').toLowerCase())) return reply(403, { error: 'host' })
+    if (given.length !== tokenBuffer.length || !timingSafeEqual(given, tokenBuffer)) return reply(403, { error: 'token' })
+    if (req.method === 'POST' && !hosts.map((host) => `http://${host}`).includes(String(req.headers.origin ?? ''))) return reply(403, { error: 'origin' })
+    try {
+      if (req.method === 'GET' && url.pathname === '/') return reply(200, readFileSync(PAGE, 'utf8'), 'text/html; charset=utf-8')
+      if (req.method === 'GET' && url.pathname === '/api/state') return reply(200, { ...state.refresh(), pauseSupported: platform !== 'win32' })
+      if (req.method === 'POST' && ['/api/priorities', '/api/pause', '/api/resume'].includes(url.pathname)) {
+        let size = 0
+        const chunks = []
+        req.on('data', (chunk) => {
+          size += chunk.length
+          if (size > BODY_MAX) req.destroy()
+          else chunks.push(chunk)
+        })
+        req.on('end', () => {
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+            if (url.pathname === '/api/priorities') {
+              const keys = body?.order
+              if (!Array.isArray(keys) || keys.length > 500 || !keys.every((key) => typeof key === 'string' && key.length <= 1000 && state.isKnown(key))) return reply(400, { error: 'order must be a list of known task keys' })
+              // a card the page did not show (a session root without a task, a closed task) keeps its old place after the posted keys
+              const order = setOrder([...keys, ...readPriorities().order.filter((key) => !keys.includes(key))]).order
+              state.invalidate?.()
+              return reply(200, { ok: true, order })
+            }
+            if (platform === 'win32') return reply(400, { error: 'pause is not supported on Windows' })
+            if (typeof body?.key !== 'string' || !state.isKnown(body.key)) return reply(400, { error: 'unknown task key' })
+            const paused = setPaused(body.key, url.pathname === '/api/pause').paused
+            state.invalidate?.()
+            return reply(200, { ok: true, paused })
+          } catch {
+            return reply(400, { error: 'bad request' })
+          }
+        })
+        return undefined
+      }
+      return reply(404, { error: 'not found' })
+    } catch (error) {
+      return reply(500, { error: String(error?.message ?? error) })
+    }
+  })
+  return new Promise((resolveStart, reject) => {
+    server.once('error', reject)
+    server.listen(port, '127.0.0.1', () => {
+      const bound = server.address().port
+      resolveStart({ server, port: bound, token, url: `http://127.0.0.1:${bound}/?t=${token}`, close: () => new Promise((done) => (server.close(done), server.closeAllConnections?.())) })
+    })
+  })
 }
 
 // ── the table ────────────────────────────────────────────────────────────────
@@ -561,7 +793,24 @@ export function renderTable(snapshot) {
   return lines.join('\n')
 }
 
-if (isMain(import.meta.url)) {
+async function main() {
+  const args = process.argv.slice(2)
+  if (args[0] === 'serve') {
+    const at = args.indexOf('--port')
+    const port = at >= 0 ? Number(args[at + 1]) : DEFAULT_PORT
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      console.error('usage: node monitor.mjs serve [--port N] [--new-token]')
+      process.exit(2)
+    }
+    try {
+      const running = await serve({ port, newToken: args.includes('--new-token') })
+      console.log(`monitor: ${running.url}`)
+    } catch (error) {
+      console.error(`monitor: cannot listen on 127.0.0.1:${port} — ${error?.message ?? error}`)
+      process.exit(1)
+    }
+    return
+  }
   const json = process.argv.includes('--json')
   let snapshot
   try {
@@ -571,3 +820,5 @@ if (isMain(import.meta.url)) {
   }
   console.log(json ? JSON.stringify(snapshot, null, 2) : renderTable(snapshot))
 }
+
+if (isMain(import.meta.url)) await main()

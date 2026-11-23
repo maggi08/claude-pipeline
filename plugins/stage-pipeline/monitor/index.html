@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stage Pipeline monitor</title>
+<style>
+  :root {
+    --ground: #eef0f6; --surface: #ffffff; --surface-2: #f5f6fa; --ink: #11131b; --ink-2: #3a4054; --muted: #626a80;
+    --rule: #dadeea; --rule-strong: #b9c0d4; --accent: #263ad7; --accent-ink: #263ad7; --accent-soft: #e6e9fb;
+    --critical: #b8332b; --major: #9a6410; --ok: #16704b;
+    --shadow: 0 1px 2px rgba(17, 19, 27, .05), 0 10px 28px rgba(17, 19, 27, .08);
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --cond: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0b0d13; --surface: #14171f; --surface-2: #1a1e28; --ink: #e9ebf2; --ink-2: #c2c7d6; --muted: #939bb0;
+      --rule: #272d3a; --rule-strong: #3a4254; --accent: #8b98ff; --accent-ink: #a3adff; --accent-soft: #1c2246;
+      --critical: #f0837a; --major: #e0a852; --ok: #56c795; --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 10px 28px rgba(0, 0, 0, .45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0b0d13; --surface: #14171f; --surface-2: #1a1e28; --ink: #e9ebf2; --ink-2: #c2c7d6; --muted: #939bb0;
+    --rule: #272d3a; --rule-strong: #3a4254; --accent: #8b98ff; --accent-ink: #a3adff; --accent-soft: #1c2246;
+    --critical: #f0837a; --major: #e0a852; --ok: #56c795; --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 10px 28px rgba(0, 0, 0, .45);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 14px/1.45 var(--sans); -webkit-font-smoothing: antialiased; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 48px; display: flex; flex-direction: column; gap: 18px; }
+  h1, h2 { font-family: var(--cond); margin: 0; letter-spacing: -.01em; }
+  h1 { font-size: 26px; }
+  h2 { font-size: 16px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-family: var(--mono); font-weight: 600; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px; }
+  .machine { display: flex; flex-wrap: wrap; gap: 6px 20px; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); }
+  .machine b { color: var(--ink); font-weight: 600; }
+  .panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; box-shadow: var(--shadow); }
+  .panel > h2 { padding: 12px 16px 0; }
+  .banner { padding: 8px 16px; border: 1px solid var(--major); border-radius: 4px; color: var(--major); background: var(--surface); overflow-wrap: anywhere; }
+  .waiting { border-color: var(--accent); }
+  .wrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; padding: 10px 16px; border-top: 1px solid var(--rule); }
+  .wrow:first-of-type { border-top: 0; }
+  .wrow .what { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  .wrow .text { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7.5em; overflow: auto; color: var(--ink-2); }
+  .kind { font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 3px; background: var(--accent-soft); color: var(--accent-ink); }
+  .meta { color: var(--muted); font-size: 12.5px; }
+  .options { display: flex; flex-wrap: wrap; gap: 6px; grid-column: 1 / -1; }
+  .options span { border: 1px solid var(--rule-strong); border-radius: 3px; padding: 0 8px; font-size: 12.5px; }
+  a.open, button { font: inherit; font-weight: 600; color: var(--accent-ink); background: var(--surface); border: 1px solid var(--accent); border-radius: 4px; padding: 3px 12px; cursor: pointer; text-decoration: none; }
+  a.open:hover, button:hover { background: var(--accent-soft); }
+  .hint { padding: 8px 16px 12px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--rule); }
+  .none { padding: 12px 16px 14px; color: var(--muted); }
+  #cards { display: flex; flex-direction: column; gap: 10px; padding: 0; margin: 0; list-style: none; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--rule-strong); border-radius: 4px; box-shadow: var(--shadow); padding: 12px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px 14px; cursor: grab; }
+  .card.over { border-color: var(--accent); background: var(--accent-soft); }
+  .card.dragging { opacity: .5; }
+  .card.busy { border-left-color: var(--accent); }
+  .place { font-family: var(--cond); font-size: 28px; font-weight: 700; color: var(--accent-ink); line-height: 1; min-width: 1.4em; }
+  .title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+  .title strong { font-size: 16px; }
+  .body { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .line { overflow-wrap: anywhere; }
+  .lbl { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: 6px; }
+  .st-running { color: var(--ok); } .st-waiting, .st-throttled { color: var(--major); } .st-paused { color: var(--critical); }
+  .state { font-weight: 600; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .legend { color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) { main { padding: 12px; } .card { grid-template-columns: auto minmax(0, 1fr); } .body { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Stage Pipeline</h1><div class="machine" id="machine" aria-live="off"></div></header>
+  <div class="banner" id="problem" hidden></div>
+  <section class="panel waiting" aria-labelledby="wh">
+    <h2 id="wh">Waiting for you <span id="wcount"></span></h2>
+    <div id="waiting"></div>
+    <div class="hint">Open uses the VS Code window that is in focus; if the session belongs to another window, switch to it first.</div>
+  </section>
+  <section aria-labelledby="th">
+    <h2 id="th">Tasks in priority order</h2>
+    <p class="legend">Drag a card, or focus it and press Alt+Up / Alt+Down, to change its priority. The top task gets the machine first.</p>
+    <ol id="cards"></ol>
+  </section>
+</main>
+<script>
+(() => {
+  const token = new URL(location.href).searchParams.get('t') || ''
+  const $ = (id) => document.getElementById(id)
+  const GB = 1024 ** 3
+  const gb = (bytes) => (bytes == null ? '?' : `${(bytes / GB).toFixed(1)} GB`)
+  const mem = (bytes) => (bytes == null ? '?' : bytes >= GB ? gb(bytes) : `${Math.round(bytes / 1048576)} MB`)
+  const h = (tag, attrs, ...kids) => {
+    const node = document.createElement(tag)
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (value === null || value === undefined || value === false) continue
+      if (key === 'class') node.className = value
+      else node.setAttribute(key, value === true ? '' : value)
+    }
+    for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) node.append(kid)
+    return node
+  }
+  const ago = (ms) => {
+    const sec = Math.max(0, Math.round(ms / 1000))
+    if (sec < 90) return `${sec} s`
+    if (sec < 5400) return `${Math.round(sec / 60)} min`
+    return `${(sec / 3600).toFixed(1)} h`
+  }
+  const api = async (path, body) => {
+    const res = await fetch(path, { method: body ? 'POST' : 'GET', headers: { 'X-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
+    if (!res.ok) throw new Error(`${path}: ${res.status}`)
+    return res.json()
+  }
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  let snap = null
+  let dragKey = null
+  let focusKey = null // `<task key>` or `<task key>\u0000pause`
+
+  const taskCards = (s) => {
+    const order = s.balance.order
+    const open = s.tasks.filter((t) => t.open || t.problem || order.includes(t.key) || s.sessions.some((x) => x.task === t.key))
+    const place = (t) => (order.includes(t.key) ? order.indexOf(t.key) : order.length)
+    return open.map((t, i) => [t, i]).sort((a, b) => place(a[0]) - place(b[0]) || a[1] - b[1]).map(([t]) => t)
+  }
+  const sessionsOf = (s, key) => s.sessions.filter((x) => x.task === key || (!x.task && x.root === key))
+
+  function renderMachine(s) {
+    const m = s.machine
+    const el = $('machine')
+    el.replaceChildren()
+    const add = (name, value) => el.append(h('span', null, `${name} `, h('b', null, value)))
+    if (m) {
+      add('memory', `${m.pressure ?? 'no reading'}, ${gb(m.availableBytes)} free of ${gb(m.totalBytes)}`)
+      add('swap', m.swapTotalBytes == null ? '?' : `${gb(m.swapUsedBytes)} of ${gb(m.swapTotalBytes)}`)
+      add('load', m.load == null ? `? on ${m.cores} cores` : `${Number(m.load).toFixed(1)} on ${m.cores} cores`)
+    }
+    add('waiting commands', String(s.balance.heavy.filter((x) => x.state === 'waiting').length))
+    $('problem').hidden = !s.problem
+    $('problem').textContent = s.problem || ''
+  }
+
+  function renderWaiting(s) {
+    const box = $('waiting')
+    box.replaceChildren()
+    const list = [...s.waiting].sort((a, b) => a.since - b.since)
+    $('wcount').textContent = list.length ? `(${list.length})` : ''
+    document.title = `${list.length ? `(${list.length}) ` : ''}Stage Pipeline monitor`
+    if (!list.length) return box.append(h('div', { class: 'none' }, 'No session is waiting for you.'))
+    for (const w of list) {
+      const task = w.ticket ? `${(w.root || '').split('/').pop()}#${w.ticket}` : (w.cwd || '').split('/').pop() || 'unknown'
+      box.append(h('div', { class: 'wrow' },
+        h('div', { class: 'what' }, h('strong', null, task), h('span', { class: 'kind' }, w.kind), h('span', { class: 'meta' }, `waiting ${ago(Date.now() - w.since)}`)),
+        w.sessionId && UUID.test(w.sessionId) ? h('a', { class: 'open', href: `vscode://anthropic.claude-code/open?session=${encodeURIComponent(w.sessionId)}` }, 'Open') : null,
+        w.text ? h('p', { class: 'text' }, w.text) : null,
+        w.options && w.options.length ? h('div', { class: 'options' }, w.options.map((o) => h('span', null, o))) : null))
+    }
+  }
+
+  function heavyLines(s, task, sessions) {
+    const lines = []
+    const rows = s.balance.heavy.filter((x) => x.key === task.key)
+    const kindsSeen = new Set()
+    const usageOf = (row) => {
+      if (row.usage) return `${Math.round(row.usage.cpu)}% CPU, ${mem(row.usage.rssBytes)}`
+      return row.state === 'waiting' ? null : usage(row.kind)
+    }
+    const usage = (kind) => {
+      let rss = 0
+      let cpu = null
+      let count = 0
+      for (const x of sessions) {
+        const k = x.load.kinds[kind]
+        if (!k || !k.count) continue
+        count += k.count
+        rss += k.rssBytes
+        const live = x.live && x.live.kinds[kind]
+        cpu = (cpu ?? 0) + (live !== undefined ? live : (x.live ? 0 : k.cpu))
+      }
+      return count ? `${Math.round(cpu ?? 0)}% CPU, ${mem(rss)}` : null
+    }
+    for (const row of rows) {
+      kindsSeen.add(row.kind)
+      const used = usageOf(row)
+      lines.push(h('div', { class: 'line' }, h('span', { class: 'lbl' }, row.kind), h('span', { class: `state st-${row.state}` }, row.text || row.state), used ? ` — ${used}` : null, h('span', { class: 'meta' }, `  ${row.command}`)))
+    }
+    for (const kind of ['check', 'browser', 'dev-server']) {
+      if (kindsSeen.has(kind)) continue
+      const u = usage(kind)
+      if (u) lines.push(h('div', { class: 'line' }, h('span', { class: 'lbl' }, kind), h('span', { class: 'state st-running' }, 'running'), ` — ${u}`))
+    }
+    return lines.length ? lines : [h('div', { class: 'line meta' }, 'nothing heavy now')]
+  }
+
+  function renderCards(s) {
+    const ol = $('cards')
+    const had = focusKey
+    ol.replaceChildren()
+    const cards = taskCards(s)
+    if (!cards.length) ol.append(h('li', { class: 'none panel' }, 'No open tasks.'))
+    cards.forEach((t, i) => {
+      const sessions = sessionsOf(s, t.key)
+      const heavy = s.balance.heavy.filter((x) => x.key === t.key)
+      const paused = s.balance.paused.includes(t.key)
+      const busy = heavy.some((x) => x.state === 'running') || sessions.some((x) => x.load.kinds.check.count || x.load.kinds.browser.count || x.load.kinds['dev-server'].count)
+      const stage = t.stageNumber ? `stage ${t.stageNumber} of ${t.stageTotal}` : t.stageTotal ? `${t.stageTotal} stages` : 'no stages'
+      const current = t.stageNumber && t.stages[t.stageNumber - 1] ? t.stages[t.stageNumber - 1].heading.replace(/^\S+\s+\d+\s*[:.-]?\s*/, '') : null
+      const li = h('li', { class: `card${busy ? ' busy' : ''}`, tabindex: '0', draggable: 'true', 'data-key': t.key, 'aria-label': `${t.repo} ${t.ticket}, place ${i + 1} of ${cards.length}. Alt+Up or Alt+Down moves it.` },
+        h('div', { class: 'place' }, String(i + 1)),
+        h('div', { class: 'title' }, h('strong', null, `${t.ticket}`), h('span', { class: 'meta' }, t.repo), h('span', { class: 'meta' }, stage)),
+        s.pauseSupported === false ? h('span') : h('button', { type: 'button', 'data-pause': t.key, 'aria-pressed': paused ? 'true' : 'false' }, paused ? 'Resume' : 'Pause'),
+        h('div', { class: 'body' },
+          t.problem ? h('div', { class: 'line st-paused' }, t.problem) : null,
+          current ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'stage'), current) : null,
+          t.next ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'next'), t.next) : null,
+          h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'sessions'), sessions.length ? sessions.map((x) => `pid ${x.pid}${x.branch ? ` · ${x.branch}` : ''}${x.live ? ` · ${Math.round(x.live.cpu)}% CPU` : ''}`).join('; ') : 'no session'),
+          heavyLines(s, t, sessions)))
+      ol.append(li)
+      if (had === t.key) li.focus()
+      else if (had === `${t.key}\u0000pause`) li.querySelector('button')?.focus()
+    })
+  }
+
+  const render = () => {
+    if (!snap || dragKey) return
+    renderMachine(snap)
+    renderWaiting(snap)
+    renderCards(snap)
+  }
+  async function poll() {
+    try {
+      snap = await api('/api/state')
+      render()
+    } catch (error) {
+      $('problem').hidden = false
+      $('problem').textContent = `The monitor server does not answer (${error.message}).`
+    }
+  }
+  async function saveOrder(keys) {
+    try {
+      await api('/api/priorities', { order: keys })
+    } catch (error) {
+      $('problem').hidden = false
+      $('problem').textContent = `The order was not saved (${error.message}).`
+    }
+    poll()
+  }
+  const keysNow = () => [...$('cards').querySelectorAll('.card')].map((li) => li.dataset.key)
+  const cardOf = (event) => event.target.closest?.('.card')
+
+  $('cards').addEventListener('dragstart', (event) => {
+    const li = cardOf(event)
+    if (!li) return
+    dragKey = li.dataset.key
+    li.classList.add('dragging')
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', dragKey)
+  })
+  $('cards').addEventListener('dragover', (event) => {
+    const li = cardOf(event)
+    if (!dragKey || !li) return
+    event.preventDefault()
+    for (const x of $('cards').querySelectorAll('.over')) x.classList.remove('over')
+    if (li.dataset.key !== dragKey) li.classList.add('over')
+  })
+  $('cards').addEventListener('drop', (event) => {
+    const li = cardOf(event)
+    if (!dragKey || !li) return
+    event.preventDefault()
+    const keys = keysNow().filter((key) => key !== dragKey)
+    const at = keys.indexOf(li.dataset.key)
+    const before = event.clientY < li.getBoundingClientRect().top + li.offsetHeight / 2
+    keys.splice(before ? at : at + 1, 0, dragKey)
+    dragKey = null
+    saveOrder(keys)
+  })
+  $('cards').addEventListener('dragend', () => {
+    dragKey = null
+    render()
+  })
+  $('cards').addEventListener('keydown', (event) => {
+    const li = cardOf(event)
+    if (!li || event.target !== li || !event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return
+    event.preventDefault()
+    const keys = keysNow()
+    const from = keys.indexOf(li.dataset.key)
+    const to = from + (event.key === 'ArrowUp' ? -1 : 1)
+    if (to < 0 || to >= keys.length) return
+    keys.splice(to, 0, keys.splice(from, 1)[0])
+    focusKey = li.dataset.key
+    const cards = [...$('cards').children]
+    $('cards').insertBefore(cards[from], event.key === 'ArrowUp' ? cards[to] : cards[to].nextSibling)
+    li.focus()
+    saveOrder(keys)
+  })
+  $('cards').addEventListener('focusin', (event) => {
+    const li = cardOf(event)
+    focusKey = li ? (event.target === li ? li.dataset.key : `${li.dataset.key}\u0000pause`) : null
+  })
+  $('cards').addEventListener('click', async (event) => {
+    const button = event.target.closest?.('button[data-pause]')
+    if (!button) return
+    const key = button.dataset.pause
+    try {
+      await api(button.getAttribute('aria-pressed') === 'true' ? '/api/resume' : '/api/pause', { key })
+    } catch (error) {
+      $('problem').hidden = false
+      $('problem').textContent = `Pause was not applied (${error.message}).`
+    }
+    poll()
+  })
+  poll()
+  setInterval(poll, 2000)
+})()
+</script>
+</body>
+</html>

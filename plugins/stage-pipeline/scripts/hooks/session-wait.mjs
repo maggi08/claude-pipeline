@@ -121,11 +121,12 @@ export function claudePidOf(pid = process.pid) {
   return table ? ancestors(table, pid).find((entry) => isClaude(entry.args))?.pid ?? null : null
 }
 
-/** The stored `claudePid` still names a live `claude` process: not null, signal 0 succeeds, one `ps` says its command line is a `claude`. */
-function pidStillClaude(pid, { aliveOf, commandOf: commandLine }) {
-  if (!Number.isInteger(pid) || !aliveOf(pid)) return false
+/** The stored `claudePid` against one `ps`: 'claude' (a live claude), 'other' (alive, the command line is not a claude), 'unknown' (alive, `ps` did not answer), 'dead' (null, not alive). */
+function oldPidState(pid, { aliveOf, commandOf: commandLine }) {
+  if (!Number.isInteger(pid) || !aliveOf(pid)) return 'dead'
   const args = commandLine(pid, { timeout: PS_TIMEOUT_MS })
-  return args !== null && isClaude(args)
+  if (args === null) return 'unknown'
+  return isClaude(args) ? 'claude' : 'other'
 }
 
 /** Deletes the state files of other sessions older than 7 days, at most once an hour (the mtime of a marker file next to the directory). Never throws. */
@@ -182,14 +183,15 @@ export function record(input, { dir = join(pluginDataDir(), 'sessions'), now = D
   if (change === 'remove') return rmSync(file, { force: true })
   if (change === 'clear' && !existing) return
   const set = change === 'clear' ? { kind: null, text: '', options: [] } : change
-  const kept = existing && pidStillClaude(existing.claudePid, { aliveOf, commandOf: commandLine })
+  const old = existing ? oldPidState(existing.claudePid, { aliveOf, commandOf: commandLine }) : 'dead'
+  const kept = old === 'claude'
   const next = {
     ...set,
     source: set.kind ? input.hook_event_name : null,
     since: now,
     cwd: input.cwd ?? existing?.cwd ?? null,
     transcript: input.transcript_path ?? existing?.transcript ?? null,
-    claudePid: kept ? existing.claudePid : pidOf() ?? (Number.isInteger(existing?.claudePid) && aliveOf(existing.claudePid) ? existing.claudePid : null), // a failed lookup under load keeps a live old pid
+    claudePid: kept ? existing.claudePid : pidOf() ?? (old === 'unknown' ? existing.claudePid : null), // a failed lookup under load keeps a live old pid, but not one that `ps` positively said is not a claude
   }
   mkdirSync(dir, { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`

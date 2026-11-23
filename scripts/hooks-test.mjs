@@ -22,7 +22,8 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { availableParallelism, getPriority, homedir, loadavg, setPriority, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -199,6 +200,7 @@ const UNITS = [
   { id: 'pp1s5', weight: 2 }, // PP-1 stage 5: plan-check reads PRODUCT-HANDOFF.md (H<n> coverage, unknown version, no file = no requirement) and --input (no input stops, any one of four passes); stage-plan and docs-lookup text
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
   { id: 'vt17s3', weight: 2 }, // VT-17 stage 3: monitor.mjs — tasks of the registry, sessions, the tree split by kind, one ps and one lsof per session, the balancer's states, the table
+  { id: 'vt17s5', weight: 2 }, // VT-17 stage 5: monitor.mjs serve — token, Host, Origin, port, priorities and pause endpoints, the state with the CPU delta
   { id: 'vt17s4', weight: 2 }, // VT-17 stage 4: the session-wait hook (turn-ended, question, permission, elicitation, cleared, subagent, never blocks) and the waiting field of monitor.mjs
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -11934,6 +11936,7 @@ if (unit('vt17s3')) {
   const stateOf = (pid) => bal.heavy.find((item) => item.pid === pid)
   check('monitor AC-3.7: running, throttled (cpu: load L of N), waiting (the balancer reason) and paused, with the order and the paused keys', stateOf(102).state === 'running' && stateOf(102).session === 100 && stateOf(7).state === 'throttled' && stateOf(7).reason === 'cpu: load 9.5 of 10' && stateOf(9).state === 'waiting' && stateOf(9).reason === 'memory: needs ~1.6 GB, 1.5 GB available' && stateOf(8).state === 'paused' && stateOf(10).state === 'paused' && bal.paused[0] === 'b#T-2' && bal.order.length === 2, JSON.stringify(bal.heavy.map((i) => [i.pid, i.state, i.reason])))
 
+  check('monitor AC-5.2: every heavy row carries its card text — paused says by you and Resume, waiting and throttled their balancer reason, running just running', stateOf(8).text === 'paused by you — Resume to continue' && stateOf(9).text === 'waiting: memory: needs ~1.6 GB, 1.5 GB available' && stateOf(7).text === 'throttled: cpu: load 9.5 of 10' && stateOf(102).text === 'running' && mon.balanceRows({ running: [], waiting: [entry(11, 'y#T-5', { reason: '' })], priorities: prio, load: { load: 1, cores: 4 }, sessions }).heavy[0].text === 'waiting: looking', JSON.stringify(bal.heavy.map((i) => i.text)))
   check('monitor AC-3.7: the place is one answer — 1-based in the order, null outside it (the heavy rows and the helper)', stateOf(102).place === 1 && stateOf(8).place === 2 && stateOf(7).place === null && mon.placeIn(prio.order, 'zzz') === null && mon.placeIn(prio.order, 'b#T-2') === 2)
   const onWin = mon.balanceRows({ running: [entry(8, 'b#T-2', { paused: true })], waiting: [entry(10, 'b#T-2')], priorities: prio, load: { load: 1, cores: 10 }, sessions, platform: 'win32' })
   check('monitor D16: on win32 there is no pause — no paused keys, no paused state', onWin.paused.length === 0 && onWin.pauseSupported === false && onWin.heavy.every((item) => item.state !== 'paused'), JSON.stringify(onWin))
@@ -11953,14 +11956,137 @@ if (unit('vt17s3')) {
   const unreg = mon.collect({ table: new Map([row(400, 1, '/bin/claude')]), taskDirs: [tasksDir], cwdOf: () => join(root, 'other-repo'), taskOf: () => ({ key: `${join(root, 'other-repo')}#UP-1`, task: true, root: join(root, 'other-repo'), ticket: 'UP-1', taskDir: outside }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam })
   const unregRow = unreg.tasks.find((t) => t.ticket === 'UP-1')
   check('monitor AC-3.1: a session\'s task outside the known task directories gets a row (registered: false) with its stage; no machine readings with a null seam', unregRow?.registered === false && unregRow.key === `${join(root, 'other-repo')}#UP-1` && unregRow.stageNumber === 1 && unreg.tasks.filter((t) => t.registered !== false).length === 3 && unreg.machine.pressure === null && unreg.machine.load === null, JSON.stringify(unreg.tasks.map((t) => [t.key, t.registered])))
+  const dedupe = mon.collect({ table: new Map([row(400, 1, '/bin/claude')]), taskDirs: [outside], cwdOf: () => '/elsewhere/repo', taskOf: () => ({ key: '/elsewhere/repo#UP-1', task: true, root: '/elsewhere/repo', ticket: 'UP-1', taskDir: outside }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam })
+  check('monitor AC-3.1: a session task whose directory the registry lists under another key is not a second row — one row, registered, with the session\'s key', dedupe.tasks.length === 1 && dedupe.tasks[0].registered === true && dedupe.tasks[0].key === '/elsewhere/repo#UP-1', JSON.stringify(dedupe.tasks.map((t) => [t.key, t.registered])))
+  // finding 1: rows of session tasks outside the registry are built once per STAGES.md signature, not on every poll
+  const built = [] // the row object each poll got: the same object means no rebuild
+  const cachedState = mon.makeState({
+    collectFn: (seams) => mon.collect({ ...seams, rowOf: (dir, ticket) => { const got = seams.rowOf(dir, ticket); built.push(got); return got }, taskDirs: [], table: new Map([row(400, 1, '/bin/claude')]), cwdOf: () => join(root, 'other-repo'), taskOf: () => ({ key: `${join(root, 'other-repo')}#UP-1`, task: true, root: join(root, 'other-repo'), ticket: 'UP-1', taskDir: outside }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam }),
+    clock: (() => { let t = 1_000_000; return () => (t += 2000) })(),
+    tableOf: () => new Map([row(400, 1, '/bin/claude')]),
+    dirsOf: () => [],
+  })
+  const firstPoll = cachedState.refresh()
+  cachedState.invalidate()
+  const secondPoll = cachedState.refresh()
+  check('monitor finding 1: two polls build the row of a session task outside the registry once (the page polls every 2 s)', firstPoll.tasks.some((t) => t.ticket === 'UP-1') && secondPoll.tasks.some((t) => t.ticket === 'UP-1') && built.length === 2 && built[0] && built[0] === built[1], String(built.length))
+  const rowFile = join(outside, 'UP-1', 'STAGES.md')
+  writeFileSync(rowFile, readFileSync(rowFile, 'utf8').replace('stage 1 of 2', 'stage 2 of 2').replace('Stage 1: a  [status: in-progress]', 'Stage 1: a  [status: done]').replace('Stage 2: b  [status: todo]', 'Stage 2: b  [status: in-progress]'))
+  cachedState.invalidate()
+  const thirdPoll = cachedState.refresh()
+  check('monitor finding 1: a STAGES.md change builds the row again', built[2] !== built[1] && thirdPoll.tasks.find((t) => t.ticket === 'UP-1')?.stageNumber === 2, JSON.stringify(thirdPoll.tasks.find((t) => t.ticket === 'UP-1')?.stageNumber))
   const cli = spawnSync(process.execPath, [join(PLUGIN, 'monitor.mjs'), '--json'], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'no-bin'), STAGE_PIPELINE_DATA_DIR: join(root, 'data'), STAGE_PIPELINE_LOCK_DIR: join(root, 'lock') } })
   const cliSnap = (() => { try { return JSON.parse(cli.stdout) } catch { return null } })()
   check('monitor AC-3.5: the CLI without ps in PATH exits 0 and prints the JSON with the problem', cli.status === 0 && cliSnap?.sessions.length === 0 && /ps/.test(cliSnap.problem ?? ''), cli.stdout + cli.stderr)
   const cliTable = spawnSync(process.execPath, [join(PLUGIN, 'monitor.mjs')], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'no-bin'), STAGE_PIPELINE_DATA_DIR: join(root, 'data'), STAGE_PIPELINE_LOCK_DIR: join(root, 'lock') } })
   check('monitor AC-3.6: the CLI without flags prints the table and exits 0', cliTable.status === 0 && /^TASK\s+STAGE/m.test(cliTable.stdout) && /^machine: /m.test(cliTable.stdout), cliTable.stdout + cliTable.stderr)
   const parsed = ps.parseStatRows('  42     1   501  12.5  204800   10   4 Ss    01:02:03 1-02:03:04 /usr/bin/claude --resume x\nnot a row\n  43 42 0 0.0 10 - - Z 5:00 0:01.50 (defunct)\n')
-  check('monitor AC-3.3: ps time= (cumulative CPU time) parses on Linux and macOS shapes', parsed.get(42).cpuSeconds === 93784 && parsed.get(43).cpuSeconds === 1.5 && ps.cpuSecondsOf('12:34.56') === 754.56 && ps.cpuSecondsOf('x') === null)
+  check('monitor AC-3.3: ps time= (cumulative CPU time) parses on Linux and macOS shapes', parsed.get(42).cpuSeconds === 93784 && parsed.get(43).cpuSeconds === 1.5 && ps.cpuSecondsOf('12:34.56') === 754.56 && ps.cpuSecondsOf('123:45.67') === 7425.67 && ps.cpuSecondsOf('1:02:03.45') === 3723.45 && ps.cpuSecondsOf('x') === null)
   check('monitor: parseStatRows reads %CPU, RSS, nice, PRI, state and age; a bad row is skipped', parsed.size === 2 && parsed.get(42).cpu === 12.5 && parsed.get(42).rssKb === 204800 && parsed.get(42).pri === 4 && parsed.get(42).age === 3723 && parsed.get(43).nice === null)
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-17 stage 5: the page's server ─────────────────────────────────────────
+// A random port, temporary data and lock dirs, an injected snapshot: never the real data dir or the fixed port.
+if (unit('vt17s5')) {
+  const { request } = await import('node:http')
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-serve-'))
+  const saved = { data: process.env.STAGE_PIPELINE_DATA_DIR, lock: process.env.STAGE_PIPELINE_LOCK_DIR }
+  process.env.STAGE_PIPELINE_DATA_DIR = join(root, 'data')
+  process.env.STAGE_PIPELINE_LOCK_DIR = join(root, 'lock')
+  mkdirSync(process.env.STAGE_PIPELINE_DATA_DIR, { recursive: true })
+  const call = (port, path, { method = 'GET', headers = {}, body } = {}) => new Promise((done, fail) => {
+    const req = request({ host: '127.0.0.1', port, path, method, headers: { host: `127.0.0.1:${port}`, ...headers } }, (res) => {
+      let text = ''
+      res.on('data', (chunk) => (text += chunk))
+      res.on('end', () => done({ status: res.statusCode, text, headers: res.headers }))
+    })
+    req.on('error', fail)
+    req.end(body)
+  })
+  let cpuSeconds = 10
+  let clockNow = 1_000_000
+  const proc = () => ({ pid: 11, kind: 'check', age: 100 + (clockNow - 1_000_000) / 1000, cpuSeconds })
+  const snapshotOf = () => ({ at: 'x', tasks: [{ key: '/r#T-1', repo: 'r', ticket: 'T-1', stages: [], open: true }, { key: '/r#T-2', repo: 'r', ticket: 'T-2', stages: [], open: true }], sessions: [{ pid: 10, root: '/r', task: '/r#T-1', load: { procs: [proc()] } }], waiting: [], balance: { heavy: [], paused: [], pauseSupported: true, order: [] }, machine: null, problem: null })
+  const state = mon.makeState({ collectFn: snapshotOf, clock: () => clockNow, tableOf: () => new Map(), dirsOf: () => [] })
+  const live = await mon.serve({ port: 0, state })
+  const { port, token } = live
+  try {
+    const good = await call(port, `/api/state?t=${token}`)
+    check('serve AC-5.6: with the token the state answers 200 and the page 200', good.status === 200 && (await call(port, `/?t=${token}`)).status === 200 && /<title>/.test((await call(port, `/?t=${token}`)).text))
+    check('serve AC-5.6: no token, a wrong token and a token of another length are 403', (await call(port, '/api/state')).status === 403 && (await call(port, '/api/state?t=nope')).status === 403 && (await call(port, `/api/state?t=${token.replace(/.$/, 'g')}`)).status === 403)
+    check('serve AC-5.6: a token in the X-Token header is accepted', (await call(port, '/api/state', { headers: { 'x-token': token } })).status === 200)
+    check('serve AC-5.6: a Host other than 127.0.0.1:<port> / localhost:<port> (also the port-less one) is 403', (await call(port, `/api/state?t=${token}`, { headers: { host: 'evil.example' } })).status === 403 && (await call(port, `/api/state?t=${token}`, { headers: { host: '127.0.0.1' } })).status === 403 && (await call(port, `/api/state?t=${token}`, { headers: { host: `localhost:${port}` } })).status === 200)
+    const post = (path, payload, origin = `http://127.0.0.1:${port}`) => call(port, `${path}?t=${token}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body: JSON.stringify(payload) })
+    const foreign = await post('/api/priorities', { order: ['/r#T-2', '/r#T-1'] }, 'http://evil.example')
+    const noOrigin = await post('/api/priorities', { order: ['/r#T-2', '/r#T-1'] }, null)
+    check('serve AC-5.6: a POST with a foreign Origin or none is 403 and changes nothing', foreign.status === 403 && noOrigin.status === 403 && hq.readPriorities().order.length === 0)
+    check('serve AC-5.6: the server listens on 127.0.0.1 only', live.server.address().address === '127.0.0.1')
+    await call(port, `/api/state?t=${token}`)
+    const changed = await post('/api/priorities', { order: ['/r#T-2', '/r#T-1'] })
+    check('serve AC-5.1: POST /api/priorities writes the order that readPriorities (heavy-queue status) reads', changed.status === 200 && hq.readPriorities().order.join() === '/r#T-2,/r#T-1', changed.text)
+    check('serve AC-5.1: an unknown key, a non-list and a non-string are 400 and the order stays', (await post('/api/priorities', { order: ['/x#Y'] })).status === 400 && (await post('/api/priorities', { order: 'a' })).status === 400 && (await post('/api/priorities', { order: [5] })).status === 400 && hq.readPriorities().order.join() === '/r#T-2,/r#T-1')
+    check('serve AC-5.3: POST /api/pause and /api/resume with a task key set and clear priorities.paused', (await post('/api/pause', { key: '/r#T-1' })).status === 200 && hq.readPriorities().paused.join() === '/r#T-1' && (await post('/api/resume', { key: '/r#T-1' })).status === 200 && hq.readPriorities().paused.length === 0)
+    check('serve AC-5.6: a pid or an unknown key is not taken by pause (400, nothing paused)', (await post('/api/pause', { key: 'pid:4242' })).status === 400 && (await post('/api/pause', { pid: 4242 })).status === 400 && hq.readPriorities().paused.length === 0)
+    hq.setOrder(['/r#T-2', '/r#T-1', '/gone#T-9', '/root-only'])
+    const kept = await post('/api/priorities', { order: ['/r#T-1', '/r#T-2'] })
+    check('serve finding 3: a reorder keeps the old keys missing from the posted list, after the posted ones in their old order', kept.status === 200 && hq.readPriorities().order.join() === '/r#T-1,/r#T-2,/gone#T-9,/root-only', hq.readPriorities().order.join())
+    check('serve: an unknown path is 404 and a bad body 400', (await call(port, `/nope?t=${token}`)).status === 404 && (await call(port, `/api/pause?t=${token}`, { method: 'POST', headers: { origin: `http://127.0.0.1:${port}` }, body: '{ half' })).status === 400)
+    // the CPU delta: two samples of cpuSeconds, 10 s apart, 5 CPU seconds = 50 %
+    clockNow += 10_000
+    cpuSeconds += 5
+    const second = JSON.parse((await call(port, `/api/state?t=${token}`)).text)
+    check('serve AC-5.2: /api/state has the snapshot (tasks, sessions, waiting, balance, machine) and the live CPU % per session and kind from two samples', Array.isArray(second.tasks) && Array.isArray(second.waiting) && second.balance && second.pauseSupported === true && second.sessions[0].live?.cpu === 50 && second.sessions[0].live.kinds.check === 50, JSON.stringify(second.sessions[0]))
+    const reused = [{ load: { procs: [{ pid: 1, kind: 'check', age: 5, cpuSeconds: 1 }] } }]
+    mon.sampleCpu(reused, new Map([[1, { age: 500, cpuSeconds: 0.5, at: 0 }]]), 1000)
+    const dropped = [{ load: { procs: [{ pid: 1, kind: 'check', age: 600, cpuSeconds: 1 }] } }]
+    mon.sampleCpu(dropped, new Map([[1, { age: 500, cpuSeconds: 9, at: 0 }]]), 1000)
+    const same = [{ load: { procs: [{ pid: 1, kind: 'check', age: 600, cpuSeconds: 2 }] } }]
+    mon.sampleCpu(same, new Map([[1, { age: 500, cpuSeconds: 1, at: 0 }]]), 1000)
+    check('serve: a reused pid (its age fell) or a process whose CPU time dropped gives no CPU %; the same process does', reused[0].live === null && dropped[0].live === null && same[0].live?.cpu === 100)
+  } finally {
+    await live.close()
+  }
+  // the fixed default port, the token kept in the data dir, --new-token (AC-5.12)
+  const t1 = mon.readToken()
+  const t2 = mon.readToken()
+  const t3 = mon.readToken({ fresh: true })
+  check('serve AC-5.12: the token is reused across restarts, --new-token gives another, the file is 0600 and the token 48 hex', t1 === t2 && t3 !== t1 && /^[0-9a-f]{48}$/.test(t3) && mon.readToken() === t3 && (statSync(join(process.env.STAGE_PIPELINE_DATA_DIR, 'monitor-token')).mode & 0o777) === 0o600)
+  const tokenFile = join(process.env.STAGE_PIPELINE_DATA_DIR, 'monitor-token')
+  chmodSync(tokenFile, 0o644)
+  mon.readToken()
+  check('serve finding 2: a token file that is wider than 0600 is narrowed on read, and a data dir made here is 0700', (statSync(tokenFile).mode & 0o777) === 0o600 && (() => { const fresh = join(root, 'new-data'); mon.readToken({ dir: fresh }); return (statSync(fresh).mode & 0o777) === 0o700 })())
+  check('serve AC-5.12: the default port is 7317', mon.DEFAULT_PORT === 7317)
+  const run = (port, ...flags) => new Promise((done) => {
+    const child = spawn(process.execPath, [join(PLUGIN, 'monitor.mjs'), 'serve', ...(port ? ['--port', String(port)] : []), ...flags], { env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    child.stdout.on('data', (chunk) => {
+      out += chunk
+      if (/\n/.test(out)) {
+        child.kill()
+        done(out.trim())
+      }
+    })
+    child.on('exit', () => done(out.trim()))
+  })
+  const free = await new Promise((done) => {
+    const probe = createServer()
+    probe.listen(0, '127.0.0.1', () => {
+      const { port: found } = probe.address()
+      probe.close(() => done(found))
+    })
+  })
+  const first = await run(free)
+  const again = await run(free)
+  const fresh = await run(free, '--new-token')
+  const urlOf = (line) => new RegExp(`^monitor: http://127\\.0\\.0\\.1:${free}/\\?t=([0-9a-f]{48})$`).exec(line)?.[1]
+  check('serve AC-5.12: the CLI prints http://127.0.0.1:<port>/?t=<token>, the same token after a restart, another with --new-token', urlOf(first) && urlOf(first) === urlOf(again) && urlOf(fresh) && urlOf(fresh) !== urlOf(first), [first, again, fresh].join(' | '))
+  if (saved.data === undefined) delete process.env.STAGE_PIPELINE_DATA_DIR
+  else process.env.STAGE_PIPELINE_DATA_DIR = saved.data
+  if (saved.lock === undefined) delete process.env.STAGE_PIPELINE_LOCK_DIR
+  else process.env.STAGE_PIPELINE_LOCK_DIR = saved.lock
   rmSync(root, { recursive: true, force: true })
 }
 
@@ -12153,6 +12279,9 @@ if (unit('vt17s4')) {
   rec8({ pidOf: () => 5, commandOf: () => 'claude' })
   rec8({ pidOf: () => 8, commandOf: () => null })
   check('hook AC-4.5: a failed lookup keeps a live old claudePid, drops a dead one to null, and a positive answer replaces it', keptPid === 5 && goneNull === null && pid8() === 8, `${keptPid} ${goneNull} ${pid8()}`)
+  rec8({ pidOf: () => 5, commandOf: () => 'claude' })
+  rec8({ pidOf: () => null, commandOf: () => '/bin/zsh -l' })
+  check('hook AC-4.5: a live old pid that ps positively says is not a claude is not kept as a fallback', pid8() === null, String(pid8()))
 
   // stale state files: the monitor skips them, the hook deletes them at most once an hour
   const dir6 = join(root, 'stale', 'sessions')
@@ -12198,12 +12327,15 @@ if (unit('vt17s4')) {
   check('monitor: the newer state of the process wins and gives its session id (a session after /clear)', r.sessions[0].sessionId === 'new-id' && r.sessions[0].waiting.kind === 'question' && r.sessions[0].waiting.options.join() === 'A,B')
   r = run([sess(1, null), sess(2, null), sess(3, null)], [st('a', { claudePid: 1, since: now - 10_000, kind: 'turn-ended' }), st('b', { claudePid: 2, since: now - 90_000, kind: 'question' })])
   check('monitor: the top-level waiting list holds the waiting sessions only, oldest since first, with the session id, pid, task and the kind', r.list.length === 2 && r.list[0].sessionId === 'b' && r.list[1].sessionId === 'a' && r.list[0].kind === 'question' && r.list[0].pid === 2 && r.list[0].ticket === 'T-1' && r.sessions[2].waiting === null, JSON.stringify(r.list))
-  // an approved permission whose command runs: the Bash shell (shell-snapshots source) of the session's tree, started after since, ends the wait
+  // an approved Bash permission whose command runs: the Bash shell (shell-snapshots source) of the session's tree that carries the saved command and started at or after since ends the wait (B1 of the stage-4 review)
   const shellArgs = '/bin/zsh -c source /Users/u/.claude/shell-snapshots/snapshot-zsh-1.sh && eval "sleep 180"'
   const treeOf = (shellAge, args = shellArgs, ppid = 100) => new Map([[100, { pid: 100, ppid: 1, age: 600, args: '/usr/local/bin/claude' }], [200, { pid: 200, ppid, age: shellAge, args }]])
-  const waitAt = (table) => mon.attachWaiting([sess(100, null)], [st('idA')], { now, mtimeOf: () => now - 100_000, table })[0]
-  check('monitor AC-4.3: a Bash shell child younger than the permission state means the approved command runs: not waiting', waitAt(treeOf(30)) === undefined)
-  check('monitor AC-4.3: an older shell (a background shell from before), another command line, a shell outside the tree and no table still wait', waitAt(treeOf(300))?.kind === 'permission' && waitAt(treeOf(30, '/bin/zsh -c ls'))?.kind === 'permission' && waitAt(treeOf(30, shellArgs, 1))?.kind === 'permission' && waitAt(null)?.kind === 'permission')
+  const bashState = (extra) => st('idA', { text: 'Bash sleep 180', source: 'PermissionRequest', ...extra })
+  const waitAt = (table, state = bashState()) => mon.attachWaiting([sess(100, null)], [state], { now, mtimeOf: () => now - 100_000, table })[0]
+  check('monitor AC-4.3: the same Bash command running in a shell younger than the permission means it was approved: not waiting', waitAt(treeOf(30)) === undefined)
+  check('monitor AC-4.3: an older shell (a background shell from before), a shell outside the tree and no table still wait', waitAt(treeOf(300))?.kind === 'permission' && waitAt(treeOf(30, shellArgs, 1))?.kind === 'permission' && waitAt(null)?.kind === 'permission')
+  check('monitor AC-4.3: a younger foreign shell does not end the wait of an Edit permission, of a Bash permission for another command, nor of a state from a Notification', waitAt(treeOf(30), bashState({ text: 'Edit /a.txt' }))?.kind === 'permission' && waitAt(treeOf(30), bashState({ text: 'Bash ls' }))?.kind === 'permission' && waitAt(treeOf(30), bashState({ source: 'Notification' }))?.kind === 'permission')
+  check('monitor AC-4.3: the boundary is since itself, no tolerance — a shell started at since counts, one started a second earlier does not', waitAt(treeOf(60)) === undefined && waitAt(treeOf(59)) === undefined && waitAt(treeOf(61))?.kind === 'permission')
   const question = mon.attachWaiting([sess(100, null)], [st('idA', { kind: 'question' })], { now, mtimeOf: () => now - 100_000, table: treeOf(30) })
   check('monitor AC-4.3: a running shell does not hide a question', question[0]?.kind === 'question')
   // read from disk, collect: nothing deleted, bad files skipped
