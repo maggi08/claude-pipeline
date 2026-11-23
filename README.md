@@ -9,6 +9,7 @@ A personal Claude Code marketplace: plugins I connect to my own projects.
 | [`stage-pipeline`](plugins/stage-pipeline/README.md) | A staged maker/checker workflow for large UI tasks: splitting into stages, a spec from the design, checks by subagents (Figma/prototype, runtime, code review), a state journal kept in files |
 | [`human-text`](https://github.com/maggi08/human-text) | Rules for writing work text people actually read (status updates, handoffs, docs) and a closed-question check of a draft in a clean context. A copy also ships inside `stage-pipeline` |
 | [`design-pipeline`](https://github.com/maggi08/design-pipeline) | Design before code for projects without a designer: brief, design system, clickable HTML prototypes, design review and a handoff that `stage-pipeline` reads as its prototype design source. Installs on its own: `claude plugin install design-pipeline@magzhan` |
+| [`product-pipeline`](https://github.com/maggi08/product-pipeline) | Product work before code: intake, discovery with sourced facts, a brief with a lint and a clean-context review, stakeholder decisions, the split into tickets, Jira and a handoff that `stage-pipeline`'s `/stage-plan` reads. Installs on its own: `claude plugin install product-pipeline@magzhan` |
 
 ## Installation
 

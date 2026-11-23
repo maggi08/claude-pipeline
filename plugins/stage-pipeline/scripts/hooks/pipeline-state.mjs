@@ -17,6 +17,7 @@ import {
   STATUS_FORCE_CLOSED,
   STATUS_FORCE_CLOSED_WITH_DATE,
   STATUS_LINE,
+  TICKET_KEY,
   forceHeadings,
   freshestForceHeading,
   globToRegExp,
@@ -102,7 +103,7 @@ function foreignTasks(ownTaskDir, root, branch) {
   return knownTaskDirs()
     .filter((dir) => dir !== own)
     .flatMap((dir) => readTasks(dir, branch))
-    .filter((task) => task.current && /^[A-Z][A-Z0-9]*-\d+$/.test(task.ticket) && isCurrentTask(task.ticket, [], branch))
+    .filter((task) => task.current && TICKET_KEY.test(task.ticket) && isCurrentTask(task.ticket, [], branch))
     .filter((task) => namesRepo(task.stages, repoName))
     .map((task) => ({ ...task, foreign: true }))
 }
