@@ -121,7 +121,10 @@
     const order = s.balance.order
     const open = s.tasks.filter((t) => t.open || t.problem || order.includes(t.key) || s.sessions.some((x) => x.task === t.key))
     const place = (t) => (order.includes(t.key) ? order.indexOf(t.key) : order.length)
-    return open.map((t, i) => [t, i]).sort((a, b) => place(a[0]) - place(b[0]) || a[1] - b[1]).map(([t]) => t)
+    // a session in a repo with no current task has no task card: its card is keyed by the repo root, labelled by the folder name, after the task cards (D4)
+    const roots = new Map()
+    for (const x of s.sessions) if (!x.task && x.root && !roots.has(x.root)) roots.set(x.root, { key: x.root, repo: x.root.split('/').filter(Boolean).pop() || x.root, ticket: x.root.split('/').filter(Boolean).pop() || x.root, noTask: true, stageNumber: null, stageTotal: 0, stages: [], next: null, problem: null })
+    return [...open, ...roots.values()].map((t, i) => [t, i]).sort((a, b) => place(a[0]) - place(b[0]) || a[1] - b[1]).map(([t]) => t)
   }
   const sessionsOf = (s, key) => s.sessions.filter((x) => x.task === key || (!x.task && x.root === key))
 
@@ -203,17 +206,17 @@
       const heavy = s.balance.heavy.filter((x) => x.key === t.key)
       const paused = s.balance.paused.includes(t.key)
       const busy = heavy.some((x) => x.state === 'running') || sessions.some((x) => x.load.kinds.check.count || x.load.kinds.browser.count || x.load.kinds['dev-server'].count)
-      const stage = t.stageNumber ? `stage ${t.stageNumber} of ${t.stageTotal}` : t.stageTotal ? `${t.stageTotal} stages` : 'no stages'
+      const stage = t.noTask ? 'no current task' : t.stageNumber ? `stage ${t.stageNumber} of ${t.stageTotal}` : t.stageTotal ? `${t.stageTotal} stages` : 'no stages'
       const current = t.stageNumber && t.stages[t.stageNumber - 1] ? t.stages[t.stageNumber - 1].heading.replace(/^\S+\s+\d+\s*[:.-]?\s*/, '') : null
       const li = h('li', { class: `card${busy ? ' busy' : ''}`, tabindex: '0', draggable: 'true', 'data-key': t.key, 'aria-label': `${t.repo} ${t.ticket}, place ${i + 1} of ${cards.length}. Alt+Up or Alt+Down moves it.` },
         h('div', { class: 'place' }, String(i + 1)),
-        h('div', { class: 'title' }, h('strong', null, `${t.ticket}`), h('span', { class: 'meta' }, t.repo), h('span', { class: 'meta' }, stage)),
+        h('div', { class: 'title' }, h('strong', null, `${t.ticket}`), t.repo && t.repo !== t.ticket ? h('span', { class: 'meta' }, t.repo) : null, h('span', { class: 'meta' }, stage)),
         s.pauseSupported === false ? h('span') : h('button', { type: 'button', 'data-pause': t.key, 'aria-pressed': paused ? 'true' : 'false' }, paused ? 'Resume' : 'Pause'),
         h('div', { class: 'body' },
           t.problem ? h('div', { class: 'line st-paused' }, t.problem) : null,
           current ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'stage'), current) : null,
           t.next ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'next'), t.next) : null,
-          h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'sessions'), sessions.length ? sessions.map((x) => `pid ${x.pid}${x.branch ? ` · ${x.branch}` : ''}${x.live ? ` · ${Math.round(x.live.cpu)}% CPU` : ''}`).join('; ') : 'no session'),
+          h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'sessions'), sessions.length ? sessions.map((x) => `pid ${x.pid}${x.branch ? ` · ${x.branch}` : ''}${x.live ? ` · ${Math.round(x.live.cpu)}% CPU` : ''} · ${mem(x.load.rssBytes)}`).join('; ') : 'no session'),
           heavyLines(s, t, sessions)))
       ol.append(li)
       if (had === t.key) li.focus()

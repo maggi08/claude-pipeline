@@ -365,7 +365,7 @@ function bypassMessage({ kind, text, cd }) {
   return (
     `heavy-guard/bypass: \`${text}\` is the repo's ${kind} command, and in the low resource mode it runs through run-check, which waits for free memory ` +
     `and records the peak; a bare run goes round the balancer. Run it as \`${wrapped}\` (Bash timeout 600000: the run may wait in the queue). ` +
-    'Not for this call? STAGE_PIPELINE_HEAVY_GUARD=off turns the rule off.'
+    'Not for this call? STAGE_PIPELINE_HEAVY_GUARD=off turns the rule off, but it is an environment variable of Claude Code itself (`env` in settings, or set in the shell before claude starts): written in front of this command it does nothing.'
   )
 }
 

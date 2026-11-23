@@ -52,7 +52,8 @@ function psRun(names, timeout) {
   }
 }
 
-function parseRows(out, names) {
+/** The rows of any `ps` output with the columns `names` (keys of the column table above), as pid → row; a row that does not fit is skipped. */
+export function parsePsRows(out, names) {
   const row = new RegExp(`^\\s*${names.map((name) => COLUMNS[name][0]).join('\\s+')}$`)
   const table = new Map()
   for (const line of String(out).split('\n')) {
@@ -70,7 +71,7 @@ function parseRows(out, names) {
 /** Every process as pid → `{ pid, ppid, uid, age, args }` (`age` in seconds, `args` the full command line); null when `ps` is missing, refused or slower than `timeout`. */
 export function processTable({ timeout = 3000 } = {}) {
   const out = psRun(BASE, timeout)
-  return out === null ? null : parseRows(out, BASE)
+  return out === null ? null : parsePsRows(out, BASE)
 }
 
 /**
@@ -84,7 +85,7 @@ export function processStats({ timeout = 3000 } = {}) {
 }
 
 /** The rows of `ps -o pid=,ppid=,uid=,%cpu=,rss=,nice=,pri=,stat=,etime=,time=,args=` — anchored, linear. A row that does not fit is skipped. */
-export const parseStatRows = (out) => parseRows(out, STATS)
+export const parseStatRows = (out) => parsePsRows(out, STATS)
 
 /** The command line of one process right now (`ps -p`); null when it is gone or `ps` fails. Read again right before a kill: a PID can be reused. */
 export function commandOf(pid, { timeout = 1500 } = {}) {
@@ -105,6 +106,25 @@ export function identityOf(pid, { timeout = 1500 } = {}) {
   } catch {
     return null
   }
+}
+
+/**
+ * Who each of `pids` is right now (`ps -p a,b,c`, one process for all): pid → start time and command line, the same string `identityOf` gives; a PID that is gone is missing;
+ * null when `ps` fails. `ps -p` exits 1 when some PIDs are gone and still prints the others.
+ */
+export function identitiesOf(pids, { timeout = 1500 } = {}) {
+  if (!pids.length) return new Map()
+  let out
+  try {
+    out = run('ps', ['-ww', '-o', 'pid=,lstart=,args=', '-p', pids.join(',')], timeout)
+  } catch (error) {
+    out = error?.status === 1 && typeof error.stdout === 'string' ? error.stdout : null
+    if (out === null) return null
+  }
+  return new Map(String(out).split('\n').flatMap((line) => {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line)
+    return match ? [[Number(match[1]), match[2].trim()]] : []
+  }))
 }
 
 /** The parents of `pid` from the nearest up, without pid 0 and 1; a loop in a stale table ends the walk. */

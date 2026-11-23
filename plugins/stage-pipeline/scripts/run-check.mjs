@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { UNRECORDED, isGateCommand, recordGate, shellQuote, treeState } from './ci-gates.mjs'
 import { configRoot, pathList, pluginDataDir, readConfig, worktreeTwinDataDir } from './hooks/pipeline-state.mjs'
 import { FILES_PLACEHOLDER } from './markers.mjs'
-import { admit, dropEntries, resourceMode } from './heavy-queue.mjs'
+import { admit, dropEntries, recordSessionTask, resourceMode, taskInfo } from './heavy-queue.mjs'
 
 const args = process.argv.slice(2)
 const baseIndex = args.indexOf('--base')
@@ -86,23 +86,33 @@ for (const [signal, number] of Object.entries(SIGNALS)) {
   process.on(signal, () => {
     if (slot) {
       slot.terminate(child, signal)
-      slot.finish({ record: false })
-    } else dropEntries()
+      settle({ record: false })
+    } else safely(dropEntries)
     process.exit(128 + number)
   })
 }
-slot = await admit({ cwd: process.cwd(), repo: root, command, mode })
+// The machine's files (the lock and the data directories) may be unwritable (read-only, a full disk): the balancer is a courtesy, so the command then starts without admission.
+const place = taskInfo(process.cwd())
+safely(() => recordSessionTask(place)) // the session ↔ task pair: this folder's task for the Claude session above (the tracker and the browser hook read it)
+try {
+  // the peak is kept under the config root, not the worktree: every worktree of the repo shares what the command needed
+  slot = await admit({ cwd: process.cwd(), repo: taskInfo(root).root, command, mode })
+} catch (error) {
+  safely(dropEntries)
+  console.log(`balance: admission unavailable (${error?.code ?? error?.message ?? 'error'}), starting without admission`)
+  slot = { key: place.key, nice: null, watch() {}, unstop() {}, terminate: (proc, signal) => proc?.kill(signal), finish() {} }
+}
 const started = Date.now()
 // A run of the whole repo on a clean tree is evidence for the CI gates; a run by diff or with edits in progress is not.
 const whole = !placeholder && !base
 const before = whole ? treeState(root) : null
 // `nice` by the task's place in priorities.json (10 for place 1, +1 per place, at most 19), in both modes: it works only while the cores are busy.
 child = spawn('/bin/sh', ['-c', slot.nice === null ? finalCommand : `nice -n ${slot.nice} /bin/sh -c ${shellQuote(finalCommand)}`], { stdio: 'inherit' })
-slot.watch(child)
+safely(() => slot.watch(child))
 // A linked worktree whose `.claude/` is excluded reads the main tree's config, the way the hooks find it.
 const isGate = () => isGateCommand(readConfig(configRoot(root, root) ?? root), command)
 child.on('exit', (code, signal) => {
-  slot.finish({ record: signal === null && code === 0 }) // a failed run often stops early: its partial peak would lower the recorded one
+  settle({ record: signal === null && code === 0 }) // a failed run often stops early: its partial peak would lower the recorded one
   const seconds = ((Date.now() - started) / 1000).toFixed(0)
   console.log(`run-check: code ${code ?? signal} in ${seconds} s`)
   if (before?.clean && before.tree) {
@@ -123,6 +133,19 @@ child.on('exit', (code, signal) => {
   }
   process.exit(code ?? 1)
 })
+
+/** `finish` of the slot that never changes the command's result: its files may not be writable. */
+function settle(options) {
+  safely(() => slot.finish(options))
+}
+
+function safely(fn) {
+  try {
+    return fn()
+  } catch {
+    return undefined
+  }
+}
 
 /** Changed and new files (without deleted ones) against HEAD or the merge-base with `--base`, from the repo root. */
 function changedFiles() {

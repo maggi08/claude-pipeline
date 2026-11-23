@@ -21,13 +21,14 @@
  * `{"memory":null}` for a machine without readings.
  */
 import { execFileSync } from 'node:child_process'
-import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync } from 'node:fs'
 import { cpus, homedir, loadavg, totalmem } from 'node:os'
 import { dirname, join } from 'node:path'
+import { writeJsonAtomic, withFileLock } from './file-state.mjs'
 import { fileURLToPath } from 'node:url'
 import { isMain } from './main-guard.mjs'
-import { isMcpServer, survey } from './browser-cleanup.mjs'
-import { alive, descendants, identityOf, processStats } from './processes.mjs'
+import { isClaude, survey } from './browser-cleanup.mjs'
+import { alive, ancestors, descendants, identitiesOf, identityOf, processStats, processTable } from './processes.mjs'
 import { pluginDataDir, readConfig, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const GB = 1024 ** 3
@@ -111,98 +112,13 @@ const queueDir = () => join(lockDir(), 'queue')
 const prioritiesFile = (data = pluginDataDir()) => join(data, 'priorities.json')
 const peaksFile = (data = pluginDataDir()) => join(data, 'heavy-peaks.json')
 
-function writeJson(file, value) {
-  mkdirSync(dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`)
-  renameSync(tmp, file)
-}
+const writeJson = writeJsonAtomic
 
 function readJson(file, fallback) {
   try {
     return JSON.parse(readFileSync(file, 'utf8'))
   } catch {
     return fallback
-  }
-}
-
-const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-
-/**
- * A dead owner's lock is removed only under a second short lock, after the owner is read again there: two waiters that both saw the dead owner
- * cannot then remove the lock the first one has just taken. Returns true when the lock was removed (try again at once).
- */
-function takeOverStale(lock) {
-  const readOwner = () => {
-    try {
-      return Number(readFileSync(lock, 'utf8').trim() || 0)
-    } catch {
-      return -1 // gone
-    }
-  }
-  const owner = readOwner()
-  if (owner === -1) return true
-  if (!owner || alive(owner)) return false
-  const guard = `${lock}.takeover`
-  try {
-    writeFileSync(guard, String(process.pid), { flag: 'wx' })
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error
-    // A fresh guard belongs to a live taker and is not touched (renaming it would leave a gap in which a third waiter takes the lock too). Only a guard older
-    // than the threshold is renamed to a unique name (atomic) and the renamed file is judged; a fresh one caught by the rename in that rare race is put back
-    // with a no-clobber link.
-    const staleAfter = 10_000
-    try {
-      if (Date.now() - statSync(guard).mtimeMs <= staleAfter) return false
-    } catch {
-      return false // gone
-    }
-    const moved = `${guard}.stale-${process.pid}-${Date.now()}`
-    try {
-      renameSync(guard, moved)
-      if (Date.now() - statSync(moved).mtimeMs <= staleAfter) {
-        try {
-          linkSync(moved, guard)
-        } catch {
-          // another taker already made a new one
-        }
-      }
-    } catch {
-      // gone
-    }
-    rmSync(moved, { force: true })
-    return false
-  }
-  try {
-    const again = readOwner()
-    if (again > 0 && !alive(again)) {
-      rmSync(lock, { force: true })
-      return true
-    }
-    return again === -1
-  } finally {
-    rmSync(guard, { force: true })
-  }
-}
-
-/** A short lock around one read-modify-write of a state file (the pid of the owner; a dead owner's lock is taken over). */
-function withFileLock(file, fn) {
-  const lock = `${file}.lock`
-  mkdirSync(dirname(lock), { recursive: true })
-  let held = false
-  for (let attempt = 0; attempt < 100 && !held; attempt += 1) {
-    try {
-      writeFileSync(lock, String(process.pid), { flag: 'wx' })
-      held = true
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error
-      if (!takeOverStale(lock)) sleepSync(30)
-    }
-  }
-  try {
-    return fn()
-  } finally {
-    if (held) rmSync(lock, { force: true })
   }
 }
 
@@ -253,12 +169,8 @@ export function niceFor(order, key) {
   return order.includes(key) ? Math.min(NICE_BASE + order.indexOf(key), NICE_MAX) : NICE_MAX
 }
 
-/** The key of the task a command in `cwd` belongs to: `<repo root>#<TICKET>` of the current task, else the repo root. */
-export function taskKey(cwd) {
-  return taskInfo(cwd).key
-}
-
 /**
+ * The key of the task a command in `cwd` belongs to is `.key`: `<repo root>#<TICKET>` of the current task, else the repo root.
  * `{ key, task, root, ticket, taskDir }`: `task` is true when the key has a ticket; `root` is the repo root, `ticket` the current task's ticket and `taskDir` the task directory of the config
  * (null off a pipeline repo). A structured answer, never split from `key`: a repo path may contain `#`. Stage 3 of VT-17 reads all of it, keep it.
  */
@@ -274,6 +186,48 @@ export function taskInfo(cwd) {
   return { key: task ? `${root}#${task.ticket}` : root, task: Boolean(task), root, ticket: task?.ticket ?? null, taskDir: state?.taskDir ?? null }
 }
 
+// ── the session ↔ task pairs ─────────────────────────────────────────────────
+
+/**
+ * A Claude session may sit in one folder (the main tree) while its commands run in another (a linked worktree of the task): `taskInfo` of the two folders gives two keys. `run-check` therefore
+ * writes a pair — the session's `claude` process, its identity, and the task key of the folder the command runs in — into `<data dir>/session-tasks.json`; the tracker (a session's card, the pause
+ * of its browsers) and the browser hook take the session's key from it, and from the session's own folder when there is no pair. The last run overwrites the old pair; a pair whose process is gone
+ * or no longer the same (a reused PID) is dropped.
+ */
+const sessionTasksFile = (data = pluginDataDir()) => join(data, 'session-tasks.json')
+
+/** The nearest `claude` ancestor of `from` in `table`, or null. */
+export const claudeOf = (table, from = process.pid) => (table ? ancestors(table, from).find((entry) => isClaude(entry.args)) ?? null : null)
+
+/** A pair is live while its process is in `table`, did not start after the pair was written, and still has the command line it had (the identity string is `<start time> <command line>`). */
+const pairLive = (table, pid, item, now) => sameProcessIn(table, { pid, since: item?.at }, now) && (!item?.identity || !table.get(pid).args || String(item.identity).endsWith(table.get(pid).args))
+
+/** Writes the pair of the `claude` process above this one with `info` (`taskInfo` of the command's folder); returns it, or null when there is no such process or no table. Never throws. */
+export function recordSessionTask(info, { table = processTable({ timeout: 1500 }), from = process.pid, data = pluginDataDir(), identity = identityOf, now = Date.now() } = {}) {
+  try {
+    const session = claudeOf(table, from)
+    if (!session) return null
+    const pair = { pid: session.pid, identity: identity(session.pid), key: info.key, root: info.root, ticket: info.ticket, taskDir: info.taskDir, task: Boolean(info.task), at: now }
+    withFileLock(sessionTasksFile(data), () => {
+      const kept = Object.fromEntries(Object.entries(readJson(sessionTasksFile(data), {})).filter(([pid, item]) => Number(pid) !== pair.pid && pairLive(table, Number(pid), item, now)))
+      writeJson(sessionTasksFile(data), { ...kept, [pair.pid]: pair })
+    })
+    return pair
+  } catch {
+    return null
+  }
+}
+
+/** pid → `{ key, root, ticket, taskDir, task }` of the sessions with a pair that is still valid in `table` (null table: none). */
+export function readSessionTasks(table, data = pluginDataDir(), now = Date.now()) {
+  const pairs = new Map()
+  if (!table) return pairs
+  for (const [pid, item] of Object.entries(readJson(sessionTasksFile(data), {}))) {
+    if (typeof item?.key === 'string' && pairLive(table, Number(pid), item, now)) pairs.set(Number(pid), item)
+  }
+  return pairs
+}
+
 // ── the registry: running commands and waiters ───────────────────────────────
 
 function sameProcess(entry) {
@@ -282,8 +236,21 @@ function sameProcess(entry) {
   return now === null || !entry.identity || now === entry.identity
 }
 
-/** The live entries of a directory; a dead process's or a reused PID's entry is removed on the way (AC-1.11). */
-function liveEntries(dir) {
+/**
+ * The same question answered from a process table already read (no `ps` call): the PID is in the table and the process did not start after the entry was written (a reused PID is
+ * a younger process). `since`: when the entry was made, epoch ms; a row with no `age` (or an entry with no `since`) is taken as the same process.
+ */
+export function sameProcessIn(table, { pid, since }, now = Date.now()) {
+  const row = table.get(pid)
+  if (!row) return false
+  return !(Number.isFinite(since) && Number.isFinite(row.age) && now - row.age * 1000 > since + 5000)
+}
+
+/**
+ * The live entries of a directory; a dead process's or a reused PID's entry is removed on the way (AC-1.11). `given`: a process table the caller has read (the tracker's snapshot
+ * makes one `ps` call for everything): the entries are judged by it and no `ps` runs here. Without it each entry is looked at by its own `ps -p`.
+ */
+function liveEntries(dir, given = null) {
   let names = []
   try {
     names = readdirSync(dir)
@@ -291,13 +258,13 @@ function liveEntries(dir) {
     return []
   }
   const entries = []
-  let table // the process table, read once per call and only when a browser entry needs it
+  let table = given ?? undefined // the process table, read once per call and only when a browser entry needs it
   const tableOnce = () => (table === undefined ? (table = tableSource.read()) : table)
   for (const name of names.filter((item) => item.endsWith('.json'))) {
     const file = join(dir, name)
     const entry = readJson(file, null)
     if (!entry || !Number.isInteger(entry.pid)) continue
-    if (!sameProcess(entry)) rmSync(file, { force: true })
+    if (!(given ? sameProcessIn(given, { ...entry, since: entry.since ?? entry.started }) : sameProcess(entry))) rmSync(file, { force: true })
     else if (entry.watch && !browserEntryLive(entry, file, tableOnce())) rmSync(file, { force: true })
     else entries.push(entry)
   }
@@ -344,8 +311,8 @@ export function registerBrowser({ pid, key, now = Date.now(), cfg = limits() }) 
   return entry
 }
 
-export const readRunning = () => liveEntries(runningDir())
-export const readWaiting = () => liveEntries(queueDir())
+export const readRunning = (table = null) => liveEntries(runningDir(), table)
+export const readWaiting = (table = null) => liveEntries(queueDir(), table)
 const entryFile = (dir, pid) => join(dir, `${pid}.json`)
 
 // ── admission (pure) ─────────────────────────────────────────────────────────
@@ -412,7 +379,8 @@ export function nextBackground(state, { load, cores, now, lowerHalf, cfg = limit
 
 /** Whether `pid` is in the lower half of the running commands by priority (a lone command is in the upper one). */
 export function inLowerHalf(running, pid, order) {
-  const ranked = [...running].sort((a, b) => placeOf(order, a.key) - placeOf(order, b.key) || a.started - b.started || a.pid - b.pid)
+  // An open browser is not a heavy command: it is no one's rival for the cores, as in `idle`.
+  const ranked = running.filter((entry) => entry.kind !== 'browser').sort((a, b) => placeOf(order, a.key) - placeOf(order, b.key) || a.started - b.started || a.pid - b.pid)
   const rank = ranked.findIndex((entry) => entry.pid === pid)
   return rank >= Math.ceil(ranked.length / 2)
 }
@@ -437,40 +405,11 @@ export function expectedBytes(repo, command, kind = 'check', cfg = limits()) {
   return recordedPeak(repo, command) || (kind === 'browser' ? cfg.browserBytes : cfg.defaultBytes)
 }
 
-/** `[{ pid, ppid, rss }]` of every process (rss in bytes); null when `ps` fails. */
-function psRows() {
-  try {
-    return sh('ps', ['-A', '-o', 'pid=,ppid=,rss=']).split('\n').flatMap((line) => {
-      const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line)
-      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), rss: Number(match[3]) * 1024 }] : []
-    })
-  } catch {
-    return null
-  }
-}
-
-/** Who each of `pids` is right now (`ps -p a,b,c`, one process for all): pid → start time and command line; a PID that is gone is missing; null when `ps` fails. */
-function identitiesOf(pids) {
-  if (!pids.length) return new Map()
-  let out
-  try {
-    out = sh('ps', ['-ww', '-o', 'pid=,lstart=,args=', '-p', pids.join(',')])
-  } catch (error) {
-    out = error?.status === 1 && typeof error.stdout === 'string' ? error.stdout : null // `ps -p` exits 1 when some PIDs are gone, and still prints the others
-    if (out === null) return null
-  }
-  return new Map(out.split('\n').flatMap((line) => {
-    const match = /^\s*(\d+)\s+(.+)$/.exec(line)
-    return match ? [[Number(match[1]), match[2].trim()]] : []
-  }))
-}
-
-/** The tree of `pid` (itself and its descendants) with the summed RSS. */
-function treeOf(pid, rows = psRows()) {
-  if (!rows) return { pids: [pid], rss: 0 }
-  const table = new Map(rows.map((row) => [row.pid, row]))
+/** The tree of `pid` (itself and its descendants) with the summed RSS in bytes; `table` is a process table of `processStats` (one `ps` call when not given). */
+function treeOf(pid, table = processStats()) {
+  if (!table) return { pids: [pid], rss: 0 }
   const pids = [pid, ...descendants(table, pid, { depth: 12 }).map((row) => row.pid)].filter((item) => table.has(item))
-  return { pids, rss: pids.reduce((sum, item) => sum + table.get(item).rss, 0) }
+  return { pids, rss: pids.reduce((sum, item) => sum + (table.get(item).rssKb ?? 0) * 1024, 0) }
 }
 
 /**
@@ -480,7 +419,7 @@ function treeOf(pid, rows = psRows()) {
 export function rampOf(running, now = Date.now(), cfg = limits(), rows = null) {
   const young = running.filter((entry) => now - entry.started < cfg.rampSeconds * 1000)
   if (!young.length) return 0
-  const table = rows ?? psRows()
+  const table = rows ?? processStats()
   // The held-back share falls linearly to 0 over the window: a command that never reaches its expected memory does not hold the shortfall for good.
   return young.reduce((sum, entry) => {
     const left = 1 - (now - entry.started) / (cfg.rampSeconds * 1000)
@@ -490,7 +429,7 @@ export function rampOf(running, now = Date.now(), cfg = limits(), rows = null) {
 
 // ── the background class ─────────────────────────────────────────────────────
 
-const taskpolicyBin = () => process.env.STAGE_PIPELINE_TASKPOLICY ?? (process.platform === 'darwin' ? '/usr/sbin/taskpolicy' : null)
+export const taskpolicyBin = () => process.env.STAGE_PIPELINE_TASKPOLICY ?? (process.platform === 'darwin' ? '/usr/sbin/taskpolicy' : null)
 function taskpolicy(flag, pids) {
   const bin = taskpolicyBin()
   if (!bin) return
@@ -501,6 +440,11 @@ function taskpolicy(flag, pids) {
       // the process is gone or the call is refused: the background is only a courtesy
     }
   }
+}
+
+/** The PIDs of `recorded` (pid → identity at the time) that are still the same process in `now` (pid → identity); a gone or reused PID, or no reading at all, is left out. */
+export function sameProcesses(recorded, now) {
+  return [...recorded].filter(([pid, identity]) => now?.has(pid) && (!identity || now.get(pid) === identity)).map(([pid]) => pid)
 }
 
 const signalAll = (pids, signal) => {
@@ -527,10 +471,10 @@ export function dropEntries(pid = process.pid) {
  * command still waits for the resume (D3). `watch` starts the command's own look (pause, the peak, the background class); `finish` removes
  * the entry and records the peak. `passWhen` (polled on each round) lets a caller through without admission, `passed` in the result says so; `capSeconds`/`capMessage`/`capPaused` change the wait cap for a caller with its own (the browser hook: 240 s, its own line, a paused task's wait ends too).
  */
-export async function admit({ cwd, repo, command, kind = 'check', mode, say = console.log, capSeconds = null, capMessage = null, capPaused = false, passWhen = null }) {
+export async function admit({ cwd, repo, command, kind = 'check', mode, say = console.log, capSeconds = null, capMessage = null, capPaused = false, passWhen = null, key: given = null }) {
   const cfg = limits()
   const data = pluginDataDir()
-  const { key } = taskInfo(cwd)
+  const key = given ?? taskInfo(cwd).key
   ensureTask(key, data)
   const order = readPriorities(data).order
   const self = { pid: process.pid, identity: identityOf(process.pid), key, repo, command, kind, started: Date.now(), expectedBytes: expectedBytes(repo, command, kind, cfg), background: false, paused: false, childPid: null }
@@ -584,12 +528,19 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
   }
 
   await waitForAdmission(true)
-  const save = () => writeJson(entryFile(runningDir(), self.pid), self)
+  // a registry that cannot be written (read-only or full disk) must not stop the command: the entry is only the balancer's view of it
+  const save = () => {
+    try {
+      writeJson(entryFile(runningDir(), self.pid), self)
+    } catch {
+      // not recorded
+    }
+  }
 
   let peak = 0
   let timer = null
   let stopped = false
-  let stoppedPids = []
+  const stoppedIds = new Map() // PID → identity of what the pause stopped: a PID is signalled again only while it is still that process
   let warnedPause = false
   let busy = false
   let loadState = { busySince: null, background: false }
@@ -607,6 +558,12 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
     const fresh = pids.filter((pid) => !switched.has(pid) && (!ids || ids.has(pid)))
     for (const pid of fresh) switched.set(pid, ids?.get(pid) ?? null)
     return fresh
+  }
+
+  /** The stopped PIDs that are still the processes that were stopped (a gone or reused PID is left alone) and the tree's own. */
+  function stoppedNow(child) {
+    const ids = stoppedIds.size ? identitiesOf([...stoppedIds.keys()]) : new Map()
+    return [...new Set([...sameProcesses(stoppedIds, ids), ...treeOf(child.pid).pids])]
   }
 
   /** SIGSTOP to the tree, then again to what it forked in the meantime, until nothing new shows up. */
@@ -634,14 +591,18 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
           if (!warnedPause) say('balance: pause is not supported on Windows — the command goes on')
           warnedPause = true
         } else if (paused && !stopped) {
-          stoppedPids = stopTree(child.pid)
+          const pids = stopTree(child.pid)
+          const ids = identitiesOf(pids)
+          stoppedIds.clear()
+          for (const pid of pids) stoppedIds.set(pid, ids?.get(pid) ?? null)
           stopped = true
           self.paused = true
           save()
         } else if (!paused && stopped) {
           // After the pause a `low` command goes through admission again (a `normal` one does not look at memory); its own entry stays in the registry (a stopped command's memory is still taken).
           await waitForAdmission(false)
-          signalAll([...new Set([...stoppedPids, ...treeOf(child.pid).pids])], 'SIGCONT')
+          signalAll(stoppedNow(child), 'SIGCONT')
+          stoppedIds.clear()
           stopped = false
           self.paused = false
           save()
@@ -652,7 +613,8 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
             lastLoadLook = now
             const { load, cores } = readLoad()
             const lowerHalf = inLowerHalf(readRunning(), self.pid, readPriorities(data).order)
-            loadState = nextBackground(loadState, { load, cores, now, lowerHalf, cfg })
+            // no `taskpolicy` here (Linux): nothing is put into the background and nothing is shown as throttled
+            loadState = nextBackground(loadState, { load, cores, now, lowerHalf: lowerHalf && Boolean(taskpolicyBin()), cfg })
           }
           if (loadState.background) taskpolicy('-b', syncSwitched(tree.pids))
           if (loadState.background !== self.background) {
@@ -675,14 +637,15 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
 
   /** The command's own signals while it is stopped: continue it, otherwise a SIGTERM stays pending. */
   function unstop(child) {
-    if (stopped && child?.pid) signalAll([...new Set([...stoppedPids, ...treeOf(child.pid).pids])], 'SIGCONT')
+    if (stopped && child?.pid) signalAll(stoppedNow(child), 'SIGCONT')
   }
 
   /** A signal to the command: the paused tree is continued first, then the signal goes to every process of the tree (grandchildren too), not only the `sh` wrapper. */
   function terminate(child, signal) {
     if (!child?.pid) return
-    unstop(child)
-    signalAll([...new Set([...stoppedPids, ...treeOf(child.pid).pids])], signal)
+    const pids = stoppedNow(child)
+    if (stopped) signalAll(pids, 'SIGCONT')
+    signalAll(pids, signal)
   }
 
   /** `record: false` — a run cut short by a signal has not reached its peak: the recorded one stays. */
@@ -692,8 +655,19 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
       const ids = identitiesOf([...switched.keys()])
       taskpolicy('-B', [...switched].filter(([pid, identity]) => !ids || (ids.has(pid) && (!identity || ids.get(pid) === identity))).map(([pid]) => pid))
     }
-    dropEntries(self.pid)
-    if (record) recordPeak(repo, command, peak)
+    // the command's own result does not depend on the machine's files: a registry or a peak that cannot be written changes nothing
+    try {
+      dropEntries(self.pid)
+    } catch {
+      // the entry of a dead pid is removed by the next reader
+    }
+    if (record) {
+      try {
+        recordPeak(repo, command, peak)
+      } catch {
+        // the old peak stays
+      }
+    }
   }
 
   return { key, place: placeOf(order, key), nice, watch, unstop, terminate, finish, passed }

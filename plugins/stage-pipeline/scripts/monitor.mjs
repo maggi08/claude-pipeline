@@ -8,10 +8,11 @@
  *   node monitor.mjs serve [--port N] [--new-token]   # the page: http://127.0.0.1:7317/?t=<token>
  *   node monitor.mjs browsers pause|resume <key>      # SIGSTOP / SIGCONT to a task's browsers (the pause of `heavy-queue.mjs`)
  *
- * Read-only (but `signalTaskBrowsers`, which pause and resume call, and the page's own writes): it signals nothing and writes nothing (the registry reads drop only dead entries, as `heavy-queue.mjs status` does). One `ps` call for the whole table and at most one
+ * The snapshot only reads: it signals nothing and changes no state of its own. The writes are `signalTaskBrowsers` (SIGSTOP / SIGCONT, which pause and resume call) and the page's own (priorities, pause); the registry reads drop dead entries
+ * (as `heavy-queue.mjs status` does) and keep the peak of an open browser up to date (the balancer's own file). One `ps` call for the whole snapshot, the registry judged by that table, and at most one
  * `lsof` per session (through `cwdOf`). Without `ps`, or when it does not answer in time, the snapshot has the tasks, no processes and a `problem` line; the exit code stays 0.
  * `serve` (stage 5) is the page: a local HTTP server on 127.0.0.1 with a token, see the section below.
- * Stages 4–6 import `sessionRows`, `classifyTree` and `balanceRows` from here: the session ↔ process link and the process kinds live in this file only.
+ * The session ↔ process link (`sessionRows`) and the process kinds (`classifyTree`) live in this file only; `heavy-queue.mjs` does not import this file, it runs it as a child for `pause|resume` (`monitor.mjs browsers pause|resume`).
  */
 import { spawnSync } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
@@ -22,8 +23,9 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isBrowserMain, isClaude, isMcpServer } from './browser-cleanup.mjs'
 import { isMain } from './main-guard.mjs'
-import { descendants, processStats, cwdOf as readCwd } from './processes.mjs'
-import { placeOf, readLoad, readMemory, readPriorities, readRunning, readWaiting, setOrder, setPaused, taskInfo } from './heavy-queue.mjs'
+import { descendants, identityOf, processStats, cwdOf as readCwd } from './processes.mjs'
+import { placeOf, readLoad, readMemory, readPriorities, readRunning, readSessionTasks, readWaiting, setOrder, setPaused, taskInfo } from './heavy-queue.mjs'
+import { writeJsonAtomic } from './file-state.mjs'
 import { STATUS_LINE } from './markers.mjs'
 import { nextAction, resumeState, stageList } from './resume-point.mjs'
 import { WAIT_STATE_MAX_AGE_MS } from './hooks/session-wait.mjs'
@@ -127,15 +129,21 @@ const LAUNCHERS = {
 }
 const wordOf = (token) => basename(token ?? '').replace(/\.(?:[cm]?js|ts)$/, '')
 
-/** The words of a command line without leading `VAR=value` words; a shell's `-c <command>` is the command itself. */
+const COMMAND_PREFIX_MAX = 4096 // a launcher is named at the start of a command line: the rest is never parsed (S-2)
+const SHELL_LEVELS_MAX = 3
+
+/** The words of a command line without leading `VAR=value` words; a shell's `-c <command>` is the command itself (up to 3 levels). Parses a bounded prefix, in linear time. */
 function commandWords(args) {
-  let words = args.trim().split(/\s+/)
-  for (;;) {
-    while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words = words.slice(1)
+  let words = String(args).slice(0, COMMAND_PREFIX_MAX).trim().split(/\s+/)
+  for (let level = 0; level <= SHELL_LEVELS_MAX; level += 1) {
+    let start = 0
+    while (start < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[start])) start += 1
+    if (start) words = words.slice(start)
     const cIndex = SHELLS.has(wordOf(words[0])) ? words.indexOf('-c') : -1
-    if (cIndex < 0 || !words[cIndex + 1]) return words
+    if (cIndex < 0 || !words[cIndex + 1] || level === SHELL_LEVELS_MAX) return words
     words = words.slice(cIndex + 1).join(' ').replace(/^['"]|['"]$/g, '').split(/\s+/)
   }
+  return words
 }
 
 /** Whether a command line launches a dev server: the launcher is the command word (through `node`, `npx`, `yarn`/`pnpm`/`bun`/`npm run`) and its subcommand serves. A word elsewhere in the line (`rg next src/dev`) is not one. */
@@ -316,8 +324,20 @@ const devPortIn = (cwd) => {
  * Every Claude Code session of a process table (`claude --chrome-native-host` is the browser extension's helper, not a session). `cwdOf` is called once per session — it is the only `lsof`.
  * The seams (`cwdOf`, `taskOf`, `branchOf`, `devPortOf`, `projectsDir`, `now`) let a test run on a fake table without touching the machine.
  */
-export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchOf = branchOfCwd, devPortOf = devPortIn, projectsDir, now = Date.now(), platform } = {}) {
+export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchOf = branchOfCwd, devPortOf = devPortIn, projectsDir, now = Date.now(), platform, pairs = null } = {}) {
   const rows = []
+  // The task a session works on: the pair `run-check` recorded for it (the folder its commands run in, a linked worktree of the task) beats the task of the session's own folder.
+  let known = pairs
+  const pairOf = (pid) => {
+    if (known === null) {
+      try {
+        known = readSessionTasks(table)
+      } catch {
+        known = new Map()
+      }
+    }
+    return known.get(pid) ?? null
+  }
   const perCwd = new Map() // the task, the branch and the dev port of a folder are read once per distinct folder
   const about = (cwd) => {
     if (!perCwd.has(cwd)) {
@@ -334,16 +354,19 @@ export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchO
   for (const entry of table.values()) {
     if (!isClaude(entry.args) || /--chrome-native-host\b/.test(entry.args)) continue
     const cwd = cwdOf(entry.pid) ?? null
-    const { task, branch, devPort } = cwd ? about(cwd) : { task: { key: null, task: false }, branch: null, devPort: devPortOf(cwd) }
+    const { task: own, branch, devPort } = cwd ? about(cwd) : { task: { key: null, task: false }, branch: null, devPort: devPortOf(cwd) }
+    const pair = pairOf(entry.pid)
+    const task = pair ?? own
+    const placed = Boolean(pair) || Boolean(cwd)
     const sessionId = sessionIdOf(entry.args)
     rows.push({
       pid: entry.pid,
       cwd,
       branch,
-      task: cwd && task.task ? task.key : null,
-      ticket: cwd && task.task ? task.ticket ?? null : null,
-      taskDir: cwd && task.task ? task.taskDir ?? null : null,
-      root: cwd ? task.root ?? (task.task ? null : task.key ?? null) : null,
+      task: placed && task.task ? task.key : null,
+      ticket: placed && task.task ? task.ticket ?? null : null,
+      taskDir: placed && task.task ? task.taskDir ?? null : null,
+      root: placed ? task.root ?? (task.task ? null : task.key ?? null) : null,
       sessionId,
       age: entry.age,
       subagents: activeSubagents(sessionId, cwd, { projectsDir, now }),
@@ -560,7 +583,7 @@ export function collect({ table, ...seams } = {}) {
   const priorities = guarded('priorities', () => readPriorities(), { version: 1, order: [], paused: [] })
   const noLoad = { load: 0, cores: cpus().length }
   const load = seams.machine && 'load' in seams.machine ? seams.machine.load ?? noLoad : guarded('load', () => readLoad(), noLoad)
-  const balance = guarded('balance', () => balanceRows({ running: readRunning(), waiting: readWaiting(), priorities, load, sessions, platform: seams.platform }), { heavy: [], paused: [], pauseSupported: true, order: [] })
+  const balance = guarded('balance', () => balanceRows({ running: readRunning(processes), waiting: readWaiting(processes), priorities, load, sessions, platform: seams.platform }), { heavy: [], paused: [], pauseSupported: true, order: [] })
   if (processes) guarded('heavy usage', () => attachHeavyUsage(balance.heavy, processes), null)
   const machine = guarded('machine', () => machineRow({ load: seams.machine && 'load' in seams.machine ? seams.machine.load : load, ...seams.machine }), null)
   return { at: new Date().toISOString(), tasks, sessions, waiting, balance, machine, problem: problems.length ? problems.join('; ') : null }
@@ -573,10 +596,10 @@ export function collect({ table, ...seams } = {}) {
  * endpoints: the PIDs come from the process table, found through the sessions and their `browser` kind, never from a request. macOS and Linux only (D16). Returns the PIDs signalled;
  * `kill` and the seams of `sessionRows` are for the tests.
  */
-export function signalTaskBrowsers(key, signal, { table = processStats(), platform = process.platform, kill = process.kill, ...seams } = {}) {
-  if (platform === 'win32' || !table || !['SIGSTOP', 'SIGCONT'].includes(signal)) return []
+export function signalTaskBrowsers(key, signal, { table = processStats(), platform = process.platform, kill = process.kill, data = pluginDataDir(), identity = identityOf, ...seams } = {}) {
+  if (platform === 'win32' || !['SIGSTOP', 'SIGCONT'].includes(signal)) return []
   const signalled = []
-  for (const session of sessionRows(table, seams)) {
+  for (const session of table ? sessionRows(table, { ...seams, pairs: seams.pairs ?? readSessionTasks(table, data) }) : []) {
     if ((session.task ?? session.root) !== key) continue
     for (const proc of session.load.procs) {
       if (proc.kind !== 'browser') continue
@@ -588,8 +611,41 @@ export function signalTaskBrowsers(key, signal, { table = processStats(), platfo
       }
     }
   }
+  try {
+    const file = join(data, STOPPED_FILE)
+    const record = readStoppedRecord(file)
+    if (signal === 'SIGSTOP') {
+      if (signalled.length) writeStoppedRecord(file, { ...record, [key]: signalled.map((pid) => ({ pid, identity: identity(pid) })) })
+    } else if (record[key]) {
+      // a browser stopped by the pause whose session ended during it is not in the table any more, but still stopped: continue every recorded one that is the same process
+      for (const item of record[key]) {
+        if (signalled.includes(item.pid) || !item.identity || identity(item.pid) !== item.identity) continue
+        try {
+          kill(item.pid, 'SIGCONT')
+          signalled.push(item.pid)
+        } catch {
+          // gone
+        }
+      }
+      const { [key]: _done, ...rest } = record
+      writeStoppedRecord(file, rest)
+    }
+  } catch {
+    // the record is a safety net: the pause and the resume go on without it
+  }
   return signalled
 }
+
+const STOPPED_FILE = 'paused-browsers.json' // key → [{ pid, identity }]: the browsers a pause has stopped, next to priorities.json
+function readStoppedRecord(file) {
+  try {
+    const value = JSON.parse(readFileSync(file, 'utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+const writeStoppedRecord = (file, value) => writeJsonAtomic(file, value, { compact: true, mode: 0o600, dirMode: 0o700 })
 
 // ── the page's server (stage 5) ──────────────────────────────────────────────
 
@@ -718,7 +774,7 @@ export function makeState({ collectFn = collect, clock = Date.now, tableOf = pro
  * Starts the page's server on 127.0.0.1 (AC-5.6, AC-5.12, D8). Every request needs the token (`?t=` or `X-Token`); a `Host` other than 127.0.0.1/localhost with the listening port is 403;
  * a POST needs the page's own `Origin`. The server takes task keys only and checks them against the snapshot's own; it never takes a pid. Resolves with `{ server, port, token, url, close }`.
  */
-export function serve({ port = DEFAULT_PORT, newToken = false, state = makeState(), platform = process.platform, signalBrowsers = signalTaskBrowsers } = {}) {
+export function serve({ port = DEFAULT_PORT, newToken = false, rotateOnBusy = port === DEFAULT_PORT, state = makeState(), platform = process.platform, signalBrowsers = signalTaskBrowsers } = {}) {
   const token = readToken({ fresh: newToken })
   const tokenBuffer = Buffer.from(token)
   const server = createServer((req, res) => {
@@ -778,7 +834,18 @@ export function serve({ port = DEFAULT_PORT, newToken = false, state = makeState
     }
   })
   return new Promise((resolveStart, reject) => {
-    server.once('error', reject)
+    server.once('error', (error) => {
+      // the fixed port is taken: whoever holds it (a page that squats it) must not see a valid token later, so the next start has a new one (S-3)
+      if (error?.code === 'EADDRINUSE' && rotateOnBusy) {
+        try {
+          readToken({ fresh: true })
+          error.tokenRotated = true
+        } catch {
+          // the old token stays; the error line does not claim a rotation
+        }
+      }
+      reject(error)
+    })
     server.listen(port, '127.0.0.1', () => {
       const bound = server.address().port
       resolveStart({ server, port: bound, token, url: `http://127.0.0.1:${bound}/?t=${token}`, close: () => new Promise((done) => (server.close(done), server.closeAllConnections?.())) })
@@ -839,7 +906,7 @@ async function main() {
       const running = await serve({ port, newToken: args.includes('--new-token') })
       console.log(`monitor: ${running.url}`)
     } catch (error) {
-      console.error(`monitor: cannot listen on 127.0.0.1:${port} — ${error?.message ?? error}`)
+      console.error(`monitor: cannot listen on 127.0.0.1:${port} — ${error?.message ?? error}${error?.tokenRotated ? '; the access token was replaced (another program holds the port)' : ''}`)
       process.exit(1)
     }
     return

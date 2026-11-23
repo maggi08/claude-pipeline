@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { isClaude } from '../browser-cleanup.mjs'
 import { alive, ancestors, commandOf, processTable } from '../processes.mjs'
 import { isMain } from '../main-guard.mjs'
+import { writeJsonAtomic } from '../file-state.mjs'
 import { readHookInput } from './hook-input.mjs'
 import { pluginDataDir } from './pipeline-state.mjs'
 
@@ -152,6 +153,17 @@ function sweepStale(dir, keep, now) {
   }
 }
 
+/** The state file is the session's own: a private temp file (0600) renamed into place, and a directory or a file made wider earlier is narrowed (S-1). */
+function writeState(file, value) {
+  writeJsonAtomic(file, value, { compact: true, mode: 0o600 })
+  try {
+    chmodSync(file, 0o600)
+    chmodSync(dirname(file), 0o700)
+  } catch {
+    // a mode that cannot be set is not an error of the hook
+  }
+}
+
 /**
  * An approved permission or a finished elicitation: PostToolUse of the tool that waited. Called from journal-gate (PostToolUse of Edit, Write, MultiEdit, Bash), so no hook of its own
  * runs per tool call. Other tools (MCP, WebFetch) are not seen here: their state is dropped by the monitor's transcript rule. One read, no process; sets `kind` to null only when it is
@@ -164,9 +176,7 @@ export function clearApproved(sessionId, { dir = join(pluginDataDir(), 'sessions
     const file = join(dir, `${id}.json`)
     const existing = readState(file)
     if (existing?.kind !== 'permission' && existing?.kind !== 'elicitation') return false
-    const tmp = `${file}.${process.pid}.tmp`
-    writeFileSync(tmp, JSON.stringify({ ...existing, kind: null, text: '', options: [], since: now }))
-    renameSync(tmp, file)
+    writeState(file, { ...existing, kind: null, text: '', options: [], since: now })
     return true
   } catch {
     return false
@@ -193,10 +203,8 @@ export function record(input, { dir = join(pluginDataDir(), 'sessions'), now = D
     transcript: input.transcript_path ?? existing?.transcript ?? null,
     claudePid: kept ? existing.claudePid : pidOf() ?? (old === 'unknown' ? existing.claudePid : null), // a failed lookup under load keeps a live old pid, but not one that `ps` positively said is not a claude
   }
-  mkdirSync(dir, { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(next))
-  renameSync(tmp, file)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  writeState(file, next)
   sweepStale(dir, `${id}.json`, now)
 }
 
