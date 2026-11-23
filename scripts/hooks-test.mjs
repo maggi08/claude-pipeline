@@ -22,7 +22,7 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { availableParallelism, getPriority, homedir, loadavg, setPriority, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -2503,7 +2503,11 @@ const niceOf = (scene) => /^(\d+)$/m.exec(spawnSync(process.execPath, [RUN_CHECK
 const nice1 = hqScene('nice-low', { pressure: 'normal', availableGB: 8 })
 mkdirSync(join(nice1.dir, 'data'), { recursive: true })
 writeFileSync(join(nice1.dir, 'data', 'priorities.json'), JSON.stringify({ order: ['elsewhere', rcReal] }))
-check('heavy-queue AC-1.3: a command of the task on place 2 in low runs with nice 11, a task without a place with 19', niceOf(nice1) === String(Math.min(niceBase + 11, 20)) && niceOf(hqScene('nice-none', { pressure: 'normal', availableGB: 8 })) === String(Math.min(niceBase + 19, 20)))
+// A task with no place is put last by `ensureTask`: behind twelve others its place is 13 and its nice is capped at 19.
+const niceDeep = hqScene('nice-none', { pressure: 'normal', availableGB: 8 })
+mkdirSync(join(niceDeep.dir, 'data'), { recursive: true })
+writeFileSync(join(niceDeep.dir, 'data', 'priorities.json'), JSON.stringify({ order: Array.from({ length: 12 }, (_, i) => `elsewhere${i}`) }))
+check('heavy-queue AC-1.3: a command of the task on place 2 in low runs with nice 11, a task behind twelve others with 19', niceOf(nice1) === String(Math.min(niceBase + 11, 20)) && niceOf(niceDeep) === String(Math.min(niceBase + 19, 20)))
 const nice2 = hqScene('nice-normal', { pressure: 'critical', availableGB: 0 }, { STAGE_PIPELINE_RESOURCES: 'normal' })
 mkdirSync(join(nice2.dir, 'data'), { recursive: true })
 writeFileSync(join(nice2.dir, 'data', 'priorities.json'), JSON.stringify({ order: [rcReal] }))
@@ -2690,14 +2694,22 @@ Object.defineProperty(process, 'platform', { value: 'win32' })
 const winVerdict = verdictOf(waiter(70, 'A', 0), [], fits, busyOne, ['A'], ['A']).admit
 Object.defineProperty(process, 'platform', realPlatform)
 check('heavy-queue D16: on win32 `decide` ignores the pause', winVerdict)
-// N7: a fresh guard of another taker is not removed by a stale-guard check
+// N7 / carry-over 2: a fresh guard of a live taker is not touched at all (a rename, even put back by a link, opens a gap for a third waiter); a stale one is taken over
 const guardData = join(rcRoot, 'guard-data')
 mkdirSync(guardData, { recursive: true })
 const guardFile = join(guardData, 'priorities.json.lock')
 writeFileSync(guardFile, '999999')
 writeFileSync(`${guardFile}.takeover`, String(process.pid)) // fresh, held by a live taker
-hq.setOrder(['q'], guardData) // finds the lock dead, the guard fresh: must not delete the guard
-check('heavy-queue: a fresh takeover guard of a live taker survives the stale-guard check', existsSync(`${guardFile}.takeover`) && readdirSync(guardData).every((name) => !name.includes('.stale-')), readdirSync(guardData).join(','))
+const guardBefore = statSync(`${guardFile}.takeover`)
+hq.setOrder(['q'], guardData) // finds the lock dead, the guard fresh: must not touch the guard
+const guardAfter = statSync(`${guardFile}.takeover`, { throwIfNoEntry: false })
+// a rename changes ctime (and a put-back link keeps the inode): the same ctime is the proof that no rename happened
+check('heavy-queue: a fresh takeover guard of a live taker is never renamed (same inode and ctime, no .stale- file)', guardAfter?.ino === guardBefore.ino && guardAfter.ctimeMs === guardBefore.ctimeMs && readdirSync(guardData).every((name) => !name.includes('.stale-')), readdirSync(guardData).join(','))
+const longAgo = new Date(Date.now() - 60_000)
+utimesSync(`${guardFile}.takeover`, longAgo, longAgo)
+writeFileSync(guardFile, '999999')
+hq.setOrder(['q'], guardData) // the guard is older than the threshold: taken over
+check('heavy-queue: a stale takeover guard is removed and the lock goes on', !existsSync(`${guardFile}.takeover`) && readdirSync(guardData).every((name) => !name.includes('.stale-')) && JSON.parse(readFileSync(join(guardData, 'priorities.json'), 'utf8')).order.join() === 'q', readdirSync(guardData).join(','))
 rmSync(`${guardFile}.takeover`, { force: true })
 // D3 in normal: a task already on pause does not start its next command until the resume (admission is skipped, the pause is not)
 const normalPause = hqScene('normal-pause', { pressure: 'critical', availableGB: 0 }, { STAGE_PIPELINE_RESOURCES: 'normal' })
@@ -2708,6 +2720,63 @@ const heldOut = heldRun.output()
 hqCli(normalPause, 'resume', rcReal)
 const heldDone = await heldRun.done
 check('heavy-queue D3: in normal the next command of a paused task is held until the resume, then runs with no admission', !/^started$/m.test(heldOut) && heldDone.status === 0 && /^started$/m.test(heldDone.stdout), `${heldOut}|${heldDone.stdout}`)
+// ── heavy-guard/bypass (VT-17 stage 2): a config test/build/type_check/lint run bare in the low mode is denied with the wrapped command ───────────────────────
+const hgRepo = join(rcRoot, 'hg-repo')
+mkdirSync(join(hgRepo, '.git'), { recursive: true })
+mkdirSync(join(hgRepo, '.claude'), { recursive: true })
+writeFileSync(join(hgRepo, '.claude/pipeline.config.md'), '# Config\n\n## Commands\n- dev: yarn dev\n- build: yarn build\n- lint: yarn lint {files}\n- type_check: yarn tsc --noEmit\n- test: node scripts/validate.mjs && node scripts/hooks-test.mjs   # slow\n\n## Other\n- test: yarn nope\n')
+const hgRun = (command, { cwd = hgRepo, env = {}, event = 'PreToolUse' } = {}) => {
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'git-guard.mjs')], { input: JSON.stringify({ cwd, hook_event_name: event, tool_name: 'Bash', tool_input: { command } }), encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'low', ...env } })
+  return run.stdout.trim() ? JSON.parse(run.stdout).hookSpecificOutput : null
+}
+const hgDenied = (command, options) => hgRun(command, options)?.permissionDecision === 'deny'
+const hgCd = hgRun('cd packages/web && yarn build --watch')
+check('heavy-guard AC-2.1: low mode, a bare `yarn build` after `cd … &&` is denied, with the rule and the same command through run-check', hgCd?.permissionDecision === 'deny' && /heavy-guard\/bypass/.test(hgCd.permissionDecisionReason) && hgCd.permissionDecisionReason.includes(`node ${join(PLUGIN, 'run-check.mjs')} -- 'yarn build --watch'`) && hgCd.permissionDecisionReason.includes('cd packages/web && node ') && /timeout 600000/.test(hgCd.permissionDecisionReason), hgCd?.permissionDecisionReason)
+check('heavy-guard AC-2.1: env assignments before the command, each `&&` part of a config command, and `yarn lint <files>` (the {files} tail) are judged', hgDenied('CI=1 yarn tsc --noEmit') && hgDenied('node scripts/hooks-test.mjs --units heavy') && hgDenied('node scripts/validate.mjs') && hgDenied('yarn lint src/a.ts') && hgDenied('echo hi; yarn build'))
+check('heavy-guard AC-2.2: a run through run-check or ci-gates, and `dev`, pass', !hgDenied(`node ${join(PLUGIN, 'run-check.mjs')} -- yarn build`) && !hgDenied('node plugins/stage-pipeline/scripts/ci-gates.mjs run yarn build') && !hgDenied('yarn dev'))
+check('heavy-guard AC-2.3: normal mode, the off switch, a PostToolUse call and a repo with no config pass', !hgDenied('yarn build', { env: { STAGE_PIPELINE_RESOURCES: 'normal' } }) && !hgDenied('yarn build', { env: { STAGE_PIPELINE_HEAVY_GUARD: 'off' } }) && !hgDenied('yarn build', { event: 'PostToolUse' }) && !hgDenied('yarn build', { cwd: rcRoot }))
+check('heavy-guard AC-2.4: a lookalike (`yarn build:e2e`, `grep build`, `echo "yarn build"`, a longer config part cut short, a `test` outside Commands) passes', !hgDenied('yarn build:e2e') && !hgDenied('grep build src') && !hgDenied('echo "yarn build"') && !hgDenied('node scripts/validate') && !hgDenied('yarn nope') && !hgDenied('git commit -m "x; yarn build"'))
+// AC-2.1 / AC-2.4: the real `## Commands` shapes — a backtick inside a trailing comment is no command, `cd … &&` is no check, a heredoc body is text, a lone `make` / `yarn` is no match
+const heavyGuard = await import(join(PLUGIN, 'heavy-guard.mjs'))
+const FEMO_COMMANDS = `## Commands
+
+- dev: npm run dev # Vite, :5173
+- build: npm run build # tsc -b && vite build — то же, что сборочный шаг Docker-образа
+- lint: npm run lint # eslint . (flat config + eslint-rules/). baseline: 0 errors / 2270 warnings (2026-10-10, fix/olympiad-fixes): 2263 \`local/no-magic-strings\`, 4 \`react-hooks/exhaustive-deps\`, 2 \`react-hooks/incompatible-library\`, 1 \`@typescript-eslint/no-unused-vars\`
+  <!-- ⚠ FSD-границы (\`no-restricted-imports\`) заданы как \`warn\`, не \`error\` — lint НЕ падает на нарушении слоя.
+       Baseline нарушений FSD = 0: любое новое предупреждение \`no-restricted-imports\` в дифе = регресс. -->
+- type_check: npm run type-check # tsc --noEmit -p tsconfig.app.json (src + .storybook). baseline: 0 (2026-10-10, после \`npm install\`). vite.config.ts (tsconfig.node.json) покрывает только \`tsc -b\` из \`build\`
+  <!-- Урок 2026-10-10: устаревший node_modules (без vitest/jsdom/@testing-library/react) давал 82 ошибки
+       в *.test.ts — это не долг, а установка. Ненулевой type-check на чистом коде — сначала \`npm install\`. -->
+- test: npm run test # Vitest 5 + Testing Library (jsdom), тесты рядом с кодом \`*.test.ts(x)\`, setup src/test/setup.ts. На 2026-10-10: 44 файла / 384 теста, зелёные. Покрывают правила, не экраны — рантайм на стенде по-прежнему обязателен
+- lint_files: npx eslint {files}
+- test_related: npx vitest related --run {files}`
+const GUESTAPP_COMMANDS = `## Commands
+<!-- все — из корня репо -->
+- dev: yarn start                       # guestapp standalone; SDK-режим: yarn start:sdk
+- build: yarn build:guestapp            # production; staging: yarn build:guestapp:stg; SDK: yarn build:sdk
+- lint: yarn lint
+- type_check: cd apps/guestapp && ../../node_modules/.bin/tsc -p tsconfig.json --noEmit   # baseline: 0 (перезамерено 2026-07-31 на ui beta.75. Хроника: 0 на beta.53 (29.07) → 1 на \`redesign-2.0\` с beta.71 (\`TabsCount\` отсутствует в ките) → снова 0 после бампа до beta.75. Вывод на будущее: ошибка вида «has no exported member» — почти всегда отставание версии кита, а не свежая правка; сверять с \`npm view @chekinapp/ui versions\`)
+  # ⚠ \`yarn type-check\` (workspaces foreach --all -pt) всё равно НЕ ГОДИТСЯ как единственная проверка guestapp: флаг -t топологически ПРОПУСКАЕТ @chekin/guestapp, если падает @chekin/shared — сейчас оба чистые, но при любом падении shared guestapp снова молча перестанет тайпчекаться локально и в CI (находка финального pro-review IT-5236, 2026-07-29)
+- test: yarn test                       # vitest; e2e: yarn e2e:test (Playwright, нужен yarn e2e:install)`
+const partsOf = (config) => heavyGuard.heavyParts(config).map(({ kind, words }) => `${kind}: ${words.join(' ')}`)
+check('heavy-guard AC-2.1: femo commands (a backtick span only in a comment) parse to the real commands', same(partsOf(FEMO_COMMANDS), ['build: npm run build', 'lint: npm run lint', 'type_check: npm run type-check', 'test: npm run test']), JSON.stringify(partsOf(FEMO_COMMANDS)))
+check('heavy-guard AC-2.1: chekin-guestapp commands (`cd … &&` and a comment naming `redesign-2.0`) parse to the real commands', same(partsOf(GUESTAPP_COMMANDS), ['build: yarn build:guestapp', 'lint: yarn lint', 'type_check: ../../node_modules/.bin/tsc -p tsconfig.json --noEmit', 'test: yarn test']), JSON.stringify(partsOf(GUESTAPP_COMMANDS)))
+check('heavy-guard AC-2.4: femo — `npm install` passes, `npm run type-check` is a bypass', heavyGuard.bypassOf(FEMO_COMMANDS, 'npm install') === null && heavyGuard.bypassOf(FEMO_COMMANDS, 'npm run type-check')?.kind === 'type_check')
+const HEREDOC_CONFIG = '## Commands\n- test: yarn test\n- build: make\n'
+check('heavy-guard AC-2.4: a heredoc body (`<<EOF`, `<<\'EOF\'`, `<<"EOF"`, `<<-EOF`) is text, not a command', ['cat > f <<\'EOF\'\nyarn test\nEOF', 'git commit -F - <<\'EOF\'\nfix: yarn test passes\nEOF', 'cat <<EOF\nyarn test\nEOF', 'cat <<"EOF"\nyarn test\nEOF', 'cat <<-EOF\n\tyarn test\n\tEOF'].every((command) => heavyGuard.bypassOf(HEREDOC_CONFIG, command) === null) && heavyGuard.bypassOf(HEREDOC_CONFIG, 'cat <<\'EOF\' > f\nx\nEOF\nyarn test')?.text === 'yarn test')
+check('heavy-guard AC-2.4: a config part of one word (`make`, `yarn`) does not match `make clean` or `yarn add x`', heavyGuard.bypassOf(HEREDOC_CONFIG, 'make clean') === null && heavyGuard.bypassOf('## Commands\n- test: yarn\n', 'yarn add x') === null && heavyGuard.bypassOf(HEREDOC_CONFIG, 'yarn test --watch') !== null)
+const hgQuoted = hgRun("cd packages/web && yarn build 2>&1 | tail -5")
+check('heavy-guard AC-2.1: the suggested command keeps the `cd` and quotes the command as one string (`2>&1` stays in it)', hgQuoted?.permissionDecision === 'deny' && hgQuoted.permissionDecisionReason.includes(`cd packages/web && node ${join(PLUGIN, 'run-check.mjs')} -- 'yarn build 2>&1'`), hgQuoted?.permissionDecisionReason)
+const hgMain = join(rcRoot, 'hg-main')
+mkdirSync(join(hgMain, '.git/worktrees/wt'), { recursive: true })
+mkdirSync(join(hgMain, '.claude'), { recursive: true })
+copyFileSync(join(hgRepo, '.claude/pipeline.config.md'), join(hgMain, '.claude/pipeline.config.md'))
+const hgTree = join(rcRoot, 'hg-wt')
+mkdirSync(hgTree, { recursive: true })
+writeFileSync(join(hgTree, '.git'), `gitdir: ${join(hgMain, '.git/worktrees/wt')}\n`)
+writeFileSync(join(hgMain, '.git/worktrees/wt/commondir'), '../..\n')
+check('heavy-guard AC-2.1: a linked worktree reads the main tree config (no git process)', hgDenied('yarn build', { cwd: hgTree }))
 holder.kill()
 rmSync(rcRoot, { recursive: true, force: true })
 }

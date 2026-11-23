@@ -145,12 +145,19 @@ function takeOverStale(lock) {
     writeFileSync(guard, String(process.pid), { flag: 'wx' })
   } catch (error) {
     if (error.code !== 'EEXIST') throw error
-    // A guard of a taker that died: renamed to a unique name first (atomic), and only the renamed file is judged; a fresh guard caught by the
-    // rename is put back with a no-clobber link, so a live taker's guard is never deleted.
+    // A fresh guard belongs to a live taker and is not touched (renaming it would leave a gap in which a third waiter takes the lock too). Only a guard older
+    // than the threshold is renamed to a unique name (atomic) and the renamed file is judged; a fresh one caught by the rename in that rare race is put back
+    // with a no-clobber link.
+    const staleAfter = 10_000
+    try {
+      if (Date.now() - statSync(guard).mtimeMs <= staleAfter) return false
+    } catch {
+      return false // gone
+    }
     const moved = `${guard}.stale-${process.pid}-${Date.now()}`
     try {
       renameSync(guard, moved)
-      if (Date.now() - statSync(moved).mtimeMs <= 10_000) {
+      if (Date.now() - statSync(moved).mtimeMs <= staleAfter) {
         try {
           linkSync(moved, guard)
         } catch {
@@ -384,6 +391,22 @@ function psRows() {
   }
 }
 
+/** Who each of `pids` is right now (`ps -p a,b,c`, one process for all): pid → start time and command line; a PID that is gone is missing; null when `ps` fails. */
+function identitiesOf(pids) {
+  if (!pids.length) return new Map()
+  let out
+  try {
+    out = sh('ps', ['-ww', '-o', 'pid=,lstart=,args=', '-p', pids.join(',')])
+  } catch (error) {
+    out = error?.status === 1 && typeof error.stdout === 'string' ? error.stdout : null // `ps -p` exits 1 when some PIDs are gone, and still prints the others
+    if (out === null) return null
+  }
+  return new Map(out.split('\n').flatMap((line) => {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line)
+    return match ? [[Number(match[1]), match[2].trim()]] : []
+  }))
+}
+
 /** The tree of `pid` (itself and its descendants) with the summed RSS. */
 function treeOf(pid, rows = psRows()) {
   if (!rows) return { pids: [pid], rss: 0 }
@@ -510,12 +533,17 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
   let lastLoadLook = 0
   const switched = new Map() // PID → identity of what was put into the background class: each is switched once; a dead or reused PID is pruned on the tick
 
-  /** Drops what is gone or reused by another process (`-B` must not touch a stranger); `inTree` — the PIDs of the tree now, when known. */
-  function pruneSwitched(inTree = null) {
-    for (const [pid, identity] of switched) {
-      const now = alive(pid) ? identityOf(pid) : undefined
-      if (now === undefined || (inTree && !inTree.includes(pid)) || (identity && now && now !== identity)) switched.delete(pid)
-    }
+  /**
+   * Brings `switched` in line with `pids` (the PIDs it is to cover now: the tree of this tick, already read) and returns the ones not yet in it, with their identity noted.
+   * Gone, outside the tree or reused (a different identity) is dropped. One `ps -p` for all of them, never one per PID; when `ps` fails nothing is dropped and nothing noted.
+   */
+  function syncSwitched(pids) {
+    for (const pid of switched.keys()) if (!pids.includes(pid)) switched.delete(pid)
+    const ids = identitiesOf(pids)
+    if (ids) for (const [pid, identity] of switched) if (!ids.has(pid) || (identity && ids.get(pid) !== identity)) switched.delete(pid)
+    const fresh = pids.filter((pid) => !switched.has(pid) && (!ids || ids.has(pid)))
+    for (const pid of fresh) switched.set(pid, ids?.get(pid) ?? null)
+    return fresh
   }
 
   /** SIGSTOP to the tree, then again to what it forked in the meantime, until nothing new shows up. */
@@ -563,12 +591,7 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
             const lowerHalf = inLowerHalf(readRunning(), self.pid, readPriorities(data).order)
             loadState = nextBackground(loadState, { load, cores, now, lowerHalf, cfg })
           }
-          pruneSwitched(tree.pids)
-          if (loadState.background) {
-            const fresh = tree.pids.filter((pid) => !switched.has(pid))
-            taskpolicy('-b', fresh)
-            for (const pid of fresh) switched.set(pid, identityOf(pid))
-          }
+          if (loadState.background) taskpolicy('-b', syncSwitched(tree.pids))
           if (loadState.background !== self.background) {
             if (!loadState.background) {
               taskpolicy('-B', [...switched.keys()])
@@ -602,15 +625,16 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
   /** `record: false` — a run cut short by a signal has not reached its peak: the recorded one stays. */
   function finish({ record = true } = {}) {
     if (timer) clearInterval(timer)
-    pruneSwitched()
-    if (switched.size) taskpolicy('-B', [...switched.keys()])
+    if (switched.size) {
+      const ids = identitiesOf([...switched.keys()])
+      taskpolicy('-B', [...switched].filter(([pid, identity]) => !ids || (ids.has(pid) && (!identity || ids.get(pid) === identity))).map(([pid]) => pid))
+    }
     dropEntries(self.pid)
     if (record) recordPeak(repo, command, peak)
   }
 
   return { key, place: placeOf(order, key), nice, watch, unstop, terminate, finish }
 }
-
 
 // ── the resource mode ────────────────────────────────────────────────────────
 

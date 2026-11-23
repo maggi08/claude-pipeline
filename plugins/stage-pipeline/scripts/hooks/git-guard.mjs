@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { denyTool } from './firing.mjs'
-import { readHookInput } from './pipeline-state.mjs'
+import { findConfigRoot, hasPipelineConfig, readConfig, readHookInput } from './pipeline-state.mjs'
 
 /**
  * In the normal pipeline mode the index and the commit belong to the user: /stage-check
@@ -34,6 +34,8 @@ import { readHookInput } from './pipeline-state.mjs'
  */
 const input = await readHookInput()
 const command = input.tool_input?.command ?? ''
+// heavy-guard/bypass (VT-17): a config test/build/type_check/lint run bare in the low resource mode. Before the git exit below: the command is not a git one.
+if (input.hook_event_name !== 'PostToolUse' && command && process.env.STAGE_PIPELINE_HEAVY_GUARD !== 'off') await heavyGuard()
 if (!/\bgit\b/.test(command) || !/\b(add|commit)\b/.test(command)) process.exit(0)
 // The hook runs before and after every Bash call: the rule modules are loaded only for a command that can add or commit.
 const { journalText, openLedgers, readTaskFile, reportNames } = await import('../journal-check.mjs')
@@ -354,6 +356,35 @@ function denyStaging(rule, tampered) {
       'stage with `git add` in its own call, then commit; a commit command may chain only add, commit, status, diff, log, show and rev-parse, with no git call inside `bash -c`, `eval`, `xargs`, backticks or `$( … )`. ' +
       'The maker receipt judges the code of a force commit by the blob that goes into it, and cannot read it from a command that builds the index another way.',
   )
+}
+
+/** The denial: the rule, why, and the same command through run-check (the text is here, not in heavy-guard.mjs: the rule registry reads its head from the hooks). */
+function bypassMessage({ kind, text, cd }) {
+  // the command goes as ONE quoted string (run-check takes a single argument as a ready shell string, so `2>&1` and env words stay as written), after the `cd` it ran in
+  const wrapped = `${cd ? `${cd} && ` : ''}node ${join(dirname(fileURLToPath(import.meta.url)), '..', 'run-check.mjs')} -- '${text.replace(/'/g, `'\\''`)}'`
+  return (
+    `heavy-guard/bypass: \`${text}\` is the repo's ${kind} command, and in the low resource mode it runs through run-check, which waits for free memory ` +
+    `and records the peak; a bare run goes round the balancer. Run it as \`${wrapped}\` (Bash timeout 600000: the run may wait in the queue). ` +
+    'Not for this call? STAGE_PIPELINE_HEAVY_GUARD=off turns the rule off.'
+  )
+}
+
+async function heavyGuard() {
+  const cwd = input.cwd ?? process.cwd()
+  let message = null
+  // File-only checks first; the queue module (and the memory reading) is loaded only for a command that matches.
+  try {
+    if (hasPipelineConfig(cwd)) {
+      const guard = await import('../heavy-guard.mjs')
+      const root = findConfigRoot(cwd)
+      const hit = root && guard.bypassOf(readConfig(root), command)
+      if (hit && (await import('../heavy-queue.mjs')).resourceMode(root).name === 'low') message = bypassMessage(hit)
+    }
+  } catch {
+    message = null // a failure is no verdict: the command goes through
+  }
+  // Not `deny`: it reads module state that is set only after this early check.
+  if (message) denyTool('git-guard/heavy-guard-bypass', message, { input, repo: cwd })
 }
 
 /** Runs one rule: a throw is no verdict (null), so the rules after it still run. */
