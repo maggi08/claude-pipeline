@@ -1,5 +1,5 @@
 {
-  "proseBaseline": 220,
+  "proseBaseline": 221,
   "rules": {
     "api-verify#302c6b07e6": {
       "to": "prose",
@@ -971,6 +971,11 @@
     "stage-force#ce25069995": {
       "to": "prose",
       "text": "it will see the [blocked: b<n>] criteria as missing: do not start a catch-up for them, they are already in the",
+      "baseline": true
+    },
+    "stage-force#c155b22e3f": {
+      "to": "prose",
+      "text": "do not rerun the other final checkers: recheck their fixed findings by file:line (a runtime one by /stage-chec",
       "baseline": true
     },
     "stage-force#8c599661db": {

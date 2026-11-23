@@ -1221,6 +1221,11 @@ const DISPOSITIONS = [
   ['- M-1 — сделаю потом', 'parked'],
   ['- M-1 — исправлено: a.ts:1, остальное потом', 'parked'],
   ['- M-1 — исправлено: a.ts:1; потом', 'parked'],
+  ['- M-1 — исправлено частично; остальное потом', 'parked'],
+  ['- M-1 — исправлено: a.ts:1; тесты потом', 'parked'],
+  ['- M-1 — частично исправлено, второй кейс потом', 'parked'],
+  ['- M-1 — ложная: это потом, в следующем этапе', 'parked'],
+  ['- M-1 — e2e потом в отдельном PR', 'parked'],
 ]
 for (const [entry, want] of DISPOSITIONS) check(`outcome "${entry.slice(2, 40)}" → ${want}`, jc.disposition(entry) === want, jc.disposition(entry))
 const REVIEW = '# pro-review, этап 1\nНаходки: critical 0 · major 2 · minor 0\n\n### 🟠 M-1 a.ts:1 — дубль\n### 🟠 M-2 b.ts:2 — гонка\n'
@@ -1967,6 +1972,10 @@ const EN_DISPOSITIONS = [
   ['- M-1 — out of scope for this task', 'parked'],
   ['- M-1 — fixed: a.ts:1 — the rest is out of scope', 'parked'],
   ['- M-1 — fixed: a.ts:1; out of scope', 'parked'],
+  ['- M-1 — partially fixed, mobile out of scope', 'parked'],
+  ['- M-1 — fixed partially, the rest out of scope', 'parked'],
+  ['- M-1 — fixed: a.ts:1, out of scope for now', 'parked'],
+  ['- M-1 — false: out of scope for now', 'parked'],
   ['- M-1 — fixed: a.mjs:3 — one empty form for Decisions, Out of scope and Open questions', 'fixed'],
   ['- m-2 — fixed: handoff.mjs — a divider closes the block, Out of scope takes list items only', 'fixed'],
   ['- M-1 — not fixed', 'parked'],
@@ -11348,7 +11357,7 @@ if (unit('pp1s5')) {
   check('PP-1 docs-lookup: a 403, a login wall or a captcha is retried in the plugin\'s chrome-devtools before "not verified"; a refused or unavailable tool is still the end of the work', docs.includes('answered 403, a login wall or a captcha') && docs.includes('mcp__plugin_stage-pipeline_chrome-devtools__navigate_page') && docs.includes('never a project\'s') && /A refused or unavailable tool .* is not a 403 and gets no browser retry: with no package that is step 4/.test(docs) && Buffer.byteLength(docs) < 8192, String(Buffer.byteLength(docs)))
   check('PP-1 final checks: the browser retry opens an isolated context and is named in untrusted-content; a changed handoff gets a full plan-check (spec, kickoff); the Input header line is in the template and language.md', docs.includes('`isolatedContext: "docs-lookup"`') && docs.includes('No other page is selected') && read('references/untrusted-content.md').includes('`docs-lookup` retries a documentation page') && spec.includes('runs a full `plan-check <STAGES.md>` at every stage opening') && read('skills/stage-kickoff/SKILL.md').includes('**A product handoff.**') && read('skills/stage-kickoff/SKILL.md').includes('every stage opening runs a full') && stagePlan.includes('Input: <stated in chat') && lang.includes('`Вход: задана в чате'))
   const force = read('skills/stage-force/SKILL.md')
-  check('0.30.1: the stage-force kickoff runs the full plan-check of a product handoff; a minor of the final checks or a delta is fixed in the round when one line, else one line in Not included, with no follow-up task and no backlog entry', force.includes("first `/stage-kickoff`'s full `plan-check`") && force.includes('a one-line fix goes in the round') && force.includes('no follow-up, no backlog') && !force.includes('as next-version items') && read('skills/stage-force/references/final-checks-notes.md').includes('enters no backlog file of the repo') && !read('skills/stage-force/references/final-checks-notes.md').includes('as next-version items'))
+  check('0.30.1: the stage-force kickoff runs the full plan-check of a product handoff; a minor of the final checks or a delta is fixed in the round when one line, else one line in Not included, with no follow-up task and no backlog entry', force.includes("first `/stage-kickoff`'s full `plan-check`") && force.includes('a one-line fix rides an open round') && force.includes('Do not rerun the other final checkers') && force.includes('no follow-up, no backlog') && !force.includes('as next-version items') && (() => { const notes = read('skills/stage-force/references/final-checks-notes.md'); return notes.includes('enters no backlog file of the repo') && notes.includes('only when that delta opens one') && !notes.includes('as next-version items') })())
   check('PP-1 docs-lookup: with the package installed a refused tool leaves one line "not verified", not "is not installed"', docs.includes('with the package installed, what it did not cover is one line "not verified"'))
   check('PP-1 README: the /stage-plan input line names the handoff and plan-check --input and says it asks one question (not a hard stop)', read('README.md').includes('PRODUCT-HANDOFF.md') && read('README.md').includes('plan-check.mjs --input') && read('README.md').includes('asks one question') && !read('README.md').includes('it writes no plan and points'))
 }
