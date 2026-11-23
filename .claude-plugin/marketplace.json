@@ -51,7 +51,7 @@
       "source": {
         "source": "github",
         "repo": "maggi08/product-pipeline",
-        "ref": "v0.1.0"
+        "ref": "v0.1.1"
       }
     }
   ]

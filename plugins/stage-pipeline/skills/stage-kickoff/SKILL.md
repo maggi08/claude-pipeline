@@ -23,7 +23,7 @@ This is the pair of /stage-check: **kickoff opens the stage, check closes it**.
 ### Step 1. Read the stage
 From STAGES.md: scope, Figma nodes, acceptance criteria (`AC-*`, WHEN/THEN), what to reuse, where to match with adaptive/webview, plus the rows of the "Shared elements" table where this stage is listed as the CONSUMER — their owner is already written, and there is nothing to write again. Read selectively (offset/grep), not the whole file — STAGES.md can be big.
 
-**A handoff that changed after the plan.** When `<task_dir>/<TICKET>/PRODUCT-HANDOFF.md` is newer than STAGES.md, run a full `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs <STAGES.md>` (no `--stage`: stage mode drops plan-level findings); a new `H<n>` becomes a row of "Product handoff coverage" before the stage opens.
+**A product handoff.** When `<task_dir>/<TICKET>/PRODUCT-HANDOFF.md` exists, every stage opening runs a full `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-check.mjs <STAGES.md>` (no `--stage`: stage mode drops plan-level findings). A file-date test would miss a handoff given again, since STAGES.md is rewritten at every stage close. A new `H<n>` becomes a row of "Product handoff coverage" before the stage opens.
 
 **The criteria quality gate — before sign-off, not after.** What is checked here is not the implementation (it does not exist yet) but the wording itself: an unmeasurable criterion passes into implement unhindered and surfaces as an edit after the PR. Run the stage's criteria through eight questions:
 
