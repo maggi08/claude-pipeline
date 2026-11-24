@@ -1,0 +1,977 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-24T10:35:22+00:00",
+  "title": "Design System: Stage Pipeline monitor",
+  "extensions": {
+    "colorMeta": {
+      "plate": {
+        "role": "primary",
+        "displayName": "Controller Yellow",
+        "canonical": "oklch(81.4% 0.167 84)",
+        "tonalRamp": [
+          "#1a0500",
+          "#3c1c00",
+          "#623800",
+          "#8a5500",
+          "#ae7700",
+          "#cc9d32",
+          "#eac375",
+          "#ffebaf"
+        ]
+      },
+      "plate-ink": {
+        "role": "primary",
+        "displayName": "Plate Black",
+        "canonical": "oklch(21.7% 0.008 95)",
+        "tonalRamp": [
+          "#0c0b09",
+          "#262522",
+          "#43423e",
+          "#62615d",
+          "#83827e",
+          "#a6a5a1",
+          "#cac9c6",
+          "#efeeec"
+        ]
+      },
+      "plate-hover": {
+        "role": "primary",
+        "displayName": "Plate Black hover",
+        "canonical": "oklch(33.7% 0.017 93)",
+        "tonalRamp": [
+          "#0c0b07",
+          "#27251f",
+          "#44423a",
+          "#646157",
+          "#858278",
+          "#a8a59c",
+          "#cbc9c1",
+          "#f0eee8"
+        ]
+      },
+      "turns-paper": {
+        "role": "primary",
+        "displayName": "Turn Paper",
+        "canonical": "oklch(92.8% 0.068 94)",
+        "tonalRamp": [
+          "#100b00",
+          "#2c2409",
+          "#4b411f",
+          "#6d6136",
+          "#8f8256",
+          "#b0a57f",
+          "#d2c9aa",
+          "#f6efd6"
+        ]
+      },
+      "turns-hover": {
+        "role": "primary",
+        "displayName": "Turn Paper hover",
+        "canonical": "oklch(87.6% 0.092 92)",
+        "tonalRamp": [
+          "#120a00",
+          "#2f2400",
+          "#504009",
+          "#735f1f",
+          "#958142",
+          "#b5a470",
+          "#d7c99e",
+          "#f9eecd"
+        ]
+      },
+      "strip": {
+        "role": "secondary",
+        "displayName": "Buff Strip",
+        "canonical": "oklch(94.4% 0.028 89)",
+        "tonalRamp": [
+          "#0d0b05",
+          "#29251b",
+          "#474235",
+          "#676151",
+          "#898271",
+          "#aaa596",
+          "#cec9bc",
+          "#f2eee4"
+        ]
+      },
+      "sheet": {
+        "role": "secondary",
+        "displayName": "Unfolded Sheet",
+        "canonical": "oklch(91.3% 0.036 91)",
+        "tonalRamp": [
+          "#0e0b04",
+          "#292518",
+          "#474231",
+          "#68614c",
+          "#8a826c",
+          "#aba592",
+          "#cec9b9",
+          "#f3eee2"
+        ]
+      },
+      "strip-ink": {
+        "role": "secondary",
+        "displayName": "Strip Ink",
+        "canonical": "oklch(21.7% 0.008 95)",
+        "tonalRamp": [
+          "#0c0b09",
+          "#262522",
+          "#43423e",
+          "#62615d",
+          "#83827e",
+          "#a6a5a1",
+          "#cac9c6",
+          "#efeeec"
+        ]
+      },
+      "strip-muted": {
+        "role": "secondary",
+        "displayName": "Strip Muted",
+        "canonical": "oklch(44.0% 0.036 90)",
+        "tonalRamp": [
+          "#0e0b04",
+          "#292518",
+          "#484231",
+          "#68614c",
+          "#8a826c",
+          "#aca592",
+          "#cfc9b9",
+          "#f3eee2"
+        ]
+      },
+      "strip-rule": {
+        "role": "secondary",
+        "displayName": "Strip Rule",
+        "canonical": "oklch(85.9% 0.048 90)",
+        "tonalRamp": [
+          "#0f0b02",
+          "#2b2413",
+          "#4a412b",
+          "#6b6044",
+          "#8d8264",
+          "#aea48b",
+          "#d1c9b3",
+          "#f5eedd"
+        ]
+      },
+      "strip-control-rule": {
+        "role": "secondary",
+        "displayName": "Strip Control Rule",
+        "canonical": "oklch(59.3% 0.050 89)",
+        "tonalRamp": [
+          "#0f0b02",
+          "#2b2412",
+          "#4a412a",
+          "#6c6043",
+          "#8d8163",
+          "#afa48a",
+          "#d1c9b2",
+          "#f5eedc"
+        ]
+      },
+      "strip-hover": {
+        "role": "secondary",
+        "displayName": "Strip Hover",
+        "canonical": "oklch(90.8% 0.041 90)",
+        "tonalRamp": [
+          "#0e0b03",
+          "#2a2516",
+          "#49412e",
+          "#6a6148",
+          "#8b8268",
+          "#ada58e",
+          "#d0c9b6",
+          "#f4eedf"
+        ]
+      },
+      "waits-ink": {
+        "role": "secondary",
+        "displayName": "Waiting Ink",
+        "canonical": "oklch(45.6% 0.099 69)",
+        "tonalRamp": [
+          "#180600",
+          "#381e00",
+          "#5c3907",
+          "#83571d",
+          "#a67841",
+          "#c59d6f",
+          "#e5c29d",
+          "#ffe9cc"
+        ]
+      },
+      "bad-ink": {
+        "role": "secondary",
+        "displayName": "Problem Ink",
+        "canonical": "oklch(46.3% 0.152 29)",
+        "tonalRamp": [
+          "#220000",
+          "#490805",
+          "#742018",
+          "#a2392e",
+          "#c95c4f",
+          "#e68779",
+          "#ffb2a5",
+          "#ffddd2"
+        ]
+      },
+      "holder-running": {
+        "role": "tertiary",
+        "displayName": "Running Green",
+        "canonical": "oklch(51.6% 0.121 149)",
+        "tonalRamp": [
+          "#001100",
+          "#002f0d",
+          "#134f23",
+          "#2a723b",
+          "#4e955c",
+          "#7bb684",
+          "#a7d8ae",
+          "#d4fad9"
+        ]
+      },
+      "holder-queued": {
+        "role": "tertiary",
+        "displayName": "Queued Blue",
+        "canonical": "oklch(51.0% 0.103 248)",
+        "tonalRamp": [
+          "#000c1f",
+          "#042743",
+          "#19456a",
+          "#2f6595",
+          "#5187b9",
+          "#7caad6",
+          "#a8cef2",
+          "#d5f2ff"
+        ]
+      },
+      "holder-live": {
+        "role": "tertiary",
+        "displayName": "Live Sage",
+        "canonical": "oklch(85.4% 0.019 161)",
+        "tonalRamp": [
+          "#080c0a",
+          "#202723",
+          "#3b453f",
+          "#59645e",
+          "#7a867f",
+          "#9ea8a2",
+          "#c3ccc7",
+          "#e9f0ec"
+        ]
+      },
+      "holder-idle": {
+        "role": "tertiary",
+        "displayName": "Idle Grey",
+        "canonical": "oklch(55.3% 0.014 237)",
+        "tonalRamp": [
+          "#080c0e",
+          "#212629",
+          "#3d4347",
+          "#5a6368",
+          "#7b8489",
+          "#9fa6ab",
+          "#c4cace",
+          "#eaeff3"
+        ]
+      },
+      "holder-paused": {
+        "role": "tertiary",
+        "displayName": "Paused Slate",
+        "canonical": "oklch(46.1% 0.019 239)",
+        "tonalRamp": [
+          "#080c0f",
+          "#20262a",
+          "#3b4349",
+          "#58636a",
+          "#79848c",
+          "#9da7ae",
+          "#c2cad0",
+          "#e9eff4"
+        ]
+      },
+      "holder-problem": {
+        "role": "tertiary",
+        "displayName": "Problem Red",
+        "canonical": "oklch(53.1% 0.164 28)",
+        "tonalRamp": [
+          "#240000",
+          "#4c0303",
+          "#781b15",
+          "#a6342a",
+          "#cd584b",
+          "#ea8477",
+          "#ffafa3",
+          "#ffdbd0"
+        ]
+      },
+      "chip-running": {
+        "role": "tertiary",
+        "displayName": "Running Chip",
+        "canonical": "oklch(92.5% 0.031 142)",
+        "tonalRamp": [
+          "#080d07",
+          "#20281f",
+          "#3b453a",
+          "#586657",
+          "#798777",
+          "#9da99b",
+          "#c2cdc1",
+          "#e9f1e8"
+        ]
+      },
+      "chip-running-ink": {
+        "role": "tertiary",
+        "displayName": "Running Chip Ink",
+        "canonical": "oklch(41.7% 0.095 148)",
+        "tonalRamp": [
+          "#001002",
+          "#0b2d13",
+          "#224d2b",
+          "#3a6f44",
+          "#5c9164",
+          "#85b28b",
+          "#afd5b4",
+          "#daf8dd"
+        ]
+      },
+      "chip-waiting": {
+        "role": "tertiary",
+        "displayName": "Waiting Chip",
+        "canonical": "oklch(92.0% 0.069 89)",
+        "tonalRamp": [
+          "#110a00",
+          "#2e2408",
+          "#4e401e",
+          "#705f34",
+          "#928155",
+          "#b3a47e",
+          "#d5c8a9",
+          "#f8eed5"
+        ]
+      },
+      "chip-waiting-ink": {
+        "role": "tertiary",
+        "displayName": "Waiting Chip Ink",
+        "canonical": "oklch(41.9% 0.090 71)",
+        "tonalRamp": [
+          "#160700",
+          "#361f00",
+          "#593b10",
+          "#7f5826",
+          "#a27a48",
+          "#c19e74",
+          "#e1c4a1",
+          "#ffeacf"
+        ]
+      },
+      "chip-paused": {
+        "role": "tertiary",
+        "displayName": "Paused Chip",
+        "canonical": "oklch(90.8% 0.006 240)",
+        "tonalRamp": [
+          "#0a0b0c",
+          "#232527",
+          "#404244",
+          "#5e6264",
+          "#7f8385",
+          "#a2a5a8",
+          "#c7c9cb",
+          "#edeff0"
+        ]
+      },
+      "chip-paused-ink": {
+        "role": "tertiary",
+        "displayName": "Paused Chip Ink",
+        "canonical": "oklch(38.0% 0.018 239)",
+        "tonalRamp": [
+          "#080c0e",
+          "#20262a",
+          "#3b4349",
+          "#59636a",
+          "#7a848b",
+          "#9da6ad",
+          "#c3cad0",
+          "#e9eff4"
+        ]
+      },
+      "bay": {
+        "role": "neutral",
+        "displayName": "Bay (light)",
+        "canonical": "oklch(91.1% 0.008 139)",
+        "tonalRamp": [
+          "#0a0c0a",
+          "#242623",
+          "#404340",
+          "#5f625e",
+          "#80837f",
+          "#a3a6a2",
+          "#c7cac7",
+          "#edefed"
+        ]
+      },
+      "rail": {
+        "role": "neutral",
+        "displayName": "Rail (light)",
+        "canonical": "oklch(95.5% 0.006 138)",
+        "tonalRamp": [
+          "#0b0b0a",
+          "#242524",
+          "#414340",
+          "#60625f",
+          "#818380",
+          "#a3a6a3",
+          "#c8cac7",
+          "#edefed"
+        ]
+      },
+      "rail-rule": {
+        "role": "neutral",
+        "displayName": "Rail Rule (light)",
+        "canonical": "oklch(85.0% 0.011 150)",
+        "tonalRamp": [
+          "#0a0c0a",
+          "#232623",
+          "#3f433f",
+          "#5d635e",
+          "#7e847f",
+          "#a1a7a2",
+          "#c6cac7",
+          "#ecefec"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink (light)",
+        "canonical": "oklch(24.7% 0.013 233)",
+        "tonalRamp": [
+          "#090c0d",
+          "#212628",
+          "#3d4346",
+          "#5b6267",
+          "#7c8488",
+          "#9fa6aa",
+          "#c4cace",
+          "#ebeff2"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted (light)",
+        "canonical": "oklch(45.6% 0.017 162)",
+        "tonalRamp": [
+          "#080c0a",
+          "#212723",
+          "#3c4440",
+          "#5a645e",
+          "#7b857f",
+          "#9ea8a2",
+          "#c3cbc7",
+          "#eaf0ed"
+        ]
+      },
+      "bar": {
+        "role": "neutral",
+        "displayName": "Owner Bar (light)",
+        "canonical": "oklch(49.4% 0.024 161)",
+        "tonalRamp": [
+          "#070d09",
+          "#1f2723",
+          "#3a453f",
+          "#57655d",
+          "#77877e",
+          "#9ba9a1",
+          "#c1ccc6",
+          "#e8f1ec"
+        ]
+      },
+      "bar-other": {
+        "role": "neutral",
+        "displayName": "Other Apps Bar (light)",
+        "canonical": "oklch(76.0% 0.014 160)",
+        "tonalRamp": [
+          "#090c0a",
+          "#212623",
+          "#3d4440",
+          "#5b645f",
+          "#7c8580",
+          "#9fa7a3",
+          "#c4cbc7",
+          "#ebf0ed"
+        ]
+      },
+      "warn": {
+        "role": "neutral",
+        "displayName": "Warn (light)",
+        "canonical": "oklch(50.8% 0.108 73)",
+        "tonalRamp": [
+          "#180600",
+          "#381e00",
+          "#5c3900",
+          "#83570c",
+          "#a67837",
+          "#c59d68",
+          "#e5c398",
+          "#ffeac8"
+        ]
+      },
+      "crit": {
+        "role": "neutral",
+        "displayName": "Critical (light)",
+        "canonical": "oklch(50.1% 0.178 29)",
+        "tonalRamp": [
+          "#260000",
+          "#4f0000",
+          "#7c130e",
+          "#ab2c23",
+          "#d35245",
+          "#f08072",
+          "#ffad9f",
+          "#ffd9cd"
+        ]
+      },
+      "bay-dark": {
+        "role": "neutral",
+        "displayName": "Graphite Bay (dark)",
+        "canonical": "oklch(23.9% 0.012 237)",
+        "tonalRamp": [
+          "#090c0d",
+          "#222628",
+          "#3e4346",
+          "#5c6267",
+          "#7d8388",
+          "#a0a6aa",
+          "#c5cacd",
+          "#ebeff2"
+        ]
+      },
+      "rail-dark": {
+        "role": "neutral",
+        "displayName": "Rail (dark)",
+        "canonical": "oklch(28.3% 0.015 235)",
+        "tonalRamp": [
+          "#080c0e",
+          "#212629",
+          "#3c4347",
+          "#5a6368",
+          "#7b8489",
+          "#9fa6ab",
+          "#c4cace",
+          "#eaeff3"
+        ]
+      },
+      "rail-rule-dark": {
+        "role": "neutral",
+        "displayName": "Rail Rule (dark)",
+        "canonical": "oklch(35.6% 0.018 232)",
+        "tonalRamp": [
+          "#080c0e",
+          "#20262a",
+          "#3b4348",
+          "#586369",
+          "#79848b",
+          "#9da7ac",
+          "#c2cbcf",
+          "#e9f0f3"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "Ink (dark)",
+        "canonical": "oklch(92.7% 0.008 139)",
+        "tonalRamp": [
+          "#0a0c0a",
+          "#242623",
+          "#404340",
+          "#5f625e",
+          "#80837f",
+          "#a3a6a2",
+          "#c7cac7",
+          "#edefed"
+        ]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "Muted (dark)",
+        "canonical": "oklch(71.1% 0.015 162)",
+        "tonalRamp": [
+          "#080c0a",
+          "#212724",
+          "#3d4440",
+          "#5a645f",
+          "#7b8580",
+          "#9fa7a3",
+          "#c4cbc7",
+          "#eaf0ed"
+        ]
+      },
+      "strip-dark": {
+        "role": "secondary",
+        "displayName": "Buff Strip (dark)",
+        "canonical": "oklch(93.2% 0.033 90)",
+        "tonalRamp": [
+          "#0e0b04",
+          "#292519",
+          "#474232",
+          "#68614d",
+          "#89826e",
+          "#aba593",
+          "#cec9ba",
+          "#f3eee2"
+        ]
+      },
+      "sheet-dark": {
+        "role": "secondary",
+        "displayName": "Unfolded Sheet (dark)",
+        "canonical": "oklch(89.6% 0.038 88)",
+        "tonalRamp": [
+          "#0e0b04",
+          "#2a2517",
+          "#484130",
+          "#69604a",
+          "#8b826b",
+          "#ada490",
+          "#cfc9b8",
+          "#f3eee1"
+        ]
+      },
+      "strip-rule-dark": {
+        "role": "secondary",
+        "displayName": "Strip Rule (dark)",
+        "canonical": "oklch(80.7% 0.050 89)",
+        "tonalRamp": [
+          "#0f0b02",
+          "#2b2412",
+          "#4a412a",
+          "#6c6043",
+          "#8e8163",
+          "#afa48a",
+          "#d1c9b2",
+          "#f5eedc"
+        ]
+      },
+      "bar-other-dark": {
+        "role": "neutral",
+        "displayName": "Other Apps Bar (dark)",
+        "canonical": "oklch(49.1% 0.020 231)",
+        "tonalRamp": [
+          "#070c0e",
+          "#1f262a",
+          "#3a4449",
+          "#57636a",
+          "#78858b",
+          "#9ca7ad",
+          "#c1cbd0",
+          "#e8f0f4"
+        ]
+      },
+      "warn-dark": {
+        "role": "neutral",
+        "displayName": "Warn (dark)",
+        "canonical": "oklch(81.4% 0.167 84)",
+        "tonalRamp": [
+          "#1a0500",
+          "#3c1c00",
+          "#623800",
+          "#8a5500",
+          "#ae7700",
+          "#cc9d32",
+          "#eac375",
+          "#ffebaf"
+        ]
+      },
+      "crit-dark": {
+        "role": "neutral",
+        "displayName": "Critical (dark)",
+        "canonical": "oklch(75.8% 0.145 29)",
+        "tonalRamp": [
+          "#210000",
+          "#480b07",
+          "#72231b",
+          "#9f3c31",
+          "#c65f52",
+          "#e3897c",
+          "#ffb3a7",
+          "#ffddd3"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "Page name in the top bar."
+      },
+      "vital": {
+        "displayName": "Vital",
+        "purpose": "The three machine figures in the top bar."
+      },
+      "place": {
+        "displayName": "Place",
+        "purpose": "A strip's position number in the bay."
+      },
+      "ticket": {
+        "displayName": "Ticket",
+        "purpose": "Task ticket on a strip; mono wherever a ticket appears."
+      },
+      "name": {
+        "displayName": "Name",
+        "purpose": "Repo folder on a strip with no task."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Page default, tabular figures."
+      },
+      "box-text": {
+        "displayName": "Box text",
+        "purpose": "Main line of a strip box; stage and next clamps to two lines."
+      },
+      "heading": {
+        "displayName": "Heading",
+        "purpose": "Muted sentence-case section headings."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Load figures on a strip, right-aligned."
+      },
+      "meta": {
+        "displayName": "Meta",
+        "purpose": "Secondary lines in boxes and chat meta."
+      },
+      "meta-mono": {
+        "displayName": "Meta mono",
+        "purpose": "Chips, owner sizes and shares, heavy-command kinds and commands."
+      },
+      "holder-label": {
+        "displayName": "Holder label",
+        "purpose": "The uppercase state stamp in a holder cell only."
+      },
+      "legend": {
+        "displayName": "Legend",
+        "purpose": "Column names above the bay."
+      }
+    },
+    "shadows": [
+      {
+        "name": "paper-rest",
+        "value": "0 1px 2px rgba(27, 34, 38, .14), 0 3px 8px rgba(27, 34, 38, .08)",
+        "purpose": "Every strip, unfolded sheet and yellow plate (light)."
+      },
+      {
+        "name": "paper-rest-dark",
+        "value": "0 2px 6px rgba(0, 0, 0, .38)",
+        "purpose": "Paper rest in dark."
+      },
+      {
+        "name": "paper-lifted",
+        "value": "0 4px 14px rgba(27, 34, 38, .22)",
+        "purpose": "A cocked strip (its chat asks) or a strip lifted from Memory by owner (light)."
+      },
+      {
+        "name": "paper-lifted-dark",
+        "value": "0 6px 18px rgba(0, 0, 0, .55)",
+        "purpose": "Paper lifted in dark."
+      },
+      {
+        "name": "your-turn-inset",
+        "value": "inset 0 0 0 3px #f5b700",
+        "purpose": "The yellow border inside a Your turn holder."
+      },
+      {
+        "name": "bar-track",
+        "value": "inset 0 0 0 1px var(--rail-rule)",
+        "purpose": "Hairline track of the memory bar."
+      }
+    ],
+    "motion": [
+      {
+        "name": "cock",
+        "value": "margin .2s cubic-bezier(.2, .8, .2, 1)",
+        "purpose": "A strip moving out of or back into line."
+      },
+      {
+        "name": "dim",
+        "value": "opacity .15s ease-out",
+        "purpose": "Dragging (45%) and the lift dimming other strips (50%)."
+      },
+      {
+        "name": "chevron",
+        "value": "transform .18s cubic-bezier(.2, .8, .2, 1)",
+        "purpose": "Chevron rotates 180 degrees when a strip unfolds."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "none",
+        "purpose": "Under prefers-reduced-motion, strips and chevron do not transition."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "one-column",
+        "value": "1180px"
+      },
+      {
+        "name": "narrow",
+        "value": "860px"
+      }
+    ],
+    "grid": {
+      "cols": "84px 34px minmax(110px, 176px) minmax(0, 1.3fr) 112px minmax(0, 1.8fr) 76px 104px",
+      "narrowCols": "76px 30px minmax(0, 1fr) minmax(0, 1fr) auto",
+      "narrowAreas": "\"h p c c a\" \"s s s n n\" \"m m m m m\""
+    },
+    "themeVars": {
+      "light": {
+        "--focus": "#1b2226",
+        "--on": "#1b2226",
+        "--on-ink": "#fbf6e8",
+        "--bar": "#56665d"
+      },
+      "dark": {
+        "--focus": "#f5b700",
+        "--on": "#f1e8d0",
+        "--on-ink": "#1b1a16",
+        "--bar": "#f1e8d0"
+      }
+    }
+  },
+  "components": [
+    {
+      "name": "Strip",
+      "kind": "custom",
+      "refersTo": "strip",
+      "description": "One task on buff paper: holder, place, ticket, stage, now, chats, load, actions on the shared column grid.",
+      "html": "<div class=\"ds-strip\"><div class=\"ds-box ds-holder ds-h-run\">Running</div><div class=\"ds-box ds-place\">2</div><div class=\"ds-box\"><span class=\"ds-tk\">KC-713</span><small>core</small></div><div class=\"ds-box\"><small>19 of 21</small><span class=\"ds-t\">Final checks</span></div><div class=\"ds-box\"><div class=\"ds-chips\"><span class=\"ds-chip ds-c-running\">check</span></div></div><div class=\"ds-box\"><small>2 chats · 4 min ago</small><span class=\"ds-t\">KC-713 stage plan</span></div><div class=\"ds-box ds-fig\">2.4 GB<small>175% CPU</small></div><div class=\"ds-box ds-acts\"><button class=\"ds-sbtn\" type=\"button\">Pause</button></div></div>",
+      "css": ".ds-strip{--strip:#f4ecd8;--sheet:#ebe2c8;--strip-ink:#1b1a16;--strip-muted:#5a523c;--strip-rule:#ddd0ae;--plate:#f5b700;--plate-ink:#1b1a16;--rail:#eef1ed;--rail-rule:#c9d0ca;--ink:#1b2226;--muted:#4f5a54;--bay:#dfe3de;--bar:#56665d;--bar-other:#aab4ae;--focus:#1b2226;--strip-shadow:0 1px 2px rgba(27,34,38,.14),0 3px 8px rgba(27,34,38,.08);--lift-shadow:0 4px 14px rgba(27,34,38,.22);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}.ds-strip{display:grid;grid-template-columns:84px 34px 150px minmax(0,1.3fr) 112px minmax(0,1.8fr) 76px 80px;min-height:64px;background:var(--strip);color:var(--strip-ink);border-radius:3px;box-shadow:var(--strip-shadow);font:14px/1.4 var(--sans);overflow:hidden;cursor:grab}.ds-strip:hover{box-shadow:var(--lift-shadow)}.ds-strip:focus-visible{outline:2px solid var(--focus);outline-offset:2px}.ds-box{padding:7px 10px;border-left:1px solid var(--strip-rule);display:flex;flex-direction:column;justify-content:center;gap:1px;min-width:0}.ds-box small{font-size:12px;color:var(--strip-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-holder{border-left:0;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}.ds-h-run{background:#2a7a3e;color:#fff}.ds-place{font-size:20px;font-weight:700;align-items:center}.ds-tk{font:600 15px/1.15 var(--mono);letter-spacing:-.01em}.ds-fig{align-items:flex-end;font:600 13px var(--mono)}.ds-fig small{font:12px var(--mono)}.ds-chips{display:flex;flex-wrap:wrap;gap:3px 4px}.ds-chip{font:12px/1.15 var(--mono);padding:3px 6px;border-radius:3px}.ds-c-running{background:#dbecd9;color:#1f5a2d}.ds-acts{flex-direction:row;align-items:center}.ds-sbtn{border:1px solid #8a7d5c;background:transparent;color:var(--strip-ink);border-radius:3px;padding:4px 9px;font:12px var(--sans);cursor:pointer}.ds-sbtn:hover{background:#ebe0c2}"
+    },
+    {
+      "name": "Holder ladder",
+      "kind": "chip",
+      "refersTo": "holder-needs-you",
+      "description": "The state cell that opens every strip, one colour per state in precedence order.",
+      "html": "<div class=\"ds-ladder\"><span class=\"ds-hd\" style=\"background:#b83a30;color:#fff\">Problem</span><span class=\"ds-hd\" style=\"background:#f5b700;color:#1b1a16\">Needs you</span><span class=\"ds-hd\" style=\"background:#4f5a62;color:#fff\">Paused</span><span class=\"ds-hd\" style=\"background:#f4ecd8;color:#1b1a16;box-shadow:inset 0 0 0 3px #f5b700\">Your turn</span><span class=\"ds-hd\" style=\"background:#2f6a9e;color:#fff\">Queued</span><span class=\"ds-hd\" style=\"background:#2a7a3e;color:#fff\">Running</span><span class=\"ds-hd\" style=\"background:#c5d3cb;color:#1b1a16\">Live</span><span class=\"ds-hd\" style=\"background:#6b747a;color:#fff\">Idle</span></div>",
+      "css": ".ds-ladder{--strip:#f4ecd8;--sheet:#ebe2c8;--strip-ink:#1b1a16;--strip-muted:#5a523c;--strip-rule:#ddd0ae;--plate:#f5b700;--plate-ink:#1b1a16;--rail:#eef1ed;--rail-rule:#c9d0ca;--ink:#1b2226;--muted:#4f5a54;--bay:#dfe3de;--bar:#56665d;--bar-other:#aab4ae;--focus:#1b2226;--strip-shadow:0 1px 2px rgba(27,34,38,.14),0 3px 8px rgba(27,34,38,.08);--lift-shadow:0 4px 14px rgba(27,34,38,.22);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}.ds-ladder{display:flex;flex-wrap:wrap;gap:6px}.ds-hd{display:flex;align-items:center;width:84px;min-height:64px;padding:7px 10px;border-radius:3px;font:700 11px var(--sans);letter-spacing:.05em;text-transform:uppercase}"
+    },
+    {
+      "name": "Asking plate",
+      "kind": "card",
+      "refersTo": "plate",
+      "description": "A chat that asks something, in the Waiting for you column, with the page's one filled button.",
+      "html": "<div class=\"ds-plate\"><div><div class=\"ds-who\"><span class=\"ds-tick\">UP-492</span><span class=\"ds-repo\">chekin-guestapp</span></div><div class=\"ds-waits\">question · 9 min</div></div><a class=\"ds-open\" href=\"#\">Open</a><p class=\"ds-text\">Which layout should the empty state use?</p><p class=\"ds-opts\">Variant A / Variant B / Keep current</p></div>",
+      "css": ".ds-plate{--strip:#f4ecd8;--sheet:#ebe2c8;--strip-ink:#1b1a16;--strip-muted:#5a523c;--strip-rule:#ddd0ae;--plate:#f5b700;--plate-ink:#1b1a16;--rail:#eef1ed;--rail-rule:#c9d0ca;--ink:#1b2226;--muted:#4f5a54;--bay:#dfe3de;--bar:#56665d;--bar-other:#aab4ae;--focus:#1b2226;--strip-shadow:0 1px 2px rgba(27,34,38,.14),0 3px 8px rgba(27,34,38,.08);--lift-shadow:0 4px 14px rgba(27,34,38,.22);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}.ds-plate{background:var(--plate);color:var(--plate-ink);border-radius:4px;padding:12px 14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;box-shadow:var(--strip-shadow);font:14px/1.4 var(--sans);max-width:360px}.ds-who{font-weight:700;font-size:15px}.ds-tick{font:700 14px var(--mono)}.ds-repo{font-size:12px;font-weight:500;margin-left:6px}.ds-waits{font-weight:600}.ds-text{grid-column:1/-1;margin:0;font-size:13px}.ds-opts{grid-column:1/-1;margin:0;font-size:12px}.ds-open{align-self:start;background:var(--plate-ink);color:var(--plate);border-radius:3px;padding:5px 12px;font-size:13px;font-weight:700;text-decoration:none}.ds-open:hover{background:#3a372d}.ds-open:focus-visible{outline:2px solid var(--focus);outline-offset:2px}"
+    },
+    {
+      "name": "Turn list",
+      "kind": "card",
+      "refersTo": "turns",
+      "description": "One quiet plate listing chats whose turn ended, a row each with an outlined Open.",
+      "html": "<div class=\"ds-turns\"><div class=\"ds-row\"><span class=\"ds-who\">claude-pipeline</span><span class=\"ds-age\">your turn · 49 min</span><a class=\"ds-topen\" href=\"#\">Open</a></div><div class=\"ds-row\"><span class=\"ds-who\"><span class=\"ds-tick\">KC-713</span> core</span><span class=\"ds-age\">your turn · 79 s</span><a class=\"ds-topen\" href=\"#\">Open</a></div></div>",
+      "css": ".ds-turns{--strip:#f4ecd8;--sheet:#ebe2c8;--strip-ink:#1b1a16;--strip-muted:#5a523c;--strip-rule:#ddd0ae;--plate:#f5b700;--plate-ink:#1b1a16;--rail:#eef1ed;--rail-rule:#c9d0ca;--ink:#1b2226;--muted:#4f5a54;--bay:#dfe3de;--bar:#56665d;--bar-other:#aab4ae;--focus:#1b2226;--strip-shadow:0 1px 2px rgba(27,34,38,.14),0 3px 8px rgba(27,34,38,.08);--lift-shadow:0 4px 14px rgba(27,34,38,.22);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}.ds-turns{background:#f6e7b4;color:var(--plate-ink);border-radius:4px;padding:4px 14px;font:13px/1.4 var(--sans);max-width:360px}.ds-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid rgba(27,26,22,.15)}.ds-row:first-child{border-top:0}.ds-who{font-weight:600}.ds-tick{font-family:var(--mono)}.ds-age{font-size:12px}.ds-topen{color:var(--plate-ink);border:1px solid var(--plate-ink);border-radius:3px;padding:2px 10px;font-size:12px;font-weight:600;text-decoration:none}.ds-topen:hover{background:#ecd58f}.ds-topen:focus-visible{outline:2px solid var(--focus);outline-offset:2px}"
+    },
+    {
+      "name": "Owner bar",
+      "kind": "custom",
+      "refersTo": "owner-bar",
+      "description": "Memory by owner: one bar of the whole memory, then a row per owner; the pointed-at segment turns yellow.",
+      "html": "<div class=\"ds-panel\"><h2>Memory by owner</h2><div class=\"ds-usedbar\"><i style=\"width:20%\"></i><i class=\"ds-lit\" style=\"width:3%\"></i><i style=\"width:1%\"></i><i class=\"ds-o\" style=\"width:55%\"></i></div><div class=\"ds-owner\"><span class=\"ds-tk\">KC-713</span><em>2.4 GB</em><em>20%</em></div><div class=\"ds-owner ds-other\"><span>other apps</span><em>9.1 GB</em><em>74%</em></div></div>",
+      "css": ".ds-panel{--strip:#f4ecd8;--sheet:#ebe2c8;--strip-ink:#1b1a16;--strip-muted:#5a523c;--strip-rule:#ddd0ae;--plate:#f5b700;--plate-ink:#1b1a16;--rail:#eef1ed;--rail-rule:#c9d0ca;--ink:#1b2226;--muted:#4f5a54;--bay:#dfe3de;--bar:#56665d;--bar-other:#aab4ae;--focus:#1b2226;--strip-shadow:0 1px 2px rgba(27,34,38,.14),0 3px 8px rgba(27,34,38,.08);--lift-shadow:0 4px 14px rgba(27,34,38,.22);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}.ds-panel{background:var(--rail);border:1px solid var(--rail-rule);border-radius:4px;padding:14px 16px;color:var(--ink);font:13px/1.4 var(--sans);max-width:360px}.ds-panel h2{margin:0 0 12px;font-size:13px;font-weight:600;color:var(--muted)}.ds-usedbar{display:flex;gap:2px;height:14px;border-radius:3px;overflow:hidden;box-shadow:inset 0 0 0 1px var(--rail-rule);margin-bottom:8px}.ds-usedbar i{display:block;height:100%;background:var(--bar)}.ds-usedbar i.ds-o{background:var(--bar-other)}.ds-usedbar i.ds-lit{background:var(--plate)}.ds-owner{display:grid;grid-template-columns:minmax(0,1fr) 62px 40px;gap:10px;align-items:center;border-radius:3px;padding:1px 4px;margin:0 -4px}.ds-owner:hover{background:var(--bay)}.ds-owner em{font:normal 12px var(--mono);text-align:right;color:var(--muted)}.ds-tk{font:12px var(--mono)}.ds-other{color:var(--muted)}"
+    },
+    {
+      "name": "Chips",
+      "kind": "chip",
+      "refersTo": "chip-running",
+      "description": "Heavy work in a strip's Now box: running shows the kind, waiting and paused add the state.",
+      "html": "<div class=\"ds-chips\"><span class=\"ds-chip ds-run\">check</span><span class=\"ds-chip ds-wait\">browser · waiting</span><span class=\"ds-chip ds-pause\">dev-server · paused</span></div>",
+      "css": ".ds-chips{display:flex;flex-wrap:wrap;gap:3px 4px;background:#f4ecd8;padding:8px}.ds-chip{font:12px/1.15 ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;padding:3px 6px;border-radius:3px}.ds-run{background:#dbecd9;color:#1f5a2d}.ds-wait{background:#f7e3b0;color:#6b4300}.ds-pause{background:#dde1e4;color:#3a444b}"
+    },
+    {
+      "name": "Strip buttons",
+      "kind": "button",
+      "refersTo": "strip-button",
+      "description": "Hairline controls printed on paper: Pause, Resume (pressed, slate) and the chevron that unfolds the strip.",
+      "html": "<div class=\"ds-paper\"><button class=\"ds-sb\" type=\"button\">Pause</button><button class=\"ds-sb\" type=\"button\" aria-pressed=\"true\">Resume</button><button class=\"ds-sb ds-more\" type=\"button\" aria-label=\"Show the chats\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M4 6l4 4 4-4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button></div>",
+      "css": ".ds-paper{display:flex;gap:6px;align-items:center;background:#f4ecd8;padding:10px}.ds-sb{border:1px solid #8a7d5c;background:transparent;color:#1b1a16;border-radius:3px;padding:4px 9px;font:12px -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;cursor:pointer}.ds-sb:hover{background:#ebe0c2}.ds-sb:focus-visible{outline:2px solid #1b2226;outline-offset:2px}.ds-sb[aria-pressed=true]{background:#4f5a62;border-color:#4f5a62;color:#fff}.ds-more{padding:4px;line-height:0}.ds-more svg{transition:transform .18s cubic-bezier(.2,.8,.2,1)}.ds-more:hover svg{transform:rotate(180deg)}"
+    },
+    {
+      "name": "Filter",
+      "kind": "nav",
+      "refersTo": "filter-button",
+      "description": "Active / All segmented pair in the top bar, each with its count.",
+      "html": "<div class=\"ds-filter\"><button type=\"button\" aria-pressed=\"true\">Active (5)</button><button type=\"button\" aria-pressed=\"false\">All (58)</button></div>",
+      "css": ".ds-filter{--strip:#f4ecd8;--sheet:#ebe2c8;--strip-ink:#1b1a16;--strip-muted:#5a523c;--strip-rule:#ddd0ae;--plate:#f5b700;--plate-ink:#1b1a16;--rail:#eef1ed;--rail-rule:#c9d0ca;--ink:#1b2226;--muted:#4f5a54;--bay:#dfe3de;--bar:#56665d;--bar-other:#aab4ae;--focus:#1b2226;--strip-shadow:0 1px 2px rgba(27,34,38,.14),0 3px 8px rgba(27,34,38,.08);--lift-shadow:0 4px 14px rgba(27,34,38,.22);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}.ds-filter{display:inline-flex;border:1px solid var(--muted);border-radius:4px;overflow:hidden}.ds-filter button{border:0;background:transparent;color:var(--ink);padding:5px 12px;font:13px var(--sans);cursor:pointer}.ds-filter button+button{border-left:1px solid var(--muted)}.ds-filter button:hover{background:var(--rail)}.ds-filter button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}.ds-filter button[aria-pressed=true]{background:var(--ink);color:#fbf6e8;font-weight:600}"
+    },
+    {
+      "name": "Vitals",
+      "kind": "custom",
+      "refersTo": "vital",
+      "description": "Machine figures in the top bar: a mono figure toned by pressure and a muted label.",
+      "html": "<div class=\"ds-vitals\"><div class=\"ds-vital\"><b>3.8 GB</b><span>free of 16.0 GB, normal</span></div><div class=\"ds-vital\"><b class=\"ds-crit\">92%</b><span>swap, 13.8 GB of 15.0 GB</span></div><div class=\"ds-vital\"><b class=\"ds-warn\">10.4</b><span>load on 10 cores</span></div></div>",
+      "css": ".ds-vitals{--strip:#f4ecd8;--sheet:#ebe2c8;--strip-ink:#1b1a16;--strip-muted:#5a523c;--strip-rule:#ddd0ae;--plate:#f5b700;--plate-ink:#1b1a16;--rail:#eef1ed;--rail-rule:#c9d0ca;--ink:#1b2226;--muted:#4f5a54;--bay:#dfe3de;--bar:#56665d;--bar-other:#aab4ae;--focus:#1b2226;--strip-shadow:0 1px 2px rgba(27,34,38,.14),0 3px 8px rgba(27,34,38,.08);--lift-shadow:0 4px 14px rgba(27,34,38,.22);--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;--mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;}.ds-vitals{display:flex;flex-wrap:wrap;gap:4px 32px;align-items:baseline;background:var(--bay);color:var(--ink);padding:16px;font-family:var(--sans)}.ds-vital{display:flex;align-items:baseline;gap:7px;white-space:nowrap}.ds-vital b{font:600 22px/1 var(--mono);letter-spacing:-.02em}.ds-vital span{font-size:12px;color:var(--muted)}.ds-warn{color:#8a5a00}.ds-crit{color:#b3261e}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Strip Bay",
+    "overview": "The monitor is an air traffic control flight progress board. A bay of graphite (pale grey-green in light) holds buff paper strips printed in near-black, one strip per task, stacked in priority order: the top strip gets the machine first. Every strip opens with a coloured holder cell that names its one state, and its fields sit in fixed boxes ruled by hairlines, so a column reads straight down the whole bay. A strip whose chat asks something is pushed out of line toward the reader; the yellow plate in the right column carries the same chat with its Open.\n\nThe world is dense on purpose. One reader knows the vocabulary, so the page shows figures, tickets and states instead of explanations, and colour carries state before any word is read. Paper is the only warm material; everything else (bay, rail panels, top bar) is a cool, quiet ground that recedes behind the strips. The paper stays buff in both themes; only the bay and the rail change.\n\nThe system rejects the card-per-task admin dashboard: no KPI tiles, no task cards with headers and footers. Machine figures sit as bare numbers in the top bar; memory is one bar of the whole memory, not a donut or a gauge.",
+    "keyCharacteristics": [
+      "Buff paper strips on a cool bay; paper stays buff in dark.",
+      "One coloured holder cell per strip names the state; the paper never changes colour by state.",
+      "Fixed column grid shared by the legend rail and every strip.",
+      "Yellow means \"you\": the chat that asks, your turn, the lit owner segment.",
+      "Mono for tickets, figures and commands; system sans for names and prose.",
+      "Out-of-line position (28 px) is the loudest signal and belongs only to a chat that asks."
+    ],
+    "rules": [
+      {
+        "name": "The Paper Stays Paper Rule",
+        "body": "Strip paper is buff in both themes. Dark mode changes the bay, rails and figures; it never inverts the strips.",
+        "section": "colors"
+      },
+      {
+        "name": "The Holder Carries State Rule",
+        "body": "A strip's state lives only in its holder cell. The paper, the boxes and the type never change colour by state; the one exception is the waiting text in the Chats box, which echoes the holder.",
+        "section": "colors"
+      },
+      {
+        "name": "The Yellow Means You Rule",
+        "body": "Controller Yellow marks only what wants the reader: a chat that asks, a turn that ended, the pointed-at owner segment, selection and (in dark) focus and warn. It is never decoration and never a sign that things are fine.",
+        "section": "colors"
+      },
+      {
+        "name": "The Printer Rule",
+        "body": "Tickets, figures, sizes, percentages and command lines are mono; names, titles and prose are sans. A ticket is mono wherever it appears: strip, plate, turn row, owner row.",
+        "section": "typography"
+      },
+      {
+        "name": "The Holder Caps Rule",
+        "body": "Uppercase letter-spaced type belongs to the holder cell, where it is the printed state stamp. Headings, labels and buttons stay in sentence case.",
+        "section": "typography"
+      },
+      {
+        "name": "The Paper Lies Flat Rule",
+        "body": "Only paper (strips, sheets, plates) casts a shadow. Rails, panels, the filter and the top bar are flat and separated by hairlines.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Lift Dims the Rest Rule",
+        "body": "When an owner is pointed at, its strip takes the lifted shadow and every other strip drops to 50% opacity; the matching bar segment turns yellow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do put every new per-task field into a ruled box on the shared `--cols` grid, and add its name to the legend rail.",
+      "Do name a strip's state only through its holder cell, using the holder ladder in precedence order (problem, needs you, paused, your turn, queued, running, live, idle).",
+      "Do reserve the 28px cock and the lifted shadow for a strip whose chat asks something (and for the pointed-at owner's lift).",
+      "Do print tickets, sizes, percentages and command lines in mono, and names in sans.",
+      "Do keep strip paper buff and strip ink near-black in both themes; theme only the bay, rails, ink and figures.",
+      "Do tint machine figures `warn` or `crit` by pressure rather than adding icons or badges.",
+      "Do keep the page offline: system font stacks only, inline SVG for the chevron."
+    ],
+    "donts": [
+      "Don't turn a task into a card with a header, body and footer, or put machine figures in KPI tiles.",
+      "Don't colour strip paper, boxes or rows by state; the holder carries it.",
+      "Don't use Controller Yellow as decoration or as a \"fine\" signal; it means the reader is wanted.",
+      "Don't use uppercase letter-spaced labels outside the holder cell.",
+      "Don't give rails, panels or the top bar a shadow; only paper casts one.",
+      "Don't round anything past 4px.",
+      "Don't load web fonts or a CDN."
+    ]
+  }
+}

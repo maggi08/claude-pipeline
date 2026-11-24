@@ -3,104 +3,217 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Stage Pipeline monitor</title>
 <style>
   :root {
-    --ground: #eef0f6; --surface: #ffffff; --surface-2: #f5f6fa; --ink: #11131b; --ink-2: #3a4054; --muted: #626a80;
-    --rule: #dadeea; --rule-strong: #b9c0d4; --accent: #263ad7; --accent-ink: #263ad7; --accent-soft: #e6e9fb;
-    --critical: #b8332b; --major: #9a6410; --ok: #16704b;
-    --shadow: 0 1px 2px rgba(17, 19, 27, .05), 0 10px 28px rgba(17, 19, 27, .08);
-    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    --cond: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --bay: #dfe3de; --rail: #eef1ed; --rail-rule: #c9d0ca; --ink: #1b2226; --muted: #4f5a54;
+    --strip: #f4ecd8; --sheet: #ebe2c8; --strip-ink: #1b1a16; --strip-muted: #5a523c; --strip-rule: #ddd0ae;
+    --strip-shadow: 0 1px 2px rgba(27, 34, 38, .14), 0 3px 8px rgba(27, 34, 38, .08);
+    --lift-shadow: 0 4px 14px rgba(27, 34, 38, .22);
+    --warn: #8a5a00; --crit: #b3261e; --focus: #1b2226; --on: #1b2226; --on-ink: #fbf6e8;
+    --plate: #f5b700; --plate-ink: #1b1a16; --bar: #56665d; --bar-other: #aab4ae;
+    --cols: 84px 34px minmax(110px, 176px) minmax(0, 1.3fr) 112px minmax(0, 1.8fr) 76px 104px;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --ground: #0b0d13; --surface: #14171f; --surface-2: #1a1e28; --ink: #e9ebf2; --ink-2: #c2c7d6; --muted: #939bb0;
-      --rule: #272d3a; --rule-strong: #3a4254; --accent: #8b98ff; --accent-ink: #a3adff; --accent-soft: #1c2246;
-      --critical: #f0837a; --major: #e0a852; --ok: #56c795; --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 10px 28px rgba(0, 0, 0, .45);
+      --bay: #1a2024; --rail: #232b30; --rail-rule: #333e44; --ink: #e4e8e3; --muted: #9aa59f;
+      --strip: #f1e8d0; --sheet: #e7dcc1; --strip-rule: #cdbf9c;
+      --strip-shadow: 0 2px 6px rgba(0, 0, 0, .38); --lift-shadow: 0 6px 18px rgba(0, 0, 0, .55);
+      --warn: #f5b700; --crit: #ff8a7a; --focus: #f5b700; --on: #f1e8d0; --on-ink: #1b1a16; --bar: #f1e8d0; --bar-other: #56636a;
     }
   }
   :root[data-theme="dark"] {
-    --ground: #0b0d13; --surface: #14171f; --surface-2: #1a1e28; --ink: #e9ebf2; --ink-2: #c2c7d6; --muted: #939bb0;
-    --rule: #272d3a; --rule-strong: #3a4254; --accent: #8b98ff; --accent-ink: #a3adff; --accent-soft: #1c2246;
-    --critical: #f0837a; --major: #e0a852; --ok: #56c795; --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 10px 28px rgba(0, 0, 0, .45);
+    --bay: #1a2024; --rail: #232b30; --rail-rule: #333e44; --ink: #e4e8e3; --muted: #9aa59f;
+    --strip: #f1e8d0; --sheet: #e7dcc1; --strip-rule: #cdbf9c;
+    --strip-shadow: 0 2px 6px rgba(0, 0, 0, .38); --lift-shadow: 0 6px 18px rgba(0, 0, 0, .55);
+    --warn: #f5b700; --crit: #ff8a7a; --focus: #f5b700; --on: #f1e8d0; --on-ink: #1b1a16; --bar: #f1e8d0; --bar-other: #56636a;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--ground); color: var(--ink); font: 14px/1.45 var(--sans); -webkit-font-smoothing: antialiased; }
-  main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 48px; display: flex; flex-direction: column; gap: 18px; }
-  h1, h2 { font-family: var(--cond); margin: 0; letter-spacing: -.01em; }
-  h1 { font-size: 26px; }
-  h2 { font-size: 16px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-family: var(--mono); font-weight: 600; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px; }
-  .machine { display: flex; flex-wrap: wrap; gap: 6px 20px; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); }
-  .machine b { color: var(--ink); font-weight: 600; }
-  .panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; box-shadow: var(--shadow); }
-  .panel > h2 { padding: 12px 16px 0; }
-  .banner { padding: 8px 16px; border: 1px solid var(--major); border-radius: 4px; color: var(--major); background: var(--surface); overflow-wrap: anywhere; }
-  .waiting { border-color: var(--accent); }
-  .wrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; padding: 10px 16px; border-top: 1px solid var(--rule); }
-  .wrow:first-of-type { border-top: 0; }
-  .wrow .what { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
-  .wrow .text { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 7.5em; overflow: auto; color: var(--ink-2); }
-  .kind { font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 3px; background: var(--accent-soft); color: var(--accent-ink); }
-  .meta { color: var(--muted); font-size: 12.5px; }
-  .options { display: flex; flex-wrap: wrap; gap: 6px; grid-column: 1 / -1; }
-  .options span { border: 1px solid var(--rule-strong); border-radius: 3px; padding: 0 8px; font-size: 12.5px; }
-  a.open, button { font: inherit; font-weight: 600; color: var(--accent-ink); background: var(--surface); border: 1px solid var(--accent); border-radius: 4px; padding: 3px 12px; cursor: pointer; text-decoration: none; }
-  a.open:hover, button:hover { background: var(--accent-soft); }
-  .hint { padding: 8px 16px 12px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--rule); }
-  .none { padding: 12px 16px 14px; color: var(--muted); }
-  #cards { display: flex; flex-direction: column; gap: 10px; padding: 0; margin: 0; list-style: none; }
-  .card { background: var(--surface); border: 1px solid var(--rule); border-left: 4px solid var(--rule-strong); border-radius: 4px; box-shadow: var(--shadow); padding: 12px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px 14px; cursor: grab; }
-  .card.over { border-color: var(--accent); background: var(--accent-soft); }
-  .card.dragging { opacity: .5; }
-  .card.busy { border-left-color: var(--accent); }
-  .place { font-family: var(--cond); font-size: 28px; font-weight: 700; color: var(--accent-ink); line-height: 1; min-width: 1.4em; }
-  .title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
-  .title strong { font-size: 16px; }
-  .body { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .line { overflow-wrap: anywhere; }
-  .lbl { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: 6px; }
-  .st-running { color: var(--ok); } .st-waiting, .st-throttled { color: var(--major); } .st-paused { color: var(--critical); }
-  .state { font-weight: 600; }
-  .chats { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; padding: 0; list-style: none; }
-  .chat { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; align-items: baseline; padding: 6px 10px; background: var(--surface-2); border-radius: 3px; }
+  html { scrollbar-color: var(--muted) var(--bay); }
+  body { margin: 0; background: var(--bay); color: var(--ink); font: 14px/1.4 var(--sans); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+  ::selection { background: var(--plate); color: var(--plate-ink); }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  h1, h2, p { margin: 0; }
+  button, a.open { font: inherit; cursor: pointer; }
+
+  .top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px 40px; padding: 0 32px; min-height: 64px; border-bottom: 1px solid var(--rail-rule); }
+  .top h1 { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+  .filter { display: inline-flex; border: 1px solid var(--muted); border-radius: 4px; overflow: hidden; }
+  .filter button { border: 0; background: transparent; color: var(--ink); padding: 5px 12px; font-size: 13px; }
+  .filter button + button { border-left: 1px solid var(--muted); }
+  .filter button:hover { background: var(--rail); }
+  .filter button[aria-pressed="true"] { background: var(--on); color: var(--on-ink); font-weight: 600; }
+  .banner { margin: 16px 32px 0; padding: 10px 14px; border: 1px solid var(--crit); border-radius: 4px; color: var(--crit); background: var(--rail); overflow-wrap: anywhere; }
+
+  .wrap { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 28px; padding: 20px 32px 48px; max-width: 1720px; margin: 0 auto; }
+  .wrap h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 10px; }
+  .bay { padding-left: 28px; min-width: 0; }
+  .legend { display: grid; grid-template-columns: var(--cols); font-size: 11px; font-weight: 600; color: var(--muted); padding: 0 0 6px; }
+  .legend span { padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .legend .r { text-align: right; padding: 0 10px 0 0; overflow: visible; }
+  #cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+
+  .card { position: relative; border-radius: 3px; transition: opacity .15s ease-out, margin .2s cubic-bezier(.2, .8, .2, 1); }
+  .card.need { margin-left: -28px; margin-right: 28px; }
+  .card.dragging { opacity: .45; }
+  .bay.lifting .card:not(.lift) { opacity: .5; }
+  .strip { display: grid; grid-template-columns: var(--cols); min-height: 64px; background: var(--strip); color: var(--strip-ink); border-radius: 3px; box-shadow: var(--strip-shadow); cursor: grab; overflow: hidden; }
+  .card.need .strip, .card.lift .strip { box-shadow: var(--lift-shadow); }
+  .card.over .strip { outline: 2px dashed var(--focus); outline-offset: 2px; }
+  .card:focus-visible { outline: none; }
+  .card:focus-visible .strip { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .box { padding: 7px 10px; border-left: 1px solid var(--strip-rule); display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; }
+  .box small { font-size: 12px; color: var(--strip-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .box .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+  .holder { border-left: 0; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .h-need { background: #f5b700; color: #1b1a16; } .h-run { background: #2a7a3e; color: #fff; } .h-queue { background: #2f6a9e; color: #fff; }
+  .h-live { background: #c5d3cb; color: #1b1a16; } .h-idle { background: #6b747a; color: #fff; } .h-pause { background: #4f5a62; color: #fff; }
+  .h-problem { background: #b83a30; color: #fff; } .h-turn { background: var(--strip); color: #1b1a16; box-shadow: inset 0 0 0 3px var(--plate); }
+  .place { font-size: 20px; font-weight: 700; align-items: center; }
+  .tk { font: 600 15px/1.15 var(--mono); letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tk.name { font: 600 15px/1.15 var(--sans); letter-spacing: 0; }
+  .stage .t { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3; }
+  .fig { align-items: flex-end; font: 600 13px var(--mono); white-space: nowrap; }
+  .fig small { font: 12px var(--mono); }
+  .waits { color: #7a4b00; font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 3px 4px; }
+  .chip { font: 12px/1.15 var(--mono); padding: 3px 6px; border-radius: 3px; max-width: 100%; }
+  .c-running { background: #dbecd9; color: #1f5a2d; } .c-waiting, .c-throttled { background: #f7e3b0; color: #6b4300; } .c-paused { background: #dde1e4; color: #3a444b; }
+  .quiet { color: var(--strip-muted); font-size: 13px; }
+  .acts { flex-direction: row; align-items: center; gap: 6px; padding: 0 10px; }
+  .strip button { border: 1px solid #8a7d5c; background: transparent; color: var(--strip-ink); border-radius: 3px; padding: 4px 9px; font-size: 12px; }
+  .strip button:hover { background: #ebe0c2; }
+  .strip button[aria-pressed="true"] { background: #4f5a62; border-color: #4f5a62; color: #fff; }
+  .strip .more-btn { padding: 4px; line-height: 0; }
+  .more-btn svg { transition: transform .18s cubic-bezier(.2, .8, .2, 1); }
+  .more-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+  .more { background: var(--sheet); color: var(--strip-ink); border-radius: 0 0 3px 3px; margin: -2px 0 0; padding: 10px 14px 12px 132px; box-shadow: var(--strip-shadow); display: flex; flex-direction: column; gap: 8px; }
+  .more .line { overflow-wrap: anywhere; font-size: 13px; }
+  .more .lbl { display: inline-block; min-width: 44px; color: var(--strip-muted); font-size: 12px; }
+  .more .bad { color: #9c2a20; font-weight: 600; }
+  .chats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--strip-rule); }
+  .chat { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--strip-rule); }
   .chat .ctitle { font-weight: 600; overflow-wrap: anywhere; }
-  .chat .cmeta { color: var(--muted); font-size: 12.5px; }
-  .chat .cprompt { grid-column: 1 / -1; color: var(--ink-2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chat a.open { padding: 1px 10px; font-size: 12.5px; }
-  .chat .wait { color: var(--major); font-weight: 600; }
-  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  .legend { color: var(--muted); font-size: 12.5px; }
-  .tasks-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
-  .filter { display: inline-flex; border: 1px solid var(--accent); border-radius: 4px; overflow: hidden; }
-  .filter button { border: 0; border-radius: 0; padding: 3px 12px; }
-  .filter button + button { border-left: 1px solid var(--accent); }
-  .filter button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
-  @media (max-width: 760px) { main { padding: 12px; } .card { grid-template-columns: auto minmax(0, 1fr); } .body { grid-column: 1 / -1; } }
+  .chat .cmeta { color: var(--strip-muted); font-size: 12px; }
+  .chat .cprompt { grid-column: 1 / -1; color: var(--strip-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .heavyline { font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+  .heavyline .cmd { color: var(--strip-muted); }
+  .chat a.open { border: 1px solid #8a7d5c; border-radius: 3px; padding: 2px 10px; font-size: 12px; font-weight: 600; color: var(--strip-ink); text-decoration: none; }
+  .chat a.open:hover { background: #ebe0c2; }
+
+  .none { padding: 16px; background: var(--rail); border: 1px solid var(--rail-rule); border-radius: 4px; color: var(--muted); }
+  .rest { margin-top: 12px; }
+  .linkish { border: 0; background: none; padding: 0; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; font-size: 13px; }
+  .linkish:hover { color: var(--ink); }
+
+  .side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  .panel { background: var(--rail); border: 1px solid var(--rail-rule); border-radius: 4px; padding: 14px 16px; }
+  .panel h2 { margin-bottom: 12px; }
+  .plates { display: flex; flex-direction: column; gap: 8px; }
+  .plate { background: var(--plate); color: var(--plate-ink); border-radius: 4px; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; box-shadow: var(--strip-shadow); }
+  .plate .who { font-weight: 700; font-size: 15px; overflow-wrap: anywhere; }
+  .plate .who .tick { font-family: var(--mono); font-size: 14px; }
+  .plate .who .repo { font-size: 12px; font-weight: 500; margin-left: 6px; }
+  .plate .text { grid-column: 1 / -1; margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .plate .text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-height: none; }
+  .plate .opts { grid-column: 1 / -1; margin: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .plate.short .who { font-size: 14px; }
+  .plate.short { padding: 8px 14px; align-items: center; }
+  .turns { background: #f6e7b4; color: var(--plate-ink); border-radius: 4px; padding: 4px 14px; }
+  .turns .row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid rgba(27, 26, 22, .15); font-size: 13px; }
+  .turns .row:first-child { border-top: 0; }
+  .turns .who { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .turns .who .tick { font-family: var(--mono); }
+  .turns .who .repo { font-weight: 500; font-size: 12px; margin-left: 6px; }
+  .turns .age { font-size: 12px; }
+  .turns a.open { color: var(--plate-ink); border: 1px solid var(--plate-ink); border-radius: 3px; padding: 2px 10px; font-size: 12px; font-weight: 600; text-decoration: none; }
+  .turns a.open:hover { background: #ecd58f; }
+  .plate .waits { color: var(--plate-ink); }
+  .plate a.open { align-self: start; background: var(--plate-ink); color: var(--plate); border-radius: 3px; padding: 5px 12px; font-size: 13px; font-weight: 700; text-decoration: none; }
+  .plate a.open:hover { background: #3a372d; }
+  .calm { color: var(--muted); font-size: 13px; padding: 12px 14px; border: 1px dashed var(--rail-rule); border-radius: 4px; }
+
+  .vitals { display: flex; flex-wrap: wrap; gap: 4px 32px; align-items: baseline; }
+  .vital { display: flex; align-items: baseline; gap: 7px; white-space: nowrap; }
+  .vital b { font: 600 22px/1 var(--mono); letter-spacing: -.02em; }
+  .vital span { font-size: 12px; color: var(--muted); }
+  .warn { color: var(--warn); } .crit { color: var(--crit); }
+  .owners { display: flex; flex-direction: column; gap: 6px; }
+  .usedbar { display: flex; gap: 2px; height: 14px; border-radius: 3px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--rail-rule); margin-bottom: 8px; }
+  .usedbar i { display: block; height: 100%; background: var(--bar); }
+  .usedbar i.o { background: var(--bar-other); }
+  .usedbar i.lit { background: var(--plate); }
+  .owner { display: grid; grid-template-columns: minmax(0, 1fr) 62px 40px; gap: 10px; align-items: center; font-size: 13px; border-radius: 3px; padding: 1px 4px; margin: 0 -4px; }
+  .owner[data-owner] { cursor: default; }
+  .owner[data-owner]:hover { background: var(--bay); }
+  .owner .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .owner .tick { font: 12px var(--mono); }
+  .owner .pc { font: normal 12px var(--mono); text-align: right; color: var(--muted); }
+  .owner em { font: normal 12px var(--mono); text-align: right; color: var(--muted); }
+  .owner.other { color: var(--muted); }
+  .hrow { display: grid; grid-template-columns: 86px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 13px; padding: 5px 0; border-top: 1px solid var(--rail-rule); }
+  .hrow:first-child { border-top: 0; }
+  .hrow .k { font: 600 12px var(--mono); }
+  .hrow .s { min-width: 0; overflow-wrap: anywhere; }
+  .hrow em { font: normal 12px var(--mono); color: var(--muted); }
+  .st-running { color: var(--ink); } .st-waiting, .st-throttled { color: var(--warn); } .st-paused { color: var(--muted); font-weight: 600; }
+
+  @media (max-width: 1180px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); }
+    .side { order: -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; }
+  }
+  @media (max-width: 860px) {
+    .top { grid-template-columns: minmax(0, 1fr) auto; padding: 10px 16px; }
+    .top .vitals { grid-column: 1 / -1; grid-row: 2; } .wrap { padding: 14px 16px 40px; } .banner { margin: 12px 16px 0; }
+    .side { order: 1; } .legend { display: none; }
+    .bay { padding-left: 0; } .card.need { margin-left: 0; margin-right: 0; }
+    .strip { grid-template-columns: 76px 30px minmax(0, 1fr) minmax(0, 1fr) auto; grid-template-areas: "h p c c a" "s s s n n" "m m m m m"; }
+    .strip .holder { grid-area: h; } .strip .place { grid-area: p; } .strip .call { grid-area: c; } .strip .acts { grid-area: a; }
+    .strip .stage { grid-area: s; } .strip .now { grid-area: n; } .strip .chatsbox { grid-area: m; }
+    .strip .stage, .strip .now, .strip .chatsbox { border-left: 0; border-top: 1px solid var(--strip-rule); }
+    .strip .now { border-left: 1px solid var(--strip-rule); }
+    .strip.plain .stage, .strip.plain .now { display: none; }
+    .strip .fig { display: none; }
+    .more { padding-left: 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .card, .more-btn svg { transition: none; } }
 </style>
 </head>
 <body>
-<main>
-  <header><h1>Stage Pipeline</h1><div class="machine" id="machine" aria-live="off"></div></header>
-  <div class="banner" id="problem" hidden></div>
-  <section class="panel waiting" aria-labelledby="wh">
-    <h2 id="wh">Waiting for you <span id="wcount"></span></h2>
-    <div id="waiting"></div>
-    <div class="hint">Open uses the VS Code window that is in focus; if the session belongs to another window, switch to it first.</div>
-  </section>
-  <section aria-labelledby="th">
-    <div class="tasks-head">
-      <h2 id="th">Tasks in priority order</h2>
-      <div class="filter" role="group" aria-label="Which tasks to show">
-        <button type="button" data-filter="active" aria-pressed="true">Active <span id="nactive"></span></button>
-        <button type="button" data-filter="all" aria-pressed="false">All <span id="nall"></span></button>
-      </div>
-    </div>
-    <p class="legend">Drag a card, or focus it and press Alt+Up / Alt+Down, to change its priority. The top task gets the machine first. Active: a live Claude session, a heavy command or a pause; reordering there puts the shown tasks above the hidden ones.</p>
+<header class="top">
+  <h1>Stage Pipeline</h1>
+  <div id="machine" class="vitals" role="group" aria-label="Machine"></div>
+  <div class="filter" role="group" aria-label="Which tasks to show">
+    <button type="button" data-filter="active" aria-pressed="true">Active <span id="nactive"></span></button>
+    <button type="button" data-filter="all" aria-pressed="false">All <span id="nall"></span></button>
+  </div>
+</header>
+<div class="banner" id="problem" role="alert" hidden></div>
+<main class="wrap">
+  <section class="bay" id="bay" aria-labelledby="th">
+    <h2 id="th">Tasks · the top one gets the machine first</h2>
+    <div class="legend" aria-hidden="true"><span>State</span><span>#</span><span>Task</span><span>Stage · next</span><span>Now</span><span>Chats</span><span class="r">Load</span><span></span></div>
     <ol id="cards"></ol>
+    <p class="rest" id="rest" hidden></p>
   </section>
+  <aside class="side">
+    <section aria-labelledby="wh">
+      <h2 id="wh">Waiting for you <span id="wcount"></span></h2>
+      <div id="waiting" class="plates"></div>
+    </section>
+    <section class="panel" aria-labelledby="mh">
+      <h2 id="mh">Memory by owner</h2>
+      <div id="owners" class="owners"></div>
+    </section>
+    <section class="panel" aria-labelledby="hh">
+      <h2 id="hh">Heavy commands <span id="hcount"></span></h2>
+      <div id="heavy"></div>
+    </section>
+  </aside>
 </main>
 <script>
 (() => {
@@ -109,6 +222,7 @@
   const GB = 1024 ** 3
   const gb = (bytes) => (bytes == null ? '?' : `${(bytes / GB).toFixed(1)} GB`)
   const mem = (bytes) => (bytes == null ? '?' : bytes >= GB ? gb(bytes) : `${Math.round(bytes / 1048576)} MB`)
+  const SVG = 'http://www.w3.org/2000/svg'
   const h = (tag, attrs, ...kids) => {
     const node = document.createElement(tag)
     for (const [key, value] of Object.entries(attrs || {})) {
@@ -118,6 +232,14 @@
     }
     for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) node.append(kid)
     return node
+  }
+  const chevron = () => {
+    const svg = document.createElementNS(SVG, 'svg')
+    for (const [key, value] of Object.entries({ width: '16', height: '16', viewBox: '0 0 16 16', 'aria-hidden': 'true' })) svg.setAttribute(key, value)
+    const path = document.createElementNS(SVG, 'path')
+    for (const [key, value] of Object.entries({ d: 'M4 6l4 4 4-4', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })) path.setAttribute(key, value)
+    svg.append(path)
+    return svg
   }
   const ago = (ms) => {
     const sec = Math.max(0, Math.round(ms / 1000))
@@ -131,9 +253,12 @@
     return res.json()
   }
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const OPEN_HINT = 'Opens in the VS Code window that is in focus; if the chat belongs to another window, switch to it first.'
+  const openLink = (sessionId, label) => h('a', { class: 'open', href: `vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`, title: OPEN_HINT }, label)
   let snap = null
   let dragKey = null
-  let focusKey = null // `<task key>` or `<task key>\u0000pause`
+  let focusKey = null // `<task key>\u0000<role>`: the role is 'card', 'pause' or 'more'
+  let hoverKey = null // the owner whose memory bar the pointer is on: its strip lifts, the rest dim
 
   const taskCards = (s) => {
     const order = s.balance.order
@@ -147,54 +272,34 @@
   const sessionsOf = (s, key) => s.sessions.filter((x) => x.task === key || (!x.task && x.root === key))
   // Active: the task has a live Claude session, a heavy command (running, waiting or stopped) or a pause to take off; the rest are open tasks nobody works on now
   const isActive = (s, t) => sessionsOf(s, t.key).length > 0 || s.balance.heavy.some((x) => x.key === t.key) || s.balance.paused.includes(t.key)
+  const remembered = (name, fallback) => {
+    try {
+      return localStorage.getItem(name) ?? fallback
+    } catch {
+      return fallback // no storage (a private window): the default stays
+    }
+  }
+  const remember = (name, value) => {
+    try {
+      localStorage.setItem(name, value)
+    } catch {
+      // not remembered: the choice holds until the page is reloaded
+    }
+  }
   const FILTER_KEY = 'stage-pipeline-monitor-filter'
-  let filter = 'active'
-  try {
-    if (localStorage.getItem(FILTER_KEY) === 'all') filter = 'all'
-  } catch {
-    // no storage (a private window): the default stays
-  }
-
-  function renderMachine(s) {
-    const m = s.machine
-    const el = $('machine')
-    el.replaceChildren()
-    const add = (name, value) => el.append(h('span', null, `${name} `, h('b', null, value)))
-    if (m) {
-      add('memory', `${m.pressure ?? 'no reading'}, ${gb(m.availableBytes)} free of ${gb(m.totalBytes)}`)
-      add('swap', m.swapTotalBytes == null ? '?' : `${gb(m.swapUsedBytes)} of ${gb(m.swapTotalBytes)}`)
-      add('load', m.load == null ? `? on ${m.cores} cores` : `${Number(m.load).toFixed(1)} on ${m.cores} cores`)
+  const UNFOLD_KEY = 'stage-pipeline-monitor-unfolded'
+  let filter = remembered(FILTER_KEY, 'active') === 'all' ? 'all' : 'active'
+  const unfolded = new Set((() => {
+    try {
+      const saved = JSON.parse(remembered(UNFOLD_KEY, '[]'))
+      return Array.isArray(saved) ? saved : []
+    } catch {
+      return [] // a damaged value: every strip starts folded
     }
-    add('waiting commands', String(s.balance.heavy.filter((x) => x.state === 'waiting').length))
-    $('problem').hidden = !s.problem
-    $('problem').textContent = s.problem || ''
-  }
+  })())
 
-  function renderWaiting(s) {
-    const box = $('waiting')
-    box.replaceChildren()
-    const list = [...s.waiting].sort((a, b) => a.since - b.since)
-    $('wcount').textContent = list.length ? `(${list.length})` : ''
-    document.title = `${list.length ? `(${list.length}) ` : ''}Stage Pipeline monitor`
-    if (!list.length) return box.append(h('div', { class: 'none' }, 'No session is waiting for you.'))
-    for (const w of list) {
-      const task = w.ticket ? `${(w.root || '').split('/').pop()}#${w.ticket}` : (w.cwd || '').split('/').pop() || 'unknown'
-      box.append(h('div', { class: 'wrow' },
-        h('div', { class: 'what' }, h('strong', null, task), h('span', { class: 'kind' }, w.kind), h('span', { class: 'meta' }, `waiting ${ago(Date.now() - w.since)}`)),
-        w.sessionId && UUID.test(w.sessionId) ? h('a', { class: 'open', href: `vscode://anthropic.claude-code/open?session=${encodeURIComponent(w.sessionId)}` }, 'Open') : null,
-        w.text ? h('p', { class: 'text' }, w.text) : null,
-        w.options && w.options.length ? h('div', { class: 'options' }, w.options.map((o) => h('span', null, o))) : null))
-    }
-  }
-
-  function heavyLines(s, task, sessions) {
-    const lines = []
-    const rows = s.balance.heavy.filter((x) => x.key === task.key)
-    const kindsSeen = new Set()
-    const usageOf = (row) => {
-      if (row.usage) return `${Math.round(row.usage.cpu)}% CPU, ${mem(row.usage.rssBytes)}`
-      return row.state === 'waiting' ? null : usage(row.kind)
-    }
+  // The heavy work of a task: its balancer rows (with their own usage when the row has one) and the kinds its sessions run outside the balancer
+  function heavyOf(s, task, sessions) {
     const usage = (kind) => {
       let rss = 0
       let cpu = null
@@ -209,17 +314,116 @@
       }
       return count ? `${Math.round(cpu ?? 0)}% CPU, ${mem(rss)}` : null
     }
-    for (const row of rows) {
+    const rows = []
+    const kindsSeen = new Set()
+    for (const row of s.balance.heavy.filter((x) => x.key === task.key)) {
       kindsSeen.add(row.kind)
-      const used = usageOf(row)
-      lines.push(h('div', { class: 'line' }, h('span', { class: 'lbl' }, row.kind), h('span', { class: `state st-${row.state}` }, row.text || row.state), used ? ` — ${used}` : null, h('span', { class: 'meta' }, `  ${row.command}`)))
+      const used = row.usage ? `${Math.round(row.usage.cpu)}% CPU, ${mem(row.usage.rssBytes)}` : row.state === 'waiting' ? null : usage(row.kind)
+      rows.push({ kind: row.kind, state: row.state, text: row.text || row.state, used, command: row.command })
     }
     for (const kind of ['check', 'browser', 'dev-server']) {
       if (kindsSeen.has(kind)) continue
-      const u = usage(kind)
-      if (u) lines.push(h('div', { class: 'line' }, h('span', { class: 'lbl' }, kind), h('span', { class: 'state st-running' }, 'running'), ` — ${u}`))
+      const used = usage(kind)
+      if (used) rows.push({ kind, state: 'running', text: 'running', used, command: null })
     }
-    return lines.length ? lines : [h('div', { class: 'line meta' }, 'nothing heavy now')]
+    return rows
+  }
+
+  // A chat that asked something (a question, a permission, an MCP form) needs you; one whose turn ended only waits for your next message
+  const asks = (kind) => kind && kind !== 'turn-ended'
+  // One state per strip, the first that holds: problem, needs you, paused, your turn, queued, running, live (a chat, nothing heavy), idle
+  const STATES = { problem: 'Problem', need: 'Needs you', pause: 'Paused', turn: 'Your turn', queue: 'Queued', run: 'Running', live: 'Live', idle: 'Idle' }
+  function stateOf(s, t, sessions, heavy) {
+    if (t.problem) return 'problem'
+    if (sessions.some((x) => asks(x.waiting?.kind))) return 'need'
+    if (s.balance.paused.includes(t.key)) return 'pause'
+    if (sessions.some((x) => x.waiting)) return 'turn'
+    if (heavy.some((x) => x.state === 'waiting' || x.state === 'throttled')) return 'queue'
+    if (heavy.some((x) => x.state === 'running')) return 'run'
+    return sessions.length ? 'live' : 'idle'
+  }
+
+  function renderMachine(s) {
+    const m = s.machine
+    const box = $('machine')
+    box.replaceChildren()
+    const vital = (value, label, tone) => box.append(h('div', { class: 'vital' }, h('b', { class: tone || null }, value), h('span', null, label)))
+    if (m) {
+      vital(m.availableBytes == null ? '?' : gb(m.availableBytes), `free of ${gb(m.totalBytes)}, ${m.pressure ?? 'no reading'}`, m.pressure === 'critical' ? 'crit' : m.pressure === 'warn' ? 'warn' : null)
+      const swap = m.swapTotalBytes ? m.swapUsedBytes / m.swapTotalBytes : null
+      vital(swap == null ? '?' : `${Math.round(swap * 100)}%`, swap == null ? 'swap' : `swap, ${gb(m.swapUsedBytes)} of ${gb(m.swapTotalBytes)}`, swap >= 0.9 ? 'crit' : swap >= 0.7 ? 'warn' : null)
+      const per = m.load == null ? null : m.load / m.cores
+      vital(m.load == null ? '?' : Number(m.load).toFixed(1), `load on ${m.cores} cores`, per >= 1.5 ? 'crit' : per >= 1 ? 'warn' : null)
+    } else vital('?', 'no machine reading')
+    $('problem').hidden = !s.problem
+    $('problem').textContent = s.problem || ''
+  }
+
+  // Memory by owner: one bar of the whole memory — each task's chats (their process trees, heavy commands included), the other apps, the free rest —
+  // then a row per owner with its share of the used memory, the largest first; pointing at a segment or a row lifts that task's strip
+  const ownerName = (t) => (t.noTask ? h('span', { class: 'n' }, t.ticket) : h('span', { class: 'n tick' }, t.ticket))
+  function renderOwners(s, all) {
+    const box = $('owners')
+    box.replaceChildren()
+    const owners = all.map((t) => ({ t, bytes: sessionsOf(s, t.key).reduce((sum, x) => sum + (x.load.rssBytes || 0), 0) })).filter((o) => o.bytes > 0).sort((a, b) => b.bytes - a.bytes)
+    const tracked = owners.reduce((sum, o) => sum + o.bytes, 0)
+    const m = s.machine
+    const total = m?.totalBytes || 0
+    const used = total && m.availableBytes != null ? total - m.availableBytes : tracked
+    const other = Math.max(0, used - tracked)
+    const share = (bytes) => (used ? `${Math.round((bytes / used) * 100)}%` : '')
+    if (total) {
+      const pct = (bytes) => `${Math.max(0.4, (bytes / total) * 100).toFixed(2)}%`
+      box.append(h('div', { class: 'usedbar', role: 'img', 'aria-label': `${gb(used)} of ${gb(total)} used: ${owners.map((o) => `${o.t.ticket} ${mem(o.bytes)}`).join(', ')}${other ? `, other apps ${mem(other)}` : ''}` },
+        owners.map((o) => h('i', { style: `width:${pct(o.bytes)}`, 'data-owner': o.t.key, title: `${o.t.ticket} · ${mem(o.bytes)}` })),
+        other ? h('i', { class: 'o', style: `width:${pct(other)}`, title: `other apps · ${mem(other)}` }) : null))
+    }
+    for (const o of owners.slice(0, 7)) box.append(h('div', { class: 'owner', 'data-owner': o.t.key, title: o.t.repo || o.t.ticket }, ownerName(o.t), h('em', null, mem(o.bytes)), h('span', { class: 'pc' }, share(o.bytes))))
+    if (other) box.append(h('div', { class: 'owner other' }, h('span', { class: 'n' }, 'other apps'), h('em', null, mem(other)), h('span', { class: 'pc' }, share(other))))
+    if (!owners.length) box.append(h('div', { class: 'owner other' }, h('span', { class: 'n' }, 'no chat holds memory now'), h('em'), h('span')))
+  }
+
+  function renderHeavy(s, all) {
+    const box = $('heavy')
+    box.replaceChildren()
+    const label = new Map(all.map((t) => [t.key, t.ticket]))
+    const rows = [...s.balance.heavy].sort((a, b) => (a.state === 'running') - (b.state === 'running'))
+    const waiting = rows.filter((x) => x.state === 'waiting').length
+    $('hcount').textContent = waiting ? `· ${waiting} waiting` : ''
+    if (!rows.length) return box.append(h('p', { class: 'calm' }, 'No heavy command runs or waits.'))
+    for (const row of rows) {
+      const used = row.usage ? `${Math.round(row.usage.cpu)}% · ${mem(row.usage.rssBytes)}` : ''
+      box.append(h('div', { class: 'hrow', title: row.command || '' }, h('span', { class: 'k' }, row.kind), h('span', { class: `s st-${row.state}` }, `${label.get(row.key) || row.key.split('/').pop()} · ${row.text || row.state}`), h('em', null, used)))
+    }
+  }
+
+  function renderWaiting(s) {
+    const box = $('waiting')
+    box.replaceChildren()
+    const list = [...s.waiting].sort((a, b) => a.since - b.since)
+    $('wcount').textContent = list.length ? `(${list.length})` : ''
+    document.title = `${list.length ? `(${list.length}) ` : ''}Stage Pipeline monitor`
+    if (!list.length) return box.append(h('p', { class: 'calm' }, 'Nobody waits for you.'))
+    // what asks comes first, oldest first: the two oldest in full (two lines of text, the options as one line), the rest one line each;
+    // then the chats whose turn ended, as rows of one quiet plate with the reply in the tooltip
+    const asking = list.filter((x) => asks(x.kind))
+    const whoOf = (w) => (w.ticket
+      ? [h('span', { class: 'tick' }, w.ticket), h('span', { class: 'repo' }, (w.root || '').split('/').pop())]
+      : [(w.cwd || '').split('/').pop() || 'unknown'])
+    const turns = list.filter((x) => !asks(x.kind))
+    asking.forEach((w, i) => {
+      const full = i < 2
+      const options = w.options || []
+      box.append(h('div', { class: `plate${full ? '' : ' short'}`, title: !full && w.text ? w.text.slice(0, 600) : null },
+        h('div', null, h('div', { class: 'who' }, whoOf(w)), h('div', { class: 'waits' }, `${w.kind} · ${ago(Date.now() - w.since)}`)),
+        w.sessionId && UUID.test(w.sessionId) ? openLink(w.sessionId, 'Open') : h('span'),
+        full && w.text ? h('p', { class: 'text', title: w.text.slice(0, 1200) }, w.text) : null,
+        full && options.length ? h('p', { class: 'opts', title: options.join(' / ') }, options.join(' / ')) : null))
+    })
+    if (turns.length) box.append(h('div', { class: 'turns', 'aria-label': 'Chats whose turn ended' }, turns.map((w) => h('div', { class: 'row', title: w.text ? w.text.slice(0, 600) : null },
+      h('span', { class: 'who' }, whoOf(w)),
+      h('span', { class: 'age' }, `your turn · ${ago(Date.now() - w.since)}`),
+      w.sessionId && UUID.test(w.sessionId) ? openLink(w.sessionId, 'Open') : h('span')))))
   }
 
   // One row per open chat (a Claude Code session): its title as VS Code shows it, when it last wrote, its own CPU and memory, its last prompt; the latest first.
@@ -237,55 +441,98 @@
       ].filter(Boolean).join(' · ')
       const canOpen = x.sessionId && !x.sessionGuessed && UUID.test(x.sessionId)
       return h('li', { class: 'chat' },
-        h('div', null, h('span', { class: 'ctitle' }, title), x.waiting ? h('span', { class: 'wait' }, `  waiting: ${x.waiting.kind}`) : null, h('div', { class: 'cmeta' }, meta)),
-        canOpen ? h('a', { class: 'open', href: `vscode://anthropic.claude-code/open?session=${encodeURIComponent(x.sessionId)}` }, 'Open') : h('span'),
+        h('div', null, h('span', { class: 'ctitle' }, title), x.waiting ? h('span', { class: 'waits' }, `  waiting: ${x.waiting.kind}`) : null, h('div', { class: 'cmeta' }, meta)),
+        canOpen ? openLink(x.sessionId, 'Open') : h('span'),
         x.chat?.lastPrompt ? h('div', { class: 'cprompt', title: x.chat.lastPrompt }, `last: ${x.chat.lastPrompt}`) : null)
     }))
   }
 
-  function renderCards(s) {
+  // The chats box of a strip: the chat that waits for you, else the latest one, with the count of open chats
+  function chatsBox(sessions) {
+    if (!sessions.length) return h('div', { class: 'box chatsbox' })
+    const waiting = sessions.find((x) => asks(x.waiting?.kind)) || sessions.find((x) => x.waiting)
+    const latest = waiting || [...sessions].sort((a, b) => (b.chat?.activeAt ?? 0) - (a.chat?.activeAt ?? 0))[0]
+    const title = latest.chat?.title || (latest.sessionId ? 'untitled chat' : 'new chat')
+    const count = sessions.length > 1 ? `${sessions.length} chats · ` : ''
+    const since = waiting?.waiting.since ? ` · ${ago(Date.now() - waiting.waiting.since)}` : ''
+    const head = waiting
+      ? h('small', { class: asks(waiting.waiting.kind) ? 'waits' : null }, `${count}${asks(waiting.waiting.kind) ? waiting.waiting.kind : 'your turn'}${since}`)
+      : h('small', null, `${count}${latest.chat?.activeAt ? `${ago(Date.now() - latest.chat.activeAt)} ago` : 'open'}`)
+    return h('div', { class: 'box chatsbox' }, head, h('span', { class: 't', title }, title))
+  }
+
+  function renderCards(s, all) {
     const ol = $('cards')
     // the focus comes back only when it was on a card when the poll came; and without scrolling — a focus() in the loop scrolled the page to that card every 2 s
-    const had = $('cards').contains(document.activeElement) ? focusKey : null
+    const had = ol.contains(document.activeElement) ? focusKey : null
     let refocus = null
     ol.replaceChildren()
-    const all = taskCards(s)
-    const cards = filter === 'all' ? all : all.filter((t) => isActive(s, t))
-    $('nactive').textContent = `(${all.filter((t) => isActive(s, t)).length})`
+    const active = all.filter((t) => isActive(s, t))
+    const cards = filter === 'all' ? all : active
+    $('nactive').textContent = `(${active.length})`
     $('nall').textContent = `(${all.length})`
     for (const button of document.querySelectorAll('[data-filter]')) button.setAttribute('aria-pressed', button.dataset.filter === filter ? 'true' : 'false')
-    if (!cards.length) ol.append(h('li', { class: 'none panel' }, all.length ? 'No task has a live session, a heavy command or a pause now. All shows every open task.' : 'No open tasks.'))
+    const hidden = all.length - cards.length
+    $('rest').hidden = !hidden || !cards.length
+    $('rest').replaceChildren(h('button', { type: 'button', class: 'linkish', 'data-show-all': '' }, `${hidden} more open task${hidden > 1 ? 's' : ''} with no session · show all`))
+    if (!cards.length) {
+      ol.append(h('li', { class: 'none' }, all.length ? 'No task has a live session, a heavy command or a pause now. ' : 'No open tasks.', all.length ? h('button', { type: 'button', class: 'linkish', 'data-show-all': '' }, 'Show all open tasks') : null))
+      return
+    }
     cards.forEach((t) => {
       const i = all.indexOf(t) // the place among all cards: the order the balancer reads, whichever cards are shown
       const sessions = sessionsOf(s, t.key)
-      const heavy = s.balance.heavy.filter((x) => x.key === t.key)
+      const heavy = heavyOf(s, t, sessions)
       const paused = s.balance.paused.includes(t.key)
-      const busy = heavy.some((x) => x.state === 'running') || sessions.some((x) => x.load.kinds.check.count || x.load.kinds.browser.count || x.load.kinds['dev-server'].count)
-      const stage = t.noTask ? 'no current task' : t.stageNumber ? `stage ${t.stageNumber} of ${t.stageTotal}` : t.stageTotal ? `${t.stageTotal} stages` : 'no stages'
+      const state = stateOf(s, t, sessions, heavy)
+      const open = unfolded.has(t.key)
+      const stage = t.noTask ? '' : t.stageNumber ? `${t.stageNumber} of ${t.stageTotal}` : t.stageTotal ? `${t.stageTotal} stages` : 'no stages'
       const current = t.stageNumber && t.stages[t.stageNumber - 1] ? t.stages[t.stageNumber - 1].heading.replace(/^\S+\s+\d+\s*[:.-]?\s*/, '') : null
-      const li = h('li', { class: `card${busy ? ' busy' : ''}`, tabindex: '0', draggable: 'true', 'data-key': t.key, 'aria-label': `${t.repo} ${t.ticket}, place ${i + 1} of ${all.length}. Alt+Up or Alt+Down moves it.` },
-        h('div', { class: 'place' }, String(i + 1)),
-        h('div', { class: 'title' }, h('strong', null, `${t.ticket}`), t.repo && t.repo !== t.ticket ? h('span', { class: 'meta' }, t.repo) : null, h('span', { class: 'meta' }, stage)),
-        s.pauseSupported === false ? h('span') : h('button', { type: 'button', 'data-pause': t.key, 'aria-pressed': paused ? 'true' : 'false' }, paused ? 'Resume' : 'Pause'),
-        h('div', { class: 'body' },
-          t.problem ? h('div', { class: 'line st-paused' }, t.problem) : null,
+      const doing = t.next || current
+      const bytes = sessions.reduce((sum, x) => sum + (x.load.rssBytes || 0), 0)
+      const cpu = sessions.reduce((sum, x) => sum + (x.live ? x.live.cpu : (x.load.cpu || 0)), 0)
+      const li = h('li', { class: `card ${state}`, tabindex: '0', draggable: 'true', 'data-key': t.key, 'aria-label': `${t.repo} ${t.ticket}, ${STATES[state]}, place ${i + 1} of ${all.length}. Enter shows its chats; Alt+Up or Alt+Down moves it.` },
+        h('div', { class: `strip${!stage && !doing && !heavy.length ? ' plain' : ''}` },
+          h('div', { class: `box holder h-${state}` }, STATES[state]),
+          h('div', { class: 'box place' }, String(i + 1)),
+          h('div', { class: 'box call' }, h('span', { class: t.noTask ? 'tk name' : 'tk', title: t.ticket }, `${t.ticket}`), t.repo && t.repo !== t.ticket ? h('small', null, t.repo) : h('small', null, t.noTask ? 'no current task' : '')),
+          h('div', { class: 'box stage' }, stage ? h('small', null, stage) : null, doing ? h('span', { class: 't', title: doing }, doing) : null),
+          h('div', { class: 'box now' }, heavy.length ? h('div', { class: 'chips' }, heavy.map((x) => h('span', { class: `chip c-${x.state}`, title: [x.text, x.used, x.command].filter(Boolean).join(' · ') }, x.state === 'running' ? x.kind : `${x.kind} · ${x.state}`))) : null),
+          chatsBox(sessions),
+          h('div', { class: 'box fig', title: 'memory and CPU of its chats and their commands' }, bytes ? mem(bytes) : null, sessions.length ? h('small', null, `${Math.round(cpu)}% CPU`) : null),
+          h('div', { class: 'box acts' },
+            s.pauseSupported === false ? null : h('button', { type: 'button', 'data-pause': t.key, 'data-role': 'pause', 'aria-pressed': paused ? 'true' : 'false' }, paused ? 'Resume' : 'Pause'),
+            h('button', { type: 'button', class: 'more-btn', 'data-more': t.key, 'data-role': 'more', 'aria-expanded': open ? 'true' : 'false', 'aria-label': open ? 'Hide the chats' : 'Show the chats' }, chevron()))),
+        open ? h('div', { class: 'more' },
+          t.problem ? h('div', { class: 'line bad' }, t.problem) : null,
           current ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'stage'), current) : null,
           t.next ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'next'), t.next) : null,
-          sessions.length ? chatList(sessions) : h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'sessions'), 'no session'),
-          heavyLines(s, t, sessions)))
+          heavy.map((x) => h('div', { class: 'heavyline' }, `${x.kind} ${x.text}${x.used ? ` — ${x.used}` : ''}`, x.command ? h('span', { class: 'cmd' }, `  ${x.command}`) : null)),
+          sessions.length ? chatList(sessions) : h('div', { class: 'line quiet' }, 'no open chat')) : null)
       ol.append(li)
-      if (had === t.key) refocus = li
-      else if (had === `${t.key}\u0000pause`) refocus = li.querySelector('button')
+      if (had === `${t.key}\u0000card`) refocus = li
+      else if (had && had.startsWith(`${t.key}\u0000`)) refocus = li.querySelector(`[data-role="${had.split('\u0000')[1]}"]`)
     })
     refocus?.focus({ preventScroll: true })
+    applyLift()
+  }
+
+  const applyLift = () => {
+    for (const seg of $('owners').querySelectorAll('.usedbar i[data-owner]')) seg.classList.toggle('lit', seg.dataset.owner === hoverKey)
+    const shown = [...$('cards').children]
+    $('bay').classList.toggle('lifting', Boolean(hoverKey) && shown.some((li) => li.dataset.key === hoverKey))
+    for (const li of shown) li.classList.toggle('lift', li.dataset.key === hoverKey)
   }
 
   const render = () => {
     if (!snap || dragKey) return
     const y = window.scrollY // the rebuilt lists keep the reader where they were
+    const all = taskCards(snap)
     renderMachine(snap)
+    renderOwners(snap, all)
+    renderHeavy(snap, all)
     renderWaiting(snap)
-    renderCards(snap)
+    renderCards(snap, all)
     if (window.scrollY !== y) window.scrollTo(0, y)
   }
   async function poll() {
@@ -308,6 +555,17 @@
   }
   const keysNow = () => [...$('cards').querySelectorAll('.card')].map((li) => li.dataset.key)
   const cardOf = (event) => event.target.closest?.('.card')
+  const toggle = (key) => {
+    if (unfolded.has(key)) unfolded.delete(key)
+    else unfolded.add(key)
+    remember(UNFOLD_KEY, JSON.stringify([...unfolded]))
+    render()
+  }
+  const showAll = () => {
+    filter = 'all'
+    remember(FILTER_KEY, filter)
+    render()
+  }
 
   $('cards').addEventListener('dragstart', (event) => {
     const li = cardOf(event)
@@ -341,14 +599,21 @@
   })
   $('cards').addEventListener('keydown', (event) => {
     const li = cardOf(event)
-    if (!li || event.target !== li || !event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return
+    if (!li || event.target !== li) return
+    if (!event.altKey && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault()
+      focusKey = `${li.dataset.key}\u0000card`
+      toggle(li.dataset.key)
+      return
+    }
+    if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return
     event.preventDefault()
     const keys = keysNow()
     const from = keys.indexOf(li.dataset.key)
     const to = from + (event.key === 'ArrowUp' ? -1 : 1)
     if (to < 0 || to >= keys.length) return
     keys.splice(to, 0, keys.splice(from, 1)[0])
-    focusKey = li.dataset.key
+    focusKey = `${li.dataset.key}\u0000card`
     const cards = [...$('cards').children]
     $('cards').insertBefore(cards[from], event.key === 'ArrowUp' ? cards[to] : cards[to].nextSibling)
     li.focus()
@@ -356,11 +621,19 @@
   })
   $('cards').addEventListener('focusin', (event) => {
     const li = cardOf(event)
-    focusKey = li ? (event.target === li ? li.dataset.key : `${li.dataset.key}\u0000pause`) : null
+    focusKey = li ? `${li.dataset.key}\u0000${event.target === li ? 'card' : event.target.dataset.role || 'card'}` : null
   })
   $('cards').addEventListener('click', async (event) => {
+    if (event.target.closest?.('[data-show-all]')) return showAll()
+    const more = event.target.closest?.('button[data-more]')
+    if (more) return toggle(more.dataset.more)
     const button = event.target.closest?.('button[data-pause]')
-    if (!button) return
+    if (!button) {
+      // a click on the strip itself (not on a link or the unfolded sheet) unfolds it
+      const strip = event.target.closest?.('.strip')
+      if (strip) toggle(strip.parentElement.dataset.key)
+      return
+    }
     const key = button.dataset.pause
     try {
       await api(button.getAttribute('aria-pressed') === 'true' ? '/api/resume' : '/api/pause', { key })
@@ -370,15 +643,24 @@
     }
     poll()
   })
+  $('rest').addEventListener('click', (event) => {
+    if (event.target.closest?.('[data-show-all]')) showAll()
+  })
+  $('owners').addEventListener('mouseover', (event) => {
+    const key = event.target.closest?.('[data-owner]')?.dataset.owner ?? null
+    if (key === hoverKey) return
+    hoverKey = key
+    applyLift()
+  })
+  $('owners').addEventListener('mouseleave', () => {
+    hoverKey = null
+    applyLift()
+  })
   document.querySelector('.filter').addEventListener('click', (event) => {
     const button = event.target.closest?.('[data-filter]')
     if (!button || button.dataset.filter === filter) return
     filter = button.dataset.filter
-    try {
-      localStorage.setItem(FILTER_KEY, filter)
-    } catch {
-      // not remembered: the choice holds until the page is reloaded
-    }
+    remember(FILTER_KEY, filter)
     render()
   })
   poll()
