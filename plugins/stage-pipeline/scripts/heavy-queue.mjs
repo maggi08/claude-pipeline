@@ -507,10 +507,13 @@ export async function admit({ cwd, repo, command, kind = 'check', mode, say = co
         }
         const now = Date.now()
         const state = readPriorities(data)
+        // The queue is read BEFORE `running/`: an admitted command writes its running entry before it removes its waiting one,
+        // so in this order it is seen in at least one of them. Read the other way round, a neighbour admitted between the two reads is in neither, and both start.
+        const waiters = readWaiting()
         const running = readRunning()
         const memory = useMemory ? readMemory() : null
         const ramp = memory ? rampOf(running.filter((entry) => entry.pid !== self.pid), now, cfg) : 0
-        verdict = decide({ self: waiter, waiters: readWaiting(), running, memory, order: state.order, paused: state.paused, rampBytes: ramp, now, cfg })
+        verdict = decide({ self: waiter, waiters, running, memory, order: state.order, paused: state.paused, rampBytes: ramp, now, cfg })
         const waited = (now - waiter.since) / 1000
         if (verdict.admit) return go()
         if (verdict.reason !== waiter.reason) {

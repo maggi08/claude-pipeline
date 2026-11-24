@@ -12246,6 +12246,35 @@ if (unit('vt17s6')) {
     for (const child of claudes) child.kill('SIGKILL')
     await pause(200)
 
+    // ── a neighbour admitted while a waiter reads the registry is seen in the queue or in running/, never in neither (CI run 45343364925: both passed).
+    // A fake `ps` moves the neighbour from queue/ to running/ on the waiter's first `ps -A` (the ramp's process table); before the fix that call sat between the two reads.
+    clearRegistry()
+    const realPs = execFileSync('sh', ['-c', 'command -v ps'], { encoding: 'utf8' }).trim()
+    const psBin = join(root, 'ps-bin')
+    mkdirSync(psBin, { recursive: true })
+    const [youngHolder, neighbour] = started(2)
+    addRunning(youngHolder, { started: Date.now(), expectedBytes: 0 }) // young, so the waiter reads the process table; it holds back nothing
+    const neighbourEntry = { pid: neighbour, identity: psIdentity(neighbour).replace(/^\s+/, ''), key: '/t#A', repo: '/r', command: 'c', kind: 'check', started: Date.now(), since: Date.now() - 5000, expectedBytes: 0.8 * GB, background: false, paused: false, childPid: null }
+    mkdirSync(join(lockDir, 'queue'), { recursive: true })
+    writeFileSync(join(lockDir, 'queue', `${neighbour}.json`), JSON.stringify(neighbourEntry))
+    const mark = join(root, 'ps-moved')
+    writeFileSync(join(psBin, 'ps'), `#!/bin/sh\ncase " $* " in *" -A "*) if [ ! -e '${mark}' ]; then : > '${mark}'; mv '${join(lockDir, 'queue', `${neighbour}.json`)}' '${join(lockDir, 'running', `${neighbour}.json`)}'; fi;; esac\nexec '${realPs}' "$@"\n`, { mode: 0o755 })
+    hq.setOrder(['/t#A', '/t#B'])
+    setMemory(3.4) // 1.9 GB of headroom: the waiter's 1.5 GB fits alone, not beside the neighbour's 0.8 GB
+    const savedPath = process.env.PATH
+    process.env.PATH = `${psBin}:${savedPath}`
+    const raced = []
+    const raceStart = Date.now()
+    try {
+      const slot = await hq.admit({ cwd: root, key: '/t#B', repo: '/r2', command: 'x', kind: 'check', mode: { name: 'low' }, say: (line) => raced.push(line), capSeconds: 1.5, capMessage: () => 'capped' })
+      slot.finish({ record: false })
+    } finally {
+      process.env.PATH = savedPath
+    }
+    ms = Date.now() - raceStart
+    check('admission race: a neighbour that moves from the queue to running/ while a waiter reads the registry still holds the waiter back — it waits to the cap instead of starting beside it',
+      existsSync(mark) && raced.at(-1) === 'capped' && ms >= 1400, `${ms} ms ${JSON.stringify(raced)} moved=${existsSync(mark)}`)
+
     // ── the registry entry lives while the session's tree holds a browser main process; its peak is recorded when it goes
     clearRegistry()
     const [owner] = started()
