@@ -18,6 +18,22 @@ export function writeJsonAtomic(file, value, { compact = false, mode = undefined
 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
+// A lock file with no readable pid (empty: its owner died between the create and the write; garbage) is taken over once it is older than this.
+const PIDLESS_AFTER_MS = 2000
+
+/** The owner's pid in a lock file: the plain pid this module writes, or the `{"pid":…}` of `acquirePidLock` (the force-queue file lock before 0.31.0); 0 when there is none. */
+function ownerIn(text) {
+  const trimmed = text.trim()
+  const plain = Number(trimmed)
+  if (Number.isInteger(plain) && plain > 0) return plain
+  try {
+    const pid = JSON.parse(trimmed)?.pid
+    return Number.isInteger(pid) && pid > 0 ? pid : 0
+  } catch {
+    return 0
+  }
+}
+
 /**
  * A dead owner's lock is removed only under a second short lock, after the owner is read again there: two waiters that both saw the dead owner
  * cannot then remove the lock the first one has just taken. Returns true when the lock was removed (try again at once).
@@ -25,14 +41,23 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 function takeOverStale(lock) {
   const readOwner = () => {
     try {
-      return Number(readFileSync(lock, 'utf8').trim() || 0)
+      return ownerIn(readFileSync(lock, 'utf8'))
     } catch {
       return -1 // gone
     }
   }
+  const olderThan = (ms) => {
+    try {
+      return Date.now() - statSync(lock).mtimeMs > ms
+    } catch {
+      return false // gone: the next try takes it
+    }
+  }
+  // A pidless lock goes only after the grace: a fresh one may be a live owner between its create and its write.
+  const takeable = (owner) => (owner > 0 ? !alive(owner) : olderThan(PIDLESS_AFTER_MS))
   const owner = readOwner()
   if (owner === -1) return true
-  if (!owner || alive(owner)) return false
+  if (!takeable(owner)) return false
   const guard = `${lock}.takeover`
   try {
     writeFileSync(guard, String(process.pid), { flag: 'wx' })
@@ -65,7 +90,7 @@ function takeOverStale(lock) {
   }
   try {
     const again = readOwner()
-    if (again > 0 && !alive(again)) {
+    if (again !== -1 && takeable(again)) {
       rmSync(lock, { force: true })
       return true
     }

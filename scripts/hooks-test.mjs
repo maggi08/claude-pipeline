@@ -13022,6 +13022,24 @@ if (unit('vt17f3')) {
     const free = fs.withFileLock(target, () => existsSync(custom), { failOpen: false, lockPath: custom })
     check('file-state M-2: a second holder of the lock path gets the caller\'s error with failOpen: false, a free lock path is taken and released', held?.message === 'q.json is locked by another process — try again' && free === true && !existsSync(custom) && !existsSync(`${target}.lock`))
 
+    // ── delta-2 m-1: a lock with no plain pid — the `{"pid":…}` of acquirePidLock (the force-queue file lock up to 0.30.1) or an empty file — is still taken over
+    const lockWith = (text, ageMs = 0) => {
+      writeFileSync(custom, text)
+      if (ageMs) utimesSync(custom, (Date.now() - ageMs) / 1000, (Date.now() - ageMs) / 1000)
+      try {
+        return fs.withFileLock(target, () => 'ran', { attempts: 3, failOpen: false, lockPath: custom })
+      } catch (error) {
+        return error.message
+      } finally {
+        rmSync(custom, { force: true })
+      }
+    }
+    const legacy = (pid) => JSON.stringify({ pid, label: 'force-queue file', started: new Date().toISOString() })
+    check('file-state m-1: a lock of the old {"pid":…} form with a dead owner is taken over', lockWith(legacy(deadPid)) === 'ran')
+    check('file-state m-1: a lock of the old {"pid":…} form with a live owner is not', lockWith(legacy(process.ppid)) !== 'ran')
+    check('file-state m-1: an empty lock older than the grace is taken over', lockWith('', 5000) === 'ran')
+    check('file-state m-1: a fresh empty lock (an owner between its create and its write) is not', lockWith('') !== 'ran')
+
     // ── m-4 (AC-8.3): a pair of a folder with no task does not cover the task of the session's own folder
     const SESSION = 7301
     const CLAUDE = '/usr/local/bin/claude --resume'
