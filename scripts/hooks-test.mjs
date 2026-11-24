@@ -2504,8 +2504,11 @@ check('heavy-queue AC-1.12: a command the user paused does not keep the machine 
 check('heavy-queue: a paused task\'s waiter never starts; no memory readings — no admission', !verdictOf(waiter(23, 'A', 0), [], fits, busyOne, ['A'], ['A']).admit && verdictOf(waiter(23, 'A', 0, 99), [], null).admit)
 // AC-1.3 / AC-1.8: nice by place
 check('heavy-queue AC-1.3: nice = min(10 + N - 1, 19), 19 without a place', same([1, 2, 3, 10, 12].map((n) => hq.niceFor(Array.from({ length: 12 }, (_, i) => `k${i + 1}`), `k${n}`)), [10, 11, 12, 19, 19]) && hq.niceFor(['a'], 'nowhere') === 19)
-// `nice -n N` adds N to the niceness the process already has (the test run may itself be niced), capped at 20
+// `nice -n N` adds N to the niceness the process already has (the test run may itself be niced, CI runs the pool at 10), capped by the system:
+// 20 on macOS, 19 on Linux — measured, not assumed (the CI runner on Linux read 19 where the test expected 20)
 const niceBase = Number(spawnSync('ps', ['-o', 'ni=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout) || 0
+const niceCap = Number(spawnSync('nice', ['-n', '40', 'sh', '-c', 'ps -o ni= -p $$'], { encoding: 'utf8' }).stdout) || 19
+const capped = (n) => Math.min(niceBase + n, niceCap)
 const niceOf = (scene) => /^(\d+)$/m.exec(spawnSync(process.execPath, [RUN_CHECK, '--', 'ps -o ni= -p $$'], { cwd: rcRepo, encoding: 'utf8', env: { ...process.env, ...scene.env } }).stdout.replace(/ /g, ''))?.[1]
 const nice1 = hqScene('nice-low', { pressure: 'normal', availableGB: 8 })
 mkdirSync(join(nice1.dir, 'data'), { recursive: true })
@@ -2514,13 +2517,13 @@ writeFileSync(join(nice1.dir, 'data', 'priorities.json'), JSON.stringify({ order
 const niceDeep = hqScene('nice-none', { pressure: 'normal', availableGB: 8 })
 mkdirSync(join(niceDeep.dir, 'data'), { recursive: true })
 writeFileSync(join(niceDeep.dir, 'data', 'priorities.json'), JSON.stringify({ order: Array.from({ length: 12 }, (_, i) => `elsewhere${i}`) }))
-check('heavy-queue AC-1.3: a command of the task on place 2 in low runs with nice 11, a task behind twelve others with 19', niceOf(nice1) === String(Math.min(niceBase + 11, 20)) && niceOf(niceDeep) === String(Math.min(niceBase + 19, 20)))
+check('heavy-queue AC-1.3: a command of the task on place 2 in low runs with nice 11, a task behind twelve others with 19', niceOf(nice1) === String(capped(11)) && niceOf(niceDeep) === String(capped(19)), `${niceOf(nice1)} / ${niceOf(niceDeep)}, base ${niceBase}, cap ${niceCap}`)
 const nice2 = hqScene('nice-normal', { pressure: 'critical', availableGB: 0 }, { STAGE_PIPELINE_RESOURCES: 'normal' })
 mkdirSync(join(nice2.dir, 'data'), { recursive: true })
 writeFileSync(join(nice2.dir, 'data', 'priorities.json'), JSON.stringify({ order: [rcReal] }))
 hqEntry(nice2, 'running', holder.pid)
 const normalBusy = spawnSync(process.execPath, [RUN_CHECK, '--', 'ps -o ni= -p $$'], { cwd: rcRepo, encoding: 'utf8', timeout: 20000, env: { ...process.env, ...nice2.env } })
-check('heavy-queue AC-1.8: in normal there is no admission (a critical machine with a running command: no wait), nice by place', new RegExp(`^\\s*${Math.min(niceBase + 10, 20)}\\s*$`, 'm').test(normalBusy.stdout) && !/balance:/.test(normalBusy.stdout), normalBusy.stdout + normalBusy.stderr)
+check('heavy-queue AC-1.8: in normal there is no admission (a critical machine with a running command: no wait), nice by place', new RegExp(`^\\s*${capped(10)}\\s*$`, 'm').test(normalBusy.stdout) && !/balance:/.test(normalBusy.stdout), normalBusy.stdout + normalBusy.stderr)
 // AC-1.6 pure part
 check('heavy-queue AC-1.6: busy cores for 30 s put the lower half into the background; below 0.8 × cores it is taken off; free cores — never', (() => {
   const busyStart = { busySince: null, background: false }
@@ -2604,14 +2607,17 @@ const calmB = hqRun(calm, ['--', 'sleep 1.5; true'])
 await Promise.all([calmA.done, calmB.done])
 check('heavy-queue AC-1.6: while the cores are free nobody goes into the background', !existsSync(bgLog))
 const loaded = hqScene('bg-load', { pressure: 'normal', availableGB: 8, load: 25, cores: 10 }, { STAGE_PIPELINE_TASKPOLICY: stub, STAGE_PIPELINE_BALANCE_BUSY_S: '0', STAGE_PIPELINE_BALANCE_LOAD_EVERY_S: '0' })
-const loadA = hqRun(loaded, ['--', 'sleep 4'])
+// Polled, not fixed naps: under a loaded or niced run the balancer's tick comes late, and a fixed 1.2 s wait missed the -B before the command ended.
+const bgLines = () => (existsSync(bgLog) ? readFileSync(bgLog, 'utf8') : '')
+const bgUntil = async (pattern, ms) => { const end = Date.now() + ms; while (Date.now() < end && !pattern.test(bgLines())) await hqNap(100) }
+const loadA = hqRun(loaded, ['--', 'sleep 7'])
 await hqNap(300)
-const loadB = hqRun(loaded, ['--', 'sleep 3.5; true'])
-await hqNap(1500)
-const onLines = existsSync(bgLog) ? readFileSync(bgLog, 'utf8') : ''
+const loadB = hqRun(loaded, ['--', 'sleep 6.5; true'])
+await bgUntil(/-b -p \d+/, 3000)
+const onLines = bgLines()
 writeFileSync(loaded.probeFile, JSON.stringify({ pressure: 'normal', availableGB: 8, load: 2, cores: 10 }))
-await hqNap(1200)
-const offLines = existsSync(bgLog) ? readFileSync(bgLog, 'utf8') : ''
+await bgUntil(/-B -p \d+/, 3000)
+const offLines = bgLines()
 await Promise.all([loadA.done, loadB.done])
 check('heavy-queue AC-1.6: under load the later (lower) command goes to the background (-b), at load < 0.8 × cores it comes back (-B)', /-b -p \d+/.test(onLines) && !/-B/.test(onLines) && /-B -p \d+/.test(offLines), `${onLines}|${offLines}`)
 // AC-1.9 / D4: the CLI keeps the order and the pause

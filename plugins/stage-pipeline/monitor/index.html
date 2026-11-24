@@ -66,6 +66,11 @@
   .state { font-weight: 600; }
   :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .legend { color: var(--muted); font-size: 12.5px; }
+  .tasks-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+  .filter { display: inline-flex; border: 1px solid var(--accent); border-radius: 4px; overflow: hidden; }
+  .filter button { border: 0; border-radius: 0; padding: 3px 12px; }
+  .filter button + button { border-left: 1px solid var(--accent); }
+  .filter button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
   @media (max-width: 760px) { main { padding: 12px; } .card { grid-template-columns: auto minmax(0, 1fr); } .body { grid-column: 1 / -1; } }
 </style>
 </head>
@@ -79,8 +84,14 @@
     <div class="hint">Open uses the VS Code window that is in focus; if the session belongs to another window, switch to it first.</div>
   </section>
   <section aria-labelledby="th">
-    <h2 id="th">Tasks in priority order</h2>
-    <p class="legend">Drag a card, or focus it and press Alt+Up / Alt+Down, to change its priority. The top task gets the machine first.</p>
+    <div class="tasks-head">
+      <h2 id="th">Tasks in priority order</h2>
+      <div class="filter" role="group" aria-label="Which tasks to show">
+        <button type="button" data-filter="active" aria-pressed="true">Active <span id="nactive"></span></button>
+        <button type="button" data-filter="all" aria-pressed="false">All <span id="nall"></span></button>
+      </div>
+    </div>
+    <p class="legend">Drag a card, or focus it and press Alt+Up / Alt+Down, to change its priority. The top task gets the machine first. Active: a live Claude session, a heavy command or a pause; reordering there puts the shown tasks above the hidden ones.</p>
     <ol id="cards"></ol>
   </section>
 </main>
@@ -127,6 +138,15 @@
     return [...open, ...roots.values()].map((t, i) => [t, i]).sort((a, b) => place(a[0]) - place(b[0]) || a[1] - b[1]).map(([t]) => t)
   }
   const sessionsOf = (s, key) => s.sessions.filter((x) => x.task === key || (!x.task && x.root === key))
+  // Active: the task has a live Claude session, a heavy command (running, waiting or stopped) or a pause to take off; the rest are open tasks nobody works on now
+  const isActive = (s, t) => sessionsOf(s, t.key).length > 0 || s.balance.heavy.some((x) => x.key === t.key) || s.balance.paused.includes(t.key)
+  const FILTER_KEY = 'stage-pipeline-monitor-filter'
+  let filter = 'active'
+  try {
+    if (localStorage.getItem(FILTER_KEY) === 'all') filter = 'all'
+  } catch {
+    // no storage (a private window): the default stays
+  }
 
   function renderMachine(s) {
     const m = s.machine
@@ -199,16 +219,21 @@
     const ol = $('cards')
     const had = focusKey
     ol.replaceChildren()
-    const cards = taskCards(s)
-    if (!cards.length) ol.append(h('li', { class: 'none panel' }, 'No open tasks.'))
-    cards.forEach((t, i) => {
+    const all = taskCards(s)
+    const cards = filter === 'all' ? all : all.filter((t) => isActive(s, t))
+    $('nactive').textContent = `(${all.filter((t) => isActive(s, t)).length})`
+    $('nall').textContent = `(${all.length})`
+    for (const button of document.querySelectorAll('[data-filter]')) button.setAttribute('aria-pressed', button.dataset.filter === filter ? 'true' : 'false')
+    if (!cards.length) ol.append(h('li', { class: 'none panel' }, all.length ? 'No task has a live session, a heavy command or a pause now. All shows every open task.' : 'No open tasks.'))
+    cards.forEach((t) => {
+      const i = all.indexOf(t) // the place among all cards: the order the balancer reads, whichever cards are shown
       const sessions = sessionsOf(s, t.key)
       const heavy = s.balance.heavy.filter((x) => x.key === t.key)
       const paused = s.balance.paused.includes(t.key)
       const busy = heavy.some((x) => x.state === 'running') || sessions.some((x) => x.load.kinds.check.count || x.load.kinds.browser.count || x.load.kinds['dev-server'].count)
       const stage = t.noTask ? 'no current task' : t.stageNumber ? `stage ${t.stageNumber} of ${t.stageTotal}` : t.stageTotal ? `${t.stageTotal} stages` : 'no stages'
       const current = t.stageNumber && t.stages[t.stageNumber - 1] ? t.stages[t.stageNumber - 1].heading.replace(/^\S+\s+\d+\s*[:.-]?\s*/, '') : null
-      const li = h('li', { class: `card${busy ? ' busy' : ''}`, tabindex: '0', draggable: 'true', 'data-key': t.key, 'aria-label': `${t.repo} ${t.ticket}, place ${i + 1} of ${cards.length}. Alt+Up or Alt+Down moves it.` },
+      const li = h('li', { class: `card${busy ? ' busy' : ''}`, tabindex: '0', draggable: 'true', 'data-key': t.key, 'aria-label': `${t.repo} ${t.ticket}, place ${i + 1} of ${all.length}. Alt+Up or Alt+Down moves it.` },
         h('div', { class: 'place' }, String(i + 1)),
         h('div', { class: 'title' }, h('strong', null, `${t.ticket}`), t.repo && t.repo !== t.ticket ? h('span', { class: 'meta' }, t.repo) : null, h('span', { class: 'meta' }, stage)),
         s.pauseSupported === false ? h('span') : h('button', { type: 'button', 'data-pause': t.key, 'aria-pressed': paused ? 'true' : 'false' }, paused ? 'Resume' : 'Pause'),
@@ -311,6 +336,17 @@
       $('problem').textContent = `Pause was not applied (${error.message}).`
     }
     poll()
+  })
+  document.querySelector('.filter').addEventListener('click', (event) => {
+    const button = event.target.closest?.('[data-filter]')
+    if (!button || button.dataset.filter === filter) return
+    filter = button.dataset.filter
+    try {
+      localStorage.setItem(FILTER_KEY, filter)
+    } catch {
+      // not remembered: the choice holds until the page is reloaded
+    }
+    render()
   })
   poll()
   setInterval(poll, 2000)
