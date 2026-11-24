@@ -217,7 +217,9 @@
 
   function renderCards(s) {
     const ol = $('cards')
-    const had = focusKey
+    // the focus comes back only when it was on a card when the poll came; and without scrolling — a focus() in the loop scrolled the page to that card every 2 s
+    const had = $('cards').contains(document.activeElement) ? focusKey : null
+    let refocus = null
     ol.replaceChildren()
     const all = taskCards(s)
     const cards = filter === 'all' ? all : all.filter((t) => isActive(s, t))
@@ -244,16 +246,19 @@
           h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'sessions'), sessions.length ? sessions.map((x) => `pid ${x.pid}${x.branch ? ` · ${x.branch}` : ''}${x.live ? ` · ${Math.round(x.live.cpu)}% CPU` : ''} · ${mem(x.load.rssBytes)}`).join('; ') : 'no session'),
           heavyLines(s, t, sessions)))
       ol.append(li)
-      if (had === t.key) li.focus()
-      else if (had === `${t.key}\u0000pause`) li.querySelector('button')?.focus()
+      if (had === t.key) refocus = li
+      else if (had === `${t.key}\u0000pause`) refocus = li.querySelector('button')
     })
+    refocus?.focus({ preventScroll: true })
   }
 
   const render = () => {
     if (!snap || dragKey) return
+    const y = window.scrollY // the rebuilt lists keep the reader where they were
     renderMachine(snap)
     renderWaiting(snap)
     renderCards(snap)
+    if (window.scrollY !== y) window.scrollTo(0, y)
   }
   async function poll() {
     try {
