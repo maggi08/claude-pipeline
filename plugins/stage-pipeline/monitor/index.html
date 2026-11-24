@@ -64,6 +64,13 @@
   .lbl { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: 6px; }
   .st-running { color: var(--ok); } .st-waiting, .st-throttled { color: var(--major); } .st-paused { color: var(--critical); }
   .state { font-weight: 600; }
+  .chats { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; padding: 0; list-style: none; }
+  .chat { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; align-items: baseline; padding: 6px 10px; background: var(--surface-2); border-radius: 3px; }
+  .chat .ctitle { font-weight: 600; overflow-wrap: anywhere; }
+  .chat .cmeta { color: var(--muted); font-size: 12.5px; }
+  .chat .cprompt { grid-column: 1 / -1; color: var(--ink-2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat a.open { padding: 1px 10px; font-size: 12.5px; }
+  .chat .wait { color: var(--major); font-weight: 600; }
   :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .legend { color: var(--muted); font-size: 12.5px; }
   .tasks-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
@@ -215,6 +222,27 @@
     return lines.length ? lines : [h('div', { class: 'line meta' }, 'nothing heavy now')]
   }
 
+  // One row per open chat (a Claude Code session): its title as VS Code shows it, when it last wrote, its own CPU and memory, its last prompt; the latest first.
+  function chatList(sessions) {
+    const rows = [...sessions].sort((a, b) => (b.chat?.activeAt ?? 0) - (a.chat?.activeAt ?? 0))
+    return h('ul', { class: 'chats', 'aria-label': 'Open chats' }, rows.map((x) => {
+      const title = x.chat?.title || (x.sessionId ? 'untitled chat' : 'new chat')
+      const meta = [
+        x.chat?.activeAt ? `active ${ago(Date.now() - x.chat.activeAt)} ago` : null,
+        x.subagents ? `${x.subagents} subagent${x.subagents > 1 ? 's' : ''}` : null,
+        x.live ? `${Math.round(x.live.cpu)}% CPU` : null,
+        mem(x.load.rssBytes),
+        x.branch,
+        `pid ${x.pid}`,
+      ].filter(Boolean).join(' · ')
+      const canOpen = x.sessionId && !x.sessionGuessed && UUID.test(x.sessionId)
+      return h('li', { class: 'chat' },
+        h('div', null, h('span', { class: 'ctitle' }, title), x.waiting ? h('span', { class: 'wait' }, `  waiting: ${x.waiting.kind}`) : null, h('div', { class: 'cmeta' }, meta)),
+        canOpen ? h('a', { class: 'open', href: `vscode://anthropic.claude-code/open?session=${encodeURIComponent(x.sessionId)}` }, 'Open') : h('span'),
+        x.chat?.lastPrompt ? h('div', { class: 'cprompt', title: x.chat.lastPrompt }, `last: ${x.chat.lastPrompt}`) : null)
+    }))
+  }
+
   function renderCards(s) {
     const ol = $('cards')
     // the focus comes back only when it was on a card when the poll came; and without scrolling — a focus() in the loop scrolled the page to that card every 2 s
@@ -243,7 +271,7 @@
           t.problem ? h('div', { class: 'line st-paused' }, t.problem) : null,
           current ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'stage'), current) : null,
           t.next ? h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'next'), t.next) : null,
-          h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'sessions'), sessions.length ? sessions.map((x) => `pid ${x.pid}${x.branch ? ` · ${x.branch}` : ''}${x.live ? ` · ${Math.round(x.live.cpu)}% CPU` : ''} · ${mem(x.load.rssBytes)}`).join('; ') : 'no session'),
+          sessions.length ? chatList(sessions) : h('div', { class: 'line' }, h('span', { class: 'lbl' }, 'sessions'), 'no session'),
           heavyLines(s, t, sessions)))
       ol.append(li)
       if (had === t.key) refocus = li

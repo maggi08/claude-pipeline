@@ -6,6 +6,8 @@
  *   node monitor.mjs          # a compact table
  *   node monitor.mjs --json   # the snapshot, for the page (stage 5)
  *   node monitor.mjs serve [--port N] [--new-token]   # the page: http://127.0.0.1:7317/?t=<token>
+ *   node monitor.mjs open [--port N] [--no-browser]   # the page once per machine: the running one, or `serve` started apart from the caller; then the browser (/monitor)
+ *   node monitor.mjs stop                             # stops the page that `open` (or a `serve`) started
  *   node monitor.mjs browsers pause|resume <key>      # SIGSTOP / SIGCONT to a task's browsers (the pause of `heavy-queue.mjs`)
  *
  * The snapshot only reads: it signals nothing and changes no state of its own. The writes are `signalTaskBrowsers` (SIGSTOP / SIGCONT, which pause and resume call) and the page's own (priorities, pause); the registry reads drop dead entries
@@ -14,16 +16,16 @@
  * `serve` (stage 5) is the page: a local HTTP server on 127.0.0.1 with a token, see the section below.
  * The session ↔ process link (`sessionRows`) and the process kinds (`classifyTree`) live in this file only; `heavy-queue.mjs` does not import this file, it runs it as a child for `pause|resume` (`monitor.mjs browsers pause|resume`).
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { cpus, homedir, totalmem } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isBrowserMain, isClaude, isMcpServer } from './browser-cleanup.mjs'
 import { isMain } from './main-guard.mjs'
-import { descendants, identityOf, processStats, cwdOf as readCwd } from './processes.mjs'
+import { alive, descendants, identityOf, processStats, cwdOf as readCwd } from './processes.mjs'
 import { placeOf, readLoad, readMemory, readPriorities, readRunning, readSessionTasks, readWaiting, setOrder, setPaused, taskInfo } from './heavy-queue.mjs'
 import { writeJsonAtomic } from './file-state.mjs'
 import { STATUS_LINE } from './markers.mjs'
@@ -282,6 +284,115 @@ export function activeSubagents(sessionId, cwd, { projectsDir = join(homedir(), 
   } catch {
     return 0
   }
+}
+
+/** The transcript of a session: `~/.claude/projects/<slug of cwd>/<id>.jsonl`, or the same name in any project folder (a session that changed folder); null when none. */
+function transcriptOf(sessionId, cwd, projectsDir) {
+  const own = cwd ? join(projectsDir, slugOf(cwd), `${sessionId}.jsonl`) : null
+  if (own && existsSync(own)) return own
+  const slug = readdirSync(projectsDir).find((name) => existsSync(join(projectsDir, name, `${sessionId}.jsonl`)))
+  return slug ? join(projectsDir, slug, `${sessionId}.jsonl`) : null
+}
+
+// The title entries repeat through a transcript (every turn writes them again), so the tail has them; a transcript is up to tens of MB, so only the tail is read,
+// a wider one when the first holds no title (a long tool result at the end), and the answer is kept until the file changes.
+const CHAT_TAILS = [256 * 1024, 4 * 1024 * 1024]
+const CHAT_TITLE_MAX = 120
+const CHAT_PROMPT_MAX = 200
+const chatCache = new Map() // transcript → { mtimeMs, size, chat }
+const clip = (text, max) => {
+  const flat = String(text).replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+function chatFromTail(file, size) {
+  const found = { customTitle: null, aiTitle: null, lastPrompt: null }
+  for (const tail of CHAT_TAILS) {
+    const length = Math.min(size, tail)
+    const buffer = Buffer.alloc(length)
+    const fd = openSync(file, 'r')
+    try {
+      readSync(fd, buffer, 0, length, size - length)
+    } finally {
+      closeSync(fd)
+    }
+    const lines = buffer.toString('utf8').split('\n')
+    if (length < size) lines.shift() // the first line is cut
+    for (let index = lines.length - 1; index >= 0 && !(found.customTitle && found.aiTitle && found.lastPrompt); index -= 1) {
+      const line = lines[index]
+      const key = line.includes('"custom-title"') ? 'customTitle' : line.includes('"ai-title"') ? 'aiTitle' : line.includes('"last-prompt"') ? 'lastPrompt' : null
+      if (!key || found[key]) continue
+      try {
+        const value = JSON.parse(line)?.[key]
+        if (typeof value === 'string' && value.trim()) found[key] = value
+      } catch {
+        // a cut or foreign line
+      }
+    }
+    if (found.customTitle || found.aiTitle || length === size) break
+  }
+  return found
+}
+
+/**
+ * The chat a session is in VS Code: its title (the one the user gave it, else the generated one), its last prompt and when its transcript last changed (`activeAt`, ms).
+ * Read from the tail of the transcript and cached by its mtime and size; null without a session id or a transcript.
+ */
+export function chatOf(sessionId, cwd, { projectsDir = join(homedir(), '.claude', 'projects') } = {}) {
+  if (!sessionId) return null
+  try {
+    const file = transcriptOf(sessionId, cwd, projectsDir)
+    if (!file) return null
+    const stat = statSync(file)
+    const hit = chatCache.get(file)
+    if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.chat
+    const found = chatFromTail(file, stat.size)
+    const title = found.customTitle ?? found.aiTitle
+    const chat = { title: title ? clip(title, CHAT_TITLE_MAX) : null, lastPrompt: found.lastPrompt ? clip(found.lastPrompt, CHAT_PROMPT_MAX) : null, activeAt: stat.mtimeMs }
+    chatCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, chat })
+    return chat
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A tab opened without `--resume` and with no hook state yet has no session id. Its transcript is a file of its folder's project dir that was created after the process
+ * started and that no other live session holds: the sessions of one folder take such files in the order they started, each the first file born after its own start.
+ * Sets `sessionId` and `sessionGuessed: true` (the page gives no Open link to a guessed id). `now` and `projectsDir` are seams.
+ */
+export function guessSessionIds(sessions, { projectsDir = join(homedir(), '.claude', 'projects'), now = Date.now() } = {}) {
+  const held = new Set(sessions.map((session) => session.sessionId).filter(Boolean))
+  const byDir = new Map()
+  for (const session of sessions) {
+    if (session.sessionId || !session.cwd) continue
+    const dir = join(projectsDir, slugOf(session.cwd))
+    byDir.set(dir, [...(byDir.get(dir) ?? []), session])
+  }
+  for (const [dir, waiting] of byDir) {
+    const startOf = (session) => now - (session.age ?? 0) * 1000 - 5000 // `age` is whole seconds
+    const earliest = Math.min(...waiting.map(startOf))
+    let files
+    try {
+      files = readdirSync(dir)
+        .filter((name) => name.endsWith('.jsonl') && !held.has(name.slice(0, -6)))
+        .map((name) => ({ id: name.slice(0, -6), stat: statSync(join(dir, name)) }))
+        .filter(({ stat }) => stat.mtimeMs >= earliest)
+        .map(({ id, stat }) => ({ id, born: stat.birthtimeMs || stat.ctimeMs }))
+        .filter(({ born }) => born >= earliest)
+        .sort((a, b) => a.born - b.born)
+    } catch {
+      continue
+    }
+    for (const session of waiting.sort((a, b) => startOf(a) - startOf(b))) {
+      const at = files.findIndex(({ born }) => born >= startOf(session))
+      if (at === -1) continue
+      session.sessionId = files[at].id
+      session.sessionGuessed = true
+      files.splice(at, 1)
+    }
+  }
+  return sessions
 }
 
 /** The `HEAD` file of the checkout that holds `cwd`: `.git/HEAD`, or, in a linked worktree (`.git` is a file `gitdir: <path>`), the `HEAD` of that gitdir. Null off a checkout. */
@@ -575,8 +686,10 @@ export function collect({ table, ...seams } = {}) {
     sessions = guarded('sessions', () => sessionRows(processes, seams), [])
     const known = new Map(sessions.map((session) => [session, session.sessionId]))
     waiting = guarded('waiting', () => attachWaiting(sessions, seams.waitStates ?? readWaitStates(), { now: seams.now, mtimeOf: seams.mtimeOf, table: processes }), [])
+    guarded('session ids', () => guessSessionIds(sessions, { projectsDir: seams.projectsDir, now: seams.now }), null)
     for (const session of sessions) {
       if (session.sessionId !== known.get(session)) session.subagents = activeSubagents(session.sessionId, session.cwd, { projectsDir: seams.projectsDir, now: seams.now })
+      session.chat = guarded('chat', () => chatOf(session.sessionId, session.cwd, { projectsDir: seams.projectsDir }), null) // after attachWaiting: a new tab gets its id from the hook state
     }
     if (sessions.some((session) => session.cwd === null)) problems.push('lsof is missing or did not answer: the folder of some sessions is unknown')
   }
@@ -854,6 +967,116 @@ export function serve({ port = DEFAULT_PORT, newToken = false, rotateOnBusy = po
   })
 }
 
+// ── one page per machine: open / stop (the /monitor command) ─────────────────
+
+// The `serve` that is running: `{ pid, identity, port }`, written when it listens and removed when it stops. `open` finds the page by it instead of starting a second
+// server: a second start on the fixed port fails and replaces the token (S-3), which would break the link of the page that runs.
+const SERVER_FILE = 'monitor-server.json'
+const LOG_FILE = 'monitor.log'
+const READY_MS = 5000
+
+/** The page's server of this data dir when it is alive: `{ pid, port }` (its pid still has the identity recorded at its start); else null. */
+export function runningServer({ dir = pluginDataDir(), identity = identityOf } = {}) {
+  try {
+    const saved = JSON.parse(readFileSync(join(dir, SERVER_FILE), 'utf8'))
+    if (!Number.isInteger(saved?.pid) || !Number.isInteger(saved?.port) || typeof saved.identity !== 'string') return null
+    return identity(saved.pid) === saved.identity ? { pid: saved.pid, port: saved.port } : null
+  } catch {
+    return null
+  }
+}
+
+/** Records the running `serve` and removes the record when this process ends (only its own: a newer server's record stays). */
+export function recordServer(port, { dir = pluginDataDir(), identity = identityOf } = {}) {
+  const file = join(dir, SERVER_FILE)
+  const own = identity(process.pid)
+  if (!own) return () => {} // no `ps`: nothing that `open` could check later
+  writeJsonAtomic(file, { pid: process.pid, identity: own, port }, { compact: true, mode: 0o600, dirMode: 0o700 })
+  return () => {
+    try {
+      if (JSON.parse(readFileSync(file, 'utf8')).pid === process.pid) rmSync(file, { force: true })
+    } catch {
+      // already gone
+    }
+  }
+}
+
+/** Opens a URL in the default browser, detached; false when no opener could start (the link is printed anyway). */
+export function openInBrowser(url, { platform = process.platform, spawnFn = spawn } = {}) {
+  const [command, args] = platform === 'darwin' ? ['open', [url]] : platform === 'win32' ? ['explorer', [url]] : ['xdg-open', [url]]
+  try {
+    const child = spawnFn(command, args, { detached: true, stdio: 'ignore' })
+    child.on?.('error', () => {})
+    child.unref?.()
+    return true
+  } catch {
+    return false
+  }
+}
+
+const nap = (ms) => new Promise((done) => setTimeout(done, ms))
+
+/**
+ * The page, started once per machine. A running server is reused (its link is printed); otherwise `serve` starts apart from the caller — its own process group, output
+ * to `<data dir>/monitor.log` — so it outlives the Claude session that ran the command. Resolves `{ url, pid, started }`; rejects with the server's own error line
+ * when it did not come up within `waitMs`. `browser: false` only prints.
+ */
+export async function openPage({ port = DEFAULT_PORT, dir = pluginDataDir(), browser = true, spawnFn = spawn, launch = openInBrowser, waitMs = READY_MS, identity = identityOf } = {}) {
+  let server = runningServer({ dir, identity })
+  let started = false
+  if (!server) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const logFile = join(dir, LOG_FILE)
+    const log = openSync(logFile, 'w', 0o600)
+    let child
+    try {
+      child = spawnFn(process.execPath, [fileURLToPath(import.meta.url), 'serve', '--port', String(port)], { detached: true, stdio: ['ignore', log, log], env: process.env })
+    } finally {
+      closeSync(log)
+    }
+    let exited = false
+    child.on?.('exit', () => {
+      exited = true
+    })
+    child.unref?.()
+    const end = Date.now() + waitMs
+    while (!(server && server.pid === child.pid)) {
+      if (exited || Date.now() > end) {
+        let said = ''
+        try {
+          said = readFileSync(logFile, 'utf8').trim().split('\n').pop() ?? ''
+        } catch {
+          // no log
+        }
+        throw new Error(said.replace(/^monitor:\s*/, '') || `the page did not start within ${Math.round(waitMs / 1000)} s (see ${logFile})`)
+      }
+      await nap(100)
+      server = runningServer({ dir, identity })
+    }
+    started = true
+  }
+  const url = `http://127.0.0.1:${server.port}/?t=${readToken({ dir })}`
+  if (browser) launch(url)
+  return { url, pid: server.pid, started }
+}
+
+/**
+ * Stops the running page: SIGTERM to the recorded server, then up to `waitMs` until the process itself is gone — its record goes first, from its exit handler,
+ * and the port is free only when the process has ended. `{ stopped, pid }`.
+ */
+export async function stopPage({ dir = pluginDataDir(), identity = identityOf, kill = process.kill, isAlive = alive, waitMs = 3000 } = {}) {
+  const server = runningServer({ dir, identity })
+  if (!server) return { stopped: false, pid: null }
+  try {
+    kill(server.pid, 'SIGTERM')
+  } catch {
+    return { stopped: false, pid: server.pid }
+  }
+  const end = Date.now() + waitMs
+  while (Date.now() < end && isAlive(server.pid)) await nap(50)
+  return { stopped: !isAlive(server.pid), pid: server.pid }
+}
+
 // ── the table ────────────────────────────────────────────────────────────────
 
 const gb = (bytes) => (bytes === null || bytes === undefined ? '?' : `${(bytes / GB).toFixed(1)} GB`)
@@ -896,20 +1119,43 @@ export function renderTable(snapshot) {
 
 async function main() {
   const args = process.argv.slice(2)
-  if (args[0] === 'serve') {
+  const portArg = () => {
     const at = args.indexOf('--port')
     const port = at >= 0 ? Number(args[at + 1]) : DEFAULT_PORT
-    if (!Number.isInteger(port) || port < 0 || port > 65535) {
-      console.error('usage: node monitor.mjs serve [--port N] [--new-token]')
-      process.exit(2)
-    }
+    if (Number.isInteger(port) && port >= 0 && port <= 65535) return port
+    console.error('usage: node monitor.mjs serve [--port N] [--new-token] | open [--port N] [--no-browser] | stop')
+    process.exit(2)
+  }
+  if (args[0] === 'serve') {
+    const port = portArg()
     try {
       const running = await serve({ port, newToken: args.includes('--new-token') })
+      const forget = recordServer(running.port)
+      process.on('exit', forget)
+      for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => process.exit(0)) // the exit handler drops the record
       console.log(`monitor: ${running.url}`)
     } catch (error) {
       console.error(`monitor: cannot listen on 127.0.0.1:${port} — ${error?.message ?? error}${error?.tokenRotated ? '; the access token was replaced (another program holds the port)' : ''}`)
       process.exit(1)
     }
+    return
+  }
+  if (args[0] === 'open') {
+    const port = portArg()
+    try {
+      const page = await openPage({ port, browser: !args.includes('--no-browser') })
+      console.log(`monitor: ${page.url}`)
+      console.log(page.started ? `monitor: started (pid ${page.pid}); it keeps running after this session — stop it with: node ${fileURLToPath(import.meta.url)} stop` : `monitor: already running (pid ${page.pid})`)
+    } catch (error) {
+      console.error(`monitor: ${error?.message ?? error}`)
+      process.exit(1)
+    }
+    return
+  }
+  if (args[0] === 'stop') {
+    const done = await stopPage()
+    console.log(done.stopped ? `monitor: stopped (pid ${done.pid})` : done.pid ? `monitor: pid ${done.pid} did not stop` : 'monitor: not running')
+    if (done.pid && !done.stopped) process.exit(1)
     return
   }
   if (args[0] === 'browsers' && (args[1] === 'pause' || args[1] === 'resume') && args[2]) {

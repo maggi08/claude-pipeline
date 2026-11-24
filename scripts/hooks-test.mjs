@@ -203,6 +203,7 @@ const UNITS = [
   { id: 'vt17s5', weight: 2 }, // VT-17 stage 5: monitor.mjs serve — token, Host, Origin, port, priorities and pause endpoints, the state with the CPU delta
   { id: 'vt17s6', weight: 12 }, // VT-17 stage 6: the browser admission hook (memory, priority, cap line, paused task), the browser's registry entry and its peak, SIGSTOP/SIGCONT of a task's browsers, attachHeavyUsage and the live CPU of a heavy row, hooks.json wiring
   { id: 'vt17f2', weight: 8 }, // VT-17 final-checks fix round 2: an unwritable lock/data dir does not stop run-check, the session ↔ task pair (D9 layout), one ps per snapshot, browsers outside the lower half, no background without taskpolicy, a paused task holds the call of a session that has its browser, the peak key, the card's labels
+  { id: 'vt17f4', weight: 4 }, // VT-17 after the run: the open chats of a card (title, last prompt, guessed id of a tab without --resume), the /monitor command (open, stop)
   { id: 'vt17f3', weight: 6 }, // VT-17 final-checks fix round 3: a snapshot with a ready table removes no registry entry, one short file lock with the caller's path and text, a pair with no task does not cover the folder's task, the resume wakes a paused tree when the registry cannot be written, nice 19 without admission
   { id: 'vt17s4', weight: 2 }, // VT-17 stage 4: the session-wait hook (turn-ended, question, permission, elicitation, cleared, subagent, never blocks) and the waiting field of monitor.mjs
 ]
@@ -13102,6 +13103,82 @@ if (unit('vt17f3')) {
     for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value }
     for (const child of sleepers) child.kill()
     try { chmodSync(join(root, 'ro-queue'), 0o755) } catch { /* gone */ }
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+if (unit('vt17f4')) {
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const { alive } = await import(join(PLUGIN, 'processes.mjs'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hooks-test-f4-')))
+  try {
+    // ── the open chats of a card: the title VS Code shows (the user's own, else the generated one), the last prompt, when the transcript changed
+    const projects = join(root, 'projects')
+    const cwd = '/work/my-app'
+    const dir = join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+    mkdirSync(dir, { recursive: true })
+    const id = '11111111-2222-3333-4444-555555555555'
+    const file = join(dir, `${id}.jsonl`)
+    const line = (value) => `${JSON.stringify(value)}\n`
+    writeFileSync(file, line({ type: 'ai-title', aiTitle: 'Generated title', sessionId: id }) + line({ type: 'custom-title', customTitle: 'My   own\ntitle', sessionId: id }) + line({ type: 'last-prompt', lastPrompt: 'continue', sessionId: id }))
+    appendFileSync(file, line({ type: 'assistant', text: 'x'.repeat(300 * 1024) })) // a long last entry: the titles are not in the first 256 KB tail
+    const chat = mon.chatOf(id, cwd, { projectsDir: projects })
+    check('monitor chats: the title is the user\'s own over the generated one, whitespace folded; the last prompt; found past a long last entry', chat?.title === 'My own title' && chat?.lastPrompt === 'continue' && chat?.activeAt === statSync(file).mtimeMs, JSON.stringify(chat))
+    check('monitor chats: an unchanged transcript is not read again (the same answer object)', mon.chatOf(id, cwd, { projectsDir: projects }) === chat)
+    appendFileSync(file, line({ type: 'custom-title', customTitle: 'Renamed', sessionId: id }))
+    check('monitor chats: a renamed chat shows the new title once the file changes', mon.chatOf(id, cwd, { projectsDir: projects })?.title === 'Renamed')
+    const generatedOnly = '66666666-2222-3333-4444-555555555555'
+    writeFileSync(join(dir, `${generatedOnly}.jsonl`), line({ type: 'ai-title', aiTitle: 'Only generated', sessionId: generatedOnly }))
+    check('monitor chats: with no title of the user the generated one; no session id or no transcript — null', mon.chatOf(generatedOnly, '/elsewhere', { projectsDir: projects })?.title === 'Only generated' && mon.chatOf(null, cwd, { projectsDir: projects }) === null && mon.chatOf('77777777-2222-3333-4444-555555555555', cwd, { projectsDir: projects }) === null)
+
+    // ── a tab opened without --resume: its transcript is the next file of its folder born after it started, not one another live session holds
+    const guessDir = join(projects, '-work-two-tabs')
+    mkdirSync(guessDir, { recursive: true })
+    const held = 'aaaaaaaa-0000-0000-0000-000000000000'
+    writeFileSync(join(guessDir, `${held}.jsonl`), '{}\n')
+    writeFileSync(join(guessDir, 'bbbbbbbb-0000-0000-0000-000000000000.jsonl'), '{}\n')
+    await new Promise((done) => setTimeout(done, 30))
+    writeFileSync(join(guessDir, 'cccccccc-0000-0000-0000-000000000000.jsonl'), '{}\n')
+    const now = Date.now()
+    const tabs = [
+      { pid: 1, cwd: '/work/two-tabs', sessionId: null, age: 60 },
+      { pid: 2, cwd: '/work/two-tabs', sessionId: null, age: 0 },
+      { pid: 3, cwd: '/work/two-tabs', sessionId: held, age: 600 },
+      { pid: 4, cwd: '/work/no-files', sessionId: null, age: 10 },
+    ]
+    mon.guessSessionIds(tabs, { projectsDir: projects, now })
+    check('monitor chats: tabs of one folder without an id take the files born after they started, in start order; a held file is skipped; no file — no id', tabs[0].sessionId === 'bbbbbbbb-0000-0000-0000-000000000000' && tabs[1].sessionId === 'cccccccc-0000-0000-0000-000000000000' && tabs[0].sessionGuessed && tabs[2].sessionId === held && !tabs[2].sessionGuessed && tabs[3].sessionId === null, JSON.stringify(tabs.map((tab) => [tab.sessionId, tab.sessionGuessed])))
+    const page = readFileSync(join(PLUGIN, '..', 'monitor', 'index.html'), 'utf8')
+    check('monitor chats: the page gives no Open link to a guessed id', /canOpen = x\.sessionId && !x\.sessionGuessed/.test(page))
+
+    // ── /monitor: open starts the page once per machine, apart from the caller; a second open reuses it; stop stops it
+    const data = join(root, 'data')
+    const savedData = process.env.STAGE_PIPELINE_DATA_DIR
+    process.env.STAGE_PIPELINE_DATA_DIR = data // the started `serve` reads its data dir from the environment
+    let first = null
+    try {
+      const launched = []
+      first = await mon.openPage({ port: 0, dir: data, launch: (url) => launched.push(url), waitMs: 15000 })
+      const token = readFileSync(join(data, 'monitor-token'), 'utf8').trim()
+      const port = Number(new URL(first.url).port)
+      const answer = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { 'X-Token': token } }).then((res) => res.status).catch((error) => String(error))
+      const record = statSync(join(data, 'monitor-server.json'))
+      check('monitor open: the first call starts the page (its own process, a recorded pid and port, mode 0600), the link carries the token, the browser gets it', first.started && first.pid > 0 && first.url === `http://127.0.0.1:${port}/?t=${token}` && answer === 200 && (record.mode & 0o777) === 0o600 && launched.length === 1, `${JSON.stringify(first)} ${answer} ${(record.mode & 0o777).toString(8)}`)
+      const second = await mon.openPage({ port: 0, dir: data, launch: (url) => launched.push(url) })
+      check('monitor open: a second call reuses the running page (same pid and link, no second server)', !second.started && second.pid === first.pid && second.url === first.url && launched.length === 2)
+      const quiet = await mon.openPage({ dir: data, browser: false, launch: (url) => launched.push(url) })
+      check('monitor open: --no-browser only prints', quiet.pid === first.pid && launched.length === 2)
+      const stopped = await mon.stopPage({ dir: data })
+      check('monitor stop: the page stops and its record goes; a second stop finds nothing', stopped.stopped && stopped.pid === first.pid && !existsSync(join(data, 'monitor-server.json')) && !alive(first.pid) && (await mon.stopPage({ dir: data })).pid === null)
+      const gone = spawnSync('true').pid
+      writeFileSync(join(data, 'monitor-server.json'), JSON.stringify({ pid: gone, identity: 'Mon Jan  1 00:00:00 2026 node monitor.mjs serve', port: 1 }))
+      check('monitor open: a record of a process that is gone is no running page', mon.runningServer({ dir: data }) === null)
+    } finally {
+      if (savedData === undefined) delete process.env.STAGE_PIPELINE_DATA_DIR
+      else process.env.STAGE_PIPELINE_DATA_DIR = savedData
+      if (first?.pid && alive(first.pid)) process.kill(first.pid, 'SIGKILL')
+    }
+  } finally {
     rmSync(root, { recursive: true, force: true })
   }
 }
