@@ -17,10 +17,11 @@
  *
  * Exit codes of `run`: 0 every task completed · 1 some task did not · 2 refused to start (a lock, nothing to run) · 3 limit of unknown window · 4 interrupted · 5 weekly limit · 6 spend limit.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMain } from './main-guard.mjs'
+import { withFileLock, writeJsonAtomic } from './file-state.mjs'
 import { EXIT, TICKET, acquirePidLock, findOnPath, gitOk, numberFlag, prepareRun, prepareWorktree, runLoop, taskReadiness, ticketLockFile, waitUntil } from './force-run.mjs'
 import { blockerGate, lastForceBlock, openBlockers } from './journal-check.mjs'
 import { digestFilePath } from './run-digest.mjs'
@@ -34,17 +35,11 @@ const fileLockFile = (dataDir = pluginDataDir()) => join(dataDir, 'locks', 'queu
 
 /** A short lock around one read-modify-write of `force-queue.json` (an `add`/`remove` during a night `run` must not lose an update). */
 function withQueueFile(dataDir, fn) {
-  let lock = null
-  for (let attempt = 0; attempt < 100 && !lock?.ok; attempt += 1) {
-    lock = acquirePidLock(fileLockFile(dataDir), 'force-queue file')
-    if (!lock.ok) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
-  }
-  if (!lock.ok) throw new Error('force-queue.json is locked by another process — try again')
-  try {
-    return fn()
-  } finally {
-    lock.release()
-  }
+  return withFileLock(queueFile(dataDir), fn, {
+    failOpen: false,
+    lockPath: fileLockFile(dataDir),
+    message: 'force-queue.json is locked by another process — try again',
+  })
 }
 
 function readQueue(dataDir = pluginDataDir()) {
@@ -58,11 +53,7 @@ function readQueue(dataDir = pluginDataDir()) {
 }
 
 function writeQueue(queue, dataDir = pluginDataDir()) {
-  const file = queueFile(dataDir)
-  mkdirSync(join(file, '..'), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(queue, null, 2)}\n`)
-  renameSync(tmp, file)
+  writeJsonAtomic(queueFile(dataDir), queue)
 }
 
 /** Queued and not yet started, or started and waiting for another session (a limit stopped it): the tasks `run` takes. */

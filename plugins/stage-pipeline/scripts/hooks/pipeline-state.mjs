@@ -925,26 +925,28 @@ export function mainRoot(cwd) {
 }
 
 /**
- * Whether `readPipelineState` can find a config from here — from the file system alone, without spawning git: the hooks of every Bash call in every repo
- * ask this first and leave at once outside the pipeline. Walks up to the repository root (the first `.git`) and, in a linked worktree, reads its `.git` file
- * to check the main tree as `configRoot` does. A config above the repo root says "maybe" — `readPipelineState` decides; never "no" where it would find one.
+ * The directory whose `.claude/pipeline.config.md` serves `cwd`, from the file system alone, without spawning git: walks up to the repository root (the first `.git`) and, in a linked
+ * worktree, reads its `.git` file to check the main tree as `configRoot` does. A config above the repo root counts ("maybe" — `readPipelineState` decides); null when none is in reach.
  */
-export function hasPipelineConfig(cwd) {
+export function findConfigRoot(cwd) {
   let dir = resolve(cwd)
   for (;;) {
-    if (isFile(join(dir, '.claude/pipeline.config.md'))) return true
+    if (isFile(join(dir, '.claude/pipeline.config.md'))) return dir
     const dotGit = join(dir, '.git')
-    if (isDir(dotGit)) return false
+    if (isDir(dotGit)) return null
     if (isFile(dotGit)) {
       // a submodule or a broken link: no main tree to look at, as in configRoot
       const main = linkedMainTree(dir)
-      return main !== null && isFile(join(main, '.claude/pipeline.config.md'))
+      return main !== null && isFile(join(main, '.claude/pipeline.config.md')) ? main : null
     }
     const up = dirname(dir)
-    if (up === dir) return false
+    if (up === dir) return null
     dir = up
   }
 }
+
+/** Whether `readPipelineState` can find a config from here: the hooks of every Bash call in every repo ask this first and leave at once outside the pipeline. Never "no" where it would find one. */
+export const hasPipelineConfig = (cwd) => findConfigRoot(cwd) !== null
 
 /** An agent name the way the host normalizes `subagent_type` after PreToolUse: NFKC, lowercase, no white space, dashes or `_` (agent-guard and force-guard compare this form). */
 export const squashAgentName = (name) => String(name).normalize('NFKC').toLowerCase().replace(/[\p{White_Space}\p{Pd}_]/gu, '')

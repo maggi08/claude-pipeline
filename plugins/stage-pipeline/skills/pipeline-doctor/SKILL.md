@@ -35,9 +35,9 @@ machine, and suggest a fix for what does not. The pipeline itself comes with the
    (the local fields override the base config; the file is gitignored).
 
 3. **Machine resources.** `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-check.mjs --mode` — `low` (RAM ≤ 16 GB or
-   `resources: low` in `pipeline.config.local.md`): the heavy checks of all the machine's projects go in a queue,
-   the dev server lives only for the duration of devtools-verify (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`).
-   Tell the user the mode; a strong machine and the queue gets in the way — `- resources: normal` into the local config.
+   `resources: low` in `pipeline.config.local.md`): the heavy checks of all the machine's projects are admitted by free memory (the task order decides only under
+   shortage; a wait is capped at 5 minutes), the dev server lives only for the duration of devtools-verify (`${CLAUDE_PLUGIN_ROOT}/references/heavy-checks.md`).
+   Tell the user the mode; a strong machine and the admission gets in the way — `- resources: normal` into the local config.
    No `lint_files`/`test_related` in the config — suggest them (`/pipeline-init`, item 2): without them the whole
    project is run on a stage.
 

@@ -145,21 +145,24 @@ const isTempProfile = (dir) => Boolean(dir) && basename(dir).startsWith('puppete
 /** The caller's own process: an orphan of another user is never ours to name or close. */
 const sameUser = (entry) => typeof process.getuid === 'function' && entry.uid === process.getuid()
 
+/** The nearest `claude` ancestor of `from` in `table` (`from` itself excluded), or null: the one rule for "the session above this process". */
+export const claudeOf = (table, from = process.pid) => (table ? ancestors(table, from).find((entry) => isClaude(entry.args)) ?? null : null)
+
 /**
- * Who holds which MCP browser. `from` — the process whose session is "this one" (default: this process). `under` — only profiles under this directory.
+ * Who holds which MCP browser. `from` — the process whose session is "this one" (default: this process); `session` — the Claude process itself, when it is known (the registry's browser entries). `under` — only profiles under this directory.
  * `mine` — browsers of this session's MCP servers, `others` — of other sessions' (or of servers with no session above).
  * A browser below no MCP server whose parent is gone, of this user, with a browser executable (not a shell or a script that names a profile, S-4 of VT-1 5b):
  * `orphans` — on a puppeteer temp profile in the OS temp dir (`--orphans` closes them); `held` — on the `stage-pipeline-chrome` profile, the process that keeps
  * that profile busy after its server died (listed only: m-4 of VT-1 5b).
  */
-export function survey(table, { from = process.pid, under = null } = {}) {
+export function survey(table, { from = process.pid, under = null, session: sessionPid = null } = {}) {
   const root = under ? realOr(under) : null
-  const session = ancestors(table, from).find((entry) => isClaude(entry.args)) ?? null
+  const session = sessionPid !== null ? table.get(sessionPid) ?? null : claudeOf(table, from)
   const servers = [...table.values()].filter((entry) => isMcpServer(entry.args) && !isMcpServer(table.get(entry.ppid)?.args ?? ''))
   const browsers = []
   const owned = new Set()
   for (const server of servers) {
-    const owner = ancestors(table, server.pid).find((entry) => isClaude(entry.args)) ?? null
+    const owner = claudeOf(table, server.pid)
     for (const entry of descendants(table, server.pid, { depth: 4, stop: (child) => isChromeProcess(child.args) })) {
       if (!isBrowserMain(entry.args)) continue
       owned.add(entry.pid)

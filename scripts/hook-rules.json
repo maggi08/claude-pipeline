@@ -188,6 +188,15 @@
       ],
       "head": "floor-guard found moves in the stage diff"
     },
+    "git-guard/heavy-guard-bypass": {
+      "incident": [
+        "heavy-guard AC-2.1: low mode, a bare `yarn build` after `cd … &&` is denied, with the rule and the same command through run-check"
+      ],
+      "legitimate": [
+        "heavy-guard AC-2.4: a lookalike (`yarn build:e2e`, `grep build`"
+      ],
+      "head": "heavy-guard/bypass:"
+    },
     "journal-gate/journal": {
       "incident": [
         "a new mark \"[x] pro-review (checks/"

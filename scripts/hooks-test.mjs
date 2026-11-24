@@ -22,7 +22,8 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { createServer, request as httpRequest } from 'node:http'
+import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { availableParallelism, getPriority, homedir, loadavg, setPriority, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -56,6 +57,8 @@ if (MODE === 'worker') {
 const DATA = (MODE === 'worker' && process.env.HOOKS_TEST_UNIT_DATA) || mkdtempSync(join(tmpdir(), 'hooks-test-data-'))
 delete process.env.HOOKS_TEST_UNIT_DATA
 process.env.CLAUDE_PLUGIN_DATA = DATA
+// run-check registers its heavy command in the machine's registry (heavy-queue.mjs): a temporary one, never the real ~/.claude/stage-pipeline.
+process.env.STAGE_PIPELINE_LOCK_DIR = join(DATA, 'heavy-lock')
 // A force close in journal-gate closes the MCP browser of the Claude Code session above it — run inside a session, the close fixtures would close that
 // session's real browser. Only the stage 5b fixtures turn it on, under a throwaway `claude` process of their own.
 process.env.STAGE_PIPELINE_BROWSER_CLEANUP = 'off'
@@ -135,7 +138,7 @@ const UNITS = [
   { id: 'v014', weight: 4 }, // 0.14: findings outcome, unverified, frames
   { id: 'v015', weight: 17 }, // 0.15: criteria in the plan, the kit view, CI gates, work after "done" + English twin of t…
   { id: 'v016', weight: 6, serial: true }, // 0.16: English phrase heuristics and the report language
-  { id: 'heavy', weight: 2 }, // heavy checks: scope by the diff and the machine queue
+  { id: 'heavy', weight: 16 }, // heavy checks: scope by the diff; the machine's balancer (VT-17 stage 1: admission by memory, priority with aging, pause, background under load)
   { id: 'archive', weight: 3 }, // STAGES.md archiving + 0.16 (AC-3.3): texts that scripts write into task files — in the ta…
   { id: 'showcase', weight: 2 }, // validate.mjs: the "N skills / N agents" count in a showcase, Russian and English forms (A…
   { id: 'xref', weight: 2 }, // validate.mjs: cross-references and Cyrillic outside the allowlist (AC-15.4)
@@ -196,6 +199,13 @@ const UNITS = [
   { id: 'todominors', weight: 2 }, // 0.29.2 (TODO.md minors): main guards through a symlinked path, the maker spawn of a task in a linked worktree from a main-tree session, the api-verify no-rerun text
   { id: 'pp1s5', weight: 2 }, // PP-1 stage 5: plan-check reads PRODUCT-HANDOFF.md (H<n> coverage, unknown version, no file = no requirement) and --input (no input stops, any one of four passes); stage-plan and docs-lookup text
   { id: 'vt12s3', weight: 5 }, // VT-12 stage 3: force-queue.mjs — add/list/remove, tasks one by one, the machine lock, the threshold wait, the weekly stop, error → next task, the ticket lock, the summary, check
+  { id: 'vt17s3', weight: 2 }, // VT-17 stage 3: monitor.mjs — tasks of the registry, sessions, the tree split by kind, one ps and one lsof per session, the balancer's states, the table
+  { id: 'vt17s5', weight: 2 }, // VT-17 stage 5: monitor.mjs serve — token, Host, Origin, port, priorities and pause endpoints, the state with the CPU delta
+  { id: 'vt17s6', weight: 12 }, // VT-17 stage 6: the browser admission hook (memory, priority, cap line, paused task), the browser's registry entry and its peak, SIGSTOP/SIGCONT of a task's browsers, attachHeavyUsage and the live CPU of a heavy row, hooks.json wiring
+  { id: 'vt17f2', weight: 8 }, // VT-17 final-checks fix round 2: an unwritable lock/data dir does not stop run-check, the session ↔ task pair (D9 layout), one ps per snapshot, browsers outside the lower half, no background without taskpolicy, a paused task holds the call of a session that has its browser, the peak key, the card's labels
+  { id: 'vt17f4', weight: 4 }, // VT-17 after the run: the open chats of a card (title, last prompt, guessed id of a tab without --resume), the /monitor command (open, stop)
+  { id: 'vt17f3', weight: 6 }, // VT-17 final-checks fix round 3: a snapshot with a ready table removes no registry entry, one short file lock with the caller's path and text, a pair with no task does not cover the folder's task, the resume wakes a paused tree when the registry cannot be written, nice 19 without admission
+  { id: 'vt17s4', weight: 2 }, // VT-17 stage 4: the session-wait hook (turn-ended, question, permission, elicitation, cleared, subagent, never blocks) and the waiting field of monitor.mjs
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
 const wanted = MODE === 'serial' ? UNIT_IDS : new Set((unitsArg ?? '').split(',').filter(Boolean))
@@ -2444,13 +2454,354 @@ check('run-check: the mode from resources in the config', (() => {
   write(rcRepo, { '.claude/pipeline.config.local.md': '- resources: normal\n' })
   return /^normal/.test(rc(['--mode']).stdout)
 })())
-const first = spawnSync('/bin/sh', ['-c', `STAGE_PIPELINE_RESOURCES=low STAGE_PIPELINE_LOCK_DIR='${locks}' '${process.execPath}' '${RUN_CHECK}' -- 'sleep 2; date +%s%N' & sleep 0.5; STAGE_PIPELINE_RESOURCES=low STAGE_PIPELINE_LOCK_DIR='${locks}' '${process.execPath}' '${RUN_CHECK}' -- 'date +%s%N'; wait`], { cwd: rcRepo, encoding: 'utf8' })
-const stamps = first.stdout.match(/^\d{15,}$/gm) ?? []
-check('run-check: in low the second run waits for the first (a machine queue)', /waiting in the queue/.test(first.stdout) && stamps.length === 2 && Number(stamps[1]) >= Number(stamps[0]), first.stdout)
-mkdirSync(join(locks, 'heavy.lock'), { recursive: true })
-writeFileSync(join(locks, 'heavy.lock', 'owner.json'), JSON.stringify({ pid: 999999, repo: 'x', command: 'y', started: Date.now() }))
-const stale = rc(['--', 'echo ok'], { STAGE_PIPELINE_RESOURCES: 'low' })
-check('run-check: the lock of a dead process is taken over', stale.status === 0 && /ok/.test(stale.stdout) && !/жду/.test(stale.stdout), stale.stdout)
+// VT-17 stage 1: the balancer replaces the one-slot lock. The second run starts at once while memory allows (it used to wait for the first: a stagnation D13 forbids);
+// what waits, and in what order, is shown under a substituted memory pressure (STAGE_PIPELINE_PROBE) — never by the real machine's state.
+const hqNap = (ms) => new Promise((done) => setTimeout(done, ms))
+const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+const { identityOf: hqIdentity } = await import(join(PLUGIN, 'processes.mjs'))
+const HQ_CLI = join(PLUGIN, 'heavy-queue.mjs')
+const GB = 1024 ** 3
+const rcReal = realpathSync(rcRepo)
+const hqScene = (name, probe, extra = {}) => {
+  const dir = join(rcRoot, name)
+  mkdirSync(dir, { recursive: true })
+  const probeFile = join(dir, 'probe.json')
+  writeFileSync(probeFile, JSON.stringify(probe))
+  return { dir, probeFile, env: { STAGE_PIPELINE_RESOURCES: 'low', STAGE_PIPELINE_LOCK_DIR: join(dir, 'lock'), STAGE_PIPELINE_DATA_DIR: join(dir, 'data'), STAGE_PIPELINE_PROBE: probeFile, STAGE_PIPELINE_BALANCE_POLL_MS: '100', STAGE_PIPELINE_BALANCE_TICK_MS: '150', ...extra } }
+}
+const hqRun = (scene, args, cwd = rcRepo) => {
+  const child = spawn(process.execPath, [RUN_CHECK, ...args], { cwd, env: { ...process.env, ...scene.env } })
+  let out = ''
+  child.stdout.on('data', (data) => { out += data })
+  child.stderr.on('data', (data) => { out += data })
+  return { child, output: () => out, done: new Promise((done) => child.on('close', (status) => done({ status, stdout: out }))) }
+}
+const hqCli = (scene, ...args) => spawnSync(process.execPath, [HQ_CLI, ...args], { encoding: 'utf8', env: { ...process.env, ...scene.env } })
+const hqEntry = (scene, dir, pid, patch = {}) => {
+  mkdirSync(join(scene.dir, 'lock', dir), { recursive: true })
+  writeFileSync(join(scene.dir, 'lock', dir, `${pid}.json`), JSON.stringify({ pid, identity: hqIdentity(pid), key: 'other#T-1', repo: '/other', command: 'yarn type-check', kind: 'check', started: Date.now() - 300_000, // an established command: past the ramp window
+     since: Date.now(), expectedBytes: 1.5 * GB, background: false, paused: false, ...patch }))
+}
+const holder = spawn('sleep', ['120'], { stdio: 'ignore' })
+const cfg = { reserveBytes: 1.5 * GB, defaultBytes: 1.5 * GB, browserBytes: 0.8 * GB, agingSeconds: 60, lowLoadFactor: 0.8, busySeconds: 30 }
+const NOW = 1_000_000_000_000
+const waiter = (pid, key, waitedS, gb = 1.4) => ({ pid, key, since: NOW - waitedS * 1000, expectedBytes: gb * GB })
+const busyOne = [{ pid: 1, key: 'c#T-9', started: NOW - 5000, expectedBytes: 1.5 * GB }]
+const verdictOf = (self, waiters, memory, running = busyOne, order = ['B', 'A'], paused = []) => hq.decide({ self, waiters, running, memory, order, paused, now: NOW, cfg })
+const fits = { pressure: 'normal', availableBytes: 8 * GB }
+const tight = { pressure: 'normal', availableBytes: 3 * GB }
+// AC-1.1: normal pressure and the memory fits → starts at once, other tasks' commands run, the task has the last place (or none)
+check('heavy-queue AC-1.1: pressure normal and the memory fits — it starts at once beside running commands, whatever its place', verdictOf(waiter(10, 'last'), [], fits, busyOne, ['x', 'y', 'last']).admit && verdictOf(waiter(10, 'nowhere'), [], fits).admit)
+// AC-1.2: B (place 1) comes later than A (place 2): B first; A that waited past the aging threshold is first
+const pair = (aWaited, bWaited) => [waiter(11, 'A', aWaited), waiter(12, 'B', bWaited)]
+check('heavy-queue AC-1.2: memory for one — B (place 1) starts first, A waits', verdictOf(pair(10, 0)[1], pair(10, 0), tight).admit && !verdictOf(pair(10, 0)[0], pair(10, 0), tight).admit)
+check('heavy-queue AC-1.2: A that waited past the aging threshold goes before the just-arrived B', verdictOf(pair(61, 0)[0], pair(61, 0), tight).admit && !verdictOf(pair(61, 0)[1], pair(61, 0), tight).admit && hq.effectivePriority(waiter(1, 'A', 61), ['B', 'A'], NOW, cfg) < hq.effectivePriority(waiter(2, 'B', 0), ['B', 'A'], NOW, cfg))
+check('heavy-queue AC-1.2: a waiter that does not fit does not hold back the smaller one behind it (no stagnation)', verdictOf(waiter(13, 'A', 0, 0.5), [waiter(14, 'B', 0, 9), waiter(13, 'A', 0, 0.5)], tight).admit)
+// AC-1.12 / D15
+check('heavy-queue AC-1.12: nothing runs — the first waiter starts at any pressure, even critical and too big', verdictOf(waiter(20, 'A', 0, 40), [], { pressure: 'critical', availableBytes: 0 }, []).admit)
+check('heavy-queue AC-1.12: critical — one at a time: with a command running nobody starts', !verdictOf(waiter(20, 'A', 0, 0.1), [], { pressure: 'critical', availableBytes: 50 * GB }).admit && /pressure: critical/.test(verdictOf(waiter(20, 'A', 0, 0.1), [], { pressure: 'critical', availableBytes: 50 * GB }).reason))
+check('heavy-queue AC-1.12: warn — the next one starts only when its memory fits the available minus the reserve', verdictOf(waiter(21, 'A', 0, 1.4), [], { pressure: 'warn', availableBytes: 3 * GB }).admit && !verdictOf(waiter(21, 'A', 0, 1.6), [], { pressure: 'warn', availableBytes: 3 * GB }).admit && /pressure: warn; memory: needs ~1\.6 GB, 1\.5 GB available/.test(verdictOf(waiter(21, 'A', 0, 1.6), [], { pressure: 'warn', availableBytes: 3 * GB }).reason))
+check('heavy-queue AC-1.12: a command the user paused does not keep the machine "busy" — the first waiter still starts', verdictOf(waiter(22, 'A', 0, 9), [], { pressure: 'critical', availableBytes: 0 }, [{ ...busyOne[0], paused: true }]).admit)
+check('heavy-queue: a paused task\'s waiter never starts; no memory readings — no admission', !verdictOf(waiter(23, 'A', 0), [], fits, busyOne, ['A'], ['A']).admit && verdictOf(waiter(23, 'A', 0, 99), [], null).admit)
+// AC-1.3 / AC-1.8: nice by place
+check('heavy-queue AC-1.3: nice = min(10 + N - 1, 19), 19 without a place', same([1, 2, 3, 10, 12].map((n) => hq.niceFor(Array.from({ length: 12 }, (_, i) => `k${i + 1}`), `k${n}`)), [10, 11, 12, 19, 19]) && hq.niceFor(['a'], 'nowhere') === 19)
+// `nice -n N` adds N to the niceness the process already has (the test run may itself be niced, CI runs the pool at 10), capped by the system:
+// 20 on macOS, 19 on Linux — measured, not assumed (the CI runner on Linux read 19 where the test expected 20)
+const niceBase = Number(spawnSync('ps', ['-o', 'ni=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout) || 0
+const niceCap = Number(spawnSync('nice', ['-n', '40', 'sh', '-c', 'ps -o ni= -p $$'], { encoding: 'utf8' }).stdout) || 19
+const capped = (n) => Math.min(niceBase + n, niceCap)
+const niceOf = (scene) => /^(\d+)$/m.exec(spawnSync(process.execPath, [RUN_CHECK, '--', 'ps -o ni= -p $$'], { cwd: rcRepo, encoding: 'utf8', env: { ...process.env, ...scene.env } }).stdout.replace(/ /g, ''))?.[1]
+const nice1 = hqScene('nice-low', { pressure: 'normal', availableGB: 8 })
+mkdirSync(join(nice1.dir, 'data'), { recursive: true })
+writeFileSync(join(nice1.dir, 'data', 'priorities.json'), JSON.stringify({ order: ['elsewhere', rcReal] }))
+// A task with no place is put last by `ensureTask`: behind twelve others its place is 13 and its nice is capped at 19.
+const niceDeep = hqScene('nice-none', { pressure: 'normal', availableGB: 8 })
+mkdirSync(join(niceDeep.dir, 'data'), { recursive: true })
+writeFileSync(join(niceDeep.dir, 'data', 'priorities.json'), JSON.stringify({ order: Array.from({ length: 12 }, (_, i) => `elsewhere${i}`) }))
+check('heavy-queue AC-1.3: a command of the task on place 2 in low runs with nice 11, a task behind twelve others with 19', niceOf(nice1) === String(capped(11)) && niceOf(niceDeep) === String(capped(19)), `${niceOf(nice1)} / ${niceOf(niceDeep)}, base ${niceBase}, cap ${niceCap}`)
+const nice2 = hqScene('nice-normal', { pressure: 'critical', availableGB: 0 }, { STAGE_PIPELINE_RESOURCES: 'normal' })
+mkdirSync(join(nice2.dir, 'data'), { recursive: true })
+writeFileSync(join(nice2.dir, 'data', 'priorities.json'), JSON.stringify({ order: [rcReal] }))
+hqEntry(nice2, 'running', holder.pid)
+const normalBusy = spawnSync(process.execPath, [RUN_CHECK, '--', 'ps -o ni= -p $$'], { cwd: rcRepo, encoding: 'utf8', timeout: 20000, env: { ...process.env, ...nice2.env } })
+check('heavy-queue AC-1.8: in normal there is no admission (a critical machine with a running command: no wait), nice by place', new RegExp(`^\\s*${capped(10)}\\s*$`, 'm').test(normalBusy.stdout) && !/balance:/.test(normalBusy.stdout), normalBusy.stdout + normalBusy.stderr)
+// AC-1.6 pure part
+check('heavy-queue AC-1.6: busy cores for 30 s put the lower half into the background; below 0.8 × cores it is taken off; free cores — never', (() => {
+  const busyStart = { busySince: null, background: false }
+  const t0 = hq.nextBackground(busyStart, { load: 12, cores: 10, now: NOW, lowerHalf: true, cfg })
+  const t29 = hq.nextBackground(t0, { load: 12, cores: 10, now: NOW + 29000, lowerHalf: true, cfg })
+  const t31 = hq.nextBackground(t0, { load: 12, cores: 10, now: NOW + 31000, lowerHalf: true, cfg })
+  const upper = hq.nextBackground(t0, { load: 12, cores: 10, now: NOW + 31000, lowerHalf: false, cfg })
+  const mid = hq.nextBackground(t31, { load: 9, cores: 10, now: NOW + 40000, lowerHalf: true, cfg })
+  const off = hq.nextBackground(t31, { load: 7.9, cores: 10, now: NOW + 40000, lowerHalf: true, cfg })
+  const free = hq.nextBackground(busyStart, { load: 3, cores: 10, now: NOW + 99000, lowerHalf: true, cfg })
+  return !t0.background && !t29.background && t31.background && !upper.background && mid.background && !off.background && !free.background
+})())
+const ranked = [{ pid: 1, key: 'a', started: 1 }, { pid: 2, key: 'b', started: 2 }, { pid: 3, key: 'c', started: 3 }]
+check('heavy-queue AC-1.6: the lower half of the running commands by place (a lone command is in the upper one)', !hq.inLowerHalf(ranked.slice(0, 1), 1, []) && !hq.inLowerHalf(ranked, 1, ['a', 'b', 'c']) && !hq.inLowerHalf(ranked, 2, ['a', 'b', 'c']) && hq.inLowerHalf(ranked, 3, ['a', 'b', 'c']) && hq.inLowerHalf(ranked, 1, ['c', 'b', 'a']))
+// the second run starts when memory allows (replaces "in low the second run waits for the first")
+const free2 = hqScene('free', { pressure: 'normal', availableGB: 8 })
+const firstRun = hqRun(free2, ['--', 'sleep 2; date +%s%N'])
+await hqNap(500)
+const secondRun = await hqRun(free2, ['--', 'date +%s%N']).done
+const firstDone = await firstRun.done
+const stamps = [...firstDone.stdout.matchAll(/^\d{15,}$/gm)].map((m) => Number(m[0])).concat([...secondRun.stdout.matchAll(/^\d{15,}$/gm)].map((m) => Number(m[0])))
+check('heavy-queue AC-1.1: in low the second run starts at once while memory allows — it ends before the first, nobody waited', stamps.length === 2 && stamps[1] < stamps[0] && !/balance:/.test(firstDone.stdout + secondRun.stdout), firstDone.stdout + secondRun.stdout)
+// AC-1.4, 1.9, 1.10, 1.5: a waiting command under warn pressure
+const warn = hqScene('warn', { pressure: 'warn', availableGB: 1.6 }, { STAGE_PIPELINE_BALANCE_WAIT_CAP_S: '2.5', STAGE_PIPELINE_BALANCE_ANNOUNCE_S: '1' })
+mkdirSync(join(warn.dir, 'data'), { recursive: true })
+writeFileSync(join(warn.dir, 'data', 'heavy-peaks.json'), JSON.stringify({ [`${rcReal}\necho ok`]: 2.4 * GB }))
+hqEntry(warn, 'running', holder.pid)
+const waiting = hqRun(warn, ['--', 'echo ok'])
+await hqNap(900)
+const status = hqCli(warn, 'status')
+const waitedResult = await waiting.done
+const waitingLines = waitedResult.stdout
+check('heavy-queue AC-1.9: status prints the running command, the waiting one with the reason and the order', /running \(1\)[\s\S]*other#T-1[\s\S]*yarn type-check/.test(status.stdout) && /waiting \(1\)[\s\S]*echo ok[\s\S]*pressure: warn; memory: needs ~2\.4 GB, 0\.1 GB available/.test(status.stdout) && /paused: none/.test(status.stdout), status.stdout + status.stderr)
+check('heavy-queue AC-1.5: admission counts by the recorded peak of the same repo and command (2.4 GB, not the 1.5 default)', /needs ~2\.4 GB/.test(waitingLines), waitingLines)
+check('heavy-queue AC-1.10: a waiting run prints `balance: waiting <s> s — <reason>; ahead: <keys>`', /balance: waiting \d+ s — pressure: warn; memory: needs ~2\.4 GB, 0\.1 GB available; ahead: none/.test(waitingLines) && (waitingLines.match(/balance: waiting/g) ?? []).length >= 2, waitingLines)
+check('heavy-queue AC-1.4: past the wait cap it starts with `balance: waited <s> s, starting without admission (<reason>)`, code 0', waitedResult.status === 0 && /balance: waited \d+ s, starting without admission \(pressure: warn; memory: needs/.test(waitedResult.stdout) && /^ok$/m.test(waitedResult.stdout), waitedResult.stdout)
+// AC-1.5: the peak is recorded after the command
+const peak = hqScene('peak', { pressure: 'normal', availableGB: 8 })
+await hqRun(peak, ['--', 'sleep 1.2']).done
+const peaks = JSON.parse(readFileSync(join(peak.dir, 'data', 'heavy-peaks.json'), 'utf8'))
+check('heavy-queue AC-1.5: after the command its peak RSS is recorded per repo and command', peaks[`${rcReal}\nsleep 1.2`] > 0, JSON.stringify(peaks))
+// AC-1.11: stale entries
+const stale = hqScene('stale', { pressure: 'warn', availableGB: 1.6 }, { STAGE_PIPELINE_BALANCE_WAIT_CAP_S: '30' })
+hqEntry(stale, 'running', 999999, { identity: 'x' })
+hqEntry(stale, 'running', process.pid, { identity: 'Thu Jan  1 00:00:00 1970 reused-pid' })
+const staleRun = await hqRun(stale, ['--', 'echo fresh']).done
+check('heavy-queue AC-1.11: a dead process\'s entry and an entry whose PID changed identity are removed and hold no memory (the run starts at once)', staleRun.status === 0 && !/balance:/.test(staleRun.stdout) && !existsSync(join(stale.dir, 'lock', 'running', '999999.json')) && !existsSync(join(stale.dir, 'lock', 'running', `${process.pid}.json`)), staleRun.stdout)
+// AC-1.12: nothing runs, critical pressure — starts
+const crit = hqScene('crit', { pressure: 'critical', availableGB: 0 })
+const critRun = await hqRun(crit, ['--', 'echo hi']).done
+check('heavy-queue AC-1.12: with no heavy command running, a run starts even under critical pressure', critRun.status === 0 && /^hi$/m.test(critRun.stdout) && !/balance:/.test(critRun.stdout), critRun.stdout)
+// AC-1.7: a pause by hand stops the tree, resume continues it; exit code and the time line are as without a pause
+const pausing = hqScene('pause', { pressure: 'normal', availableGB: 8 })
+const paused = hqRun(pausing, ['--', 'sleep 2; echo woke; exit 3'])
+await hqNap(700)
+check('heavy-queue AC-1.7: without the pause button nothing is stopped (the command runs)', !/^woke$/m.test(paused.output()) && !readPausedKeys(pausing).length)
+function readPausedKeys(scene) {
+  try {
+    return JSON.parse(readFileSync(join(scene.dir, 'data', 'priorities.json'), 'utf8')).paused
+  } catch {
+    return []
+  }
+}
+const pauseOut = hqCli(pausing, 'pause', rcReal)
+await hqNap(900)
+const runEntry = JSON.parse(readFileSync(join(pausing.dir, 'lock', 'running', `${paused.child.pid}.json`), 'utf8'))
+const stopped = spawnSync('ps', ['-o', 'stat=', '-p', String(runEntry.childPid)], { encoding: 'utf8' }).stdout
+check('heavy-queue AC-1.7: pause — the command\'s tree gets SIGSTOP, status shows [paused]', /T/.test(stopped) && runEntry.paused === true && /\[paused\]/.test(hqCli(pausing, 'status').stdout) && /paused/.test(pauseOut.stdout), `${stopped} ${pauseOut.stdout}`)
+await hqNap(2200)
+check('heavy-queue AC-1.7: a stopped command does not finish while paused', !/^woke$/m.test(paused.output()))
+hqCli(pausing, 'resume', rcReal)
+const pausedDone = await paused.done
+check('heavy-queue AC-1.7: after resume the command goes on; exit code 3 and the `code … in … s` line are as without a pause', pausedDone.status === 3 && /^woke$/m.test(pausedDone.stdout) && /run-check: code 3 in \d+ s/.test(pausedDone.stdout), pausedDone.stdout)
+// AC-1.6 integration: the background class goes on only under load, off when it drops (a stub instead of /usr/sbin/taskpolicy)
+const bgLog = join(rcRoot, 'taskpolicy.log')
+const stub = join(rcRoot, 'taskpolicy-stub.sh')
+writeFileSync(stub, `#!/bin/sh\necho "$@" >> '${bgLog}'\n`, { mode: 0o755 })
+const calm = hqScene('bg-calm', { pressure: 'normal', availableGB: 8, load: 1, cores: 10 }, { STAGE_PIPELINE_TASKPOLICY: stub, STAGE_PIPELINE_BALANCE_BUSY_S: '0', STAGE_PIPELINE_BALANCE_LOAD_EVERY_S: '0' })
+const calmA = hqRun(calm, ['--', 'sleep 1.5'])
+const calmB = hqRun(calm, ['--', 'sleep 1.5; true'])
+await Promise.all([calmA.done, calmB.done])
+check('heavy-queue AC-1.6: while the cores are free nobody goes into the background', !existsSync(bgLog))
+const loaded = hqScene('bg-load', { pressure: 'normal', availableGB: 8, load: 25, cores: 10 }, { STAGE_PIPELINE_TASKPOLICY: stub, STAGE_PIPELINE_BALANCE_BUSY_S: '0', STAGE_PIPELINE_BALANCE_LOAD_EVERY_S: '0' })
+// Polled, not fixed naps: under a loaded or niced run the balancer's tick comes late, and a fixed 1.2 s wait missed the -B before the command ended.
+const bgLines = () => (existsSync(bgLog) ? readFileSync(bgLog, 'utf8') : '')
+const bgUntil = async (pattern, ms) => { const end = Date.now() + ms; while (Date.now() < end && !pattern.test(bgLines())) await hqNap(100) }
+const loadA = hqRun(loaded, ['--', 'sleep 7'])
+await hqNap(300)
+const loadB = hqRun(loaded, ['--', 'sleep 6.5; true'])
+await bgUntil(/-b -p \d+/, 3000)
+const onLines = bgLines()
+writeFileSync(loaded.probeFile, JSON.stringify({ pressure: 'normal', availableGB: 8, load: 2, cores: 10 }))
+await bgUntil(/-B -p \d+/, 3000)
+const offLines = bgLines()
+await Promise.all([loadA.done, loadB.done])
+check('heavy-queue AC-1.6: under load the later (lower) command goes to the background (-b), at load < 0.8 × cores it comes back (-B)', /-b -p \d+/.test(onLines) && !/-B/.test(onLines) && /-B -p \d+/.test(offLines), `${onLines}|${offLines}`)
+// AC-1.9 / D4: the CLI keeps the order and the pause
+const cliScene = hqScene('cli', { memory: null })
+hqCli(cliScene, 'order', 'a#T-1', 'b#T-2', 'a#T-1')
+hqCli(cliScene, 'pause', 'b#T-2')
+const cliState = JSON.parse(readFileSync(join(cliScene.dir, 'data', 'priorities.json'), 'utf8'))
+check('heavy-queue: order / pause / resume write priorities.json atomically (order without duplicates, the paused set)', same(cliState.order, ['a#T-1', 'b#T-2']) && same(cliState.paused, ['b#T-2']) && (hqCli(cliScene, 'resume', 'b#T-2'), same(readPausedKeys(cliScene), [])) && hqCli(cliScene, 'bogus').status === 2)
+// pro-review round 1: the ramp, the priorities format, the lock, task keys, signals, pause in normal
+const rampNow = Date.now()
+const young = [{ pid: 1, key: 'c#T-9', started: rampNow - 5000, expectedBytes: 2 * GB, childPid: 2 }, { pid: 3, key: 'd#T-1', started: rampNow - 90_000, expectedBytes: 2 * GB, childPid: 4 }]
+const rampRows = new Map([[2, { pid: 2, ppid: 1, rssKb: 0.5 * GB / 1024 }], [4, { pid: 4, ppid: 3, rssKb: 0.1 * GB / 1024 }]])
+const rampBytes = hq.rampOf(young, rampNow, { rampSeconds: 30 }, rampRows)
+check('heavy-queue AC-1.1: what a command admitted moments ago still lacks (expected − RSS) is held back, falling linearly to 0 over the window; an old one is not', Math.abs(rampBytes - 1.5 * GB * (25 / 30)) < 0.01 * GB && hq.rampOf(young, rampNow, { rampSeconds: 30 }, new Map([[2, { pid: 2, ppid: 1, rssKb: 3 * GB / 1024 }]])) === 0 && hq.rampOf([{ ...young[0], started: rampNow - 29_000 }], rampNow, { rampSeconds: 30 }, rampRows) < 0.1 * GB)
+check('heavy-queue AC-1.1: with the ramp held back the third command does not see the same `available` as the first', verdictOf(waiter(30, 'A', 0, 1.4), [], { pressure: 'normal', availableBytes: 4 * GB }).admit && !hq.decide({ self: waiter(30, 'A', 0, 1.4), waiters: [], running: busyOne, memory: { pressure: 'normal', availableBytes: 4 * GB }, order: ['A'], rampBytes, now: NOW, cfg }).admit)
+const fmt = hqScene('format', { memory: null })
+mkdirSync(join(fmt.dir, 'data'), { recursive: true })
+writeFileSync(join(fmt.dir, 'data', 'priorities.json'), JSON.stringify({ version: 1, order: ['a#T-1', 'b#T-2'], boundary: 1, paused: [] }))
+const oldRead = hq.readPriorities(join(fmt.dir, 'data'))
+hq.ensureTask('c#T-3', join(fmt.dir, 'data'))
+hq.ensureTask(rcReal, join(fmt.dir, 'data'))
+const fmtState = JSON.parse(readFileSync(join(fmt.dir, 'data', 'priorities.json'), 'utf8'))
+check('heavy-queue D4: no `boundary` — an old file reads fine, a new task and a task-less root are appended at the end, the file has {version, order, paused}', same(oldRead.order, ['a#T-1', 'b#T-2']) && !('boundary' in oldRead) && same(fmtState.order, ['a#T-1', 'b#T-2', 'c#T-3', rcReal]) && same(Object.keys(fmtState).sort(), ['order', 'paused', 'version']))
+const hashDir = join(rcRoot, 'repo#with-hash')
+mkdirSync(hashDir, { recursive: true })
+const hashInfo = hq.taskInfo(hashDir)
+check('heavy-queue: a repo path with `#` and no task is a root key, not a task', hashInfo.task === false && hashInfo.key === hashDir)
+const lockData = join(fmt.dir, 'lockdata')
+mkdirSync(lockData, { recursive: true })
+writeFileSync(join(lockData, 'priorities.json.lock'), '999999')
+hq.setOrder(['x'], lockData)
+writeFileSync(join(lockData, 'priorities.json.lock'), '999999')
+writeFileSync(join(lockData, 'priorities.json.lock.takeover'), '999999')
+const staleGuard = new Date(Date.now() - 60_000)
+utimesSync(join(lockData, 'priorities.json.lock.takeover'), staleGuard, staleGuard)
+hq.setOrder(['y'], lockData)
+check('heavy-queue: a dead owner\'s lock (and a dead taker\'s guard) is taken over; the lock is released after', same(JSON.parse(readFileSync(join(lockData, 'priorities.json'), 'utf8')).order, ['y']) && !existsSync(join(lockData, 'priorities.json.lock')))
+// a signal during the wait for admission leaves no waiting entry (the handlers stand before the wait)
+const sigWait = hqScene('sig-wait', { pressure: 'warn', availableGB: 0.1 })
+hqEntry(sigWait, 'running', holder.pid)
+const sigWaiting = hqRun(sigWait, ['--', 'echo never'])
+const queueDir = join(sigWait.dir, 'lock', 'queue')
+for (let waited = 0; waited < 5000; waited += 100) {
+  if (existsSync(queueDir) && readdirSync(queueDir).length) break
+  await hqNap(100)
+}
+const queuedBefore = readdirSync(queueDir).length
+sigWaiting.child.kill('SIGHUP')
+const sigWaitDone = await sigWaiting.done
+check('heavy-queue AC-1.4: SIGHUP during the wait — the waiting entry is removed, exit 129', queuedBefore === 1 && sigWaitDone.status === 129 && !readdirSync(join(sigWait.dir, 'lock', 'queue')).length && !/^never$/m.test(sigWaitDone.stdout), `${queuedBefore}|${sigWaitDone.status}|${sigWaitDone.stdout}`)
+// run-check killed while its command is paused: the tree is continued first, no stopped orphan is left
+const sigPause = hqScene('sig-pause', { pressure: 'normal', availableGB: 8 })
+const sigPaused = hqRun(sigPause, ['--', 'sleep 30'])
+await hqNap(700)
+hqCli(sigPause, 'pause', rcReal)
+await hqNap(900)
+const sigChild = JSON.parse(readFileSync(join(sigPause.dir, 'lock', 'running', `${sigPaused.child.pid}.json`), 'utf8')).childPid
+const stoppedBefore = spawnSync('ps', ['-o', 'stat=', '-p', String(sigChild)], { encoding: 'utf8' }).stdout
+sigPaused.child.kill('SIGTERM')
+const sigPausedDone = await sigPaused.done
+await hqNap(500)
+const stateAfter = spawnSync('ps', ['-o', 'stat=', '-p', String(sigChild)], { encoding: 'utf8' }).stdout.trim()
+check('heavy-queue AC-1.7: SIGTERM to run-check with a paused command — it was stopped, then continued and terminated (no stopped orphan), exit 143, entry removed', /T/.test(stoppedBefore) && !/T/.test(stateAfter) && sigPausedDone.status === 143 && !readdirSync(join(sigPause.dir, 'lock', 'running')).length, `${stoppedBefore}|${stateAfter}|${sigPausedDone.status}`)
+// reliability note A: a stopped PID is signalled again only while it is still the process that was stopped
+check('heavy-queue note A: sameProcesses keeps a PID that is the same process and drops a gone one, a reused one (identity differs) and every PID when ps gave no reading', (() => {
+  const recorded = new Map([[10, 'Mon Jan 1 10:00:00 2026 sleep 5'], [11, 'Mon Jan 1 10:00:00 2026 sleep 6'], [12, 'Mon Jan 1 10:00:00 2026 sleep 7']])
+  const now = new Map([[10, 'Mon Jan 1 10:00:00 2026 sleep 5'], [11, 'Tue Jan 2 11:00:00 2026 node other.mjs']])
+  return hq.sameProcesses(recorded, now).join() === '10' && hq.sameProcesses(recorded, null).length === 0 && hq.sameProcesses(new Map(), now).length === 0
+})())
+check('heavy-queue AC-1.5: a run ended by a signal does not write a peak', !existsSync(join(sigPause.dir, 'data', 'heavy-peaks.json')))
+// pro-review round 2 (N1): the signal reaches the whole tree — a compound command's grandchildren do not live on as orphans
+const sigTree = hqScene('sig-tree', { pressure: 'normal', availableGB: 8 })
+const sigTreed = hqRun(sigTree, ['--', 'sleep 37.11 & sleep 37.12; wait'])
+await hqNap(900)
+hqCli(sigTree, 'pause', rcReal)
+await hqNap(900)
+const treeBefore = spawnSync('pgrep', ['-f', 'sleep 37\\.1[12]'], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean).length
+sigTreed.child.kill('SIGTERM')
+await sigTreed.done
+await hqNap(600)
+const treeAfter = spawnSync('pgrep', ['-f', 'sleep 37\\.1[12]'], { encoding: 'utf8' }).stdout.trim()
+check('heavy-queue AC-1.7: SIGTERM during a pause reaches the grandchildren of a compound command (none left)', treeBefore >= 2 && treeAfter === '', `${treeBefore}|${treeAfter}`)
+// N2: the ramp is wired into admission and named in the reason
+const rampScene = hqScene('ramp-wire', { pressure: 'normal', availableGB: 4 }, { STAGE_PIPELINE_BALANCE_WAIT_CAP_S: '1.5', STAGE_PIPELINE_BALANCE_ANNOUNCE_S: '0.5' })
+hqEntry(rampScene, 'running', holder.pid, { started: Date.now(), expectedBytes: 3 * GB })
+const rampRun = await hqRun(rampScene, ['--', 'echo ramped']).done
+check('heavy-queue AC-1.1: a command admitted moments ago with memory still expected holds the next one — `ramp: ~X GB still expected` in the reason', /balance: waiting \d+ s — ramp: ~\d\.\d GB still expected/.test(rampRun.stdout), rampRun.stdout)
+check('heavy-queue AC-1.1: the ramp reason is the decide verdict when only the ramp blocks', (() => {
+  const r = hq.decide({ self: waiter(50, 'A', 0, 1.4), waiters: [], running: busyOne, memory: { pressure: 'normal', availableBytes: 4 * GB }, order: ['A'], rampBytes: 1.2 * GB, now: NOW, cfg })
+  return !r.admit && /^ramp: ~1\.2 GB still expected/.test(r.reason)
+})())
+// N4: an entry in both running/ and queue/ is counted once
+check('heavy-queue AC-1.11: a waiter whose PID is already in running is not counted a second time as one ahead', hq.decide({ self: waiter(60, 'B', 0, 1.4), waiters: [waiter(61, 'A', 30, 1.4)], running: [...busyOne, { pid: 61, key: 'A', started: NOW, expectedBytes: 1.4 * GB }], memory: tight, order: ['A', 'B'], now: NOW, cfg }).admit)
+// N6: on Windows a paused key holds nothing
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+Object.defineProperty(process, 'platform', { value: 'win32' })
+const winVerdict = verdictOf(waiter(70, 'A', 0), [], fits, busyOne, ['A'], ['A']).admit
+Object.defineProperty(process, 'platform', realPlatform)
+check('heavy-queue D16: on win32 `decide` ignores the pause', winVerdict)
+// N7 / carry-over 2: a fresh guard of a live taker is not touched at all (a rename, even put back by a link, opens a gap for a third waiter); a stale one is taken over
+const guardData = join(rcRoot, 'guard-data')
+mkdirSync(guardData, { recursive: true })
+const guardFile = join(guardData, 'priorities.json.lock')
+writeFileSync(guardFile, '999999')
+writeFileSync(`${guardFile}.takeover`, String(process.pid)) // fresh, held by a live taker
+const guardBefore = statSync(`${guardFile}.takeover`)
+hq.setOrder(['q'], guardData) // finds the lock dead, the guard fresh: must not touch the guard
+const guardAfter = statSync(`${guardFile}.takeover`, { throwIfNoEntry: false })
+// a rename changes ctime (and a put-back link keeps the inode): the same ctime is the proof that no rename happened
+check('heavy-queue: a fresh takeover guard of a live taker is never renamed (same inode and ctime, no .stale- file)', guardAfter?.ino === guardBefore.ino && guardAfter.ctimeMs === guardBefore.ctimeMs && readdirSync(guardData).every((name) => !name.includes('.stale-')), readdirSync(guardData).join(','))
+const longAgo = new Date(Date.now() - 60_000)
+utimesSync(`${guardFile}.takeover`, longAgo, longAgo)
+writeFileSync(guardFile, '999999')
+hq.setOrder(['q'], guardData) // the guard is older than the threshold: taken over
+check('heavy-queue: a stale takeover guard is removed and the lock goes on', !existsSync(`${guardFile}.takeover`) && readdirSync(guardData).every((name) => !name.includes('.stale-')) && JSON.parse(readFileSync(join(guardData, 'priorities.json'), 'utf8')).order.join() === 'q', readdirSync(guardData).join(','))
+rmSync(`${guardFile}.takeover`, { force: true })
+// D3 in normal: a task already on pause does not start its next command until the resume (admission is skipped, the pause is not)
+const normalPause = hqScene('normal-pause', { pressure: 'critical', availableGB: 0 }, { STAGE_PIPELINE_RESOURCES: 'normal' })
+hqCli(normalPause, 'pause', rcReal)
+const heldRun = hqRun(normalPause, ['--', 'echo started'])
+await hqNap(1200)
+const heldOut = heldRun.output()
+hqCli(normalPause, 'resume', rcReal)
+const heldDone = await heldRun.done
+check('heavy-queue D3: in normal the next command of a paused task is held until the resume, then runs with no admission', !/^started$/m.test(heldOut) && heldDone.status === 0 && /^started$/m.test(heldDone.stdout), `${heldOut}|${heldDone.stdout}`)
+// ── heavy-guard/bypass (VT-17 stage 2): a config test/build/type_check/lint run bare in the low mode is denied with the wrapped command ───────────────────────
+const hgRepo = join(rcRoot, 'hg-repo')
+mkdirSync(join(hgRepo, '.git'), { recursive: true })
+mkdirSync(join(hgRepo, '.claude'), { recursive: true })
+writeFileSync(join(hgRepo, '.claude/pipeline.config.md'), '# Config\n\n## Commands\n- dev: yarn dev\n- build: yarn build\n- lint: yarn lint {files}\n- type_check: yarn tsc --noEmit\n- test: node scripts/validate.mjs && node scripts/hooks-test.mjs   # slow\n\n## Other\n- test: yarn nope\n')
+const hgRun = (command, { cwd = hgRepo, env = {}, event = 'PreToolUse' } = {}) => {
+  const run = spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'git-guard.mjs')], { input: JSON.stringify({ cwd, hook_event_name: event, tool_name: 'Bash', tool_input: { command } }), encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'low', ...env } })
+  return run.stdout.trim() ? JSON.parse(run.stdout).hookSpecificOutput : null
+}
+const hgDenied = (command, options) => hgRun(command, options)?.permissionDecision === 'deny'
+const hgCd = hgRun('cd packages/web && yarn build --watch')
+check('heavy-guard AC-2.1: low mode, a bare `yarn build` after `cd … &&` is denied, with the rule and the same command through run-check', hgCd?.permissionDecision === 'deny' && /heavy-guard\/bypass/.test(hgCd.permissionDecisionReason) && hgCd.permissionDecisionReason.includes(`node ${join(PLUGIN, 'run-check.mjs')} -- 'yarn build --watch'`) && hgCd.permissionDecisionReason.includes('cd packages/web && node ') && /timeout 600000/.test(hgCd.permissionDecisionReason), hgCd?.permissionDecisionReason)
+check('heavy-guard AC-2.1: env assignments before the command, each `&&` part of a config command, and `yarn lint <files>` (the {files} tail) are judged', hgDenied('CI=1 yarn tsc --noEmit') && hgDenied('node scripts/hooks-test.mjs --units heavy') && hgDenied('node scripts/validate.mjs') && hgDenied('yarn lint src/a.ts') && hgDenied('echo hi; yarn build'))
+check('heavy-guard AC-2.2: a run through run-check or ci-gates, and `dev`, pass', !hgDenied(`node ${join(PLUGIN, 'run-check.mjs')} -- yarn build`) && !hgDenied('node plugins/stage-pipeline/scripts/ci-gates.mjs run yarn build') && !hgDenied('yarn dev'))
+check('heavy-guard AC-2.3: normal mode, the off switch, a PostToolUse call and a repo with no config pass', !hgDenied('yarn build', { env: { STAGE_PIPELINE_RESOURCES: 'normal' } }) && !hgDenied('yarn build', { env: { STAGE_PIPELINE_HEAVY_GUARD: 'off' } }) && !hgDenied('yarn build', { event: 'PostToolUse' }) && !hgDenied('yarn build', { cwd: rcRoot }))
+check('heavy-guard AC-2.4: a lookalike (`yarn build:e2e`, `grep build`, `echo "yarn build"`, a longer config part cut short, a `test` outside Commands) passes', !hgDenied('yarn build:e2e') && !hgDenied('grep build src') && !hgDenied('echo "yarn build"') && !hgDenied('node scripts/validate') && !hgDenied('yarn nope') && !hgDenied('git commit -m "x; yarn build"'))
+// AC-2.1 / AC-2.4: the real `## Commands` shapes — a backtick inside a trailing comment is no command, `cd … &&` is no check, a heredoc body is text, a lone `make` / `yarn` is no match
+const heavyGuard = await import(join(PLUGIN, 'heavy-guard.mjs'))
+const FEMO_COMMANDS = `## Commands
+
+- dev: npm run dev # Vite, :5173
+- build: npm run build # tsc -b && vite build — то же, что сборочный шаг Docker-образа
+- lint: npm run lint # eslint . (flat config + eslint-rules/). baseline: 0 errors / 2270 warnings (2026-10-10, fix/olympiad-fixes): 2263 \`local/no-magic-strings\`, 4 \`react-hooks/exhaustive-deps\`, 2 \`react-hooks/incompatible-library\`, 1 \`@typescript-eslint/no-unused-vars\`
+  <!-- ⚠ FSD-границы (\`no-restricted-imports\`) заданы как \`warn\`, не \`error\` — lint НЕ падает на нарушении слоя.
+       Baseline нарушений FSD = 0: любое новое предупреждение \`no-restricted-imports\` в дифе = регресс. -->
+- type_check: npm run type-check # tsc --noEmit -p tsconfig.app.json (src + .storybook). baseline: 0 (2026-10-10, после \`npm install\`). vite.config.ts (tsconfig.node.json) покрывает только \`tsc -b\` из \`build\`
+  <!-- Урок 2026-10-10: устаревший node_modules (без vitest/jsdom/@testing-library/react) давал 82 ошибки
+       в *.test.ts — это не долг, а установка. Ненулевой type-check на чистом коде — сначала \`npm install\`. -->
+- test: npm run test # Vitest 5 + Testing Library (jsdom), тесты рядом с кодом \`*.test.ts(x)\`, setup src/test/setup.ts. На 2026-10-10: 44 файла / 384 теста, зелёные. Покрывают правила, не экраны — рантайм на стенде по-прежнему обязателен
+- lint_files: npx eslint {files}
+- test_related: npx vitest related --run {files}`
+const GUESTAPP_COMMANDS = `## Commands
+<!-- все — из корня репо -->
+- dev: yarn start                       # guestapp standalone; SDK-режим: yarn start:sdk
+- build: yarn build:guestapp            # production; staging: yarn build:guestapp:stg; SDK: yarn build:sdk
+- lint: yarn lint
+- type_check: cd apps/guestapp && ../../node_modules/.bin/tsc -p tsconfig.json --noEmit   # baseline: 0 (перезамерено 2026-07-31 на ui beta.75. Хроника: 0 на beta.53 (29.07) → 1 на \`redesign-2.0\` с beta.71 (\`TabsCount\` отсутствует в ките) → снова 0 после бампа до beta.75. Вывод на будущее: ошибка вида «has no exported member» — почти всегда отставание версии кита, а не свежая правка; сверять с \`npm view @chekinapp/ui versions\`)
+  # ⚠ \`yarn type-check\` (workspaces foreach --all -pt) всё равно НЕ ГОДИТСЯ как единственная проверка guestapp: флаг -t топологически ПРОПУСКАЕТ @chekin/guestapp, если падает @chekin/shared — сейчас оба чистые, но при любом падении shared guestapp снова молча перестанет тайпчекаться локально и в CI (находка финального pro-review IT-5236, 2026-07-29)
+- test: yarn test                       # vitest; e2e: yarn e2e:test (Playwright, нужен yarn e2e:install)`
+const partsOf = (config) => heavyGuard.heavyParts(config).map(({ kind, words }) => `${kind}: ${words.join(' ')}`)
+check('heavy-guard AC-2.1: femo commands (a backtick span only in a comment) parse to the real commands', same(partsOf(FEMO_COMMANDS), ['build: npm run build', 'lint: npm run lint', 'type_check: npm run type-check', 'test: npm run test']), JSON.stringify(partsOf(FEMO_COMMANDS)))
+check('heavy-guard AC-2.1: chekin-guestapp commands (`cd … &&` and a comment naming `redesign-2.0`) parse to the real commands', same(partsOf(GUESTAPP_COMMANDS), ['build: yarn build:guestapp', 'lint: yarn lint', 'type_check: ../../node_modules/.bin/tsc -p tsconfig.json --noEmit', 'test: yarn test']), JSON.stringify(partsOf(GUESTAPP_COMMANDS)))
+check('heavy-guard AC-2.4: femo — `npm install` passes, `npm run type-check` is a bypass', heavyGuard.bypassOf(FEMO_COMMANDS, 'npm install') === null && heavyGuard.bypassOf(FEMO_COMMANDS, 'npm run type-check')?.kind === 'type_check')
+const HEREDOC_CONFIG = '## Commands\n- test: yarn test\n- build: make\n'
+check('heavy-guard AC-2.4: a heredoc body (`<<EOF`, `<<\'EOF\'`, `<<"EOF"`, `<<-EOF`) is text, not a command', ['cat > f <<\'EOF\'\nyarn test\nEOF', 'git commit -F - <<\'EOF\'\nfix: yarn test passes\nEOF', 'cat <<EOF\nyarn test\nEOF', 'cat <<"EOF"\nyarn test\nEOF', 'cat <<-EOF\n\tyarn test\n\tEOF'].every((command) => heavyGuard.bypassOf(HEREDOC_CONFIG, command) === null) && heavyGuard.bypassOf(HEREDOC_CONFIG, 'cat <<\'EOF\' > f\nx\nEOF\nyarn test')?.text === 'yarn test')
+check('heavy-guard AC-2.4: a config part of one word (`make`, `yarn`) does not match `make clean` or `yarn add x`', heavyGuard.bypassOf(HEREDOC_CONFIG, 'make clean') === null && heavyGuard.bypassOf('## Commands\n- test: yarn\n', 'yarn add x') === null && heavyGuard.bypassOf(HEREDOC_CONFIG, 'yarn test --watch') !== null)
+const hgQuoted = hgRun("cd packages/web && yarn build 2>&1 | tail -5")
+check('heavy-guard AC-2.1: the suggested command keeps the `cd` and quotes the command as one string (`2>&1` stays in it)', hgQuoted?.permissionDecision === 'deny' && hgQuoted.permissionDecisionReason.includes(`cd packages/web && node ${join(PLUGIN, 'run-check.mjs')} -- 'yarn build 2>&1'`), hgQuoted?.permissionDecisionReason)
+const hgMain = join(rcRoot, 'hg-main')
+mkdirSync(join(hgMain, '.git/worktrees/wt'), { recursive: true })
+mkdirSync(join(hgMain, '.claude'), { recursive: true })
+copyFileSync(join(hgRepo, '.claude/pipeline.config.md'), join(hgMain, '.claude/pipeline.config.md'))
+const hgTree = join(rcRoot, 'hg-wt')
+mkdirSync(hgTree, { recursive: true })
+writeFileSync(join(hgTree, '.git'), `gitdir: ${join(hgMain, '.git/worktrees/wt')}\n`)
+writeFileSync(join(hgMain, '.git/worktrees/wt/commondir'), '../..\n')
+check('heavy-guard AC-2.1: a linked worktree reads the main tree config (no git process)', hgDenied('yarn build', { cwd: hgTree }))
+holder.kill()
 rmSync(rcRoot, { recursive: true, force: true })
 }
 
@@ -11516,6 +11867,1349 @@ if (unit('todogroup1')) {
   const ownSpellings = readdirSync(PLUGIN).filter((name) => name.endsWith('.mjs') && name !== 'markers.mjs' && /\/\\\{files/.test(readFileSync(join(PLUGIN, name), 'utf8')))
   check('files placeholder: no plugin script spells its own `{files` regex', ownSpellings.length === 0, ownSpellings.join(', '))
   rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-17 stage 3: monitor.mjs ───────────────────────────────────────────────
+// A fake process table and temporary roots only: never the real ps, lsof, data dir or ~/.claude/projects.
+if (unit('vt17s3')) {
+  const GB = 1024 ** 3
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const ps = await import(join(PLUGIN, 'processes.mjs'))
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-monitor-'))
+  const tasksDir = join(root, 'repo', '.claude', 'tasks')
+  write(join(root, 'repo'), {
+    '.claude/tasks/RU-1/STAGES.md': '# Задача\n## Статус: этап 1 из 2\n### Этап 1: первый  [status: in-progress]\n### Этап 2: второй  [status: todo]\n',
+    '.claude/tasks/EN-1/STAGES.md': '# Task\n## Status: stage 1 of 2 done\n### Stage 1: first  [status: done]\n### Stage 2: second  [status: todo]\n',
+  })
+  mkdirSync(join(tasksDir, 'BAD-1', 'STAGES.md'), { recursive: true }) // a directory where the journal should be
+  const rows = mon.taskRows([tasksDir])
+  const byTicket = Object.fromEntries(rows.map((row) => [row.ticket, row]))
+  check('monitor AC-3.1: every task of the directory has key, repo, ticket, status line, stages with statuses and the next item', ['RU-1', 'EN-1'].every((t) => byTicket[t]?.key === `${join(root, 'repo')}#${t}` && byTicket[t].repo === 'repo' && byTicket[t].status && byTicket[t].stages.length === 2 && byTicket[t].next) && byTicket['RU-1'].stages[0].status === 'in-progress' && byTicket['EN-1'].stages[0].done === true, JSON.stringify(rows))
+  check('monitor AC-3.1: the stage N of M and the next item — in progress (ru), kickoff of the next stage (en)', byTicket['RU-1'].stageNumber === 1 && byTicket['RU-1'].stageTotal === 2 && /Этап 1 in progress/.test(byTicket['RU-1'].next) && byTicket['EN-1'].stageNumber === 2 && /kickoff Stage 2/.test(byTicket['EN-1'].next), JSON.stringify([byTicket['RU-1'].next, byTicket['EN-1'].next]))
+  check('monitor AC-3.1: an unreadable STAGES.md stays in the list with a problem', Boolean(byTicket['BAD-1']?.problem) && byTicket['BAD-1'].stages.length === 0, JSON.stringify(byTicket['BAD-1']))
+
+  const uuid = '11111111-2222-3333-4444-555555555555'
+  const row = (pid, ppid, args, extra = {}) => [pid, { pid, ppid, uid: 501, cpu: 1, rssKb: 1024, nice: 0, pri: 31, stat: 'S', age: 100, cpuSeconds: 2, args, ...extra }]
+  const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  const profile = '--user-data-dir=/Users/x/.cache/chrome-devtools-mcp/profile'
+  const table = new Map([
+    row(100, 1, `/usr/local/bin/claude --resume ${uuid}`, { cpu: 2, rssKb: 100_000, nice: 10, pri: 4 }),
+    row(101, 100, '/bin/zsh -c yarn vitest'),
+    row(102, 101, `node ${root}/scripts/run-check.mjs -- yarn vitest related --run a.ts`, { cpu: 5, rssKb: 10_000, pri: 4 }),
+    row(103, 102, 'node /repo/node_modules/.bin/vitest related --run a.ts', { cpu: 90, rssKb: 800_000, pri: 4, cpuSeconds: 30.5 }),
+    row(110, 100, 'npm exec chrome-devtools-mcp@1.6.0 --isolated', { cpu: 0.5, rssKb: 50_000 }),
+    row(111, 110, 'node /x/chrome-devtools-mcp --isolated', { rssKb: 60_000 }),
+    row(112, 111, `${CHROME} ${profile}`, { cpu: 10, rssKb: 200_000 }),
+    row(113, 112, `${CHROME} --type=renderer ${profile}`, { cpu: 20, rssKb: 300_000 }),
+    row(120, 100, 'node /repo/node_modules/.bin/vite --port 3000', { cpu: 7, rssKb: 150_000 }),
+    row(130, 1, '/usr/local/bin/claude --chrome-native-host'),
+    row(200, 1, '/usr/local/bin/claude', { stat: 'T' }),
+    row(201, 200, 'sleep 100', { stat: 'T' }),
+  ])
+  const calls = { cwd: [], ps: 0 }
+  const taskOf = (cwd) => (cwd === '/work/repo' ? { key: '/work/repo#T-1', task: true, root: '/work/repo', ticket: 'T-1', taskDir: '/work/repo/.claude/tasks' } : { key: cwd, task: false, root: cwd })
+  const sessions = mon.sessionRows(table, { cwdOf: (pid) => { calls.cwd.push(pid); return pid === 100 ? '/work/repo' : '/work/other' }, taskOf, branchOf: () => 'feat/t-1', devPortOf: () => '3000', platform: 'darwin', projectsDir: join(root, 'none') })
+  const first = sessions.find((session) => session.pid === 100)
+  check('monitor AC-3.2: a session has pid, folder, branch, task key (null off a task) and the id from --resume; chrome-native-host is not a session', sessions.length === 2 && first.cwd === '/work/repo' && first.branch === 'feat/t-1' && first.task === '/work/repo#T-1' && first.sessionId === uuid && sessions.find((s) => s.pid === 200).task === null && !sessions.some((s) => s.pid === 130), JSON.stringify(sessions.map((s) => [s.pid, s.task])))
+  check('monitor AC-3.4: the folder is read once per session (the only lsof)', calls.cwd.length === 2 && new Set(calls.cwd).size === 2, calls.cwd.join(','))
+  const kinds = first.load.kinds
+  check('monitor AC-3.3: run-check, the DevTools MCP Chrome with its helper and the dev server are split into check, browser, dev-server', kinds.check.count === 2 && kinds.check.cpu === 95 && kinds.browser.count === 2 && kinds.browser.cpu === 30 && kinds.browser.rssBytes === 500_000 * 1024 && kinds['dev-server'].count === 1 && kinds['dev-server'].cpu === 7 && kinds.other.count === 4, JSON.stringify(kinds))
+  check('monitor AC-3.3: the session total, nice, background (PRI 4 on darwin), the check kind in the background and the browser not', first.load.cpu === 136.5 && first.load.nice === 10 && first.load.background === true && kinds.check.background === true && kinds.browser.background === false, JSON.stringify(first.load))
+  check('monitor AC-3.3: cumulative CPU time (cpuSeconds) per process, per tree and per kind', first.load.cpuSeconds === 46.5 && first.load.kinds.check.cpuSeconds === 32.5 && first.load.procs.length === 9 && first.load.procs.find((p) => p.pid === 103).cpuSeconds === 30.5 && first.load.procs.find((p) => p.pid === 103).age === 100 && first.load.procs.find((p) => p.pid === 103).kind === 'check', JSON.stringify(first.load))
+  const devCmd = (args) => mon.isDevServer(args, '3000')
+  check('monitor AC-3.3: isDevServer true for launchers as the command word, with or without npx/yarn/pnpm/npm run/node/a shell', ['vite', 'node /r/node_modules/.bin/vite --port 4000', 'npx next dev', 'yarn dev', 'pnpm run dev:web', 'npm start', 'nuxi dev', 'bun run dev', '/bin/zsh -c yarn dev', 'PORT=5000 node server.js', 'storybook dev -p 6006', 'next dev -p 3001', 'astro dev'].every((args) => mon.isDevServer(args, null) || args.startsWith('PORT=') && mon.isDevServer(args, '5000')) && ['node server.js --port 3000', 'python -m http.server -p 3000', 'PORT=3000 node s.js'].every((args) => devCmd(args)))
+  check('monitor AC-3.3: isDevServer false for a launcher word elsewhere in a command (rg, git log, vite build, curl of the port)', ['rg next src/dev', 'git log next..dev', 'vite build --mode dev', 'curl http://localhost:3000/health', 'yarn vitest related --run a.ts', 'next build', 'npx tsc --noEmit'].every((args) => !devCmd(args)), ['rg next src/dev', 'git log next..dev', 'vite build --mode dev', 'curl http://localhost:3000/health'].map((a) => [a, devCmd(a)]).join(';'))
+  check('monitor: a tree where every process is stopped is stopped; a live tree is not', sessions.find((s) => s.pid === 200).load.stopped === true && first.load.stopped === false)
+  check('monitor: PRI 4 is not the background off macOS', mon.classifyTree(table, 100, { platform: 'linux' }).background === false)
+
+  const projects = join(root, 'projects')
+  const subs = join(projects, '-work-repo', uuid, 'subagents')
+  mkdirSync(subs, { recursive: true })
+  writeFileSync(join(subs, 'fresh.jsonl'), '{}')
+  writeFileSync(join(subs, 'old.jsonl'), '{}')
+  const longAgo = new Date(Date.now() - 600_000)
+  utimesSync(join(subs, 'old.jsonl'), longAgo, longAgo)
+  check('monitor AC-3.2: active subagents are transcripts younger than 60 s; none without a session id', mon.activeSubagents(uuid, '/work/repo', { projectsDir: projects }) === 1 && mon.activeSubagents(null, '/work/repo', { projectsDir: projects }) === 0 && mon.activeSubagents(uuid, '/elsewhere', { projectsDir: projects }) === 1)
+
+  const gitRoot = join(root, 'gitrepo')
+  mkdirSync(join(gitRoot, '.git'), { recursive: true })
+  mkdirSync(join(gitRoot, 'sub'), { recursive: true })
+  writeFileSync(join(gitRoot, '.git', 'HEAD'), 'ref: refs/heads/feat/x#1\n')
+  const linked = join(root, 'linked')
+  mkdirSync(linked, { recursive: true })
+  mkdirSync(join(root, 'gitdirs', 'wt'), { recursive: true })
+  writeFileSync(join(linked, '.git'), `gitdir: ${join(root, 'gitdirs', 'wt')}\n`)
+  writeFileSync(join(root, 'gitdirs', 'wt', 'HEAD'), 'ref: refs/heads/wt-branch\n')
+  const detached = join(root, 'detached')
+  mkdirSync(join(detached, '.git'), { recursive: true })
+  writeFileSync(join(detached, '.git', 'HEAD'), '0123456789abcdef0123456789abcdef01234567\n')
+  check('monitor: the branch is read from .git/HEAD (a subfolder, a linked worktree\'s gitdir), null when detached or off a checkout — no git process', mon.branchOfCwd(join(gitRoot, 'sub')) === 'feat/x#1' && mon.branchOfCwd(linked) === 'wt-branch' && mon.branchOfCwd(detached) === null && mon.branchOfCwd(join(root, 'no-such')) === null)
+  const seenCwd = { task: [], branch: [] }
+  const twice = mon.sessionRows(new Map([row(300, 1, '/bin/claude'), row(301, 1, '/bin/claude')]), { cwdOf: () => '/work/repo', taskOf: (cwd) => { seenCwd.task.push(cwd); return taskOf(cwd) }, branchOf: (cwd) => { seenCwd.branch.push(cwd); return 'b' }, devPortOf: () => null, projectsDir: join(root, 'none') })
+  check('monitor AC-3.4: the task, the branch and the dev port of a folder are read once per distinct folder, and root comes from the task info', seenCwd.task.length === 1 && seenCwd.branch.length === 1 && twice.length === 2 && twice[1].root === '/work/repo' && twice[1].taskDir === '/work/repo/.claude/tasks')
+  const hashed = mon.sessionRows(new Map([row(310, 1, '/bin/claude')]), { cwdOf: () => '/w/a#b', taskOf: () => ({ key: '/w/a#b#T-1', task: true, root: '/w/a#b', ticket: 'T-1', taskDir: '/w/a#b/t' }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none') })
+  check('monitor AC-3.2: a repo path with # keeps its root', hashed[0].root === '/w/a#b' && hashed[0].task === '/w/a#b#T-1')
+
+  const prio = { order: ['/work/repo#T-1', 'b#T-2'], paused: ['b#T-2'] }
+  const entry = (pid, key, patch = {}) => ({ pid, key, command: 'yarn vitest', kind: 'check', expectedBytes: 1.5 * GB, since: Date.now() - 5000, ...patch })
+  const bal = mon.balanceRows({ running: [entry(102, '/work/repo#T-1'), entry(7, 'x#T-3', { background: true }), entry(8, 'b#T-2')], waiting: [entry(9, 'y#T-4', { reason: 'memory: needs ~1.6 GB, 1.5 GB available' }), entry(10, 'b#T-2')], priorities: prio, load: { load: 9.5, cores: 10 }, sessions })
+  const stateOf = (pid) => bal.heavy.find((item) => item.pid === pid)
+  check('monitor AC-3.7: running, throttled (cpu: load L of N), waiting (the balancer reason) and paused, with the order and the paused keys', stateOf(102).state === 'running' && stateOf(102).session === 100 && stateOf(7).state === 'throttled' && stateOf(7).reason === 'cpu: load 9.5 of 10' && stateOf(9).state === 'waiting' && stateOf(9).reason === 'memory: needs ~1.6 GB, 1.5 GB available' && stateOf(8).state === 'paused' && stateOf(10).state === 'paused' && bal.paused[0] === 'b#T-2' && bal.order.length === 2, JSON.stringify(bal.heavy.map((i) => [i.pid, i.state, i.reason])))
+
+  check('monitor AC-5.2: every heavy row carries its card text — paused says by you and Resume, waiting and throttled their balancer reason, running just running', stateOf(8).text === 'paused by you — Resume to continue' && stateOf(9).text === 'waiting: memory: needs ~1.6 GB, 1.5 GB available' && stateOf(7).text === 'throttled: cpu: load 9.5 of 10' && stateOf(102).text === 'running' && mon.balanceRows({ running: [], waiting: [entry(11, 'y#T-5', { reason: '' })], priorities: prio, load: { load: 1, cores: 4 }, sessions }).heavy[0].text === 'waiting: looking', JSON.stringify(bal.heavy.map((i) => i.text)))
+  check('monitor AC-3.7: the place is one answer — 1-based in the order, null outside it (the heavy rows and the helper)', stateOf(102).place === 1 && stateOf(8).place === 2 && stateOf(7).place === null && mon.placeIn(prio.order, 'zzz') === null && mon.placeIn(prio.order, 'b#T-2') === 2)
+  const onWin = mon.balanceRows({ running: [entry(8, 'b#T-2', { paused: true })], waiting: [entry(10, 'b#T-2')], priorities: prio, load: { load: 1, cores: 10 }, sessions, platform: 'win32' })
+  check('monitor D16: on win32 there is no pause — no paused keys, no paused state', onWin.paused.length === 0 && onWin.pauseSupported === false && onWin.heavy.every((item) => item.state !== 'paused'), JSON.stringify(onWin))
+  check('monitor D16: the table has no pause value on win32', !/paused|stopped/.test(mon.renderTable({ tasks: [], balance: { heavy: [], paused: [], pauseSupported: false, order: [] }, sessions: [{ ...sessions[1], load: { ...sessions[1].load, stopped: true } }], machine: null, problem: null }).split('\n').slice(1).join('\n')))
+  const machineSeam = { memory: null, swap: null, load: null }
+  const snap = mon.collect({ table, taskDirs: [tasksDir], cwdOf: () => '/work/repo', taskOf, branchOf: () => null, devPortOf: () => null, platform: 'darwin', projectsDir: projects, machine: { memory: { pressure: 'warn', availableBytes: 3 * GB }, swap: { used: 2 * GB, total: 4 * GB } } })
+  check('monitor: the snapshot has tasks, sessions, balance and machine (pressure, available, swap, load, cores)', snap.tasks.length === 3 && snap.sessions.length === 2 && snap.balance && snap.machine.pressure === 'warn' && snap.machine.swapUsedBytes === 2 * GB && snap.machine.cores > 0 && snap.problem === null, JSON.stringify(snap.problem))
+  const text = mon.renderTable({ ...snap, tasks: [{ key: '/work/repo#T-1', repo: 'repo', ticket: 'T-1', stageNumber: 2, stageTotal: 5 }], balance: { ...bal, paused: [] }, sessions })
+  check('monitor AC-3.6: the table has task, stage, session, heavy now, CPU, memory, place, pause and a machine line', /TASK\s+STAGE\s+SESSION\s+HEAVY NOW\s+CPU\s+MEMORY\s+PLACE\s+PAUSE/.test(text) && /repo#T-1\s+2\/5\s+100\s+check:running\s+136\.5%\s+1\.\d GB\s+1/.test(text) && /^machine: /m.test(text) && /throttled: x#T-3/.test(text), text)
+
+  const noPs = mon.collect({ table: null, taskDirs: [tasksDir], projectsDir: join(root, 'none'), machine: machineSeam })
+  check('monitor AC-3.5: no ps — the tasks, no sessions and a problem line', noPs.tasks.length === 3 && noPs.sessions.length === 0 && /ps/.test(noPs.problem))
+  const noLsof = mon.collect({ table, taskDirs: [], cwdOf: () => undefined, taskOf, branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam })
+  check('monitor AC-3.5: no lsof — the sessions stay with an unknown folder and a problem line', noLsof.sessions.length === 2 && noLsof.sessions.every((s) => s.cwd === null && s.task === null) && /lsof/.test(noLsof.problem))
+  const outside = join(root, 'other-repo', '.claude', 'tasks')
+  write(join(root, 'other-repo'), { '.claude/tasks/UP-1/STAGES.md': '# Task\n## Status: stage 1 of 2\n### Stage 1: a  [status: in-progress]\n### Stage 2: b  [status: todo]\n' })
+  const unreg = mon.collect({ table: new Map([row(400, 1, '/bin/claude')]), taskDirs: [tasksDir], cwdOf: () => join(root, 'other-repo'), taskOf: () => ({ key: `${join(root, 'other-repo')}#UP-1`, task: true, root: join(root, 'other-repo'), ticket: 'UP-1', taskDir: outside }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam })
+  const unregRow = unreg.tasks.find((t) => t.ticket === 'UP-1')
+  check('monitor AC-3.1: a session\'s task outside the known task directories gets a row (registered: false) with its stage; no machine readings with a null seam', unregRow?.registered === false && unregRow.key === `${join(root, 'other-repo')}#UP-1` && unregRow.stageNumber === 1 && unreg.tasks.filter((t) => t.registered !== false).length === 3 && unreg.machine.pressure === null && unreg.machine.load === null, JSON.stringify(unreg.tasks.map((t) => [t.key, t.registered])))
+  const dedupe = mon.collect({ table: new Map([row(400, 1, '/bin/claude')]), taskDirs: [outside], cwdOf: () => '/elsewhere/repo', taskOf: () => ({ key: '/elsewhere/repo#UP-1', task: true, root: '/elsewhere/repo', ticket: 'UP-1', taskDir: outside }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam })
+  check('monitor AC-3.1: a session task whose directory the registry lists under another key is not a second row — one row, registered, with the session\'s key', dedupe.tasks.length === 1 && dedupe.tasks[0].registered === true && dedupe.tasks[0].key === '/elsewhere/repo#UP-1', JSON.stringify(dedupe.tasks.map((t) => [t.key, t.registered])))
+  // finding 1: rows of session tasks outside the registry are built once per STAGES.md signature, not on every poll
+  const built = [] // the row object each poll got: the same object means no rebuild
+  const cachedState = mon.makeState({
+    collectFn: (seams) => mon.collect({ ...seams, rowOf: (dir, ticket) => { const got = seams.rowOf(dir, ticket); built.push(got); return got }, taskDirs: [], table: new Map([row(400, 1, '/bin/claude')]), cwdOf: () => join(root, 'other-repo'), taskOf: () => ({ key: `${join(root, 'other-repo')}#UP-1`, task: true, root: join(root, 'other-repo'), ticket: 'UP-1', taskDir: outside }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: machineSeam }),
+    clock: (() => { let t = 1_000_000; return () => (t += 2000) })(),
+    tableOf: () => new Map([row(400, 1, '/bin/claude')]),
+    dirsOf: () => [],
+  })
+  const firstPoll = cachedState.refresh()
+  cachedState.invalidate()
+  const secondPoll = cachedState.refresh()
+  check('monitor finding 1: two polls build the row of a session task outside the registry once (the page polls every 2 s)', firstPoll.tasks.some((t) => t.ticket === 'UP-1') && secondPoll.tasks.some((t) => t.ticket === 'UP-1') && built.length === 2 && built[0] && built[0] === built[1], String(built.length))
+  const rowFile = join(outside, 'UP-1', 'STAGES.md')
+  writeFileSync(rowFile, readFileSync(rowFile, 'utf8').replace('stage 1 of 2', 'stage 2 of 2').replace('Stage 1: a  [status: in-progress]', 'Stage 1: a  [status: done]').replace('Stage 2: b  [status: todo]', 'Stage 2: b  [status: in-progress]'))
+  cachedState.invalidate()
+  const thirdPoll = cachedState.refresh()
+  check('monitor finding 1: a STAGES.md change builds the row again', built[2] !== built[1] && thirdPoll.tasks.find((t) => t.ticket === 'UP-1')?.stageNumber === 2, JSON.stringify(thirdPoll.tasks.find((t) => t.ticket === 'UP-1')?.stageNumber))
+  const cli = spawnSync(process.execPath, [join(PLUGIN, 'monitor.mjs'), '--json'], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'no-bin'), STAGE_PIPELINE_DATA_DIR: join(root, 'data'), STAGE_PIPELINE_LOCK_DIR: join(root, 'lock') } })
+  const cliSnap = (() => { try { return JSON.parse(cli.stdout) } catch { return null } })()
+  check('monitor AC-3.5: the CLI without ps in PATH exits 0 and prints the JSON with the problem', cli.status === 0 && cliSnap?.sessions.length === 0 && /ps/.test(cliSnap.problem ?? ''), cli.stdout + cli.stderr)
+  const cliTable = spawnSync(process.execPath, [join(PLUGIN, 'monitor.mjs')], { encoding: 'utf8', env: { ...process.env, PATH: join(root, 'no-bin'), STAGE_PIPELINE_DATA_DIR: join(root, 'data'), STAGE_PIPELINE_LOCK_DIR: join(root, 'lock') } })
+  check('monitor AC-3.6: the CLI without flags prints the table and exits 0', cliTable.status === 0 && /^TASK\s+STAGE/m.test(cliTable.stdout) && /^machine: /m.test(cliTable.stdout), cliTable.stdout + cliTable.stderr)
+  const parsed = ps.parseStatRows('  42     1   501  12.5  204800   10   4 Ss    01:02:03 1-02:03:04 /usr/bin/claude --resume x\nnot a row\n  43 42 0 0.0 10 - - Z 5:00 0:01.50 (defunct)\n')
+  check('monitor AC-3.3: ps time= (cumulative CPU time) parses on Linux and macOS shapes', parsed.get(42).cpuSeconds === 93784 && parsed.get(43).cpuSeconds === 1.5 && ps.cpuSecondsOf('12:34.56') === 754.56 && ps.cpuSecondsOf('123:45.67') === 7425.67 && ps.cpuSecondsOf('1:02:03.45') === 3723.45 && ps.cpuSecondsOf('x') === null)
+  check('monitor: parseStatRows reads %CPU, RSS, nice, PRI, state and age; a bad row is skipped', parsed.size === 2 && parsed.get(42).cpu === 12.5 && parsed.get(42).rssKb === 204800 && parsed.get(42).pri === 4 && parsed.get(42).age === 3723 && parsed.get(43).nice === null)
+  // finding S-2: a launcher is told from a bounded prefix of the command line, in linear time
+  const hugeShell = `${'FOO=1 '.repeat(100_000)}sh -c ${'sh -c '.repeat(100_000)}vite`
+  const t0 = performance.now()
+  const hugeKnown = mon.isDevServer(hugeShell)
+  const hugeMs = performance.now() - t0
+  check('monitor S-2: a 1 MiB command line of nested `sh -c` and `VAR=` words is judged in well under 200 ms', hugeShell.length > 1_000_000 && hugeMs < 200 && hugeKnown === false, `${hugeMs.toFixed(0)} ms`)
+  check('monitor S-2: a launcher behind `VAR=` words and up to 3 levels of `sh -c` is still a dev server; a 4th level is not followed', mon.isDevServer('A=1 B=2 bash -c "FOO=1 sh -c \'npx vite dev\'"') && mon.isDevServer('sh -c "vite --port 3000"') && mon.isDevServer('sh -c sh -c sh -c vite') && !mon.isDevServer('sh -c sh -c sh -c sh -c vite'))
+  // finding C3 (AC-5.2, D3, D4): a session in a repo with no current task is a card keyed by its root: the snapshot carries what the page needs
+  const rootCwd = join(root, 'no-task-repo')
+  const rootTable = new Map([row(700, 1, '/usr/local/bin/claude'), row(701, 700, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(702, 701, `${CHROME} ${profile}`, { cpu: 40, rssKb: 500_000 })])
+  const rootSnap = mon.collect({ table: rootTable, taskDirs: [], cwdOf: () => rootCwd, taskOf: () => ({ key: rootCwd, task: false, root: rootCwd }), branchOf: () => 'main', devPortOf: () => null, projectsDir: join(root, 'none'), waitStates: [], machine: { memory: null, swap: null, load: null } })
+  const rootSession = rootSnap.sessions[0]
+  check('monitor C3: a session with no current task has task null, its root key, the kinds with CPU and memory and the pid/branch the card shows', rootSession?.task === null && rootSession.root === rootCwd && rootSession.load.kinds.browser.count >= 1 && rootSession.load.kinds.browser.rssBytes >= 500_000 * 1024 && rootSession.pid === 700 && rootSession.branch === 'main' && !rootSnap.tasks.some((task) => task.key === rootCwd), JSON.stringify(rootSession))
+  const rootState = mon.makeState({ collectFn: () => rootSnap, clock: Date.now, tableOf: () => rootTable, dirsOf: () => [] })
+  rootState.refresh()
+  check('monitor C3: the root key is accepted by the server as a card key (order and pause)', rootState.isKnown(rootCwd) === true)
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-17 stage 6: browser admission, the browser's registry entry, the pause of a task's browsers ─────────────────
+// Temporary data and lock dirs, a substituted memory (STAGE_PIPELINE_PROBE), fake process tables; real signals only to `sleep` processes started here, real hooks only under a fake `claude`.
+if (unit('vt17s6')) {
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const ba = await import(join(PLUGIN, 'hooks', 'browser-admit.mjs'))
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-browser-'))
+  const envNames = ['STAGE_PIPELINE_DATA_DIR', 'STAGE_PIPELINE_LOCK_DIR', 'STAGE_PIPELINE_PROBE', 'STAGE_PIPELINE_RESOURCES', 'STAGE_PIPELINE_BROWSER_WAIT_S', 'STAGE_PIPELINE_BALANCE_POLL_MS']
+  const saved = Object.fromEntries(envNames.map((name) => [name, process.env[name]]))
+  const dataDir = join(root, 'data')
+  const lockDir = join(root, 'lock')
+  const probeFile = join(root, 'probe.json')
+  mkdirSync(dataDir, { recursive: true })
+  process.env.STAGE_PIPELINE_DATA_DIR = dataDir
+  process.env.STAGE_PIPELINE_LOCK_DIR = lockDir
+  process.env.STAGE_PIPELINE_PROBE = probeFile
+  process.env.STAGE_PIPELINE_RESOURCES = 'low'
+  process.env.STAGE_PIPELINE_BALANCE_POLL_MS = '100'
+  const setMemory = (availableGB, pressure = 'normal') => writeFileSync(probeFile, JSON.stringify({ pressure, availableGB, load: 1, cores: 10 }))
+  const sleeper = () => spawn('sleep', ['600'], { stdio: 'ignore' })
+  const sleepers = []
+  const started = (n = 1) => Array.from({ length: n }, () => { const child = sleeper(); sleepers.push(child); return child.pid })
+  const pause = (ms) => new Promise((done) => setTimeout(done, ms))
+  const psIdentity = (pid) => execFileSync('ps', ['-ww', '-o', 'lstart=,args=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+  const stateOf = (pid) => execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+  const GB = 1024 ** 3
+  const row = (pid, ppid, args, extra = {}) => ({ pid, ppid, uid: process.getuid(), cpu: 0, rssKb: 1000, nice: 0, pri: 31, stat: 'S', age: 600, cpuSeconds: 1, args, ...extra })
+  const CHROME = 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-abc'
+  const MCP = 'npm exec chrome-devtools-mcp@1.6.0 --isolated'
+  const running = () => hq.readRunning()
+  const addRunning = (pid, extra = {}) => {
+    mkdirSync(join(lockDir, 'running'), { recursive: true })
+    writeFileSync(join(lockDir, 'running', `${pid}.json`), JSON.stringify({ pid, identity: psIdentity(pid).replace(/^\s+/, ''), key: '/other', repo: '/r', command: 'c', kind: 'check', started: Date.now() - 1_000_000, expectedBytes: 1 * GB, background: false, paused: false, childPid: null, ...extra }))
+  }
+  const clearRegistry = () => { rmSync(lockDir, { recursive: true, force: true }); rmSync(join(dataDir, 'priorities.json'), { force: true }); rmSync(join(dataDir, 'heavy-peaks.json'), { force: true }) }
+  try {
+    // ── hooks.json
+    const hooks = JSON.parse(readFileSync(join(PLUGIN, '../hooks/hooks.json'), 'utf8')).hooks.PreToolUse
+    const wired = hooks.find((entry) => entry.hooks.some((hook) => /browser-admit\.mjs/.test(hook.command)))
+    const matches = (tool) => new RegExp(`^(?:${wired?.matcher})$`).test(tool)
+    check('browser admission: hooks.json wires browser-admit.mjs on PreToolUse for the plugin\'s, the opt-in and a project\'s DevTools MCP tools, with timeout 300', wired && wired.hooks[0].timeout === 300 && matches('mcp__plugin_stage-pipeline_chrome-devtools__new_page') && matches('mcp__stage-pipeline-chrome__navigate_page') && matches('mcp__chrome-devtools__take_snapshot') && !matches('mcp__figma__get_design_context') && !matches('Bash'))
+
+    // ── a session with a browser, a session without one
+    const [sessionPid] = started()
+    const sessionTable = (withBrowser) => new Map([
+      [process.pid, row(process.pid, sessionPid, 'node browser-admit.mjs')],
+      [sessionPid, row(sessionPid, 1, '/usr/local/bin/claude --resume')],
+      ...(withBrowser ? [[9002, row(9002, sessionPid, MCP)], [9003, row(9003, 9002, CHROME, { rssKb: 400_000 })]] : [[9002, row(9002, sessionPid, MCP)]]),
+    ])
+    const cwdA = join(root, 'repoA')
+    mkdirSync(cwdA, { recursive: true })
+    const lines = []
+    const say = (line) => lines.push(line)
+    const runHook = async (table, options = {}) => {
+      const t0 = Date.now()
+      await ba.admitBrowser({ cwd: cwdA, table, say, ...options })
+      return Date.now() - t0
+    }
+    setMemory(20)
+    // AC-6.2: the session already has a browser: through at once, nothing written, no output
+    let ms = await runHook(sessionTable(true))
+    check('browser admission AC-6.2: a session that already has a browser under its MCP server passes at once with no output and no registry entry', ms < 800 && lines.length === 0 && running().length === 0, `${ms} ms`)
+    // AC-6.1: enough memory — through at once however many browsers are open
+    const others = started(3)
+    for (const pid of others) addRunning(pid, { kind: 'browser', expectedBytes: 0.8 * GB })
+    ms = await runHook(sessionTable(false))
+    const mine = running().find((entry) => entry.pid === sessionPid)
+    check('browser admission AC-6.1: with the memory in hand the new browser passes at once however many are open, and is recorded as a running browser of its session', ms < 3000 && lines.length === 0 && mine?.kind === 'browser' && mine.watch === true && mine.expectedBytes === 0.8 * GB && running().length === 4, `${ms} ms ${JSON.stringify(mine)}`)
+    // a second call of the same session while its entry is in the grace: through at once
+    ms = await runHook(sessionTable(false))
+    check('browser admission AC-6.2: a call while the browser admitted a moment ago is starting passes at once', ms < 800 && lines.length === 0)
+    // normal mode: no admission, no entry
+    clearRegistry()
+    process.env.STAGE_PIPELINE_RESOURCES = 'normal'
+    setMemory(0.1, 'critical')
+    addRunning(others[0])
+    ms = await runHook(sessionTable(false))
+    check('browser admission: in normal mode memory is not looked at, the browser passes with no output and no registry entry', ms < 800 && lines.length === 0 && running().every((entry) => entry.pid !== sessionPid))
+    process.env.STAGE_PIPELINE_RESOURCES = 'low'
+
+    // ── the 240 s cap, in seconds: AC-6.3
+    clearRegistry()
+    addRunning(others[0])
+    setMemory(1.2, 'warn')
+    lines.length = 0
+    ms = await runHook(sessionTable(false), { waitSeconds: 1 })
+    check('browser admission AC-6.3: without the memory the hook waits to its cap and passes with `browser: waited <s> s for memory, starting anyway`', ms >= 900 && ms < 3500 && lines.length === 1 && /^browser: waited 1 s for memory, starting anyway$/.test(lines[0]) && running().some((entry) => entry.pid === sessionPid && entry.kind === 'browser'), `${ms} ms ${lines}`)
+
+    // ── a browser's entry is not a running heavy command (D15); a browser waiter sees every entry
+    {
+      const now = Date.now()
+      const cfgD = hq.limits()
+      const mem = (availableGB, pressure) => ({ pressure, availableBytes: availableGB * GB })
+      const ent = (pid, kind, extra = {}) => ({ pid, key: `k${pid}`, repo: '/r', command: 'c', kind, since: now, started: now, expectedBytes: 1.5 * GB, paused: false, ...extra })
+      const verdict = (self, runningList, memory) => hq.decide({ self, waiters: [], running: runningList, memory, order: [], now, cfg: cfgD })
+      const browserRunning = ent(7001, 'browser', { expectedBytes: 0.8 * GB })
+      check('heavy-queue AC-1.12: a check waiter with only a browser running starts at warn pressure with 1.2 GB available', verdict(ent(7002, 'check'), [browserRunning], mem(1.2, 'warn')).admit === true)
+      check('heavy-queue AC-1.12: a check waiter with only a browser running starts at critical pressure', verdict(ent(7002, 'check'), [browserRunning], mem(0.3, 'critical')).admit === true)
+      check('heavy-queue AC-1.12: a check waiter with a check running follows the old rules (warn, 1.2 GB: waits; critical: waits)', verdict(ent(7002, 'check'), [ent(7003, 'check')], mem(1.2, 'warn')).admit === false && verdict(ent(7002, 'check'), [ent(7003, 'check')], mem(8, 'critical')).admit === false)
+      check('heavy-queue AC-1.12: a check running next to a browser still holds a second check back (the browser does not make the machine idle or busy)', verdict(ent(7002, 'check'), [browserRunning, ent(7003, 'check')], mem(1.2, 'warn')).admit === false)
+      check('heavy-queue AC-1.12: a browser waiter is unchanged — a running browser counts, shortage makes it wait', verdict(ent(7004, 'browser', { expectedBytes: 0.8 * GB }), [browserRunning], mem(1.2, 'warn')).admit === false && verdict(ent(7004, 'browser', { expectedBytes: 0.8 * GB }), [], mem(1.2, 'warn')).admit === true)
+    }
+
+    // ── the browser's peak is sampled: a spike decays through the smoothed record
+    {
+      clearRegistry()
+      const [ownerB] = started()
+      const treeBig = new Map([[ownerB, row(ownerB, 1, '/usr/local/bin/claude')], [9302, row(9302, ownerB, MCP)], [9303, row(9303, 9302, CHROME, { rssKb: 900_000 })]])
+      const treeSmall = new Map([[ownerB, row(ownerB, 1, '/usr/local/bin/claude')], [9302, row(9302, ownerB, MCP)], [9303, row(9303, 9302, CHROME, { rssKb: 200_000 })]])
+      const treeNone = new Map([[ownerB, row(ownerB, 1, '/usr/local/bin/claude')], [9302, row(9302, ownerB, MCP)]])
+      const realReadB = hq.tableSource.read
+      try {
+        hq.tableSource.read = () => treeBig
+        hq.registerBrowser({ pid: ownerB, key: '/r#T-1' })
+        hq.readRunning()
+        hq.tableSource.read = () => treeNone
+        const fileB = join(lockDir, 'running', `${ownerB}.json`)
+        writeFileSync(fileB, JSON.stringify({ ...JSON.parse(readFileSync(fileB, 'utf8')), graceUntil: Date.now() - 1, peak: 200_000 * 1024 }))
+        // an older, higher record of the machine's browser peak
+        writeFileSync(join(dataDir, 'heavy-peaks.json'), JSON.stringify({ [`${hq.BROWSER_REPO}\n${hq.BROWSER_COMMAND}`]: 900_000 * 1024 }))
+        hq.readRunning()
+        check('browser peak: a spike decays: the stored peak becomes the mean of the older record and this browser\'s peak', hq.recordedPeak(hq.BROWSER_REPO, hq.BROWSER_COMMAND) === 550_000 * 1024, String(hq.recordedPeak(hq.BROWSER_REPO, hq.BROWSER_COMMAND)))
+        // two more normal browsers (200 MB each) lower it further: 550 → 375 → 287.5 MB
+        for (let again = 0; again < 2; again++) {
+          hq.tableSource.read = () => treeSmall
+          hq.registerBrowser({ pid: ownerB, key: '/r#T-1' })
+          hq.readRunning()
+          hq.tableSource.read = () => treeNone
+          writeFileSync(fileB, JSON.stringify({ ...JSON.parse(readFileSync(fileB, 'utf8')), graceUntil: Date.now() - 1 }))
+          hq.readRunning()
+        }
+        check('browser peak: after a spike two normal browsers lower the expectation again', hq.recordedPeak(hq.BROWSER_REPO, hq.BROWSER_COMMAND) === 287_500 * 1024, String(hq.recordedPeak(hq.BROWSER_REPO, hq.BROWSER_COMMAND)))
+      } finally {
+        hq.tableSource.read = realReadB
+      }
+      clearRegistry()
+    }
+
+    // ── the "already admitted" check repeats on each poll; the env wait counts only when non-empty; `normal` with no pause reads no process table
+    {
+      clearRegistry()
+      addRunning(others[0])
+      setMemory(1.2, 'warn')
+      lines.length = 0
+      let reads = 0
+      let liveTable = sessionTable(false)
+      const tableCalls = { get table() { reads += 1; return liveTable } }
+      void tableCalls
+      const sessionHas = sessionTable(true)
+      let pollNo = 0
+      const t0 = Date.now()
+      const waiting = ba.admitBrowser({ cwd: cwdA, table: new Proxy(new Map(), { get: (_t, prop) => { const src = pollNo >= 3 ? sessionHas : sessionTable(false); pollNo += prop === 'values' || prop === 'entries' || prop === Symbol.iterator ? 1 : 0; const value = src[prop]; return typeof value === 'function' ? value.bind(src) : value } }), say, waitSeconds: 20 })
+      await waiting
+      const took = Date.now() - t0
+      check('browser admission: a parallel first call passes as soon as the session\'s browser exists, without waiting for the cap and with no cap line', took < 10000 && lines.length === 0 && running().every((entry) => entry.pid !== sessionPid), `${took} ms ${lines}`)
+      clearRegistry()
+      process.env.STAGE_PIPELINE_RESOURCES = 'normal'
+      let touched = 0
+      const spy = new Proxy(new Map(), { get: () => { touched += 1; return undefined } })
+      await ba.admitBrowser({ cwd: cwdA, table: spy, say })
+      check('browser admission: `normal` mode with no pause reads no process table', touched === 0)
+      process.env.STAGE_PIPELINE_RESOURCES = 'low'
+      check('browser admission: STAGE_PIPELINE_BROWSER_WAIT_S counts only when non-empty after trim (empty/blank/garbage -> 240, 0 and 7 count)', ba.waitFromEnv('') === 240 && ba.waitFromEnv('   ') === 240 && ba.waitFromEnv(undefined) === 240 && ba.waitFromEnv('x') === 240 && ba.waitFromEnv(' 7 ') === 7 && ba.waitFromEnv('0') === 0)
+    }
+
+    // ── a paused task holds its new browser until the resume (and not past the cap)
+    clearRegistry()
+    setMemory(20)
+    const key = hq.taskInfo(cwdA).key
+    hq.setPaused(key, true)
+    lines.length = 0
+    let done = false
+    const held = runHook(sessionTable(false), { waitSeconds: 30 }).then(() => { done = true })
+    await pause(700)
+    const stillWaiting = !done
+    hq.setPaused(key, false)
+    await held
+    check('browser admission AC-6.4: a task on pause holds its new browser, and the resume lets it through', stillWaiting && done && lines.length === 0)
+    clearRegistry()
+    hq.setPaused(key, true)
+    lines.length = 0
+    ms = await runHook(sessionTable(false), { waitSeconds: 1 })
+    check('browser admission AC-6.4: a paused task\'s wait ends at the cap too, with the cap line', ms >= 900 && ms < 3500 && /^browser: waited 1 s for the resume, starting anyway$/.test(lines[0] ?? ''), `${ms} ms ${lines}`)
+    hq.setPaused(key, false)
+
+    // ── priority under shortage: two sessions, two tasks, one place of memory — place 1 goes first (the real hook under a fake `claude`)
+    clearRegistry()
+    const bin = join(root, 'bin')
+    mkdirSync(bin, { recursive: true })
+    symlinkSync(process.execPath, join(bin, 'claude'))
+    const wrapper = join(root, 'wrapper.mjs')
+    writeFileSync(wrapper, `import { spawnSync } from 'node:child_process'\nimport { writeFileSync } from 'node:fs'\nconst [cwd, out] = process.argv.slice(2)\nconst r = spawnSync(process.execPath, [${JSON.stringify(join(PLUGIN, 'hooks', 'browser-admit.mjs'))}], { input: JSON.stringify({ cwd }), encoding: 'utf8' })\nwriteFileSync(out, JSON.stringify({ at: Date.now(), out: r.stdout, status: r.status }))\nsetTimeout(() => {}, 60000)\n`)
+    const dirOne = join(root, 'task-one')
+    const dirTwo = join(root, 'task-two')
+    mkdirSync(dirOne, { recursive: true })
+    mkdirSync(dirTwo, { recursive: true })
+    const [holder] = started()
+    addRunning(holder)
+    hq.setOrder([hq.taskInfo(dirTwo).key, hq.taskInfo(dirOne).key]) // task-two is place 1, task-one place 2
+    setMemory(1.0, 'warn')
+    const outOne = join(root, 'one.json')
+    const outTwo = join(root, 'two.json')
+    const env = { ...process.env, STAGE_PIPELINE_BROWSER_WAIT_S: '6' }
+    const fake = (dir, out) => spawn(join(bin, 'claude'), [wrapper, dir, out], { env, stdio: 'ignore' })
+    const claudes = [fake(dirOne, outOne)] // the place 2 one starts first and has waited longer
+    await pause(500)
+    claudes.push(fake(dirTwo, outTwo))
+    // both hooks are in the queue (polled: a slow node start under load must not let the memory rise first)
+    const queued = () => (existsSync(join(lockDir, 'queue')) ? readdirSync(join(lockDir, 'queue')).length : 0)
+    for (let i = 0; i < 100 && queued() < 2; i += 1) await pause(100)
+    await pause(300)
+    const bothWaiting = !existsSync(outOne) && !existsSync(outTwo)
+    setMemory(2.6) // headroom for one browser (0.8 GB), not for two
+    for (let i = 0; i < 40 && !existsSync(outTwo); i += 1) await pause(100)
+    const firstAt = existsSync(outTwo) ? JSON.parse(readFileSync(outTwo, 'utf8')) : null
+    const oneEarly = existsSync(outOne)
+    for (let i = 0; i < 100 && !existsSync(outOne); i += 1) await pause(100)
+    const second = existsSync(outOne) ? JSON.parse(readFileSync(outOne, 'utf8')) : null
+    check('browser admission AC-6.1: under shortage the task at place 1 passes first without output, the place 2 one waits (though it came first) and ends at the cap with the line',
+      bothWaiting && firstAt?.status === 0 && firstAt.out === '' && !oneEarly && second?.status === 0 && /^browser: waited \d+ s for memory, starting anyway\n$/.test(second.out) && second.at > firstAt.at + 2000,
+      JSON.stringify([bothWaiting, firstAt, oneEarly, second]))
+    for (const child of claudes) child.kill('SIGKILL')
+    await pause(200)
+
+    // ── a neighbour admitted while a waiter reads the registry is seen in the queue or in running/, never in neither (CI run 45343364925: both passed).
+    // A fake `ps` moves the neighbour from queue/ to running/ on the waiter's first `ps -A` (the ramp's process table); before the fix that call sat between the two reads.
+    clearRegistry()
+    const realPs = execFileSync('sh', ['-c', 'command -v ps'], { encoding: 'utf8' }).trim()
+    const psBin = join(root, 'ps-bin')
+    mkdirSync(psBin, { recursive: true })
+    const [youngHolder, neighbour] = started(2)
+    addRunning(youngHolder, { started: Date.now(), expectedBytes: 0 }) // young, so the waiter reads the process table; it holds back nothing
+    const neighbourEntry = { pid: neighbour, identity: psIdentity(neighbour).replace(/^\s+/, ''), key: '/t#A', repo: '/r', command: 'c', kind: 'check', started: Date.now(), since: Date.now() - 5000, expectedBytes: 0.8 * GB, background: false, paused: false, childPid: null }
+    mkdirSync(join(lockDir, 'queue'), { recursive: true })
+    writeFileSync(join(lockDir, 'queue', `${neighbour}.json`), JSON.stringify(neighbourEntry))
+    const mark = join(root, 'ps-moved')
+    writeFileSync(join(psBin, 'ps'), `#!/bin/sh\ncase " $* " in *" -A "*) if [ ! -e '${mark}' ]; then : > '${mark}'; mv '${join(lockDir, 'queue', `${neighbour}.json`)}' '${join(lockDir, 'running', `${neighbour}.json`)}'; fi;; esac\nexec '${realPs}' "$@"\n`, { mode: 0o755 })
+    hq.setOrder(['/t#A', '/t#B'])
+    setMemory(3.4) // 1.9 GB of headroom: the waiter's 1.5 GB fits alone, not beside the neighbour's 0.8 GB
+    const savedPath = process.env.PATH
+    process.env.PATH = `${psBin}:${savedPath}`
+    const raced = []
+    const raceStart = Date.now()
+    try {
+      const slot = await hq.admit({ cwd: root, key: '/t#B', repo: '/r2', command: 'x', kind: 'check', mode: { name: 'low' }, say: (line) => raced.push(line), capSeconds: 1.5, capMessage: () => 'capped' })
+      slot.finish({ record: false })
+    } finally {
+      process.env.PATH = savedPath
+    }
+    ms = Date.now() - raceStart
+    check('admission race: a neighbour that moves from the queue to running/ while a waiter reads the registry still holds the waiter back — it waits to the cap instead of starting beside it',
+      existsSync(mark) && raced.at(-1) === 'capped' && ms >= 1400, `${ms} ms ${JSON.stringify(raced)} moved=${existsSync(mark)}`)
+
+    // ── the registry entry lives while the session's tree holds a browser main process; its peak is recorded when it goes
+    clearRegistry()
+    const [owner] = started()
+    const entry = hq.registerBrowser({ pid: owner, key: '/r#T-1' })
+    const treeWith = new Map([[owner, row(owner, 1, '/usr/local/bin/claude')], [9102, row(9102, owner, MCP)], [9103, row(9103, 9102, CHROME, { rssKb: 300_000 })], [9104, row(9104, 9103, 'Google Chrome Helper --type=renderer', { rssKb: 200_000 })]])
+    const treeWithout = new Map([[owner, row(owner, 1, '/usr/local/bin/claude')], [9102, row(9102, owner, MCP)]])
+    const realRead = hq.tableSource.read
+    try {
+      hq.tableSource.read = () => treeWithout
+      check('browser entry: a browser that has not started yet is live within the grace after the admission', hq.readRunning().some((item) => item.pid === owner) && entry.kind === 'browser' && entry.expectedBytes === 0.8 * GB)
+      hq.tableSource.read = () => treeWith
+      const live = hq.readRunning().find((item) => item.pid === owner)
+      check('browser entry: while the session\'s tree holds a browser main process the entry is live and keeps the peak RSS of the main process and its helpers', live?.peak === 500_000 * 1024 && live.childPid === 9103, JSON.stringify(live))
+      hq.tableSource.read = () => treeWithout
+      const file = join(lockDir, 'running', `${owner}.json`)
+      writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), graceUntil: Date.now() - 1 }))
+      check('browser entry: the browser is gone and the grace is over — the entry goes and the peak is recorded for the machine', hq.readRunning().every((item) => item.pid !== owner) && !existsSync(file) && hq.recordedPeak(hq.BROWSER_REPO, hq.BROWSER_COMMAND) === 500_000 * 1024)
+      check('browser entry: the next browser is expected at the recorded peak, not the 0.8 GB default', hq.expectedBytes(hq.BROWSER_REPO, hq.BROWSER_COMMAND, 'browser') === 500_000 * 1024)
+      hq.tableSource.read = () => null
+      hq.registerBrowser({ pid: owner, key: '/r#T-1' })
+      check('browser entry: without a process table the entry stays (fail open)', hq.readRunning().some((item) => item.pid === owner))
+    } finally {
+      hq.tableSource.read = realRead
+    }
+
+    // ── SIGSTOP / SIGCONT of a task's browsers: main process and helpers, nothing else
+    clearRegistry()
+    const [mainPid, helperPid, otherBrowser, plain] = started(4)
+    const claudeOne = 9201
+    const claudeTwo = 9202
+    const table = new Map([
+      [claudeOne, row(claudeOne, 1, '/usr/local/bin/claude')], [9211, row(9211, claudeOne, MCP)],
+      [mainPid, row(mainPid, 9211, CHROME)], [helperPid, row(helperPid, mainPid, 'Google Chrome Helper --type=gpu-process')],
+      [plain, row(plain, claudeOne, 'node some-script.mjs')],
+      [claudeTwo, row(claudeTwo, 1, '/usr/local/bin/claude')], [9212, row(9212, claudeTwo, MCP)], [otherBrowser, row(otherBrowser, 9212, CHROME)],
+    ])
+    const seams = { table, cwdOf: (pid) => (pid === claudeOne ? '/r' : '/q'), taskOf: (cwd) => (cwd === '/r' ? { key: '/r#T-1', task: true, root: '/r', ticket: 'T-1' } : { key: '/q#T-2', task: true, root: '/q', ticket: 'T-2' }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none') }
+    const stopped = mon.signalTaskBrowsers('/r#T-1', 'SIGSTOP', seams)
+    await pause(300)
+    check('pause AC-6.4: the task\'s browser main process and helper are stopped (state T); a plain process of the session and another task\'s browser are not', stopped.sort().join() === [mainPid, helperPid].sort().join() && stateOf(mainPid).startsWith('T') && stateOf(helperPid).startsWith('T') && !stateOf(plain).startsWith('T') && !stateOf(otherBrowser).startsWith('T'), `${stopped} ${stateOf(mainPid)} ${stateOf(helperPid)} ${stateOf(plain)} ${stateOf(otherBrowser)}`)
+    const continued = mon.signalTaskBrowsers('/r#T-1', 'SIGCONT', seams)
+    await pause(300)
+    check('pause AC-6.4: the resume continues them', continued.length === 2 && !stateOf(mainPid).startsWith('T') && !stateOf(helperPid).startsWith('T'))
+    check('pause: Windows, a signal other than SIGSTOP/SIGCONT and a key with no session signal nothing', mon.signalTaskBrowsers('/r#T-1', 'SIGSTOP', { ...seams, platform: 'win32' }).length === 0 && mon.signalTaskBrowsers('/r#T-1', 'SIGKILL', seams).length === 0 && mon.signalTaskBrowsers('/nobody#T-9', 'SIGSTOP', seams).length === 0 && !stateOf(mainPid).startsWith('T'))
+    // reliability note B: a session that ended during the pause leaves its browsers stopped; the pause recorded them, the resume continues the ones that are still the same process
+    const recordFile = join(dataDir, 'paused-browsers.json')
+    mon.signalTaskBrowsers('/r#T-1', 'SIGSTOP', seams)
+    await pause(300)
+    const recorded = JSON.parse(readFileSync(recordFile, 'utf8'))
+    check('pause note B: the pause records the stopped browser PIDs with their identity next to priorities.json (0600, no temp file left)', recorded['/r#T-1']?.map((item) => item.pid).sort().join() === [mainPid, helperPid].sort().join() && recorded['/r#T-1'].every((item) => typeof item.identity === 'string' && item.identity.length > 0) && (statSync(recordFile).mode & 0o777) === 0o600 && !readdirSync(dataDir).some((name) => name.endsWith('.tmp')), JSON.stringify(recorded))
+    const afterEnd = mon.signalTaskBrowsers('/r#T-1', 'SIGCONT', { ...seams, table: new Map() }) // the session is gone from the table
+    await pause(300)
+    check('pause note B: the resume of a task whose session ended during the pause continues the recorded browsers and drops the record', afterEnd.sort().join() === [mainPid, helperPid].sort().join() && !stateOf(mainPid).startsWith('T') && !stateOf(helperPid).startsWith('T') && !('/r#T-1' in JSON.parse(readFileSync(recordFile, 'utf8'))), `${afterEnd} ${stateOf(mainPid)}`)
+    process.kill(otherBrowser, 'SIGSTOP')
+    await pause(200)
+    writeFileSync(recordFile, JSON.stringify({ '/q#T-9': [{ pid: otherBrowser, identity: 'Thu Jan  1 00:00:00 1970 some other process' }] }))
+    const reusedPid = mon.signalTaskBrowsers('/q#T-9', 'SIGCONT', { ...seams, table: new Map() })
+    await pause(200)
+    check('pause note B: a recorded PID that is another process now (identity differs) is not continued', reusedPid.length === 0 && stateOf(otherBrowser).startsWith('T'))
+    process.kill(otherBrowser, 'SIGCONT')
+    // the CLI: pause / resume write priorities.json; PIDs come from the table, so a key with no session stops nothing
+    const cliEnv = { ...process.env }
+    const cli = (verb, target) => spawnSync(process.execPath, [join(PLUGIN, 'heavy-queue.mjs'), verb, target], { encoding: 'utf8', env: cliEnv })
+    const cliPause = cli('pause', '/nobody#T-9')
+    const cliPaused = hq.readPriorities().paused.join()
+    const cliResume = cli('resume', '/nobody#T-9')
+    check('pause: `heavy-queue.mjs pause|resume <key>` still writes and clears the pause (and stops no process for a key with no session)', cliPause.status === 0 && cliPaused === '/nobody#T-9' && /paused \/nobody#T-9$/m.test(cliPause.stdout) && cliResume.status === 0 && hq.readPriorities().paused.length === 0, cliPause.stdout + cliPause.stderr)
+    // the page's endpoints call the same function with the task key, never a pid
+    const calls = []
+    const snapshotOf = () => ({ at: 'x', tasks: [{ key: '/r#T-1', repo: 'r', ticket: 'T-1', stages: [], open: true }], sessions: [], waiting: [], balance: { heavy: [], paused: [], pauseSupported: true, order: [] }, machine: null, problem: null })
+    const live = await mon.serve({ port: 0, state: mon.makeState({ collectFn: snapshotOf, clock: Date.now, tableOf: () => new Map(), dirsOf: () => [] }), signalBrowsers: (key, signal) => { calls.push([key, signal]); return [] } })
+    try {
+      const post = (path, payload) => new Promise((resolveCall, fail) => {
+        const req = httpRequest({ host: '127.0.0.1', port: live.port, path: `${path}?t=${live.token}`, method: 'POST', headers: { host: `127.0.0.1:${live.port}`, origin: `http://127.0.0.1:${live.port}`, 'content-type': 'application/json' } }, (res) => { res.resume(); res.on('end', () => resolveCall(res.statusCode)) })
+        req.on('error', fail)
+        req.end(JSON.stringify(payload))
+      })
+      await fetch(`http://127.0.0.1:${live.port}/api/state?t=${live.token}`)
+      const a = await post('/api/pause', { key: '/r#T-1' })
+      const b = await post('/api/resume', { key: '/r#T-1' })
+      const c = await post('/api/pause', { pid: 4242 })
+      const d = await post('/api/pause', { key: '/unknown#T-5' })
+      check('pause AC-6.4: the page\'s pause and resume endpoints stop and continue the task\'s browsers by the task key; a pid or an unknown key signals nothing', a === 200 && b === 200 && c === 400 && d === 400 && JSON.stringify(calls) === JSON.stringify([['/r#T-1', 'SIGSTOP'], ['/r#T-1', 'SIGCONT']]), JSON.stringify([a, b, c, d, calls]))
+    } finally {
+      await live.close()
+    }
+
+    // ── N1 of the stage-5 review: the usage of a heavy row and its live CPU from two refreshes
+    clearRegistry()
+    const [heavyPid] = started()
+    addRunning(heavyPid, { key: '/r#T-1', command: 'yarn test', started: Date.now() - 5000 })
+    let childSeconds = 10
+    let clockNow = 5_000_000
+    const heavyTable = () => new Map([[heavyPid, row(heavyPid, 1, 'node run-check.mjs -- yarn test', { rssKb: 1000, cpuSeconds: 2, age: 100 + (clockNow - 5_000_000) / 1000 })], [9301, row(9301, heavyPid, 'node vitest', { rssKb: 3000, cpuSeconds: childSeconds, cpu: 30, age: 90 + (clockNow - 5_000_000) / 1000 })]])
+    const stateN1 = mon.makeState({ collectFn: (options) => mon.collect({ ...options, machine: { memory: null, swap: null, load: null }, waitStates: [], projectsDir: join(root, 'none') }), clock: () => clockNow, tableOf: heavyTable, dirsOf: () => [] })
+    const first = stateN1.refresh().balance.heavy.find((item) => item.pid === heavyPid)
+    check('attachHeavyUsage: a heavy row carries the count and the resident bytes of its command\'s tree', first?.usage?.count === 2 && first.usage.rssBytes === 4000 * 1024 && first.usage.procs.length === 2, JSON.stringify(first?.usage))
+    clockNow += 10_000
+    childSeconds += 5
+    const second2 = stateN1.refresh().balance.heavy.find((item) => item.pid === heavyPid)
+    check('attachHeavyUsage: two refreshes with a growing cpuSeconds give the row a live usage.cpu (5 CPU seconds in 10 s = 50 %), replacing the ps average', second2?.usage?.cpu === 50, JSON.stringify(second2?.usage))
+    addRunning(owner, { kind: 'browser', key: '/r#T-1', watch: false })
+    const withOwner = heavyTable().set(owner, row(owner, 1, '/usr/local/bin/claude', { age: 100_000 }))
+    const withBrowserRow = mon.collect({ table: withOwner, tasks: [], machine: { memory: null, swap: null, load: null }, waitStates: [], projectsDir: join(root, 'none') }).balance.heavy.find((item) => item.pid === owner)
+    check('attachHeavyUsage: a browser row (its pid is the session\'s) gets no usage of the whole session', withBrowserRow?.kind === 'browser' && withBrowserRow.usage === undefined)
+  } finally {
+    for (const child of sleepers) child.kill('SIGKILL')
+    for (const name of envNames) {
+      if (saved[name] === undefined) delete process.env[name]
+      else process.env[name] = saved[name]
+    }
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+// ── VT-17 stage 5: the page's server ─────────────────────────────────────────
+// A random port, temporary data and lock dirs, an injected snapshot: never the real data dir or the fixed port.
+if (unit('vt17s5')) {
+  const { request } = await import('node:http')
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-serve-'))
+  const saved = { data: process.env.STAGE_PIPELINE_DATA_DIR, lock: process.env.STAGE_PIPELINE_LOCK_DIR }
+  process.env.STAGE_PIPELINE_DATA_DIR = join(root, 'data')
+  process.env.STAGE_PIPELINE_LOCK_DIR = join(root, 'lock')
+  mkdirSync(process.env.STAGE_PIPELINE_DATA_DIR, { recursive: true })
+  const call = (port, path, { method = 'GET', headers = {}, body } = {}) => new Promise((done, fail) => {
+    const req = request({ host: '127.0.0.1', port, path, method, headers: { host: `127.0.0.1:${port}`, ...headers } }, (res) => {
+      let text = ''
+      res.on('data', (chunk) => (text += chunk))
+      res.on('end', () => done({ status: res.statusCode, text, headers: res.headers }))
+    })
+    req.on('error', fail)
+    req.end(body)
+  })
+  let cpuSeconds = 10
+  let clockNow = 1_000_000
+  const proc = () => ({ pid: 11, kind: 'check', age: 100 + (clockNow - 1_000_000) / 1000, cpuSeconds })
+  const snapshotOf = () => ({ at: 'x', tasks: [{ key: '/r#T-1', repo: 'r', ticket: 'T-1', stages: [], open: true }, { key: '/r#T-2', repo: 'r', ticket: 'T-2', stages: [], open: true }], sessions: [{ pid: 10, root: '/r', task: '/r#T-1', load: { procs: [proc()] } }], waiting: [], balance: { heavy: [], paused: [], pauseSupported: true, order: [] }, machine: null, problem: null })
+  const state = mon.makeState({ collectFn: snapshotOf, clock: () => clockNow, tableOf: () => new Map(), dirsOf: () => [] })
+  const live = await mon.serve({ port: 0, state })
+  const { port, token } = live
+  try {
+    const good = await call(port, `/api/state?t=${token}`)
+    check('serve AC-5.6: with the token the state answers 200 and the page 200', good.status === 200 && (await call(port, `/?t=${token}`)).status === 200 && /<title>/.test((await call(port, `/?t=${token}`)).text))
+    check('serve AC-5.6: no token, a wrong token and a token of another length are 403', (await call(port, '/api/state')).status === 403 && (await call(port, '/api/state?t=nope')).status === 403 && (await call(port, `/api/state?t=${token.replace(/.$/, 'g')}`)).status === 403)
+    check('serve AC-5.6: a token in the X-Token header is accepted', (await call(port, '/api/state', { headers: { 'x-token': token } })).status === 200)
+    check('serve AC-5.6: a Host other than 127.0.0.1:<port> / localhost:<port> (also the port-less one) is 403', (await call(port, `/api/state?t=${token}`, { headers: { host: 'evil.example' } })).status === 403 && (await call(port, `/api/state?t=${token}`, { headers: { host: '127.0.0.1' } })).status === 403 && (await call(port, `/api/state?t=${token}`, { headers: { host: `localhost:${port}` } })).status === 200)
+    const post = (path, payload, origin = `http://127.0.0.1:${port}`) => call(port, `${path}?t=${token}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body: JSON.stringify(payload) })
+    const foreign = await post('/api/priorities', { order: ['/r#T-2', '/r#T-1'] }, 'http://evil.example')
+    const noOrigin = await post('/api/priorities', { order: ['/r#T-2', '/r#T-1'] }, null)
+    check('serve AC-5.6: a POST with a foreign Origin or none is 403 and changes nothing', foreign.status === 403 && noOrigin.status === 403 && hq.readPriorities().order.length === 0)
+    check('serve AC-5.6: the server listens on 127.0.0.1 only', live.server.address().address === '127.0.0.1')
+    await call(port, `/api/state?t=${token}`)
+    const changed = await post('/api/priorities', { order: ['/r#T-2', '/r#T-1'] })
+    check('serve AC-5.1: POST /api/priorities writes the order that readPriorities (heavy-queue status) reads', changed.status === 200 && hq.readPriorities().order.join() === '/r#T-2,/r#T-1', changed.text)
+    check('serve AC-5.1: an unknown key, a non-list and a non-string are 400 and the order stays', (await post('/api/priorities', { order: ['/x#Y'] })).status === 400 && (await post('/api/priorities', { order: 'a' })).status === 400 && (await post('/api/priorities', { order: [5] })).status === 400 && hq.readPriorities().order.join() === '/r#T-2,/r#T-1')
+    check('serve AC-5.3: POST /api/pause and /api/resume with a task key set and clear priorities.paused', (await post('/api/pause', { key: '/r#T-1' })).status === 200 && hq.readPriorities().paused.join() === '/r#T-1' && (await post('/api/resume', { key: '/r#T-1' })).status === 200 && hq.readPriorities().paused.length === 0)
+    check('serve AC-5.6: a pid or an unknown key is not taken by pause (400, nothing paused)', (await post('/api/pause', { key: 'pid:4242' })).status === 400 && (await post('/api/pause', { pid: 4242 })).status === 400 && hq.readPriorities().paused.length === 0)
+    hq.setOrder(['/r#T-2', '/r#T-1', '/gone#T-9', '/root-only'])
+    const kept = await post('/api/priorities', { order: ['/r#T-1', '/r#T-2'] })
+    check('serve finding 3: a reorder keeps the old keys missing from the posted list, after the posted ones in their old order', kept.status === 200 && hq.readPriorities().order.join() === '/r#T-1,/r#T-2,/gone#T-9,/root-only', hq.readPriorities().order.join())
+    check('serve: an unknown path is 404 and a bad body 400', (await call(port, `/nope?t=${token}`)).status === 404 && (await call(port, `/api/pause?t=${token}`, { method: 'POST', headers: { origin: `http://127.0.0.1:${port}` }, body: '{ half' })).status === 400)
+    // the CPU delta: two samples of cpuSeconds, 10 s apart, 5 CPU seconds = 50 %
+    clockNow += 10_000
+    cpuSeconds += 5
+    const second = JSON.parse((await call(port, `/api/state?t=${token}`)).text)
+    check('serve AC-5.2: /api/state has the snapshot (tasks, sessions, waiting, balance, machine) and the live CPU % per session and kind from two samples', Array.isArray(second.tasks) && Array.isArray(second.waiting) && second.balance && second.pauseSupported === true && second.sessions[0].live?.cpu === 50 && second.sessions[0].live.kinds.check === 50, JSON.stringify(second.sessions[0]))
+    const reused = [{ load: { procs: [{ pid: 1, kind: 'check', age: 5, cpuSeconds: 1 }] } }]
+    mon.sampleCpu(reused, new Map([[1, { age: 500, cpuSeconds: 0.5, at: 0 }]]), 1000)
+    const dropped = [{ load: { procs: [{ pid: 1, kind: 'check', age: 600, cpuSeconds: 1 }] } }]
+    mon.sampleCpu(dropped, new Map([[1, { age: 500, cpuSeconds: 9, at: 0 }]]), 1000)
+    const same = [{ load: { procs: [{ pid: 1, kind: 'check', age: 600, cpuSeconds: 2 }] } }]
+    mon.sampleCpu(same, new Map([[1, { age: 500, cpuSeconds: 1, at: 0 }]]), 1000)
+    check('serve: a reused pid (its age fell) or a process whose CPU time dropped gives no CPU %; the same process does', reused[0].live === null && dropped[0].live === null && same[0].live?.cpu === 100)
+  } finally {
+    await live.close()
+  }
+  // the fixed default port, the token kept in the data dir, --new-token (AC-5.12)
+  const t1 = mon.readToken()
+  const t2 = mon.readToken()
+  const t3 = mon.readToken({ fresh: true })
+  check('serve AC-5.12: the token is reused across restarts, --new-token gives another, the file is 0600 and the token 48 hex', t1 === t2 && t3 !== t1 && /^[0-9a-f]{48}$/.test(t3) && mon.readToken() === t3 && (statSync(join(process.env.STAGE_PIPELINE_DATA_DIR, 'monitor-token')).mode & 0o777) === 0o600)
+  const tokenFile = join(process.env.STAGE_PIPELINE_DATA_DIR, 'monitor-token')
+  chmodSync(tokenFile, 0o644)
+  mon.readToken()
+  check('serve finding 2: a token file that is wider than 0600 is narrowed on read, and a data dir made here is 0700', (statSync(tokenFile).mode & 0o777) === 0o600 && (() => { const fresh = join(root, 'new-data'); mon.readToken({ dir: fresh }); return (statSync(fresh).mode & 0o777) === 0o700 })())
+  check('serve AC-5.12: the default port is 7317', mon.DEFAULT_PORT === 7317)
+  const run = (port, ...flags) => new Promise((done) => {
+    const child = spawn(process.execPath, [join(PLUGIN, 'monitor.mjs'), 'serve', ...(port ? ['--port', String(port)] : []), ...flags], { env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    child.stdout.on('data', (chunk) => {
+      out += chunk
+      if (/\n/.test(out)) {
+        child.kill()
+        done(out.trim())
+      }
+    })
+    child.on('exit', () => done(out.trim()))
+  })
+  const free = await new Promise((done) => {
+    const probe = createServer()
+    probe.listen(0, '127.0.0.1', () => {
+      const { port: found } = probe.address()
+      probe.close(() => done(found))
+    })
+  })
+  const first = await run(free)
+  const again = await run(free)
+  const fresh = await run(free, '--new-token')
+  const urlOf = (line) => new RegExp(`^monitor: http://127\\.0\\.0\\.1:${free}/\\?t=([0-9a-f]{48})$`).exec(line)?.[1]
+  check('serve AC-5.12: the CLI prints http://127.0.0.1:<port>/?t=<token>, the same token after a restart, another with --new-token', urlOf(first) && urlOf(first) === urlOf(again) && urlOf(fresh) && urlOf(fresh) !== urlOf(first), [first, again, fresh].join(' | '))
+  // finding S-3: a busy fixed port rotates the token, so whatever squats the port never sees a valid token later
+  const squatter = createServer()
+  await new Promise((done) => squatter.listen(0, '127.0.0.1', done))
+  const busyPort = squatter.address().port
+  try {
+    const tokenBefore = mon.readToken()
+    const busyError = await mon.serve({ port: busyPort, rotateOnBusy: true }).then(() => null, (error) => error)
+    const tokenAfter = mon.readToken()
+    check('serve S-3: EADDRINUSE on the fixed port rejects, flags the rotation and replaces the token', busyError?.code === 'EADDRINUSE' && busyError.tokenRotated === true && tokenAfter !== tokenBefore && /^[0-9a-f]{48}$/.test(tokenAfter), `${busyError?.code} ${busyError?.tokenRotated}`)
+    const tokenKept = mon.readToken()
+    const otherError = await mon.serve({ port: busyPort }).then(() => null, (error) => error)
+    check('serve S-3: a busy port chosen with --port does not rotate the token', otherError?.code === 'EADDRINUSE' && !otherError.tokenRotated && mon.readToken() === tokenKept)
+  } finally {
+    await new Promise((done) => squatter.close(done))
+  }
+  if (saved.data === undefined) delete process.env.STAGE_PIPELINE_DATA_DIR
+  else process.env.STAGE_PIPELINE_DATA_DIR = saved.data
+  if (saved.lock === undefined) delete process.env.STAGE_PIPELINE_LOCK_DIR
+  else process.env.STAGE_PIPELINE_LOCK_DIR = saved.lock
+  rmSync(root, { recursive: true, force: true })
+}
+
+// ── VT-17 stage 4: session-wait hook and the waiting state in monitor.mjs ────
+// Temporary data dirs and fake transcripts only: never the real data dir or ~/.claude/projects.
+if (unit('vt17s4')) {
+  const sw = await import(join(PLUGIN, 'hooks', 'session-wait.mjs'))
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const root = mkdtempSync(join(tmpdir(), 'hooks-test-wait-'))
+  const dataDir = join(root, 'data')
+  const sessionsDir = join(dataDir, 'sessions')
+  const env = { ...process.env, STAGE_PIPELINE_DATA_DIR: dataDir }
+  const fire = (input, options = {}) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'session-wait.mjs')], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: options.env ?? env })
+  const stateOf = (id) => { try { return JSON.parse(readFileSync(join(sessionsDir, `${id}.json`), 'utf8')) } catch { return null } }
+  const sid = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const transcript = join(root, 'transcript.jsonl')
+  const assistant = (text) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }, { type: 'text', text }] } })
+  const base = { session_id: sid, cwd: '/work/repo', transcript_path: transcript }
+
+  // AC-4.1: Stop → turn-ended, the text is the end of the last answer (the field, else the transcript tail)
+  const long = `${'a'.repeat(2500)}END`
+  const first = fire({ ...base, hook_event_name: 'Stop', last_assistant_message: long })
+  const s1 = stateOf(sid)
+  check('hook AC-4.1: Stop sets turn-ended with the end of last_assistant_message, capped at 2000 characters; no output, exit 0', first.status === 0 && first.stdout === '' && s1?.kind === 'turn-ended' && s1.text.length === 2000 && s1.text.endsWith('END') && s1.cwd === '/work/repo' && s1.transcript === transcript && typeof s1.since === 'number', JSON.stringify(s1)?.slice(0, 200))
+  writeFileSync(transcript, `${assistant('old answer')}\n{"type":"user","message":{"content":"hi"}}\n${assistant('the final answer')}\n{"type":"system","x":1}\nnot json\n`)
+  fire({ ...base, hook_event_name: 'Stop' })
+  check('hook AC-4.1: without last_assistant_message the text comes from the last assistant text of the transcript', stateOf(sid)?.text === 'the final answer', JSON.stringify(stateOf(sid)))
+  writeFileSync(transcript, `${'x'.repeat(400_000)}\n${assistant('tail only')}\n`)
+  fire({ ...base, hook_event_name: 'Stop' })
+  check('hook AC-4.1: the transcript read is bounded (a 400 KB line before the tail is not parsed whole) and still finds the tail', stateOf(sid)?.text === 'tail only')
+
+  // AC-4.2: AskUserQuestion
+  const questions = [{ question: 'Which store?', header: 'Store', options: [{ label: 'Redis', description: 'fast' }, { label: 'SQLite', description: 'file' }], multiSelect: false }]
+  fire({ ...base, hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  const q = stateOf(sid)
+  check('hook AC-4.2: PreToolUse AskUserQuestion sets question with the question text and the option labels', q?.kind === 'question' && q.text === 'Which store?' && q.options.join() === 'Redis,SQLite', JSON.stringify(q))
+  fire({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } })
+  check('hook AC-4.2: a PreToolUse of another tool changes nothing', stateOf(sid)?.kind === 'question')
+  fire({ ...base, hook_event_name: 'PostToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  check('hook AC-4.2: after the answer (PostToolUse AskUserQuestion) the state is cleared', stateOf(sid)?.kind === null && sw.stateFor({ hook_event_name: 'PostToolUse', tool_name: 'Bash' }) === null)
+
+  // AC-4.3: permission through both paths, elicitation
+  fire({ ...base, hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })
+  check('hook AC-4.3: PermissionRequest sets permission with the tool and the command', stateOf(sid)?.kind === 'permission' && stateOf(sid).text === 'Bash rm -rf build', JSON.stringify(stateOf(sid)))
+  fire({ ...base, hook_event_name: 'PermissionRequest', tool_name: 'Edit', tool_input: { file_path: '/work/repo/a.ts' } })
+  check('hook AC-4.3: a file tool shows its path', stateOf(sid)?.text === 'Edit /work/repo/a.ts')
+  fire({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'ok' })
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' })
+  check('hook AC-4.3: Notification permission_prompt sets permission when there is no state', stateOf(sid)?.kind === 'permission' && /needs your permission/.test(stateOf(sid).text))
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'elicitation_dialog', message: 'other' })
+  check('hook AC-4.3: a Notification does not replace a state that is already set; idle_prompt is ignored', stateOf(sid)?.kind === 'permission' && stateOf(sid).text !== 'other')
+  fire({ ...base, hook_event_name: 'UserPromptSubmit' })
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'idle_prompt', message: 'idle' })
+  check('hook AC-4.3: idle_prompt sets nothing', stateOf(sid)?.kind === null)
+  fire({ ...base, hook_event_name: 'Notification', notification_type: 'elicitation_dialog', message: 'Fill the form' })
+  check('hook AC-4.3: Notification elicitation_dialog sets elicitation', stateOf(sid)?.kind === 'elicitation' && stateOf(sid).text === 'Fill the form')
+  fire({ ...base, hook_event_name: 'Elicitation', mcp_server_name: 'figma', message: 'Sign in' })
+  check('hook: Elicitation sets elicitation with the server and the message', stateOf(sid)?.kind === 'elicitation' && stateOf(sid).text === 'figma: Sign in', JSON.stringify(stateOf(sid)))
+
+  // AC-4.4: cleared by a prompt, removed by the end of the session
+  fire({ ...base, hook_event_name: 'UserPromptSubmit' })
+  const cleared = stateOf(sid)
+  check('hook AC-4.4: UserPromptSubmit clears the state (the file stays for the process id)', cleared?.kind === null && cleared.text === '')
+  fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'done' })
+  fire({ ...base, hook_event_name: 'SessionEnd', reason: 'other' })
+  check('hook AC-4.4: SessionEnd removes the file; a prompt in a session with no file creates none', stateOf(sid) === null && (fire({ session_id: 'nofile', hook_event_name: 'UserPromptSubmit' }), stateOf('nofile') === null))
+
+  // AC-4.6: a subagent's event changes nothing
+  fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'main' })
+  for (const event of [{ hook_event_name: 'Stop', last_assistant_message: 'sub' }, { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'x' } }, { hook_event_name: 'UserPromptSubmit' }, { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } }, { hook_event_name: 'SessionEnd' }]) fire({ ...base, ...event, agent_id: 'agent-1' })
+  check('hook AC-4.6: events with agent_id (a subagent) change nothing, whatever they are', stateOf(sid)?.kind === 'turn-ended' && stateOf(sid).text === 'main')
+  fire({ session_id: 'sub-only', hook_event_name: 'Stop', agent_id: 'a' })
+  check('hook AC-4.6: and create no file', stateOf('sub-only') === null)
+
+  // AC-4.7: never blocks, never prints, exit 0 within 1 s
+  const bad = [fire('not json at all'), fire(''), fire('{}'), fire({ session_id: '../../evil', hook_event_name: 'Stop' }), fire({ session_id: 'x', hook_event_name: 'NoSuchEvent' })]
+  check('hook AC-4.7: unparseable or empty data, no session id, a path-like id, an unknown event — exit 0 and no output', bad.every((r) => r.status === 0 && r.stdout === '' && r.stderr === '') && !existsSync(join(dataDir, 'evil.json')) && !existsSync(join(root, 'evil.json')), JSON.stringify(bad.map((r) => [r.status, r.stdout, r.stderr])))
+  const blocked = join(root, 'blocked')
+  writeFileSync(blocked, 'a file where the data dir should be')
+  const t0 = Date.now()
+  const noWrite = fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'x' }, { env: { ...process.env, STAGE_PIPELINE_DATA_DIR: join(blocked, 'data') } })
+  check('hook AC-4.7: a file that cannot be written — exit 0, no output, under 1 s', noWrite.status === 0 && noWrite.stdout === '' && noWrite.stderr === '' && Date.now() - t0 < 1000, `${noWrite.status} ${Date.now() - t0} ms`)
+  const hookTimes = []
+  for (let i = 0; i < 3; i++) { const t = Date.now(); fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'x' }); hookTimes.push(Date.now() - t) }
+  check('hook AC-4.7: a run with the process lookup takes well under 1 s', hookTimes.every((ms) => ms < 1000), hookTimes.join(','))
+  check('hook: the state file holds no temp leftovers and is written whole', readdirSync(sessionsDir).every((name) => name.endsWith('.json')) && Object.keys(stateOf(sid)).sort().join() === 'claudePid,cwd,kind,options,since,source,text,transcript')
+
+  // claudePid: resolved once per session, kept in the file, one lookup
+  const dir2 = join(root, 'pid')
+  let lookups = 0
+  const rec = (input, extra = {}) => sw.record({ session_id: 'pidsess', cwd: '/c', ...input }, { dir: dir2, pidOf: () => { lookups++; return 4242 }, aliveOf: () => true, commandOf: () => '/usr/local/bin/claude --resume x', ...extra })
+  rec({ hook_event_name: 'Stop', last_assistant_message: 'a' })
+  rec({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } })
+  rec({ hook_event_name: 'UserPromptSubmit' })
+  rec({ hook_event_name: 'Stop', last_assistant_message: 'b' })
+  check('hook: claudePid is looked up once per session and kept across events and a clear', lookups === 1 && JSON.parse(readFileSync(join(dir2, 'pidsess.json'), 'utf8')).claudePid === 4242)
+  const own = sw.claudePidOf(process.pid)
+  check('hook: claudePid of the real process is a number or null (this test may not run under claude), from one ps call', own === null || Number.isInteger(own))
+
+  // claudePid after a resume (same session id, new process): a dead pid, a pid that is no longer a claude and a null are looked up again
+  const dir3 = join(root, 'pid3')
+  let looks = 0
+  const rec3 = (extra) => sw.record({ session_id: 'resumed', cwd: '/c', hook_event_name: 'Stop', last_assistant_message: 'a' }, { dir: dir3, pidOf: () => { looks++; return 7 }, aliveOf: () => true, commandOf: () => 'claude', ...extra })
+  const pid3 = () => JSON.parse(readFileSync(join(dir3, 'resumed.json'), 'utf8')).claudePid
+  rec3({ pidOf: () => 5 })
+  rec3({ aliveOf: (pid) => pid !== 5 })
+  check('hook AC-4.5: a stored claudePid whose process is dead is resolved again (a session resumed in a new process)', pid3() === 7 && looks === 1, `${pid3()} ${looks}`)
+  rec3({ commandOf: () => '/bin/zsh' })
+  check('hook AC-4.5: a stored claudePid that is no longer a claude (a reused pid) is resolved again', looks === 2, String(looks))
+  rec3({ pidOf: () => null, aliveOf: () => false })
+  rec3({})
+  check('hook AC-4.5: a null claudePid (a failed ps) is resolved again at the next event; a live claude one is kept without a lookup', pid3() === 7 && looks === 3, `${pid3()} ${looks}`)
+
+  // AC-4.3: an approved permission is cleared from journal-gate's PostToolUse path; other states stay
+  const dir4 = join(root, 'clear')
+  const seed = (kind) => { mkdirSync(dir4, { recursive: true }); writeFileSync(join(dir4, 'cc.json'), JSON.stringify({ kind, text: 'Bash ls', options: ['x'], since: 1, cwd: '/c', transcript: null, claudePid: 9 })) }
+  const kindOf = () => JSON.parse(readFileSync(join(dir4, 'cc.json'), 'utf8'))
+  seed('permission')
+  const cleared1 = sw.clearApproved('cc', { dir: dir4, now: 50 })
+  check('hook AC-4.3: clearApproved sets a permission to null (text and options emptied, since moved, pid kept)', cleared1 === true && kindOf().kind === null && kindOf().text === '' && kindOf().since === 50 && kindOf().claudePid === 9)
+  seed('elicitation')
+  sw.clearApproved('cc', { dir: dir4 })
+  const afterEl = kindOf().kind
+  seed('question')
+  const noQ = sw.clearApproved('cc', { dir: dir4 })
+  seed('turn-ended')
+  const noT = sw.clearApproved('cc', { dir: dir4 })
+  check('hook AC-4.3: an elicitation is cleared; a question and a turn-ended are not; a missing file or a bad id is false', afterEl === null && noQ === false && noT === false && kindOf().kind === 'turn-ended' && sw.clearApproved('absent', { dir: dir4 }) === false && sw.clearApproved('../x', { dir: dir4 }) === false)
+  // through the real PostToolUse hook: journal-gate
+  const gateDir = join(root, 'gate-data')
+  mkdirSync(join(gateDir, 'sessions'), { recursive: true })
+  const gateEnv = { ...process.env, STAGE_PIPELINE_DATA_DIR: gateDir }
+  const gateFile = join(gateDir, 'sessions', 'gate-sess.json')
+  const gateSeed = (kind) => writeFileSync(gateFile, JSON.stringify({ kind, text: 'Bash sleep 180', options: [], since: 1, cwd: root, transcript: null, claudePid: 9 }))
+  const gate = (extra) => spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'journal-gate.mjs')], { input: JSON.stringify({ session_id: 'gate-sess', cwd: root, tool_name: 'Bash', tool_input: { command: 'sleep 180' }, ...extra }), encoding: 'utf8', env: gateEnv })
+  gateSeed('permission')
+  const gPost = gate({ hook_event_name: 'PostToolUse' })
+  check('hook AC-4.3: the PostToolUse run of journal-gate clears a permission; no output, exit 0', gPost.status === 0 && gPost.stdout === '' && JSON.parse(readFileSync(gateFile, 'utf8')).kind === null, gPost.stdout + gPost.stderr)
+  gateSeed('permission')
+  gate({ hook_event_name: 'PreToolUse' })
+  const stillPerm = JSON.parse(readFileSync(gateFile, 'utf8')).kind
+  gateSeed('question')
+  gate({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, 'a.txt') } })
+  check('hook AC-4.3: the PreToolUse run does not clear it; a question survives a PostToolUse of an Edit (which clears a permission too)', stillPerm === 'permission' && JSON.parse(readFileSync(gateFile, 'utf8')).kind === 'question')
+  gateSeed('permission')
+  gate({ hook_event_name: 'PostToolUse', agent_id: 'sub-1' })
+  const afterSub = JSON.parse(readFileSync(gateFile, 'utf8')).kind
+  gate({ hook_event_name: 'PostToolUse' })
+  check('hook AC-4.6: a subagent\'s PostToolUse (agent_id) leaves the main session\'s permission; the main session\'s own PostToolUse clears it', afterSub === 'permission' && JSON.parse(readFileSync(gateFile, 'utf8')).kind === null, String(afterSub))
+  const t1 = Date.now()
+  for (let i = 0; i < 5; i++) gate({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, 'a.txt') } })
+  console.log(`  [info] journal-gate PostToolUse Edit with a session file: ${Math.round((Date.now() - t1) / 5)} ms per run`)
+
+  // AC-4.2: a PermissionRequest for AskUserQuestion does not replace the question; a Notification of the same kind refreshes
+  const dir5 = join(root, 'q')
+  const rec5 = (input) => sw.record({ session_id: 'qq', cwd: '/c', ...input }, { dir: dir5, pidOf: () => 1, aliveOf: () => true, commandOf: () => 'claude' })
+  const st5 = () => JSON.parse(readFileSync(join(dir5, 'qq.json'), 'utf8'))
+  rec5({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  rec5({ hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion', tool_input: { questions } })
+  const afterPerm = st5()
+  rec5({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } })
+  rec5({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'needs permission' })
+  check('hook AC-4.2: PermissionRequest for AskUserQuestion (and any PermissionRequest / Notification while a question is shown) leaves the question with its options', afterPerm.kind === 'question' && afterPerm.options.join() === 'Redis,SQLite' && st5().kind === 'question' && st5().options.length === 2, JSON.stringify(st5()))
+  rec5({ hook_event_name: 'UserPromptSubmit' })
+  rec5({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'first' })
+  rec5({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'second' }, 0)
+  check('hook AC-4.3: a Notification of the same kind refreshes the text (the second permission of a turn)', st5().kind === 'permission' && st5().text === 'second', JSON.stringify(st5()))
+  rec5({ hook_event_name: 'Notification', notification_type: 'elicitation_dialog', message: 'other' })
+  check('hook AC-4.3: a Notification of another kind does not replace a set state', st5().kind === 'permission' && st5().text === 'second')
+
+  // a PermissionRequest keeps its richer text and `since` when a Notification of the same kind follows
+  const dir7 = join(root, 'rich')
+  const rec7 = (input, now) => sw.record({ session_id: 'rr', cwd: '/c', ...input }, { dir: dir7, now, pidOf: () => 1, aliveOf: () => true, commandOf: () => 'claude' })
+  const st7 = () => JSON.parse(readFileSync(join(dir7, 'rr.json'), 'utf8'))
+  rec7({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'yarn test' } }, 1000)
+  rec7({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission' }, 2000)
+  check('hook AC-4.3: a Notification after a PermissionRequest keeps the richer text and the original since', st7().text === 'Bash yarn test' && st7().since === 1000 && st7().source === 'PermissionRequest', JSON.stringify(st7()))
+  rec7({ hook_event_name: 'PermissionRequest', tool_name: 'Edit', tool_input: { file_path: '/a.txt' } }, 3000)
+  check('hook AC-4.3: a new PermissionRequest still replaces the state', st7().text === 'Edit /a.txt' && st7().since === 3000)
+
+  // a failed pid lookup (ps and commandOf both fail under load) keeps a live old pid, and replaces it only with a positive answer
+  const dir8 = join(root, 'pidkeep')
+  const rec8 = (extra) => sw.record({ session_id: 'pk', cwd: '/c', hook_event_name: 'Stop', last_assistant_message: 'a' }, { dir: dir8, aliveOf: () => true, ...extra })
+  const pid8 = () => JSON.parse(readFileSync(join(dir8, 'pk.json'), 'utf8')).claudePid
+  rec8({ pidOf: () => 5, commandOf: () => 'claude' })
+  rec8({ pidOf: () => null, commandOf: () => null })
+  const keptPid = pid8()
+  rec8({ pidOf: () => null, commandOf: () => null, aliveOf: () => false })
+  const goneNull = pid8()
+  rec8({ pidOf: () => 5, commandOf: () => 'claude' })
+  rec8({ pidOf: () => 8, commandOf: () => null })
+  check('hook AC-4.5: a failed lookup keeps a live old claudePid, drops a dead one to null, and a positive answer replaces it', keptPid === 5 && goneNull === null && pid8() === 8, `${keptPid} ${goneNull} ${pid8()}`)
+  rec8({ pidOf: () => 5, commandOf: () => 'claude' })
+  rec8({ pidOf: () => null, commandOf: () => '/bin/zsh -l' })
+  check('hook AC-4.5: a live old pid that ps positively says is not a claude is not kept as a fallback', pid8() === null, String(pid8()))
+
+  // stale state files: the monitor skips them, the hook deletes them at most once an hour
+  const dir6 = join(root, 'stale', 'sessions')
+  mkdirSync(dir6, { recursive: true })
+  const old = new Date(Date.now() - 8 * 24 * 3600 * 1000)
+  writeFileSync(join(dir6, 'dead.json'), JSON.stringify({ kind: 'turn-ended', text: 'x', since: 1, claudePid: 5 }))
+  utimesSync(join(dir6, 'dead.json'), old, old)
+  writeFileSync(join(dir6, 'fresh.json'), JSON.stringify({ kind: 'turn-ended', text: 'x', since: 1, claudePid: 6 }))
+  check('monitor: readWaitStates skips a state file untouched for 7 days and reads a fresh one', mon.readWaitStates(dir6).map((x) => x.sessionId).join() === 'fresh')
+  const rec6 = () => sw.record({ session_id: 'live', cwd: '/c', hook_event_name: 'Stop', last_assistant_message: 'a' }, { dir: dir6, pidOf: () => 1, aliveOf: () => true, commandOf: () => 'claude' })
+  rec6()
+  check('hook: a state write deletes the stale file of another session, keeps the fresh one and its own', !existsSync(join(dir6, 'dead.json')) && existsSync(join(dir6, 'fresh.json')) && existsSync(join(dir6, 'live.json')))
+  writeFileSync(join(dir6, 'dead2.json'), '{}')
+  utimesSync(join(dir6, 'dead2.json'), old, old)
+  rec6()
+  check('hook: the sweep runs at most once an hour (a marker file next to the directory)', existsSync(join(dir6, 'dead2.json')) && existsSync(join(dir6, '..', 'sessions.swept')))
+
+  // monitor: the waiting field (AC-4.1..4.5)
+  const now = 10_000_000
+  const tfile = join(root, 'mon-transcript.jsonl')
+  writeFileSync(tfile, '{}\n')
+  const mtime = 5_000_000
+  const sess = (pid, sessionId, age = 600) => ({ pid, sessionId, age, cwd: '/work/repo', task: '/work/repo#T-1', ticket: 'T-1', root: '/work/repo', subagents: 0 })
+  const st = (id, extra) => ({ sessionId: id, kind: 'permission', text: 'Bash ls', options: [], since: now - 60_000, claudePid: 100, transcript: tfile, ...extra })
+  const run = (sessions, states, mtimeOf = () => now - 100_000) => ({ list: mon.attachWaiting(sessions, states, { now, mtimeOf }), sessions })
+  let r = run([sess(100, null)], [st('idA')])
+  check('monitor AC-4.3: a session without --resume matches its state by claudePid and takes the session id from the file', r.sessions[0].sessionId === 'idA' && r.sessions[0].waiting?.kind === 'permission' && r.sessions[0].waiting.text === 'Bash ls', JSON.stringify(r.sessions[0]))
+  r = run([sess(100, 'idB')], [st('idB', { claudePid: 999 })])
+  check('monitor: a session with --resume matches by session id', r.sessions[0].waiting?.kind === 'permission')
+  r = run([sess(100, 'idB')], [st('idB', { claudePid: 999, kind: null })])
+  check('monitor AC-4.4: a cleared state is no waiting', r.sessions[0].waiting === null && r.list.length === 0)
+  r = run([sess(100, null)], [st('idA', { claudePid: 777 })])
+  check('monitor AC-4.5: a state of another process (a dead session) matches no live session', r.sessions[0].waiting === null && r.sessions[0].sessionId === null)
+  r = run([sess(100, null, 30)], [st('idA', { since: now - 600_000 })])
+  check('monitor AC-4.5: a state written before this process started (a reused pid) is not its state', r.sessions[0].waiting === null)
+  r = run([sess(100, 'idA')], [st('idA')], () => now - 60_000 + 5_001)
+  check('monitor AC-4.5: a transcript changed more than 5 s after since drops the state', r.sessions[0].waiting === null)
+  r = run([sess(100, 'idA')], [st('idA')], () => now - 60_000 + 4_999)
+  check('monitor AC-4.5: a transcript changed within 5 s of since keeps it (the turn\'s own last write)', r.sessions[0].waiting?.kind === 'permission')
+  r = run([sess(100, 'idA')], [st('idA')], () => { throw new Error('gone') })
+  check('monitor AC-4.5: an unreadable transcript does not hide the state', r.sessions[0].waiting?.kind === 'permission')
+  r = run([sess(100, 'old-id')], [st('old-id', { since: now - 120_000, kind: 'turn-ended' }), st('new-id', { since: now - 30_000, kind: 'question', text: 'Which?', options: ['A', 'B'] })])
+  check('monitor: the newer state of the process wins and gives its session id (a session after /clear)', r.sessions[0].sessionId === 'new-id' && r.sessions[0].waiting.kind === 'question' && r.sessions[0].waiting.options.join() === 'A,B')
+  r = run([sess(1, null), sess(2, null), sess(3, null)], [st('a', { claudePid: 1, since: now - 10_000, kind: 'turn-ended' }), st('b', { claudePid: 2, since: now - 90_000, kind: 'question' })])
+  check('monitor: the top-level waiting list holds the waiting sessions only, oldest since first, with the session id, pid, task and the kind', r.list.length === 2 && r.list[0].sessionId === 'b' && r.list[1].sessionId === 'a' && r.list[0].kind === 'question' && r.list[0].pid === 2 && r.list[0].ticket === 'T-1' && r.sessions[2].waiting === null, JSON.stringify(r.list))
+  // an approved Bash permission whose command runs: the Bash shell (shell-snapshots source) of the session's tree that carries the saved command and started at or after since ends the wait (B1 of the stage-4 review)
+  const shellArgs = '/bin/zsh -c source /Users/u/.claude/shell-snapshots/snapshot-zsh-1.sh && eval "sleep 180"'
+  const treeOf = (shellAge, args = shellArgs, ppid = 100) => new Map([[100, { pid: 100, ppid: 1, age: 600, args: '/usr/local/bin/claude' }], [200, { pid: 200, ppid, age: shellAge, args }]])
+  const bashState = (extra) => st('idA', { text: 'Bash sleep 180', source: 'PermissionRequest', ...extra })
+  const waitAt = (table, state = bashState()) => mon.attachWaiting([sess(100, null)], [state], { now, mtimeOf: () => now - 100_000, table })[0]
+  check('monitor AC-4.3: the same Bash command running in a shell younger than the permission means it was approved: not waiting', waitAt(treeOf(30)) === undefined)
+  check('monitor AC-4.3: an older shell (a background shell from before), a shell outside the tree and no table still wait', waitAt(treeOf(300))?.kind === 'permission' && waitAt(treeOf(30, shellArgs, 1))?.kind === 'permission' && waitAt(null)?.kind === 'permission')
+  check('monitor AC-4.3: a younger foreign shell does not end the wait of an Edit permission, of a Bash permission for another command, nor of a state from a Notification', waitAt(treeOf(30), bashState({ text: 'Edit /a.txt' }))?.kind === 'permission' && waitAt(treeOf(30), bashState({ text: 'Bash ls' }))?.kind === 'permission' && waitAt(treeOf(30), bashState({ source: 'Notification' }))?.kind === 'permission')
+  check('monitor AC-4.3: the boundary is since itself, no tolerance — a shell started at since counts, one started a second earlier does not', waitAt(treeOf(60)) === undefined && waitAt(treeOf(59)) === undefined && waitAt(treeOf(61))?.kind === 'permission')
+  const question = mon.attachWaiting([sess(100, null)], [st('idA', { kind: 'question' })], { now, mtimeOf: () => now - 100_000, table: treeOf(30) })
+  check('monitor AC-4.3: a running shell does not hide a question', question[0]?.kind === 'question')
+  // read from disk, collect: nothing deleted, bad files skipped
+  const dirR = join(root, 'read')
+  mkdirSync(dirR, { recursive: true })
+  writeFileSync(join(dirR, 'idX.json'), JSON.stringify({ kind: 'turn-ended', text: 't', since: 1, claudePid: 5 }))
+  writeFileSync(join(dirR, 'broken.json'), '{ half')
+  writeFileSync(join(dirR, 'note.txt'), 'x')
+  const read = mon.readWaitStates(dirR)
+  check('monitor: readWaitStates reads <id>.json with the id from the file name, skips broken and foreign files, deletes nothing; no directory is no state', read.length === 1 && read[0].sessionId === 'idX' && readdirSync(dirR).length === 3 && mon.readWaitStates(join(root, 'none')).length === 0)
+  const fakeTable = new Map([[100, { pid: 100, ppid: 1, uid: 501, cpu: 1, rssKb: 1, nice: 0, pri: 31, stat: 'S', age: 600, cpuSeconds: 1, args: '/usr/local/bin/claude' }]])
+  const snap = mon.collect({ table: fakeTable, taskDirs: [], cwdOf: () => '/work/repo', taskOf: () => ({ key: '/work/repo', task: false, root: '/work/repo' }), branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'none'), machine: { memory: null, swap: null, load: null }, waitStates: [st('idZ', { since: Date.now() - 1000, transcript: null })] })
+  check('monitor: collect gives sessions their waiting and a top-level waiting list', snap.sessions[0].waiting?.kind === 'permission' && snap.sessions[0].sessionId === 'idZ' && snap.waiting.length === 1 && snap.waiting[0].sessionId === 'idZ' && snap.problem === null, JSON.stringify([snap.waiting, snap.problem]))
+  const hooksJson = JSON.parse(readFileSync(join(PLUGIN, '../hooks/hooks.json'), 'utf8')).hooks
+  const wiredTo = (event, matcher) => (hooksJson[event] ?? []).some((entry) => entry.matcher === matcher && entry.hooks.some((hook) => /session-wait\.mjs/.test(hook.command) && hook.timeout <= 5))
+  check('hook: hooks.json wires session-wait for Stop, UserPromptSubmit, PermissionRequest, Notification, Elicitation, SessionEnd and AskUserQuestion before and after, with a timeout of 5 s at most', ['Stop', 'UserPromptSubmit', 'PermissionRequest', 'Notification', 'Elicitation', 'SessionEnd'].every((event) => wiredTo(event, undefined)) && wiredTo('PreToolUse', 'AskUserQuestion') && wiredTo('PostToolUse', 'AskUserQuestion'))
+  // finding S-1: the state files are private (0600 in a 0700 dir); an older wider file and dir are narrowed on the next write
+  const modeOf = (path) => statSync(path).mode & 0o777
+  const sidMode = 'bbbbbbbb-1111-2222-3333-444444444444'
+  fire({ session_id: sidMode, cwd: '/work/repo', hook_event_name: 'Stop', last_assistant_message: 'x' })
+  check('hook S-1: the session state file is 0600 and its directory 0700', modeOf(join(sessionsDir, `${sidMode}.json`)) === 0o600 && modeOf(sessionsDir) === 0o700, `${modeOf(join(sessionsDir, `${sidMode}.json`)).toString(8)} ${modeOf(sessionsDir).toString(8)}`)
+  chmodSync(join(sessionsDir, `${sidMode}.json`), 0o644)
+  chmodSync(sessionsDir, 0o755)
+  fire({ session_id: sidMode, cwd: '/work/repo', hook_event_name: 'Stop', last_assistant_message: 'y' })
+  check('hook S-1: a wider file and directory from an earlier version are narrowed by the next write', modeOf(join(sessionsDir, `${sidMode}.json`)) === 0o600 && modeOf(sessionsDir) === 0o700)
+  fire({ session_id: sidMode, cwd: '/work/repo', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } })
+  chmodSync(join(sessionsDir, `${sidMode}.json`), 0o644)
+  sw.clearApproved(sidMode, { dir: sessionsDir })
+  check('hook S-1: clearApproved writes the file 0600 too', stateOf(sidMode)?.kind === null && modeOf(join(sessionsDir, `${sidMode}.json`)) === 0o600)
+  rmSync(root, { recursive: true, force: true })
+}
+
+if (unit('vt17f2')) {
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const ba = await import(join(PLUGIN, 'hooks', 'browser-admit.mjs'))
+  const fs = await import(join(PLUGIN, 'file-state.mjs'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hooks-test-f2-')))
+  const envNames = ['STAGE_PIPELINE_DATA_DIR', 'STAGE_PIPELINE_LOCK_DIR', 'STAGE_PIPELINE_PROBE', 'STAGE_PIPELINE_RESOURCES', 'STAGE_PIPELINE_BALANCE_POLL_MS', 'STAGE_PIPELINE_BALANCE_TICK_MS', 'STAGE_PIPELINE_BALANCE_BUSY_S', 'STAGE_PIPELINE_BALANCE_LOAD_EVERY_S', 'STAGE_PIPELINE_TASKPOLICY', 'PATH']
+  const saved = Object.fromEntries(envNames.map((name) => [name, process.env[name]]))
+  const dataDir = join(root, 'data')
+  const lockDir = join(root, 'lock')
+  mkdirSync(dataDir, { recursive: true })
+  process.env.STAGE_PIPELINE_DATA_DIR = dataDir
+  process.env.STAGE_PIPELINE_LOCK_DIR = lockDir
+  process.env.STAGE_PIPELINE_RESOURCES = 'low'
+  process.env.STAGE_PIPELINE_BALANCE_POLL_MS = '100'
+  const GB = 1024 ** 3
+  const sleepers = []
+  const started = () => { const child = spawn('sleep', ['600'], { stdio: 'ignore' }); sleepers.push(child); return child.pid }
+  const row = (pid, ppid, args, extra = {}) => ({ pid, ppid, uid: process.getuid(), cpu: 0, rssKb: 1000, nice: 0, pri: 31, stat: 'S', age: 600, cpuSeconds: 1, args, ...extra })
+  const pause = (ms) => new Promise((done) => setTimeout(done, ms))
+  const gitIn = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' })
+  try {
+    // ── finding 1: a lock or data directory that cannot be written does not stop the command
+    const ro = join(root, 'ro')
+    mkdirSync(ro)
+    chmodSync(ro, 0o555)
+    const repo = join(root, 'repo')
+    mkdirSync(repo)
+    gitIn(repo, 'init', '-q', '-b', 'main')
+    writeFileSync(join(repo, 'a.txt'), 'x\n')
+    gitIn(repo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', 'add', '-A')
+    gitIn(repo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', 'commit', '-qm', 'base')
+    const roEnv = (mode) => ({ ...process.env, STAGE_PIPELINE_RESOURCES: mode, STAGE_PIPELINE_LOCK_DIR: join(ro, 'lock'), STAGE_PIPELINE_DATA_DIR: join(ro, 'data') })
+    const canWrite = (() => { try { mkdirSync(join(ro, 'probe')); rmSync(join(ro, 'probe'), { recursive: true }); return true } catch { return false } })()
+    if (canWrite) console.log('vt17f2: running as a user that can write into a 0555 directory — the read-only checks are skipped')
+    else {
+      for (const mode of ['low', 'normal']) {
+        const out = spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'echo ran; exit 3'], { cwd: repo, encoding: 'utf8', env: roEnv(mode) })
+        check(`run-check finding 1 (${mode}): unwritable lock and data directories — the command still runs, its own exit code, the admission line and the time line are printed`, out.status === 3 && /^ran$/m.test(out.stdout) && /^balance: admission unavailable \(EACCES\), starting without admission$/m.test(out.stdout) && /^run-check: code 3 in \d+ s$/m.test(out.stdout), `${out.status} ${out.stdout}${out.stderr}`)
+      }
+      const okRun = spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'true'], { cwd: repo, encoding: 'utf8', env: roEnv('low') })
+      check('run-check finding 1: a successful command exits 0 whatever the files say', okRun.status === 0 && /run-check: code 0 in \d+ s/.test(okRun.stdout), `${okRun.status} ${okRun.stdout}`)
+      const hook = spawnSync(process.execPath, [join(PLUGIN, 'hooks', 'browser-admit.mjs')], { input: JSON.stringify({ cwd: repo, tool_name: 'mcp__plugin_stage-pipeline_chrome-devtools__navigate_page' }), encoding: 'utf8', env: roEnv('low') })
+      check('browser-admit finding 1: unwritable registry directories — exit 0, no output', hook.status === 0 && hook.stdout === '', `${hook.status} ${hook.stdout}`)
+    }
+    chmodSync(ro, 0o755)
+    // finish of a slot never throws, whatever the registry files say
+    process.env.STAGE_PIPELINE_RESOURCES = 'normal'
+    const slot = await hq.admit({ cwd: repo, repo: root, command: 'finish-test', mode: { name: 'normal' }, say: () => {} })
+    chmodSync(join(lockDir, 'running'), 0o555)
+    let threw = null
+    try { slot.finish({ record: true }) } catch (error) { threw = error }
+    chmodSync(join(lockDir, 'running'), 0o755)
+    check('heavy-queue finding 1: finish does not throw when the registry entry cannot be removed', threw === null, String(threw))
+    hq.dropEntries()
+    process.env.STAGE_PIPELINE_RESOURCES = 'low'
+
+    // ── finding 3: the shared lock and atomic write
+    const lockFile = join(root, 'shared.json')
+    const lockOut = fs.withFileLock(lockFile, () => { writeFileSync(`${lockFile}.lock`, String(process.pid)); return 7 })
+    check('file-state: withFileLock runs fn under the lock and removes it', lockOut === 7 && !existsSync(`${lockFile}.lock`))
+    writeFileSync(`${lockFile}.lock`, String(process.ppid))
+    const waitStart = Date.now()
+    let openRan = false
+    fs.withFileLock(lockFile, () => { openRan = true }, { attempts: 3 })
+    let closedError = null
+    try { fs.withFileLock(lockFile, () => {}, { attempts: 3, failOpen: false }) } catch (error) { closedError = error }
+    rmSync(`${lockFile}.lock`, { force: true })
+    check('file-state: a lock that stays taken — failOpen runs fn without it, failOpen: false throws', openRan && /locked by another process/.test(closedError?.message ?? '') && Date.now() - waitStart < 2000)
+    fs.writeJsonAtomic(join(root, 'deep', 'x.json'), { a: 1 }, { compact: true, mode: 0o600 })
+    check('file-state: writeJsonAtomic makes the directory, writes the JSON through a temp file, applies the mode', JSON.parse(readFileSync(join(root, 'deep', 'x.json'), 'utf8')).a === 1 && (statSync(join(root, 'deep', 'x.json')).mode & 0o777) === 0o600 && readdirSync(join(root, 'deep')).length === 1)
+    const proc = await import(join(PLUGIN, 'processes.mjs'))
+    const deadPid = spawnSync('true').pid
+    const ids = proc.identitiesOf([process.pid, deadPid])
+    check('processes: identitiesOf gives the identity string identityOf gives and leaves a gone PID out', ids?.get(process.pid) === proc.identityOf(process.pid) && !ids.has(deadPid))
+
+    // ── finding 2 (and 8): the D9 layout — the session works in the main tree, run-check runs in the task's worktree
+    const SESSION = 7001
+    const CHROME = 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-abc'
+    const MCP = 'npm exec chrome-devtools-mcp@1.6.0 --isolated'
+    const CLAUDE = '/usr/local/bin/claude --resume'
+    const tableOf = (claudeArgs = CLAUDE) => new Map([
+      [process.pid, row(process.pid, SESSION, 'node run-check.mjs')],
+      [SESSION, row(SESSION, 1, claudeArgs)],
+      [7002, row(7002, SESSION, MCP)],
+      [7003, row(7003, 7002, CHROME, { rssKb: 400_000 })],
+    ])
+    const mainInfo = { key: '/m', task: false, root: '/m', ticket: null, taskDir: null }
+    const worktreeInfo = { key: '/m#VT-17', task: true, root: '/m', ticket: 'VT-17', taskDir: '/m/.claude/tasks' }
+    const identity = () => `Mon Jan  1 00:00:00 2026 ${CLAUDE}`
+    const seams = { cwdOf: () => '/m', taskOf: () => mainInfo, branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'projects') }
+    const sessionOf = (table, extra = {}) => mon.sessionRows(table, { ...seams, ...extra }).find((item) => item.pid === SESSION)
+    const noPair = sessionOf(tableOf())
+    check('monitor finding 2: with no pair the session is shown under the key of its own folder', noPair.task === null && noPair.root === '/m')
+    const recorded = hq.recordSessionTask(worktreeInfo, { table: tableOf(), identity })
+    const paired = sessionOf(tableOf())
+    check('monitor finding 2: run-check in the worktree records the pair — the session is on the task\'s card, its load with it', recorded?.pid === SESSION && paired.task === '/m#VT-17' && paired.ticket === 'VT-17' && paired.root === '/m' && paired.load.kinds.browser.count === 1, JSON.stringify(paired))
+    const stoppedPids = []
+    const hit = mon.signalTaskBrowsers('/m#VT-17', 'SIGSTOP', { table: tableOf(), kill: (pid) => { stoppedPids.push(pid) }, data: dataDir, identity: () => 'x', ...seams })
+    check('monitor finding 2: the pause of the task stops the browser of the session that sits in the main tree', stoppedPids.includes(7003) && hit.includes(7003), JSON.stringify(stoppedPids))
+    const none = mon.signalTaskBrowsers('/m', 'SIGSTOP', { table: tableOf(), kill: () => {}, data: dataDir, identity: () => 'x', ...seams })
+    check('monitor finding 2: the pause of the main tree\'s key does not touch it', none.length === 0)
+    hq.recordSessionTask(mainInfo, { table: tableOf(), identity })
+    check('monitor finding 2: the last run overwrites the old pair', sessionOf(tableOf()).task === null)
+    hq.recordSessionTask(worktreeInfo, { table: tableOf(), identity })
+    check('monitor finding 2: a pair of a process whose identity changed (another command line under the same PID) is dropped', sessionOf(tableOf('/usr/local/bin/claude --other')).task === null && !hq.readSessionTasks(tableOf('/usr/local/bin/claude --other')).has(SESSION))
+    const gone = tableOf()
+    gone.delete(SESSION)
+    check('monitor finding 2: a pair of a dead process is dropped on the next write', (() => { hq.recordSessionTask(mainInfo, { table: new Map([[process.pid, row(process.pid, 7100, 'node run-check.mjs')], [7100, row(7100, 1, '/usr/local/bin/claude')]]), identity: () => null }); return !hq.readSessionTasks(tableOf()).has(SESSION) })())
+
+    // the browser hook: the paused task holds the call, even when the session has its browser
+    hq.recordSessionTask(worktreeInfo, { table: tableOf(), identity })
+    hq.setPaused('/m#VT-17', true)
+    const cwdPlain = join(root, 'plain')
+    mkdirSync(cwdPlain)
+    const lines = []
+    let t0 = Date.now()
+    await ba.admitBrowser({ cwd: cwdPlain, table: tableOf(), say: (line) => lines.push(line), waitSeconds: 1 })
+    check('browser-admit findings 2 and 8: the task of the session is paused (recorded in another folder) and the session has its browser — the call waits to the cap and says "for the resume"', Date.now() - t0 >= 900 && lines.length === 1 && /^browser: waited 1 s for the resume, starting anyway$/.test(lines[0]), `${Date.now() - t0} ${lines}`)
+    lines.length = 0
+    setTimeout(() => hq.setPaused('/m#VT-17', false), 500)
+    t0 = Date.now()
+    await ba.admitBrowser({ cwd: cwdPlain, table: tableOf(), say: (line) => lines.push(line), waitSeconds: 20 })
+    check('browser-admit finding 8: the resume lets the call through at once, with no line and no memory wait', Date.now() - t0 < 3000 && lines.length === 0 && readdirSync(join(lockDir, 'running')).length === 0, `${Date.now() - t0} ${lines}`)
+    hq.setPaused('/other#T-1', true)
+    lines.length = 0
+    t0 = Date.now()
+    await ba.admitBrowser({ cwd: cwdPlain, table: tableOf(), say: (line) => lines.push(line), waitSeconds: 20 })
+    check('browser-admit finding 8: another task paused — the session with its browser passes at once', Date.now() - t0 < 800 && lines.length === 0)
+    hq.setPaused('/other#T-1', false)
+
+    // ── finding 4: one ps call per snapshot, however many registry entries
+    const shim = join(root, 'shim')
+    const psLog = join(root, 'ps.log')
+    mkdirSync(shim)
+    const realPs = execFileSync('/bin/sh', ['-c', 'command -v ps'], { encoding: 'utf8' }).trim()
+    writeFileSync(join(shim, 'ps'), `#!/bin/sh\necho call >> '${psLog}'\nexec '${realPs}' "$@"\n`, { mode: 0o755 })
+    const holders = [started(), started()]
+    const psIdentity = (pid) => execFileSync('ps', ['-ww', '-o', 'lstart=,args=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    mkdirSync(join(lockDir, 'running'), { recursive: true })
+    mkdirSync(join(lockDir, 'queue'), { recursive: true })
+    holders.forEach((pid, index) => {
+      const entry = { pid, identity: psIdentity(pid), key: '/x#T-1', repo: '/r', command: 'c', kind: 'check', started: Date.now() - 100_000, since: Date.now() - 100_000, expectedBytes: GB, paused: false }
+      writeFileSync(join(lockDir, index ? 'queue' : 'running', `${pid}.json`), JSON.stringify(entry))
+    })
+    holders.forEach((pid) => writeFileSync(join(lockDir, 'queue', `${pid + 1_000_000}.json`), JSON.stringify({ pid, identity: psIdentity(pid), key: '/x#T-2', repo: '/r', command: 'c', kind: 'check', started: Date.now(), since: Date.now(), expectedBytes: GB })))
+    process.env.PATH = `${shim}:${process.env.PATH}`
+    rmSync(psLog, { force: true })
+    const snapshot = mon.collect({ taskDirs: [], cwdOf: () => null, taskOf: () => mainInfo, branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'projects'), machine: { load: { load: 1, cores: 8 } } })
+    const calls = existsSync(psLog) ? readFileSync(psLog, 'utf8').split('\n').filter(Boolean).length : 0
+    process.env.PATH = saved.PATH
+    check('monitor finding 4 (AC-3.4): a snapshot with registry entries calls ps once, and the live entries are still reported', calls === 1 && snapshot.balance.heavy.length >= 2, `${calls} ps calls, ${snapshot.balance.heavy.length} heavy rows, ${snapshot.problem}`)
+    check('heavy-queue finding 4: sameProcessIn takes an older process as the same, a younger one (a reused PID) and a missing one as not', hq.sameProcessIn(new Map([[1, { pid: 1, age: 500 }]]), { pid: 1, since: Date.now() }) && !hq.sameProcessIn(new Map([[1, { pid: 1, age: 5 }]]), { pid: 1, since: Date.now() - 100_000 }) && !hq.sameProcessIn(new Map(), { pid: 1, since: Date.now() }))
+
+    // ── finding 5: an open browser is not a rival in the lower half
+    check('heavy-queue finding 5 (AC-1.6): a lone check beside a browser of a higher place is in the upper half; two checks still split', hq.inLowerHalf([{ pid: 1, key: 'a', kind: 'browser', started: 1 }, { pid: 2, key: 'b', kind: 'check', started: 2 }], 2, ['a', 'b']) === false && hq.inLowerHalf([{ pid: 1, key: 'a', kind: 'browser', started: 1 }, { pid: 2, key: 'b', kind: 'check', started: 2 }, { pid: 3, key: 'c', kind: 'check', started: 3 }], 3, ['a', 'b', 'c']) === true)
+
+    // ── finding 9: no background class where there is no taskpolicy (Linux)
+    const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const bgLog = join(root, 'tp.log')
+    const stub = join(root, 'tp-stub.sh')
+    writeFileSync(stub, `#!/bin/sh\necho "$@" >> '${bgLog}'\n`, { mode: 0o755 })
+    const probeFile = join(root, 'probe.json')
+    writeFileSync(probeFile, JSON.stringify({ pressure: 'normal', availableGB: 8, load: 25, cores: 10 }))
+    process.env.STAGE_PIPELINE_PROBE = probeFile
+    process.env.STAGE_PIPELINE_BALANCE_TICK_MS = '100'
+    process.env.STAGE_PIPELINE_BALANCE_BUSY_S = '0'
+    process.env.STAGE_PIPELINE_BALANCE_LOAD_EVERY_S = '0'
+    const backgroundOf = async (withStub) => {
+      hq.dropEntries()
+      rmSync(join(lockDir, 'running'), { recursive: true, force: true })
+      mkdirSync(join(lockDir, 'running'), { recursive: true })
+      const other = started()
+      writeFileSync(join(lockDir, 'running', `${other}.json`), JSON.stringify({ pid: other, identity: psIdentity(other), key: '/first#T-1', repo: '/r', command: 'c', kind: 'check', started: Date.now() - 100_000, expectedBytes: GB, paused: false }))
+      hq.setOrder(['/first#T-1', '/second#T-2'])
+      if (withStub) process.env.STAGE_PIPELINE_TASKPOLICY = stub
+      else delete process.env.STAGE_PIPELINE_TASKPOLICY
+      const mine = await hq.admit({ cwd: '/second-no-repo', key: '/second#T-2', repo: '/r', command: 'c2', mode: { name: 'normal' }, say: () => {} })
+      const child = spawn('sleep', ['5'], { stdio: 'ignore' })
+      sleepers.push(child)
+      mine.watch(child)
+      await pause(900)
+      const entry = JSON.parse(readFileSync(join(lockDir, 'running', `${process.pid}.json`), 'utf8'))
+      mine.terminate(child, 'SIGTERM')
+      mine.finish({ record: false })
+      return entry.background
+    }
+    Object.defineProperty(process, 'platform', { value: 'linux' })
+    let withoutBin
+    try { withoutBin = await backgroundOf(false) } finally { Object.defineProperty(process, 'platform', realPlatform) }
+    const withBin = await backgroundOf(true)
+    check('heavy-queue finding 9: under load in the lower half, without taskpolicy (Linux) the command is not marked background; with a taskpolicy it is', withoutBin === false && withBin === true && hq.taskpolicyBin() !== undefined, `${withoutBin} ${withBin}`)
+    delete process.env.STAGE_PIPELINE_TASKPOLICY
+
+    // ── finding 6: the peak is kept under the config root, not under the worktree
+    const mainRepo = join(root, 'peakmain')
+    mkdirSync(mainRepo)
+    gitIn(mainRepo, 'init', '-q', '-b', 'main')
+    writeFileSync(join(mainRepo, 'a.txt'), 'x\n')
+    gitIn(mainRepo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', 'add', '-A')
+    gitIn(mainRepo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', 'commit', '-qm', 'base')
+    mkdirSync(join(mainRepo, '.claude'))
+    writeFileSync(join(mainRepo, '.claude', 'pipeline.config.md'), '# config\n')
+    const worktree = join(root, 'peakwt')
+    gitIn(mainRepo, 'worktree', 'add', '-q', '-b', 'wt', worktree)
+    const peakData = join(root, 'peakdata')
+    const peakRun = spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', `node -e "const b = Buffer.alloc(150e6, 1); setTimeout(() => b.length, 1500)"`], { cwd: worktree, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'low', STAGE_PIPELINE_LOCK_DIR: join(root, 'peaklock'), STAGE_PIPELINE_DATA_DIR: peakData, STAGE_PIPELINE_PROBE: probeFile, STAGE_PIPELINE_BALANCE_TICK_MS: '100' } })
+    let peakKeys = []
+    try { peakKeys = Object.keys(JSON.parse(readFileSync(join(peakData, 'heavy-peaks.json'), 'utf8'))) } catch { /* none */ }
+    check('run-check finding 6 (AC-1.5): a run in a linked worktree keeps its peak under the repo\'s config root, so a new worktree starts from it', peakRun.status === 0 && peakKeys.length === 1 && peakKeys[0].startsWith(`${realpathSync(mainRepo)}\n`), `${peakRun.status} ${peakKeys} ${peakRun.stdout}`)
+
+    // ── finding 7 and 11: texts
+    const guardText = readFileSync(join(PLUGIN, 'hooks', 'git-guard.mjs'), 'utf8')
+    check('git-guard finding 7: the heavy-guard denial says the switch is an environment variable of Claude Code and does nothing as a command prefix', /STAGE_PIPELINE_HEAVY_GUARD=off turns the rule off, but it is an environment variable of Claude Code itself/.test(guardText) && /heavy-guard\/bypass:/.test(guardText))
+    const page = readFileSync(join(PLUGIN, '..', 'monitor', 'index.html'), 'utf8')
+    check('monitor finding 11 (AC-7.1): a card with no task names its folder once, and the sessions line has the memory next to the CPU', /t\.repo && t\.repo !== t\.ticket/.test(page) && /mem\(x\.load\.rssBytes\)/.test(page))
+  } finally {
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value }
+    for (const child of sleepers) child.kill()
+    try { chmodSync(join(root, 'ro'), 0o755) } catch { /* gone */ }
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+if (unit('vt17f3')) {
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const fs = await import(join(PLUGIN, 'file-state.mjs'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hooks-test-f3-')))
+  const envNames = ['STAGE_PIPELINE_DATA_DIR', 'STAGE_PIPELINE_LOCK_DIR', 'STAGE_PIPELINE_RESOURCES', 'STAGE_PIPELINE_BALANCE_POLL_MS', 'STAGE_PIPELINE_BALANCE_TICK_MS']
+  const saved = Object.fromEntries(envNames.map((name) => [name, process.env[name]]))
+  const dataDir = join(root, 'data')
+  const lockDir = join(root, 'lock')
+  mkdirSync(dataDir, { recursive: true })
+  process.env.STAGE_PIPELINE_DATA_DIR = dataDir
+  process.env.STAGE_PIPELINE_LOCK_DIR = lockDir
+  process.env.STAGE_PIPELINE_RESOURCES = 'low'
+  process.env.STAGE_PIPELINE_BALANCE_POLL_MS = '50'
+  process.env.STAGE_PIPELINE_BALANCE_TICK_MS = '50'
+  const sleepers = []
+  const row = (pid, ppid, args, extra = {}) => ({ pid, ppid, uid: process.getuid(), cpu: 0, rssKb: 1000, nice: 0, pri: 31, stat: 'S', age: 600, cpuSeconds: 1, args, ...extra })
+  const pause = (ms) => new Promise((done) => setTimeout(done, ms))
+  const stateOf = (pid) => spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim()
+  const until = async (fn, ms = 4000) => { const end = Date.now() + ms; while (Date.now() < end) { if (fn()) return true; await pause(50) } return fn() }
+  try {
+    // ── M-1 (AC-8.1): a snapshot with a ready table only filters the registry, it never removes an entry
+    const runDir = join(lockDir, 'running')
+    mkdirSync(runDir, { recursive: true })
+    const lateChild = spawn('sleep', ['600'], { stdio: 'ignore' })
+    sleepers.push(lateChild)
+    const deadPid = spawnSync('true').pid
+    const entryOf = (pid) => ({ pid, identity: null, key: '/r#T-1', repo: '/r', command: 'lint', kind: 'check', started: Date.now(), expectedBytes: 1, background: false, paused: false, childPid: null })
+    writeFileSync(join(runDir, `${lateChild.pid}.json`), JSON.stringify(entryOf(lateChild.pid)))
+    writeFileSync(join(runDir, `${deadPid}.json`), JSON.stringify(entryOf(deadPid)))
+    const tableBefore = new Map([[process.pid, row(process.pid, 1, 'node')]]) // read before the command started: no row for it
+    const snapshot = hq.readRunning(tableBefore, Date.now() - 1000)
+    check('heavy-queue M-1: an entry made after the table was read (a live pid with no row) survives the snapshot, a dead one is left out', snapshot.length === 1 && snapshot[0].pid === lateChild.pid, JSON.stringify(snapshot.map((e) => e.pid)))
+    check('heavy-queue M-1: the snapshot removed no file, and the next admission sees the live entry', existsSync(join(runDir, `${lateChild.pid}.json`)) && existsSync(join(runDir, `${deadPid}.json`)) && hq.readRunning().some((entry) => entry.pid === lateChild.pid))
+    check('heavy-queue M-1: a reader with no table (the admission loop) removes the dead entry', !existsSync(join(runDir, `${deadPid}.json`)))
+
+    // ── M-2: one short file lock, the lock path and the error text come from the caller
+    const target = join(root, 'q.json')
+    const custom = join(root, 'locks', 'q-file.lock')
+    mkdirSync(join(root, 'locks'), { recursive: true })
+    writeFileSync(custom, String(process.ppid))
+    let held = null
+    try { fs.withFileLock(target, () => 1, { attempts: 2, failOpen: false, lockPath: custom, message: 'q.json is locked by another process — try again' }) } catch (error) { held = error }
+    rmSync(custom, { force: true })
+    const free = fs.withFileLock(target, () => existsSync(custom), { failOpen: false, lockPath: custom })
+    check('file-state M-2: a second holder of the lock path gets the caller\'s error with failOpen: false, a free lock path is taken and released', held?.message === 'q.json is locked by another process — try again' && free === true && !existsSync(custom) && !existsSync(`${target}.lock`))
+
+    // ── delta-2 m-1: a lock with no plain pid — the `{"pid":…}` of acquirePidLock (the force-queue file lock up to 0.30.1) or an empty file — is still taken over
+    const lockWith = (text, ageMs = 0) => {
+      writeFileSync(custom, text)
+      if (ageMs) utimesSync(custom, (Date.now() - ageMs) / 1000, (Date.now() - ageMs) / 1000)
+      try {
+        return fs.withFileLock(target, () => 'ran', { attempts: 3, failOpen: false, lockPath: custom })
+      } catch (error) {
+        return error.message
+      } finally {
+        rmSync(custom, { force: true })
+      }
+    }
+    const legacy = (pid) => JSON.stringify({ pid, label: 'force-queue file', started: new Date().toISOString() })
+    check('file-state m-1: a lock of the old {"pid":…} form with a dead owner is taken over', lockWith(legacy(deadPid)) === 'ran')
+    check('file-state m-1: a lock of the old {"pid":…} form with a live owner is not', lockWith(legacy(process.ppid)) !== 'ran')
+    check('file-state m-1: an empty lock older than the grace is taken over', lockWith('', 5000) === 'ran')
+    check('file-state m-1: a fresh empty lock (an owner between its create and its write) is not', lockWith('') !== 'ran')
+
+    // ── m-4 (AC-8.3): a pair of a folder with no task does not cover the task of the session's own folder
+    const SESSION = 7301
+    const CLAUDE = '/usr/local/bin/claude --resume'
+    const table = () => new Map([[process.pid, row(process.pid, SESSION, 'node run-check.mjs')], [SESSION, row(SESSION, 1, CLAUDE)]])
+    const own = { key: '/fe#FE-1', task: true, root: '/fe', ticket: 'FE-1', taskDir: '/fe/.claude/tasks' }
+    const bare = { key: '/be', task: false, root: '/be', ticket: null, taskDir: null }
+    const seams = { cwdOf: () => '/fe', taskOf: () => own, branchOf: () => null, devPortOf: () => null, projectsDir: join(root, 'projects') }
+    const identity = () => `Mon Jan  1 00:00:00 2026 ${CLAUDE}`
+    hq.recordSessionTask(bare, { table: table(), identity })
+    const shown = mon.sessionRows(table(), seams).find((item) => item.pid === SESSION)
+    check('monitor m-4: the last run-check was in a repo with no task, the session sits in a task folder — it stays on the task of its own folder', shown.task === '/fe#FE-1' && shown.ticket === 'FE-1', JSON.stringify(shown))
+    const repoPair = { key: '/m#VT-17', task: true, root: '/m', ticket: 'VT-17', taskDir: '/m/.claude/tasks' }
+    hq.recordSessionTask(repoPair, { table: table(), identity })
+    check('monitor m-4: a pair with a task still wins over the folder\'s task', mon.sessionRows(table(), seams).find((item) => item.pid === SESSION).task === '/m#VT-17')
+    const adm = readFileSync(join(PLUGIN, 'hooks', 'browser-admit.mjs'), 'utf8')
+    check('browser-admit m-4: the hook applies the same rule (a pair without a task does not cover the folder\'s task) and its first look uses the table already read', /pair && \(pair\.task \|\| !info\.task\)/.test(adm) && /look\(rows\)/.test(adm))
+
+    // ── m-6 (AC-8.2): the resume of a paused command wakes its tree when the registry cannot be written
+    const ro = join(root, 'ro-queue')
+    const canWrite = (() => { mkdirSync(ro); chmodSync(ro, 0o555); try { mkdirSync(join(ro, 'probe')); return true } catch { return false } finally { chmodSync(ro, 0o755) } })()
+    if (canWrite) console.log('vt17f3: running as a user that can write into a 0555 directory — the read-only checks are skipped')
+    else {
+      const repo = join(root, 'repo')
+      mkdirSync(repo)
+      process.env.STAGE_PIPELINE_RESOURCES = 'normal'
+      const slot = await hq.admit({ cwd: repo, repo: root, command: 'resume-test', mode: { name: 'normal' }, say: () => {} })
+      const child = spawn('sleep', ['600'], { stdio: 'ignore' })
+      sleepers.push(child)
+      const stop = slot.watch(child)
+      hq.setPaused(slot.key, true)
+      const stopped = await until(() => stateOf(child.pid).startsWith('T'))
+      const queue = join(lockDir, 'queue')
+      mkdirSync(queue, { recursive: true })
+      chmodSync(queue, 0o555)
+      hq.setPaused(slot.key, false)
+      const woke = await until(() => stopped && !stateOf(child.pid).startsWith('T'))
+      chmodSync(queue, 0o755)
+      stop()
+      slot.finish({ record: false })
+      check('heavy-queue m-6 (AC-8.2): the queue directory cannot be written when the pause ends — the tree is continued without admission', stopped && woke, `${stopped} ${woke}`)
+    }
+
+    // ── m-1 (AC-8.2): a slot with no admission runs with nice 19 (outside Windows)
+    if (process.platform !== 'win32' && !canWrite) {
+      const niceRepo = join(root, 'nice-repo')
+      mkdirSync(niceRepo)
+      execFileSync('git', ['-C', niceRepo, 'init', '-q', '-b', 'main'])
+      chmodSync(ro, 0o555)
+      const nice = spawnSync(process.execPath, [join(PLUGIN, 'run-check.mjs'), '--', 'ps -o ni= -p $$'], { cwd: niceRepo, encoding: 'utf8', env: { ...process.env, STAGE_PIPELINE_RESOURCES: 'low', STAGE_PIPELINE_LOCK_DIR: join(ro, 'lock'), STAGE_PIPELINE_DATA_DIR: join(ro, 'data') } })
+      chmodSync(ro, 0o755)
+      check('run-check m-1: with no admission available the command runs under nice 19 (more when this run is already niced)', Number(/^\s*(\d+)$/m.exec(nice.stdout)?.[1]) >= 19 && /admission unavailable/.test(nice.stdout), `${nice.status} ${nice.stdout}${nice.stderr}`)
+    }
+  } finally {
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value }
+    for (const child of sleepers) child.kill()
+    try { chmodSync(join(root, 'ro-queue'), 0o755) } catch { /* gone */ }
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+if (unit('vt17f4')) {
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const { alive } = await import(join(PLUGIN, 'processes.mjs'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hooks-test-f4-')))
+  try {
+    // ── the open chats of a card: the title VS Code shows (the user's own, else the generated one), the last prompt, when the transcript changed
+    const projects = join(root, 'projects')
+    const cwd = '/work/my-app'
+    const dir = join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+    mkdirSync(dir, { recursive: true })
+    const id = '11111111-2222-3333-4444-555555555555'
+    const file = join(dir, `${id}.jsonl`)
+    const line = (value) => `${JSON.stringify(value)}\n`
+    writeFileSync(file, line({ type: 'ai-title', aiTitle: 'Generated title', sessionId: id }) + line({ type: 'custom-title', customTitle: 'My   own\ntitle', sessionId: id }) + line({ type: 'last-prompt', lastPrompt: 'continue', sessionId: id }))
+    appendFileSync(file, line({ type: 'assistant', text: 'x'.repeat(300 * 1024) })) // a long last entry: the titles are not in the first 256 KB tail
+    const chat = mon.chatOf(id, cwd, { projectsDir: projects })
+    check('monitor chats: the title is the user\'s own over the generated one, whitespace folded; the last prompt; found past a long last entry', chat?.title === 'My own title' && chat?.lastPrompt === 'continue' && chat?.activeAt === statSync(file).mtimeMs, JSON.stringify(chat))
+    check('monitor chats: an unchanged transcript is not read again (the same answer object)', mon.chatOf(id, cwd, { projectsDir: projects }) === chat)
+    appendFileSync(file, line({ type: 'custom-title', customTitle: 'Renamed', sessionId: id }))
+    check('monitor chats: a renamed chat shows the new title once the file changes', mon.chatOf(id, cwd, { projectsDir: projects })?.title === 'Renamed')
+    const generatedOnly = '66666666-2222-3333-4444-555555555555'
+    writeFileSync(join(dir, `${generatedOnly}.jsonl`), line({ type: 'ai-title', aiTitle: 'Only generated', sessionId: generatedOnly }))
+    check('monitor chats: with no title of the user the generated one; no session id or no transcript — null', mon.chatOf(generatedOnly, '/elsewhere', { projectsDir: projects })?.title === 'Only generated' && mon.chatOf(null, cwd, { projectsDir: projects }) === null && mon.chatOf('77777777-2222-3333-4444-555555555555', cwd, { projectsDir: projects }) === null)
+
+    // ── a tab opened without --resume: its transcript is the next file of its folder born after it started, not one another live session holds
+    const guessDir = join(projects, '-work-two-tabs')
+    mkdirSync(guessDir, { recursive: true })
+    const held = 'aaaaaaaa-0000-0000-0000-000000000000'
+    writeFileSync(join(guessDir, `${held}.jsonl`), '{}\n')
+    writeFileSync(join(guessDir, 'bbbbbbbb-0000-0000-0000-000000000000.jsonl'), '{}\n')
+    await new Promise((done) => setTimeout(done, 30))
+    writeFileSync(join(guessDir, 'cccccccc-0000-0000-0000-000000000000.jsonl'), '{}\n')
+    const now = Date.now()
+    const tabs = [
+      { pid: 1, cwd: '/work/two-tabs', sessionId: null, age: 60 },
+      { pid: 2, cwd: '/work/two-tabs', sessionId: null, age: 0 },
+      { pid: 3, cwd: '/work/two-tabs', sessionId: held, age: 600 },
+      { pid: 4, cwd: '/work/no-files', sessionId: null, age: 10 },
+    ]
+    mon.guessSessionIds(tabs, { projectsDir: projects, now })
+    check('monitor chats: tabs of one folder without an id take the files born after they started, in start order; a held file is skipped; no file — no id', tabs[0].sessionId === 'bbbbbbbb-0000-0000-0000-000000000000' && tabs[1].sessionId === 'cccccccc-0000-0000-0000-000000000000' && tabs[0].sessionGuessed && tabs[2].sessionId === held && !tabs[2].sessionGuessed && tabs[3].sessionId === null, JSON.stringify(tabs.map((tab) => [tab.sessionId, tab.sessionGuessed])))
+    const page = readFileSync(join(PLUGIN, '..', 'monitor', 'index.html'), 'utf8')
+    check('monitor chats: the page gives no Open link to a guessed id', /canOpen = x\.sessionId && !x\.sessionGuessed/.test(page))
+
+    // ── /monitor: open starts the page once per machine, apart from the caller; a second open reuses it; stop stops it
+    const data = join(root, 'data')
+    const savedData = process.env.STAGE_PIPELINE_DATA_DIR
+    process.env.STAGE_PIPELINE_DATA_DIR = data // the started `serve` reads its data dir from the environment
+    let first = null
+    try {
+      const launched = []
+      first = await mon.openPage({ port: 0, dir: data, launch: (url) => launched.push(url), waitMs: 15000 })
+      const token = readFileSync(join(data, 'monitor-token'), 'utf8').trim()
+      const port = Number(new URL(first.url).port)
+      const answer = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { 'X-Token': token } }).then((res) => res.status).catch((error) => String(error))
+      const record = statSync(join(data, 'monitor-server.json'))
+      check('monitor open: the first call starts the page (its own process, a recorded pid and port, mode 0600), the link carries the token, the browser gets it', first.started && first.pid > 0 && first.url === `http://127.0.0.1:${port}/?t=${token}` && answer === 200 && (record.mode & 0o777) === 0o600 && launched.length === 1, `${JSON.stringify(first)} ${answer} ${(record.mode & 0o777).toString(8)}`)
+      const second = await mon.openPage({ port: 0, dir: data, launch: (url) => launched.push(url) })
+      check('monitor open: a second call reuses the running page (same pid and link, no second server)', !second.started && second.pid === first.pid && second.url === first.url && launched.length === 2)
+      const quiet = await mon.openPage({ dir: data, browser: false, launch: (url) => launched.push(url) })
+      check('monitor open: --no-browser only prints', quiet.pid === first.pid && launched.length === 2)
+      const stopped = await mon.stopPage({ dir: data })
+      check('monitor stop: the page stops and its record goes; a second stop finds nothing', stopped.stopped && stopped.pid === first.pid && !existsSync(join(data, 'monitor-server.json')) && !alive(first.pid) && (await mon.stopPage({ dir: data })).pid === null)
+      const gone = spawnSync('true').pid
+      writeFileSync(join(data, 'monitor-server.json'), JSON.stringify({ pid: gone, identity: 'Mon Jan  1 00:00:00 2026 node monitor.mjs serve', port: 1 }))
+      check('monitor open: a record of a process that is gone is no running page', mon.runningServer({ dir: data }) === null)
+    } finally {
+      if (savedData === undefined) delete process.env.STAGE_PIPELINE_DATA_DIR
+      else process.env.STAGE_PIPELINE_DATA_DIR = savedData
+      if (first?.pid && alive(first.pid)) process.kill(first.pid, 'SIGKILL')
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 }
 
 if (MODE === 'serial') for (const late of lateChecks) late(DATA)

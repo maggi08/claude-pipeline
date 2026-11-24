@@ -52,6 +52,14 @@ import { readHookInput } from './hook-input.mjs'
 const input = await readHookInput()
 const tool = input.tool_name ?? ''
 const toolInput = input.tool_input ?? {}
+// An approved permission is cleared by the PostToolUse of the tool that waited (session-wait, VT-17 stage 4): one read of the session's state file, no process, never part of the verdict.
+if (input.hook_event_name === 'PostToolUse' && !input.agent_id) { // a subagent's PostToolUse carries the main session's id and must not clear the main session's wait
+  try {
+    ;(await import('./session-wait.mjs')).clearApproved(input.session_id)
+  } catch {
+    // the wait state is a display, never the gate's business
+  }
+}
 const target = tool === 'Bash' ? '' : String(toolInput.file_path ?? '')
 // R-2: a file under the plugin data directory, in a force run, is denied before the edit (the same rule as force-guard's for Bash). Only a path that could be there reaches the state read.
 const dataTarget = tool !== 'Bash' && input.hook_event_name === 'PreToolUse' && (/stage-pipeline|CLAUDE_PLUGIN_DATA/.test(target) || Boolean(process.env.CLAUDE_PLUGIN_DATA && target.includes(process.env.CLAUDE_PLUGIN_DATA)))

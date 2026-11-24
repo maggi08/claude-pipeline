@@ -17,23 +17,75 @@ function elapsedSeconds(text) {
   return ((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds)
 }
 
-/** Every process as pid → `{ pid, ppid, uid, age, args }` (`age` in seconds, `args` the full command line); null when `ps` is missing, refused or slower than `timeout`. */
-export function processTable({ timeout = 3000 } = {}) {
-  let out
+/** `ps -o time=` (cumulative CPU time) in seconds: `[dd-][hh:]mm:ss` on Linux, `[h]:mm.ss` / `mm:ss.ss` on macOS; null when the field does not parse. */
+export function cpuSecondsOf(text) {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:[.,]\d+)?)$/.exec(String(text).trim())
+  if (!match) return null
+  const [, days = 0, hours = 0, minutes, seconds] = match
+  return Math.round((((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds.replace(',', '.'))) * 100) / 100
+}
+
+// One parser for every `ps` shape: a column is a regex group and a reader; the row regex is anchored and linear. `args` is always the last column.
+const num = (text) => Number(text.replace(',', '.'))
+const optional = (text) => (text === '-' ? null : Number(text))
+const COLUMNS = {
+  pid: ['(\\d+)', 'pid=', 'pid', Number],
+  ppid: ['(\\d+)', 'ppid=', 'ppid', Number],
+  uid: ['(\\d+)', 'uid=', 'uid', Number],
+  cpu: ['(\\d+(?:[.,]\\d+)?)', '%cpu=', 'cpu', num],
+  rss: ['(\\d+)', 'rss=', 'rssKb', Number],
+  nice: ['(-?\\d+|-)', 'nice=', 'nice', optional],
+  pri: ['(-?\\d+|-)', 'pri=', 'pri', optional],
+  stat: ['(\\S+)', 'stat=', 'stat', String],
+  etime: ['(\\S+)', 'etime=', 'age', elapsedSeconds],
+  time: ['(\\S+)', 'time=', 'cpuSeconds', cpuSecondsOf],
+  args: ['(.*)', 'args=', 'args', (text) => text.trim()],
+}
+const BASE = ['pid', 'ppid', 'uid', 'etime', 'args']
+const STATS = ['pid', 'ppid', 'uid', 'cpu', 'rss', 'nice', 'pri', 'stat', 'etime', 'time', 'args']
+
+function psRun(names, timeout) {
   try {
-    out = run('ps', ['-A', '-ww', '-o', 'pid=,ppid=,uid=,etime=,args='], timeout)
+    return run('ps', ['-A', '-ww', '-o', names.map((name) => COLUMNS[name][1]).join(',')], timeout)
   } catch {
     return null
   }
+}
+
+/** The rows of any `ps` output with the columns `names` (keys of the column table above), as pid → row; a row that does not fit is skipped. */
+function parsePsRows(out, names) {
+  const row = new RegExp(`^\\s*${names.map((name) => COLUMNS[name][0]).join('\\s+')}$`)
   const table = new Map()
-  for (const line of out.split('\n')) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line)
+  for (const line of String(out).split('\n')) {
+    const match = row.exec(line)
     if (!match) continue
-    const pid = Number(match[1])
-    table.set(pid, { pid, ppid: Number(match[2]), uid: Number(match[3]), age: elapsedSeconds(match[4]), args: match[5].trim() })
+    const entry = {}
+    names.forEach((name, index) => {
+      entry[COLUMNS[name][2]] = COLUMNS[name][3](match[index + 1])
+    })
+    table.set(entry.pid, entry)
   }
   return table
 }
+
+/** Every process as pid → `{ pid, ppid, uid, age, args }` (`age` in seconds, `args` the full command line); null when `ps` is missing, refused or slower than `timeout`. */
+export function processTable({ timeout = 3000 } = {}) {
+  const out = psRun(BASE, timeout)
+  return out === null ? null : parsePsRows(out, BASE)
+}
+
+/**
+ * One row of `ps` per process as pid → `{ pid, ppid, uid, cpu, rssKb, nice, pri, stat, age, cpuSeconds, args }`. `cpu` is the %CPU `ps` reports: on macOS a decaying recent value, on Linux (procps)
+ * the average over the process's life — neither is "now", so a live load is the delta of `cpuSeconds` (`ps` `time=`, cumulative CPU time) between two samples of the same pid (same or growing `age`).
+ * `rssKb` is the resident set, `pri` the scheduler priority (on macOS 4 is the background band). Read-only, one call for the whole table; null when `ps` is missing, refused or slower than `timeout`.
+ */
+export function processStats({ timeout = 3000 } = {}) {
+  const out = psRun(STATS, timeout)
+  return out === null ? null : parseStatRows(out)
+}
+
+/** The rows of `ps -o pid=,ppid=,uid=,%cpu=,rss=,nice=,pri=,stat=,etime=,time=,args=` — anchored, linear. A row that does not fit is skipped. */
+export const parseStatRows = (out) => parsePsRows(out, STATS)
 
 /** The command line of one process right now (`ps -p`); null when it is gone or `ps` fails. Read again right before a kill: a PID can be reused. */
 export function commandOf(pid, { timeout = 1500 } = {}) {
@@ -54,6 +106,25 @@ export function identityOf(pid, { timeout = 1500 } = {}) {
   } catch {
     return null
   }
+}
+
+/**
+ * Who each of `pids` is right now (`ps -p a,b,c`, one process for all): pid → start time and command line, the same string `identityOf` gives; a PID that is gone is missing;
+ * null when `ps` fails. `ps -p` exits 1 when some PIDs are gone and still prints the others.
+ */
+export function identitiesOf(pids, { timeout = 1500 } = {}) {
+  if (!pids.length) return new Map()
+  let out
+  try {
+    out = run('ps', ['-ww', '-o', 'pid=,lstart=,args=', '-p', pids.join(',')], timeout)
+  } catch (error) {
+    out = error?.status === 1 && typeof error.stdout === 'string' ? error.stdout : null
+    if (out === null) return null
+  }
+  return new Map(String(out).split('\n').flatMap((line) => {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line)
+    return match ? [[Number(match[1]), match[2].trim()]] : []
+  }))
 }
 
 /** The parents of `pid` from the nearest up, without pid 0 and 1; a loop in a stale table ends the walk. */
