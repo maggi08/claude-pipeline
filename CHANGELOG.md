@@ -5,6 +5,22 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.31.1 — 2026-11-24
+
+### The tracker page answers four questions at a glance: who waits for you, whether the machine chokes and who eats it, what each task does, who goes first
+
+What changes against 0.31.0: the look of the tracker page (`monitor/index.html`) only. The data, the API, the balancer and the controls stay as they were.
+
+- **Tasks are strips in a bay.** Each task is one row with fixed boxes under one legend rail, so the eye reads down a column: its state on a coloured cell (*Problem*, *Needs you*, *Paused*, *Your turn*, *Queued*, *Running*, *Live*, *Idle*), its place, ticket and repo, stage and next item, what runs now, its chats, the memory and CPU of its chats, *Pause*. An empty field stays empty. A strip whose chat asks a question, a permission or a dialog sticks out of the line. A chat whose turn ended is *Your turn*, no longer the same alarm as a question.
+- **A strip unfolds instead of listing every chat.** A click on the strip (or Enter) shows the stage heading, the full next item, the heavy commands with their command line, and the open chats with *Open*; the page remembers which strips are unfolded.
+- **The machine is in the top bar.** Available memory with the pressure, swap and load are large figures, coloured when high. **Memory by owner** on the right is one bar of the whole memory — each task's chats, the other apps, the free rest — with a row per owner and its share; pointing at an owner lifts its strip.
+- **Waiting for you is shorter.** The two oldest questions, permissions or dialogs keep two lines of text and their answer options on one line; the next ones are one line each; the chats whose turn ended are rows of one quiet plate, each reply in its tooltip.
+- The explanatory paragraphs are gone from the screen: the hint on *Open* is its tooltip, the drag and keyboard hint is on the strip for screen readers. Light and dark follow the system, as before.
+
+**Dev repo only:** `PRODUCT.md` and `DESIGN.md` at the repo root and `.impeccable/` hold the page's product record, design system and design decisions (Impeccable).
+
+eval: skipped — no agent or skill with an agent name changed
+
 ## 0.31.0 — 2026-11-23
 
 ### Several sessions on one machine: heavy commands and DevTools browsers are admitted by memory, a tracker page shows the machine, and a task can be paused
