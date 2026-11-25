@@ -10,21 +10,10 @@ Item 1, `scripts/hooks-test.mjs` in parallel, is done by VT-8. Item 2, cheaper c
 4. Close a stage in one script call — measured on 2026-11-10 and parked: about 11 min of bookkeeping per headless run (journal scripts, STAGES edits, git status and commit). Hook bounces were 321 in 10 days, but the median episode is one round. The one long chain that was a false alarm ("ran on another tree") is fixed in 0.25.1. After 0.25.1, hooks refused 29 times in 6 days across all repos, 11 of them for "the stage commit has no proof that its checkers ran" (counted another way than the 321, so not directly comparable).
 5. Parallel tracks inside one task, when a real task needs them: stages in another repo (ui-lib next to core) or in another package of a monorepo, with a maker lock per repo instead of per task. What holds "one maker" now (2026-11-16): only the prose rule in `stage-force` Step 1 (no hook denies a second spawn), and the lock is per task only because the maker snapshot covers every sibling repo of the config (`maker.mjs`, `siblingRoots`) and the spawns are kept per ticket. A per-repo lock needs a snapshot of the maker's own repo and an agent-guard deny for a second spawn on the same root.
 
-## CPU load across parallel sessions (asked 2026-11-09)
-Several stage-pipeline sessions run at once in different repos, and the machine can stop responding. Wanted:
-- a priority per task, with more CPU for a higher priority;
-- a session that waits (for an answer, a review, a limit) gives its share to the others, and a stopped task frees it;
-- heavy checks (tests, builds, dev servers) queue instead of all starting at once.
-
-VT-8 only lowers the priority of its own test workers and sizes them by the load average at start. The rest is a separate task. What VT-8 measured: on a quiet machine (load average 2–5) hooks-test takes 78–81 s; next to other sessions (load 5–12) its workers give way and it takes 123–216 s.
-
 ## Notifications while working in VS Code (asked 2026-11-10)
-When I work in VS Code on something else, a stage-pipeline session should notify me when it needs me:
-- a stage or a force run stopped: it is done, or the session ended its turn;
-- a stage is blocked: a parked blocker, a fix-loop out of rounds, a hook that keeps refusing;
-- a question is waiting: `AskUserQuestion`, a kickoff sign-off, a permission prompt.
+When I work in VS Code on something else, I learn that a session waits for me only by switching to the tracker page. Wanted: a message that reaches me without that switch when a session needs me — its turn ended (a stage or a force run is done, a parked blocker, a fix-loop out of rounds), a question is open (`AskUserQuestion`, a kickoff sign-off) or a permission prompt waits.
 
-The plugin sends no notifications now: its hooks are `SessionStart`, `PreToolUse`, `PostToolUse` and `SubagentStop`, with no `Stop` or `Notification`. To find out first: what Claude Code's `Notification` and `Stop` events fire on inside the VS Code extension, and which channel actually reaches me (a macOS banner, a VS Code notification, a push to the phone). Each message names the repo, the task and the stage, so several parallel sessions don't blur together.
+What exists since 0.31.0 (VT-17): `scripts/hooks/session-wait.mjs` on `Stop`, `Notification`, `PermissionRequest`, `Elicitation`, `UserPromptSubmit` and `SessionEnd` writes which session waits and on what (`turn-ended`, `question`, `permission`, `elicitation`) to `<data dir>/sessions/`, and the tracker page shows it under "Waiting for you". Nothing leaves the page. To find out first: which channel actually reaches me while VS Code is in front (a macOS banner, a VS Code notification, a push to the phone). Each message names the repo, the task and the stage, so several parallel sessions don't blur together.
 
 ## Evals
 - Three cases stay in `evals/pending/` as unprovable after VT-13, each with its invocations in `why`: `security-review-branch` (the bare model finds both traps; the ablated runs fail almost only on report format, so the case measures format, not the finding), `pro-review-parity-moved-guard` (passes on `v0.18.0` too) and `pro-review-precision-portal` (passes on `v0.18.0` and ablated). Revisit only with a new trap that the bare model or the old tag misses by construction. The two AC-demands cases (`pro-review-ac-demands-role-overwrite`, `pro-review-ac-demands-sequential-link`) have a proven failure but no full pass on the tree; they are the train of the climb below and move to `evals/cases/` with a kept edit.
