@@ -110,14 +110,23 @@ if (agent === 'pro-review' && (WHOLE_BRANCH.test(toolInput.prompt ?? '') || DELT
   }
 }
 
-// A fresh-pass report: `checks/pro-review-3-fresh.md`, `-fresh-2.md`, also by an absolute path (`/Users/me/repo/.claude/tasks/T-7/checks/...`, `~/.claude/x-tasks/KC-1/checks/...`); the directory before `checks/` is not this rule's business. A fix-round report (`-fix<n>`) is an ordinary stage review.
-const FRESH_REPORT = /(?:^|[\s`'"(/])checks\/pro-review-\d+-fresh(?:-\d+)?\.md(?![\w-]|\.\w)/i
+// A fresh-pass report: `checks/pro-review-3-fresh.md`, `-5a-fresh.md`, `-3.1-fresh.md` (a stage id is `[\w.]+`), `-fresh-2.md`, also by an absolute path (`/Users/me/repo/.claude/tasks/T-7/checks/...`, `~/.claude/x-tasks/KC-1/checks/...`); the directory before `checks/` is not this rule's business. A fix-round report (`-fix<n>`) is an ordinary stage review.
+const FRESH_REPORT = /(?:^|[\s`'"(/])checks\/pro-review-[\w.]+?-fresh(?:-\d+)?\.md(?![\w-]|\.\w)/i
 
 if (agent === 'pro-review' && !WHOLE_BRANCH.test(toolInput.prompt ?? '') && !DELTA_MODE.test(toolInput.prompt ?? '') && toolInput.model) {
   const own = agentModel('pro-review').toLowerCase()
   const got = String(toolInput.model).toLowerCase()
   // `inherit` = the agent file has no readable `model:` — there is no own model to hold the call to, so the rule stays silent
-  if (own !== 'inherit' && !sameModel(got, own) && !FRESH_REPORT.test(toolInput.prompt ?? '')) {
+  const fresh = FRESH_REPORT.test(toolInput.prompt ?? '')
+  const want = reviewModel(state.config)
+  if (fresh && !sameModel(got, want)) {
+    deny(
+      'agent-guard/stage-review-model',
+      `stage-pipeline: the fresh pass (its \`checks/pro-review-<stage>-fresh.md\` report is named) is held to review_model — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
+        `Repeat the same call with model: "${want}" (stage-check, Step 3).`,
+    )
+  }
+  if (own !== 'inherit' && !sameModel(got, own) && !fresh) {
     deny(
       'agent-guard/stage-review-model',
       `stage-pipeline: a stage-mode pro-review runs on the agent's own model (\`${own}\`), but the call goes to \`${got}\`. ` +

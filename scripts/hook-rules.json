@@ -21,10 +21,14 @@
         "stage pro-review with model \"opus\" — denied as stage-review-model",
         "stage pro-review of a fix round (-fix1 report) on opus — denied, an ordinary stage review",
         "stage pro-review on opus with a lookalike -fix1-fresh report — denied",
-        "stage pro-review on opus with a lookalike -fresh.md.bak report — denied"
+        "stage pro-review on opus with a lookalike -fresh.md.bak report — denied",
+        "stage pro-review fresh pass on haiku (review_model opus) — denied, held to review_model",
+        "stage pro-review fresh pass on sonnet (review_model opus) — denied, held to review_model"
       ],
       "legitimate": [
         "stage pro-review on opus with a -fresh report named — passes",
+        "stage pro-review on opus with a -5a-fresh report named (stage id 5a) — passes",
+        "stage pro-review on opus with a -3.1-fresh report named (stage id 3.1) — passes",
         "stage pro-review on opus with a -fresh-2 report named — passes",
         "stage pro-review on opus with a -fresh report named by an absolute path — passes",
         "stage pro-review on opus with a -fresh report in a task dir outside the repo (~/.claude/mycar-tasks/KC-1) — passes",

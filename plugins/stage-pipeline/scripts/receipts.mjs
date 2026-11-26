@@ -28,8 +28,9 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync,
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { LEGIT_REASON, backendGate, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
 import { PATH_LINE } from './dismissals.mjs'
+import { DIFF_FLAGS, parseUnified } from './diff-rows.mjs'
 import { hasBackendRepos, taskRepos } from './plan-check.mjs'
-import { OPEN_STATUS, integrationBase, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, taskBranches, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
+import { OPEN_STATUS, prTargetRef, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, taskBranches, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, forceKey, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
@@ -438,36 +439,29 @@ function changedLinesSince(worktree, taskDir, base, head = 'HEAD') {
  */
 function diffLineSets(worktree, taskDir, from, to) {
   const taskRel = taskRelPath(worktree, taskDir)
-  const out = gitTry(worktree, 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--no-relative', from, to, '--', ...(taskRel ? [`:(top,exclude,literal)${taskRel}`] : []))
+  const out = gitTry(worktree, 'diff', '--unified=0', ...DIFF_FLAGS, '--no-relative', from, to, '--', ...(taskRel ? [`:(top,exclude,literal)${taskRel}`] : []))
   if (out === null) return null
   const files = new Map()
-  let key = null
-  let inHunk = false
-  let renamed = null
-  for (const line of out.split('\n')) {
-    if (line.startsWith('diff --git ')) { key = null; inHunk = false; renamed = null; continue }
-    if (!inHunk) {
-      if (line.startsWith('rename to ')) renamed = line.slice(10)
-      else if (line.startsWith('+++ ') && line !== '+++ /dev/null') key = line.slice(6)
-      else if (line.startsWith('--- ') && line !== '--- /dev/null' && key === null) key = line.slice(6)
-      else if (line.startsWith('@@')) { inHunk = true; key = renamed ?? key ?? '?'; if (!files.has(key)) files.set(key, new Map()) }
-      continue
-    }
-    if (line.startsWith('@@') || (line[0] !== '+' && line[0] !== '-')) continue
-    const set = files.get(key)
-    set.set(line, (set.get(line) ?? 0) + 1)
+  const entryFor = (path) => {
+    if (!files.has(path)) files.set(path, new Map())
+    const set = files.get(path)
+    const tally = (sign) => ({ push: ({ text }) => set.set(sign + text, (set.get(sign + text) ?? 0) + 1) })
+    return { added: tally('+'), removed: tally('-') }
   }
+  parseUnified(out, entryFor, { keepDeleted: true }) // a deleted file counts its removed lines
   return files
 }
 
 /**
- * How many lines the task's own diff changed between two versions of the branch: the diff of each version against its own fork point from the integration ref
- * (`oldBase` and `head` against the merge-base with `integration`), per file the +/- lines compared as multisets; the size is the lines found in only one of the two.
+ * How many lines the task's own diff changed between two versions of the branch: the diff of each version against its own fork point from the PR target `origin/<main_branch>`
+ * (`oldBase` and `head` against the merge-base with `target`), per file the +/- lines compared as multisets; the size is the lines found in only one of the two.
  * Read-only git, null when any step fails (VT-20).
  */
-function ownDiffChange(worktree, taskDir, oldBase, head, integration) {
-  const oldFork = git(worktree, 'merge-base', oldBase, integration)
-  const newFork = git(worktree, 'merge-base', head, integration)
+function ownDiffChange(worktree, taskDir, oldBase, head, target) {
+  // a target that already holds HEAD (the branch is merged) would make the fork point HEAD itself and count the task's own code as nothing, or later upstream work as the task's
+  if (gitTry(worktree, 'merge-base', '--is-ancestor', head, target) !== null) return null
+  const oldFork = git(worktree, 'merge-base', oldBase, target)
+  const newFork = git(worktree, 'merge-base', head, target)
   if (!oldFork || !newFork) return null
   const before = diffLineSets(worktree, taskDir, oldFork, oldBase)
   const after = diffLineSets(worktree, taskDir, newFork, head)
@@ -510,9 +504,9 @@ function deltaProblem(worktree, taskDir, name, text, since, item, isFresh, confi
   // VT-20: the base is not an ancestor of HEAD (a rebase or a reset) — what counts is how much the task's own diff changed, not the upstream code the rebase brought in.
   // The cheap checks above come first: the measurement runs two merge-base calls and two diffs.
   if (git(worktree, 'merge-base', base, head) !== base) {
-    const integration = integrationBase(worktree, configText, head)?.ref
-    const own = integration ? ownDiffChange(worktree, taskDir, base, head, integration) : null
-    if (own === null) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (rebased or reset) and the change of the task's own diff cannot be measured (no integration ref, no fork point, or git diff failed or was too large)`, run: fullRun }
+    const target = prTargetRef(worktree, configText)
+    const own = target ? ownDiffChange(worktree, taskDir, base, head, target) : null
+    if (own === null) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (rebased or reset) and the change of the task's own diff cannot be measured (no \`origin/<main_branch>\`, one that already contains HEAD, no fork point, or git diff failed or was too large)`, run: fullRun }
     if (own > DELTA_MAX_LINES) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (rebased or reset) and the task's own diff changed by ${own} lines, over the bound of ${DELTA_MAX_LINES}`, run: fullRun }
     return null
   }

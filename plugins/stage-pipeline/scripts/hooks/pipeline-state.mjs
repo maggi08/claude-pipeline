@@ -448,8 +448,16 @@ const UNREAD_DATE = new RegExp(
  * The integration refs of a repo, `origin/` first: `main_branch` of the config, then dev, develop, development, main, master — the ones that exist.
  * Not only `main_branch`: in live configs it can be `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
  */
+const configuredMain = (configText) => (configText ?? '').match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
+
+/** The PR target of a repo: `origin/<main_branch>` of its config (`main` when the line is absent), or null when that ref does not exist. */
+export function prTargetRef(cwd, configText) {
+  const ref = `origin/${configuredMain(configText) ?? 'main'}`
+  return isCommit(cwd, ref) ? ref : null
+}
+
 export function integrationRefs(cwd, configText) {
-  const configured = (configText ?? '').match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
+  const configured = configuredMain(configText)
   const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
   return names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
 }

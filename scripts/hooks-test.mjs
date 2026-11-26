@@ -899,6 +899,13 @@ check('stage pro-review on opus with a -fresh report named — passes', agentHoo
 check('stage pro-review on opus with a -fresh-2 report named — passes', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 3. Report checks/pro-review-3-fresh-2.md.', 'opus') === 'allow')
 check('stage pro-review on opus with a -fresh report named by an absolute path — passes', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 3. Report /Users/me/repo/.claude/tasks/T-7/checks/pro-review-3-fresh.md.', 'opus') === 'allow')
 check('stage pro-review on opus with a -fresh report in a task dir outside the repo (~/.claude/mycar-tasks/KC-1) — passes', agentHook('stage-pipeline:pro-review', 'Ticket KC-1, stage mode, stage 2. Report ~/.claude/mycar-tasks/KC-1/checks/pro-review-2-fresh.md.', 'opus') === 'allow')
+check('stage pro-review on opus with a -5a-fresh report named (stage id 5a) — passes', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 5a. Report checks/pro-review-5a-fresh.md.', 'opus') === 'allow')
+check('stage pro-review on opus with a -3.1-fresh report named (stage id 3.1) — passes', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 3.1. Report checks/pro-review-3.1-fresh.md.', 'opus') === 'allow')
+const freshPrompt = 'Ticket T-7, stage mode, stage 3. Report checks/pro-review-3-fresh.md.'
+const freshHaiku = stageDeny('haiku', freshPrompt)
+check('stage pro-review fresh pass on haiku (review_model opus) — denied, held to review_model', freshHaiku.decision === 'deny' && /fresh pass.*held to review_model/.test(JSON.stringify(freshHaiku)), JSON.stringify(freshHaiku).slice(0, 200))
+const freshSonnet = stageDeny('sonnet', freshPrompt)
+check('stage pro-review fresh pass on sonnet (review_model opus) — denied, held to review_model', freshSonnet.decision === 'deny' && /fresh pass.*held to review_model/.test(JSON.stringify(freshSonnet)), JSON.stringify(freshSonnet).slice(0, 200))
 check('stage pro-review on opus with a lookalike -fix1-fresh report — denied', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 3. Report checks/pro-review-3-fix1-fresh.md.', 'opus') === 'deny')
 check('stage pro-review on opus with a lookalike -fresh.md.bak report — denied', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 3. Report checks/pro-review-3-fresh.md.bak.', 'opus') === 'deny')
 check('stage pro-review of a fix round (-fix1 report) on opus — denied, an ordinary stage review', agentHook('stage-pipeline:pro-review', 'Ticket T-7, stage mode, stage 3. Report checks/pro-review-3-fix1.md.', 'opus') === 'deny')
@@ -3667,6 +3674,7 @@ if (unit('receipts')) {
   {
     const deltaFx = (name, { lines = 5, fullHeader = (anchor) => `head: ${anchor}\n`, fullFile = 'pro-review-branch.md', deltaFile = 'pro-review-branch-delta-1.md', deltaHeader, deltaHours = 8, rewrite = false, skipDelta = false, before = () => ({}), round = null, allowEmpty = false } = {}) => {
       const fx = fixture(name, { stages: '' })
+      git(fx.dir, 'update-ref', 'refs/remotes/origin/main', git(fx.dir, 'rev-parse', 'main').trim()) // the PR target of the fork points (VT-20 S-1)
       fx.report('pro-review-1.md', 'pro-review', 2)
       const extra = before(fx)
       // the fixture's .gitignore holds `.claude/`: a task-directory file of the anchor commit is added by force
@@ -3723,11 +3731,12 @@ if (unit('receipts')) {
     check('delta m-1 legitimate: a move inside the task directory — counts nothing, accepted', !verdict(insideTask), insideTask.text)
     // VT-20: after a rebase the size is how much the task's own diff changed (each version against its own fork point), not the upstream code the rebase brought in.
     const upstreamBig = { 'up/big.ts': Array.from({ length: 2200 }, (_, i) => `export const u${i} = ${i}`).join('\n') + '\n' }
-    const rebaseOnto = (upstream, edit = () => {}) => (fx) => {
+    const rebaseOnto = (upstream, edit = () => {}, { pushed = true } = {}) => (fx) => {
       git(fx.dir, 'checkout', '-q', 'main')
       write(fx.dir, upstream)
       git(fx.dir, 'add', '-A')
       git(fx.dir, 'commit', '-qm', 'upstream')
+      if (pushed) git(fx.dir, 'update-ref', 'refs/remotes/origin/main', git(fx.dir, 'rev-parse', 'main').trim()) // the fetched PR target moves with it
       git(fx.dir, 'checkout', '-q', `${fx.ticket}/feat/r`)
       git(fx.dir, 'rebase', '-q', 'main')
       edit(fx)
@@ -3758,8 +3767,17 @@ if (unit('receipts')) {
     check('delta AC-2.3: rebased and the task\'s own diff changed by more than the bound — denied, the message names the rebase, the count (451) and the bound, a full review asked', verdict(rebasedOver) && proReviewOnly(rebasedOver) && /rebased/.test(rebasedOver.text) && /by 451 lines/.test(rebasedOver.text) && /over the bound of 400/.test(rebasedOver.text) && /a full review, it becomes the new anchor/.test(rebasedOver.text), rebasedOver.text)
     const unknownBase = deltaFx('delta-rebased-unknown-base', { rewrite: true, fullHeader: () => `head: ${'0'.repeat(40)}\n`, deltaHeader: (a, n, f) => `head: ${n}\ndelta: ${f} ${'0'.repeat(40)}..${n}\n` }).close()
     check('delta AC-2.5: the old base commit is unknown — denied, a full review asked (fail closed)', verdict(unknownBase) && proReviewOnly(unknownBase) && /full review/.test(unknownBase.text), unknownBase.text)
-    const noIntegration = deltaFx('delta-rebased-no-integration', { rewrite: true, round: (fx) => { git(fx.dir, 'branch', '-D', 'main'); write(fx.dir, aLines(5)) } }).close()
+    const noIntegration = deltaFx('delta-rebased-no-integration', { rewrite: true, round: (fx) => { git(fx.dir, 'branch', '-D', 'main'); git(fx.dir, 'update-ref', '-d', 'refs/remotes/origin/main'); write(fx.dir, aLines(5)) } }).close()
     check('delta AC-2.5: rebased and the repo has no integration branch — denied, cannot be measured, a full review asked', verdict(noIntegration) && proReviewOnly(noIntegration) && /cannot be measured/.test(noIntegration.text) && /full review/.test(noIntegration.text), noIntegration.text)
+    // VT-20 S-1/S-2: the fork points come from `origin/<main_branch>` only; a ref that holds HEAD, a local main ahead of it or no ref at all never gets the delta accepted.
+    const merged = deltaFx('delta-rebased-merged', { rewrite: true, before: () => ({ 'src/t.ts': Array.from({ length: 100 }, (_, i) => `export const t${i} = ${i}`).join('\n') + '\n' }), round: (fx) => write(fx.dir, { 'src/b.ts': Array.from({ length: 2000 }, (_, i) => `export const b${i} = ${i}`).join('\n') + '\n' }) })
+    git(merged.fx.dir, 'update-ref', 'refs/remotes/origin/main', merged.newHead) // the task branch is merged: the PR target contains HEAD
+    const mergedResult = merged.close()
+    check('delta S-1: the branch is merged into origin/main (HEAD contained), 100 task lines at the full review and +2000 after — denied, cannot be measured, a full review asked', verdict(mergedResult) && proReviewOnly(mergedResult) && /cannot be measured/.test(mergedResult.text) && /full review/.test(mergedResult.text), mergedResult.text)
+    const unpushed = deltaFx('delta-rebased-unpushed-main', { round: rebaseOnto(upstreamBig, (fx) => write(fx.dir, aLines(5)), { pushed: false }) }).close()
+    check('delta S-2: local main is 2200 unpushed lines ahead of origin/main and the task is rebased onto it — those lines count as the task\'s own change, denied', verdict(unpushed) && /over the bound of 400/.test(unpushed.text), unpushed.text)
+    const noOrigin = deltaFx('delta-rebased-no-origin', { rewrite: true, round: (fx) => { git(fx.dir, 'update-ref', '-d', 'refs/remotes/origin/main'); write(fx.dir, aLines(5)) } }).close()
+    check('delta S-1: no origin/<main_branch> at all (a local main exists) — denied, cannot be measured, a full review asked', verdict(noOrigin) && proReviewOnly(noOrigin) && /cannot be measured/.test(noOrigin.text), noOrigin.text)
     const noHead = deltaFx('delta-full-no-head', { fullHeader: () => '' }).close()
     check('delta AC-1.2: the full report has no `head:` line — denied, named', verdict(noHead) && proReviewOnly(noHead) && /no `head: <sha>` line/.test(noHead.text), noHead.text)
     const missingFull = deltaFx('delta-missing-full', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch-0.md ${a}..${n}\n` }).close()
