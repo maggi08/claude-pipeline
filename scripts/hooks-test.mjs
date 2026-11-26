@@ -205,6 +205,7 @@ const UNITS = [
   { id: 'vt17f2', weight: 8 }, // VT-17 final-checks fix round 2: an unwritable lock/data dir does not stop run-check, the session ↔ task pair (D9 layout), one ps per snapshot, browsers outside the lower half, no background without taskpolicy, a paused task holds the call of a session that has its browser, the peak key, the card's labels
   { id: 'vt17f4', weight: 4 }, // VT-17 after the run: the open chats of a card (title, last prompt, guessed id of a tab without --resume), the /monitor command (open, stop)
   { id: 'vt17f3', weight: 6 }, // VT-17 final-checks fix round 3: a snapshot with a ready table removes no registry entry, one short file lock with the caller's path and text, a pair with no task does not cover the folder's task, the resume wakes a paused tree when the registry cannot be written, nice 19 without admission
+  { id: 'vt19s1', weight: 3 }, // VT-19 stage 1: a session sits under the task of its current folder (the transcript's tail), one rule for the snapshot, the pause and the hook, the repo label, the key of a task outside the repo
   { id: 'vt17s4', weight: 2 }, // VT-17 stage 4: the session-wait hook (turn-ended, question, permission, elicitation, cleared, subagent, never blocks) and the waiting field of monitor.mjs
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -12571,7 +12572,18 @@ if (unit('vt17s4')) {
   check('hook AC-4.4: UserPromptSubmit clears the state (the file stays for the process id)', cleared?.kind === null && cleared.text === '')
   fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'done' })
   fire({ ...base, hook_event_name: 'SessionEnd', reason: 'other' })
-  check('hook AC-4.4: SessionEnd removes the file; a prompt in a session with no file creates none', stateOf(sid) === null && (fire({ session_id: 'nofile', hook_event_name: 'UserPromptSubmit' }), stateOf('nofile') === null))
+  check('hook AC-4.4: SessionEnd removes the file', stateOf(sid) === null)
+  // VT-19 C1: the first prompt of a new tab writes its state (kind null, no text), so the tracker has the tab's id during a long first turn; a tool answer with no state still creates none
+  fire({ ...base, session_id: 'newtab', hook_event_name: 'UserPromptSubmit', prompt: 'go' })
+  const born = stateOf('newtab')
+  check('hook VT-19 C1: UserPromptSubmit with no state writes one (kind null, no text, cwd, transcript, since)', born?.kind === null && born.text === '' && born.cwd === base.cwd && born.transcript === base.transcript_path && Number.isFinite(born.since), JSON.stringify(born))
+  const placedTab = mon.attachWaiting([{ pid: born.claudePid ?? 4242, sessionId: null, age: 600 }], [{ ...born, sessionId: 'newtab', claudePid: born.claudePid ?? 4242 }], { now: Date.now(), mtimeOf: () => 0 })
+  check('hook VT-19 C1: attachWaiting leaves no session waiting once the state matched the tab', placedTab.length === 0)
+  const tabSession = { pid: 4242, sessionId: null, age: 600 }
+  mon.attachWaiting([tabSession], [{ ...born, sessionId: 'newtab', claudePid: 4242, since: Date.now() - 1000 }], { now: Date.now(), mtimeOf: () => 0 })
+  check('hook VT-19 C1: the tab session takes the id, waiting is null', tabSession.sessionId === 'newtab' && tabSession.waiting === null)
+  fire({ session_id: 'newtab', hook_event_name: 'SessionEnd', reason: 'other' })
+  check('hook VT-19 C1: SessionEnd removes the state of the new tab; a PostToolUse AskUserQuestion with no state creates none', stateOf('newtab') === null && (fire({ session_id: 'nofile', hook_event_name: 'PostToolUse', tool_name: 'AskUserQuestion' }), stateOf('nofile') === null))
 
   // AC-4.6: a subagent's event changes nothing
   fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'main' })
@@ -13091,7 +13103,7 @@ if (unit('vt17f3')) {
     hq.recordSessionTask(repoPair, { table: table(), identity })
     check('monitor m-4: a pair with a task still wins over the folder\'s task', mon.sessionRows(table(), seams).find((item) => item.pid === SESSION).task === '/m#VT-17')
     const adm = readFileSync(join(PLUGIN, 'hooks', 'browser-admit.mjs'), 'utf8')
-    check('browser-admit m-4: the hook applies the same rule (a pair without a task does not cover the folder\'s task) and its first look uses the table already read', /pair && \(pair\.task \|\| !info\.task\)/.test(adm) && /look\(rows\)/.test(adm))
+    check('browser-admit m-4: the hook applies the same rule (a pair without a task does not cover the folder\'s task) and its first look uses the table already read', /pickSessionTask\(\{[^\n]*pair: [^\n]*own: info \}\)/.test(adm) && /look\(rows\)/.test(adm))
 
     // ── m-6 (AC-8.2): the resume of a paused command wakes its tree when the registry cannot be written
     const ro = join(root, 'ro-queue')
@@ -13208,6 +13220,312 @@ if (unit('vt17f4')) {
       if (first?.pid && alive(first.pid)) process.kill(first.pid, 'SIGKILL')
     }
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+// ── VT-19 stage 1: the task of a session from its transcript ───────────────────────────────────────────────────────────
+// A fake process table, fake transcripts and a temporary data dir: never the real ps, lsof, priorities.json, session-tasks.json or ~/.claude/projects.
+if (unit('vt19s1')) {
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hooks-test-vt19-')))
+  const saved = { data: process.env.STAGE_PIPELINE_DATA_DIR, lock: process.env.STAGE_PIPELINE_LOCK_DIR }
+  process.env.STAGE_PIPELINE_DATA_DIR = join(root, 'data')
+  process.env.STAGE_PIPELINE_LOCK_DIR = join(root, 'lock')
+  try {
+    const row = (pid, ppid, args, extra = {}) => [pid, { pid, ppid, uid: 501, cpu: 1, rssKb: 1024, nice: 0, pri: 31, stat: 'S', age: 100, cpuSeconds: 2, args, ...extra }]
+    const projects = join(root, 'projects')
+    mkdirSync(projects, { recursive: true })
+    const line = (value) => `${JSON.stringify(value)}\n`
+    const stamp = (min) => new Date(Date.UTC(2026, 10, 26, 10, min)).toISOString()
+    const late = (file) => utimesSync(file, new Date(Date.UTC(2026, 10, 27)), new Date(Date.UTC(2026, 10, 27))) // the stamps below are of 26 Nov 10:xx; a transcript's mtime is not earlier than its lines (D7)
+    const transcript = (id, entries) => {
+      const dir = join(projects, '-main-tree')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `${id}.jsonl`), entries.map(([cwd, min]) => (cwd === null ? line({ type: 'ai-title', aiTitle: 't' }) : line({ type: 'user', cwd, timestamp: stamp(min) }))).join(''))
+      late(join(dir, `${id}.jsonl`))
+    }
+    const info = (dir, ticket) => ({ key: `${dir}#${ticket}`, task: true, root: dir, ticket, taskDir: join(dir, '.claude', 'tasks') })
+    const tasks = { '/wt/a': info('/wt/a', 'A-1'), '/wt/a/sub': info('/wt/a', 'A-1'), '/wt/b': info('/wt/b', 'B-1') }
+    const taskOf = (cwd) => tasks[cwd] ?? { key: cwd, task: false, root: cwd, ticket: null, taskDir: null }
+    const seams = { cwdOf: () => '/main', taskOf, branchOf: () => null, devPortOf: () => null, projectsDir: projects, waitStates: [], platform: 'darwin', machine: { memory: null, swap: null, load: null } }
+    const ID = (n) => `0000000${n}-2222-3333-4444-555555555555`
+
+    // ── AC-1.1, AC-1.2, AC-1.4: two sessions of one window folder, one per worktree; one that came back to the main tree for a command; a tab without --resume
+    transcript(ID(1), [['/main', 1], ['/wt/a', 5], ['/wt/a/sub', 6], [null, 7]])
+    transcript(ID(2), [['/main', 1], ['/wt/b', 5]])
+    transcript(ID(3), [['/wt/a', 2], ['/main', 9]])
+    transcript(ID(4), [['/main', 1], ['/wt/b', 8]])
+    const table = new Map([
+      row(100, 1, `/usr/local/bin/claude --resume ${ID(1)}`), row(101, 1, `/usr/local/bin/claude --resume ${ID(2)}`), row(102, 1, `/usr/local/bin/claude --resume ${ID(3)}`), row(103, 1, '/usr/local/bin/claude'),
+      row(110, 100, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(111, 110, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-p'),
+      row(120, 101, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(121, 120, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-q'),
+      row(130, 103, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(131, 130, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-r'),
+    ])
+    const waitStates = [{ sessionId: ID(4), claudePid: 103, since: Date.now() - 10_000, kind: null }] // the hook state gave the tab its id
+    const snap = mon.collect({ table, taskDirs: [], ...seams, waitStates })
+    const taskOfPid = (pid) => snap.sessions.find((item) => item.pid === pid)?.task
+    check('vt19 AC-1.1/1.2: two sessions with one process folder (the window) are in the lanes of their worktrees\' tasks, none in the root\'s lane', taskOfPid(100) === '/wt/a#A-1' && taskOfPid(101) === '/wt/b#B-1' && !snap.sessions.some((item) => item.task === '/main' || item.root === '/main' && item.task !== null), JSON.stringify(snap.sessions.map((item) => [item.pid, item.task, item.root])))
+    check('vt19 AC-1.1: the session keeps the process folder as its cwd, the task key equals taskInfo\'s of the worktree', snap.sessions[0].cwd === '/main' && taskOfPid(100) === taskOf('/wt/a').key && snap.sessions[0].ticket === 'A-1' && snap.sessions[0].root === '/wt/a')
+    check('vt19 AC-1.4: a session that came back to the main tree for one command stays in the lane of its task', taskOfPid(102) === '/wt/a#A-1')
+    check('vt19 AC-1.5/1.2: a tab without --resume gets its id from the hook state and is placed by its transcript too', taskOfPid(103) === '/wt/b#B-1' && snap.sessions.find((item) => item.pid === 103).sessionId === ID(4))
+
+    // ── AC-1.5: the pause stops the browsers of the sessions the snapshot puts under the task, the new tab included, and no others
+    const killed = []
+    const stopB = mon.signalTaskBrowsers('/wt/b#B-1', 'SIGSTOP', { table, kill: (pid) => killed.push(pid), data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    check('vt19 AC-1.5: the pause of a task stops the browsers of its sessions by transcript (101) and of the tab without --resume (103), not the browser of the others', stopB.sort().join() === [121, 131].join() && !killed.includes(111), `${stopB} ${killed}`)
+    const stopA = mon.signalTaskBrowsers('/wt/a#A-1', 'SIGSTOP', { table, kill: () => {}, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    check('vt19 AC-1.5: the other task\'s pause stops only the browser of its session', stopA.join() === '111', String(stopA))
+    check('vt19 AC-1.5: nothing is stopped for the window\'s root key (no session is placed there)', mon.signalTaskBrowsers('/main', 'SIGSTOP', { table, kill: () => {}, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates }).length === 0)
+
+    // ── AC-1.3: the newer of the transcript's folder and the run-check pair wins; a pair with no task never covers a task
+    const t = (min) => Date.parse(stamp(min))
+    const pairA = { key: '/wt/a#A-1', task: true, root: '/wt/a', ticket: 'A-1', taskDir: '/wt/a/.claude/tasks', at: t(3) }
+    const pairNo = { key: '/main', task: false, root: '/main', ticket: null, taskDir: null, at: t(30) }
+    const placed = (pair) => mon.collect({ table: new Map([row(100, 1, `/usr/local/bin/claude --resume ${ID(2)}`)]), taskDirs: [], ...seams, pairs: new Map(pair ? [[100, pair]] : []) }).sessions[0]
+    check('vt19 AC-1.3: the transcript (min 5, worktree B) is newer than the pair (min 3, A) — B wins; a pair at min 9 beats it', placed(pairA).task === '/wt/b#B-1' && placed({ ...pairA, at: t(9) }).task === '/wt/a#A-1')
+    check('vt19 AC-1.3: a pair with no task, however new, does not cover the transcript\'s task', placed(pairNo).task === '/wt/b#B-1')
+    const pick = (args) => hq.pickSessionTask({ taskOf, ...args })
+    const own = info('/own', 'O-1')
+    check('vt19 AC-1.3/1.8: the rule — the process folder only without a task in the two other sources; a pair with no task covers a bare folder; nothing at all gives null', pick({ pair: pairA, own }).info.key === '/wt/a#A-1' && pick({ pair: pairNo, own }).info.key === '/own#O-1' && pick({ pair: pairNo, own: taskOf('/main') }).source === 'pair' && pick({ own }).source === 'process' && pick({}).info === null && pick({ folders: [{ cwd: '/wt/b', at: t(1) }], pair: pairA }).source === 'pair' && pick({ folders: [{ cwd: '/main', at: t(50) }, { cwd: '/wt/b', at: t(1) }] }).info.key === '/wt/b#B-1')
+
+    // ── AC-1.8: no transcript, no id, no folder with a task in the tail — the old rule (pair, then the process folder); the tail is read once while the file is unchanged
+    const bare = mon.collect({ table: new Map([row(100, 1, '/usr/local/bin/claude --resume 99999999-2222-3333-4444-555555555555'), row(101, 1, '/usr/local/bin/claude')]), taskDirs: [], ...seams, cwdOf: () => '/wt/b', pairs: new Map() })
+    check('vt19 AC-1.8: a session with no transcript or no id stays at its process folder\'s task; the snapshot does not fail', bare.sessions.every((item) => item.task === '/wt/b#B-1') && bare.problem === null, bare.problem)
+    transcript(ID(5), [['/main', 1], ['/elsewhere', 2]])
+    const noTask = mon.collect({ table: new Map([row(100, 1, `/usr/local/bin/claude --resume ${ID(5)}`)]), taskDirs: [], ...seams, pairs: new Map([[100, pairA]]) }).sessions[0]
+    check('vt19 AC-1.8: no folder with a task in the transcript — the pair decides', noTask.task === '/wt/a#A-1')
+    check('vt19 AC-1.8: the folders of an unchanged transcript are one cached answer (no second read of the file)', mon.foldersOf(ID(1), '/main', { projectsDir: projects }) === mon.foldersOf(ID(1), '/main', { projectsDir: projects }) && mon.foldersOf(ID(1), '/main', { projectsDir: projects })[0].cwd === '/wt/a/sub')
+    const long = ID(6)
+    writeFileSync(join(projects, '-main-tree', `${long}.jsonl`), line({ type: 'user', cwd: '/wt/b', timestamp: stamp(1) }) + line({ type: 'ai-title', aiTitle: 'late' }) + line({ type: 'assistant', text: 'x'.repeat(300 * 1024) }))
+    late(join(projects, '-main-tree', `${long}.jsonl`))
+    check('vt19 D1: a long last entry — the folder is found in the wider tail, the title too', mon.foldersOf(long, '/main', { projectsDir: projects })[0]?.cwd === '/wt/b' && mon.chatOf(long, '/main', { projectsDir: projects })?.title === 'late')
+
+    // AC-1.4: 300 lines in the main tree after the worktree's — with all three titles and without them the session stays under its task
+    for (const [n, titled] of [[7, true], [8, false]]) {
+      const lines = [line({ type: 'user', cwd: '/wt/a', timestamp: stamp(1) })]
+      for (let i = 0; i < 300; i += 1) lines.push(line({ type: 'user', cwd: '/main', timestamp: stamp(2) }))
+      if (titled) lines.push(line({ type: 'custom-title', customTitle: 'c' }), line({ type: 'ai-title', aiTitle: 'a' }), line({ type: 'last-prompt', lastPrompt: 'p' }))
+      writeFileSync(join(projects, '-main-tree', `${ID(n)}.jsonl`), lines.join(''))
+      late(join(projects, '-main-tree', `${ID(n)}.jsonl`))
+      const kept = mon.collect({ table: new Map([row(100, 1, `/usr/local/bin/claude --resume ${ID(n)}`)]), taskDirs: [], ...seams, pairs: new Map() }).sessions[0]
+      check(`vt19 AC-1.4: 300 main-tree lines after the worktree's (${titled ? 'renamed chat' : 'no title'}) — the session stays under the task of /wt/a`, kept.task === '/wt/a#A-1', String(kept.task))
+    }
+
+    // ── AC-1.6: one function for the three callers — the hook runs on a fake table, a real transcript and real repos, and the key it holds the call under is the one the snapshot puts the session under
+    const ba = await import(join(PLUGIN, 'hooks', 'browser-admit.mjs'))
+    const hkMain = join(root, 'hk-main')
+    const hkTask = join(root, 'hk-task')
+    repoAt(hkMain, 'main')
+    repoAt(hkTask, 'H-1/feat/a')
+    write(hkMain, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n' })
+    write(hkTask, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/H-1/STAGES.md': stages('H-1', 'H-1/feat/a') })
+    const hkKey = `${realpathSync(hkTask)}#H-1`
+    const hkFile = join(root, 'hk-transcript.jsonl')
+    writeFileSync(hkFile, [[realpathSync(hkTask), 2], [realpathSync(hkMain), 9]].map(([cwd, min]) => line({ type: 'user', cwd, timestamp: stamp(min) })).join('')) // the newest line is in the main tree: one command there
+    late(hkFile)
+    const hkTable = new Map([row(process.pid, 600, 'node browser-admit.mjs'), row(600, 1, '/usr/local/bin/claude --resume'), row(601, 600, 'npm exec chrome-devtools-mcp@1.6.0 --isolated')])
+    const heldKeys = async (options) => {
+      writeFileSync(join(root, 'data', 'priorities.json'), JSON.stringify({ version: 1, order: [], paused: [hkKey] }))
+      const said = []
+      await ba.admitBrowser({ cwd: realpathSync(hkMain), table: hkTable, say: (text) => said.push(text), waitSeconds: 0, ...options })
+      return { order: JSON.parse(readFileSync(join(root, 'data', 'priorities.json'), 'utf8')).order, said }
+    }
+    const withTranscript = await heldKeys({ transcriptPath: hkFile })
+    check('vt19 AC-1.6/m-3: the hook, given the transcript of a session that is in the main tree for one command, holds the call under its task\'s key (paused) — the key the snapshot uses', withTranscript.order.join() === hkKey && withTranscript.said.some((text) => /resume/.test(text)), JSON.stringify(withTranscript))
+    const hkTool = join(root, 'hk-tool.jsonl')
+    writeFileSync(hkTool, line({ parentUuid: 'p', type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'x', name: 'Bash', input: { command: `cd ${realpathSync(hkTask)} && ls` } }] }, cwd: root, timestamp: stamp(5) })) // the session's cwd is a parent folder, in no checkout (A11): the call into the repo counts
+    late(hkTool)
+    const viaTool = await heldKeys({ transcriptPath: hkTool })
+    check('vt19 AC-3.5: the hook, given a transcript whose only task signal is a Bash `cd <worktree> &&`, holds the call under that task\'s key — the same parser as the snapshot', viaTool.order.join() === hkKey && viaTool.said.some((text) => /resume/.test(text)), JSON.stringify(viaTool))
+    const without = await heldKeys({})
+    check('vt19 AC-1.6/m-3: without the transcript the hook has only the folder it stands in — the main tree\'s key, not the paused task (the case the transcript fixes)', !without.order.includes(hkKey), JSON.stringify(without))
+    const sources = ['monitor.mjs', join('hooks', 'browser-admit.mjs')].map((name) => readFileSync(join(PLUGIN, name), 'utf8'))
+    check('vt19 AC-1.6: neither the snapshot nor the hook spells the pair rule itself', sources.every((text) => /pickSessionTask\(/.test(text) && !/pair\.task \|\|/.test(text)))
+
+    // ── AC-1.2: each lane has its own place from priorities.json
+    mkdirSync(join(root, 'data'), { recursive: true })
+    writeFileSync(join(root, 'data', 'priorities.json'), JSON.stringify({ version: 1, order: ['/wt/b#B-1', '/wt/a#A-1'], paused: [] }))
+    const placedSnap = mon.collect({ table, taskDirs: [], ...seams, waitStates })
+    const lane = (pid) => placedSnap.sessions.find((item) => item.pid === pid)?.task
+    check('vt19 AC-1.2: two sessions of one window folder have their own places from priorities.json (B first, A second)', mon.placeIn(placedSnap.balance.order, lane(101)) === 1 && mon.placeIn(placedSnap.balance.order, lane(100)) === 2 && lane(101) !== lane(100), JSON.stringify([placedSnap.balance.order, lane(100), lane(101)]))
+    rmSync(join(root, 'data', 'priorities.json'), { force: true })
+
+    // ── AC-1.5: SIGCONT after the placement changed — paused under key A, the session then moves to B; the resume of A still continues the recorded browser
+    const cont = []
+    mon.signalTaskBrowsers('/wt/a#A-1', 'SIGSTOP', { table, kill: () => {}, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    const movedTable = new Map(table)
+    movedTable.set(100, { ...table.get(100), args: `/usr/local/bin/claude --resume ${ID(2)}` }) // session 100 is now placed under B by its other transcript
+    const resumed = mon.signalTaskBrowsers('/wt/a#A-1', 'SIGCONT', { table: movedTable, kill: (pid, signal) => { cont.push([pid, signal]) }, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    check('vt19 AC-1.5: the resume of A continues the browser the pause of A recorded, though its session is placed under B now', resumed.includes(111) && cont.every(([, signal]) => signal === 'SIGCONT'), JSON.stringify([resumed, cont]))
+
+    // ── AC-1.5/1.6: a GUESSED id (two tabs without ids, one transcript, no hook state) does not place a tab: the pause of that file's task stops no browser, the page shows both tabs where the 0.31.1 rule puts them
+    const gDir = join(projects, '-main')
+    mkdirSync(gDir, { recursive: true })
+    writeFileSync(join(gDir, `${ID(7)}.jsonl`), [['/main', 1], ['/wt/b', 5]].map(([cwd, min]) => line({ type: 'user', cwd, timestamp: stamp(min) })).join(''))
+    const guessTable = new Map([
+      row(700, 1, '/usr/local/bin/claude'), row(701, 1, '/usr/local/bin/claude'),
+      row(710, 700, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(711, 710, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-g1'),
+      row(720, 701, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(721, 720, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-g2'),
+    ])
+    const guessSeams = { ...seams, waitStates: [] }
+    const guessSnap = mon.collect({ table: guessTable, taskDirs: [], ...guessSeams })
+    const tabs = guessSnap.sessions.filter((item) => [700, 701].includes(item.pid))
+    check('vt19 AC-1.5: both tabs are on the page, a transcript id was guessed for one, and neither is placed under the task of that file by the guess', tabs.length === 2 && tabs.some((item) => item.sessionGuessed) && tabs.every((item) => item.task === null && item.root === '/main'), JSON.stringify(tabs.map((item) => [item.pid, item.sessionGuessed, item.task, item.root])))
+    const guessStop = []
+    const stopped = mon.signalTaskBrowsers('/wt/b#B-1', 'SIGSTOP', { table: guessTable, kill: (pid) => guessStop.push(pid), data: join(root, 'data'), identity: () => 'x', ...guessSeams })
+    check('vt19 AC-1.5/1.6: the pause of that file\'s task stops no browser of either tab — the page and the pause agree', stopped.length === 0 && guessStop.length === 0, String(stopped))
+
+    // ── AC-1.7 and AC-1.10: a task directory outside the repo
+    const home = join(root, 'home')
+    const mycar = join(home, '.claude', 'mycar-tasks')
+    for (const ticket of ['KC-1', 'KC-713']) write(mycar, { [`${ticket}/STAGES.md`]: '# Task\n## Status: stage 1 of 2\n### Stage 1: a  [status: in-progress]\n### Stage 2: b  [status: todo]\n' })
+    const newCor = join(root, 'new-cor')
+    const core = join(root, 'mycar', 'core')
+    const outside = (dir, ticket) => ({ key: `${dir}#${ticket}`, task: true, root: dir, ticket, taskDir: mycar })
+    const outTasks = { [newCor]: outside(newCor, 'KC-1'), [core]: outside(core, 'KC-713') }
+    const outTaskOf = (cwd) => outTasks[cwd] ?? { key: cwd, task: false, root: cwd }
+    const live = mon.collect({ table: new Map([row(400, 1, '/usr/local/bin/claude')]), taskDirs: [mycar], ...seams, taskOf: outTaskOf, cwdOf: () => newCor })
+    const liveRow = live.tasks.find((item) => item.ticket === 'KC-1')
+    check('vt19 AC-1.7: a task directory outside the repo, key taken from the session — the lane\'s label is the key\'s root (new-cor), not the parent of the directory', liveRow?.key === `${newCor}#KC-1` && liveRow.repo === 'new-cor' && liveRow.root === newCor, JSON.stringify(liveRow))
+    mkdirSync(join(root, 'data'), { recursive: true })
+    const priorities = (order) => writeFileSync(join(root, 'data', 'priorities.json'), JSON.stringify({ version: 1, order, paused: [] }))
+    priorities([`${core}#KC-713`, `${join(root, 'mycar', 'other')}#KC-713`])
+    const idle = mon.collect({ table: new Map(), taskDirs: [mycar], ...seams, taskOf: outTaskOf })
+    const idleRow = idle.tasks.find((item) => item.ticket === 'KC-713')
+    check('vt19 AC-1.10: a task outside the repo with no live session takes the key of priorities.json with the same task directory and ticket, and its root\'s label (core)', idleRow?.key === `${core}#KC-713` && idleRow.repo === 'core' && idleRow.root === core && idleRow.registered === true, JSON.stringify(idleRow))
+    check('vt19 AC-1.10: a task with no such key keeps the registry\'s key (the parent of the directory)', idle.tasks.find((item) => item.ticket === 'KC-1')?.key === `${join(home)}#KC-1`, JSON.stringify(idle.tasks.map((item) => item.key)))
+    priorities([`${join(root, 'mycar', 'other')}#KC-713`, `${core}#KC-713`])
+    const live2 = mon.collect({ table: new Map([row(400, 1, '/usr/local/bin/claude')]), taskDirs: [mycar], ...seams, taskOf: (cwd) => (cwd === newCor ? outside(newCor, 'KC-713') : outTaskOf(cwd)), cwdOf: () => newCor })
+    check('vt19 AC-1.10: a live session\'s key is stronger than the key of the order', live2.tasks.find((item) => item.ticket === 'KC-713')?.key === `${newCor}#KC-713`, JSON.stringify(live2.tasks.map((item) => item.key)))
+    // a key's root is the CONFIG root: for a worktree with no config of its own it is the main tree, maybe on another branch (no task, or another ticket) — the ticket is the key's suffix, only the task directory comes from the root
+    priorities([`${core}#KC-713`])
+    for (const [name, taskOfRoot] of [['no current task', (cwd) => ({ key: cwd, task: false, root: cwd, ticket: null, taskDir: mycar })], ['another ticket', (cwd) => outside(cwd, 'KC-999')]]) {
+      const branchy = mon.collect({ table: new Map(), taskDirs: [mycar], ...seams, taskOf: taskOfRoot })
+      const found = branchy.tasks.find((item) => item.ticket === 'KC-713')
+      check(`vt19 AC-1.10: the root of the key is on ${name} — the row still takes the key`, found?.key === `${core}#KC-713` && found.repo === 'core', JSON.stringify(found))
+    }
+
+    // ── S-1/m-1: the top-level `cwd` and `timestamp` of a line, not the first ones; a future time is cut to the file's mtime (D7)
+    const tailFile = join(projects, 'tail-s1.jsonl')
+    const nested = (top, other, min) => `{"type":"assistant","serverClassifierContext":{"context":{"git_state":{"cwd":${JSON.stringify(other)},"timestamp":"2099-01-01T00:00:00.000Z"}}},"cwd":${JSON.stringify(top)},"timestamp":"${stamp(min)}"}\n`
+    writeFileSync(tailFile, nested('/wt/b', '/wt/a', 5) + line({ type: 'assistant', message: { content: [{ type: 'tool_use', input: { cwd: '/wt/a', timestamp: '2099-01-01T00:00:00.000Z' } }] }, cwd: '/wt/b', timestamp: stamp(6) }))
+    late(tailFile)
+    const tt = await import(join(PLUGIN, 'transcript-tail.mjs'))
+    const tailFolders = tt.foldersOfFile(tailFile)
+    check('vt19 S-1: a nested git_state.cwd before the top-level cwd, and a tool input with cwd and timestamp, change neither the folder nor the time', tailFolders.length === 1 && tailFolders[0].cwd === '/wt/b' && tailFolders[0].at === Date.parse(stamp(6)), JSON.stringify(tailFolders))
+    writeFileSync(tailFile, line({ type: 'user', cwd: '/wt/b', timestamp: '2099-01-01T00:00:00.000Z' }))
+    const past = new Date(Date.UTC(2026, 10, 26, 11, 0))
+    utimesSync(tailFile, past, past)
+    check('vt19 D7: a timestamp later than the file\'s mtime is cut to the mtime', tt.foldersOfFile(tailFile)[0]?.at === past.getTime(), JSON.stringify(tt.foldersOfFile(tailFile)))
+
+    // ── AC-3.1…3.4: folders from the session's own tool calls (A9), parsed in the same pass as the `cwd` folders
+    const tool = (cwd, min, name, input) => line({ parentUuid: 'p', isSidechain: false, type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'x', name, input }] }, cwd, timestamp: stamp(min) })
+    const toolFile = join(projects, 'tool-s3.jsonl')
+    const toolRead = (text) => {
+      writeFileSync(toolFile, text)
+      late(toolFile)
+      return tt.foldersOfFile(toolFile)
+    }
+    const toolTask = (text, options = {}) => {
+      const folders = toolRead(text)
+      return hq.pickSessionTask({ taskOf, folders, ...options }).info?.key ?? null
+    }
+    const bash = (command, min = 5, cwd = '/main') => tool(cwd, min, 'Bash', { command, description: 'd' })
+    check('vt19 AC-3.1: `cd /wt/a && …` at the start of a command, the line\'s cwd in the main tree — the session is under task A', toolTask(line({ type: 'user', cwd: '/main', timestamp: stamp(1) }) + bash('cd /wt/a && git status')) === '/wt/a#A-1')
+    check('vt19 AC-3.1: `cd "/wt/a" ; …` (quoted, `;`) and `cd \'/wt/a\' &&` are taken', toolTask(bash('  cd "/wt/a" ; ls')) === '/wt/a#A-1' && toolTask(bash("cd '/wt/a' && ls")) === '/wt/a#A-1')
+    check('vt19 AC-3.1: `git -C /wt/a status` as the first word is taken; so is `git -C` after a leading `cd /main &&`', toolTask(bash('git -C /wt/a status')) === '/wt/a#A-1' && toolTask(bash('cd /main && git -C /wt/a log')) === '/wt/a#A-1')
+    check('vt19 AC-3.2: Edit, Write, Read, MultiEdit file_path and NotebookEdit notebook_path under /wt/b — the folder of the file, task B', ['Edit', 'Write', 'Read', 'MultiEdit'].every((name) => toolTask(tool('/main', 5, name, { file_path: '/wt/b/x.mjs', content: 'c' })) === '/wt/b#B-1') && toolTask(tool('/main', 5, 'NotebookEdit', { notebook_path: '/wt/b/n.ipynb' })) === '/wt/b#B-1' && toolRead(tool('/main', 5, 'Read', { file_path: '/wt/b/src/x.mjs' }))[0].cwd === '/wt/b/src')
+    const listed = toolRead(line({ type: 'user', cwd: '/main', timestamp: stamp(2) }) + tool('/main', 7, 'Write', { file_path: '/wt/b/y', content: '' }))
+    check('vt19 AC-3.2: the folder\'s time is the line\'s timestamp (the same line\'s cwd has it too)', listed[0].cwd === '/wt/b' && listed[0].at === t(7) && listed.find((item) => item.cwd === '/main').at === t(7) && listed.length === 2, JSON.stringify(listed))
+    check('vt19 AC-3.3: a tool-call folder newer than a cwd folder wins; an older one loses', toolTask(line({ type: 'user', cwd: '/wt/b', timestamp: stamp(3) }) + bash('cd /wt/a && x', 6)) === '/wt/a#A-1' && toolTask(bash('cd /wt/a && x', 2) + line({ type: 'user', cwd: '/wt/b', timestamp: stamp(6) })) === '/wt/b#B-1')
+    check('vt19 AC-3.3: against the run-check pair the newest task-bearing source wins; a tool folder without a task is skipped', toolTask(bash('cd /wt/b && x', 5), { pair: pairA }) === '/wt/b#B-1' && toolTask(bash('cd /wt/b && x', 2), { pair: pairA }) === '/wt/a#A-1' && toolTask(bash('cd /nowhere && x', 9) + tool('/wt/b', 4, 'Read', { file_path: '/wt/b/f' })) === '/wt/b#B-1')
+    check('vt19 AC-3.3: a relative `cd sub && …` is resolved from the line\'s cwd; `~/x` from the home dir', toolRead(bash('cd sub && ls', 5, '/wt/a'))[0].cwd === '/wt/a/sub' && toolRead(bash('cd ~/x && ls'))[0].cwd === join(homedir(), 'x') && toolRead(bash('git -C ~ status'))[0].cwd === homedir() && toolRead(tool('/wt/b', 5, 'Edit', { file_path: 'src/z.mjs' }))[0].cwd === '/wt/b/src')
+    check('vt19 AC-3.3: the folders are deduplicated, newest first', toolRead(bash('cd /wt/a && x', 3) + bash('cd /wt/b && x', 4) + bash('cd /wt/a && x', 5)).map((item) => item.cwd).join() === '/wt/a,/main,/wt/b')
+    const many = Array.from({ length: 30 }, (_, n) => bash(`cd /d/${n} && x`, 1 + n % 50)).join('')
+    check('vt19 AC-3.3: the cap of the folder list holds for tool-call folders', toolRead(many).length === 12 && toolRead(many)[0].cwd === '/d/29')
+    const ignored = (text) => toolRead(text).filter((item) => /\/wt\/c/.test(item.cwd))
+    check('vt19 AC-3.4: a Write whose content has `cd /wt/c && x`, an `echo cd /wt/c && …`, a heredoc with /wt/c, a `cd` not at the start (`ls && cd /wt/c`), `git -C` in the middle — none is a folder', ignored(tool('/main', 5, 'Write', { file_path: '/main/n.txt', content: 'cd /wt/c && x\n' })).length === 0 && ignored(bash('echo cd /wt/c && true')).length === 0 && ignored(bash("cat <<'EOF' > f\ncd /wt/c && x\n/wt/c/file\nEOF")).length === 0 && ignored(bash('ls && cd /wt/c')).length === 0 && ignored(bash('ls && git -C /wt/c status')).length === 0 && ignored(bash('echo "x" ; git status ; cd /wt/c && ls')).length === 0 && ignored(tool('/main', 5, 'Edit', { file_path: '/main/n.txt', new_string: 'cd /wt/c && x', old_string: '/wt/c/a' })).length === 0 && ignored(tool('/main', 5, 'Grep', { path: '/wt/c', pattern: 'x' })).length === 0)
+
+    // ── review round 1: roots of checkouts, `$` in a file_path, ordering inside a line, an unresolved `cd`
+    const checkout = join(root, 'checkout-s3')
+    mkdirSync(join(checkout, '.git'), { recursive: true })
+    const wtLinked = join(root, 'linked-s3')
+    mkdirSync(wtLinked, { recursive: true })
+    writeFileSync(join(wtLinked, '.git'), 'gitdir: x\n')
+    const subs = Array.from({ length: 13 }, (_, n) => join(checkout, 'pkg', `d${n}`))
+    for (const dir of subs) mkdirSync(dir, { recursive: true })
+    mkdirSync(join(wtLinked, 'deep', 'er'), { recursive: true })
+    tasks[checkout] = info(checkout, 'C-1')
+    tasks[wtLinked] = info(wtLinked, 'L-1')
+    const reads = subs.map((dir, n) => tool(checkout, 10 + n, 'Read', { file_path: join(dir, 'f.mjs') })).join('')
+    check('vt19 AC-3.3: the folders of a checkout collapse to its root (13 folders of one checkout, plus the cwd — one entry); a linked worktree\'s `.git` file counts; a folder outside any checkout stays', toolRead(reads).length === 1 && toolRead(reads)[0].cwd === checkout && toolRead(tool('/main', 5, 'Read', { file_path: join(wtLinked, 'deep', 'er', 'x') }))[0].cwd === wtLinked && toolRead(tool('/main', 5, 'Read', { file_path: '/wt/b/src/x' }))[0].cwd === '/wt/b/src', JSON.stringify(toolRead(reads)))
+    const callsRoot = []
+    hq.pickSessionTask({ taskOf: (cwd) => { callsRoot.push(cwd); return taskOf(cwd) }, folders: toolRead(reads) })
+    check('vt19 AC-3.3: a session whose tail names files in 13 folders of one checkout costs one taskOf call for that root', callsRoot.length === 1 && callsRoot[0] === checkout, JSON.stringify(callsRoot))
+    check('vt19 AC-3.1: `cd /wt/a && x` (newest), then Reads in 13 directories of the main checkout — still task A', toolTask(subs.map((dir, n) => tool('/main', 1 + n % 5, 'Read', { file_path: join(dir, 'f') })).join('') + bash('cd /wt/a && x', 20)) === '/wt/a#A-1' && toolRead(subs.map((dir, n) => tool('/main', 1 + n % 5, 'Read', { file_path: join(dir, 'f') })).join('') + bash('cd /wt/a && x', 20)).length === 3)
+    check('vt19 AC-3.1: 13 distinct folders outside any checkout after `cd /wt/a && x` do not push `/wt/a` out of the list when it is newer', toolTask(Array.from({ length: 13 }, (_, n) => tool('/main', 1 + n % 5, 'Read', { file_path: `/out/d${n}/f` })).join('') + bash('cd /wt/a && x', 20)) === '/wt/a#A-1')
+    check('vt19 AC-3.2: a file_path with `$` or a backtick (`/wt/b/app/routes/$postId.tsx`) keeps its folder; the same in a Bash `cd` is dropped', toolRead(tool('/main', 5, 'Edit', { file_path: '/wt/b/app/routes/$postId.tsx' }))[0].cwd === '/wt/b/app/routes' && ignored(bash('cd /wt/c/$x && ls')).length === 0 && toolRead(bash('cd /wt/c/`pwd` && ls')).every((item) => !/wt\/c/.test(item.cwd)))
+    check('vt19 AC-3.3: inside one line the tool call\'s folder wins over the same line\'s top-level cwd (same timestamp)', toolTask(tool('/wt/b', 5, 'Bash', { command: 'cd /wt/a && x' })) === '/wt/a#A-1' && toolRead(tool('/wt/b', 5, 'Bash', { command: 'cd /wt/a && x' })).map((item) => item.cwd).join() === '/wt/a,/wt/b')
+    check('vt19 AC-3.4: after an unresolved leading `cd` (`cd $WT && git -C sub …`, `cd ~root/x && git -C /wt/c`) the `git -C` is not parsed; `~name/…` is not a folder', ignored(bash('cd $WT && git -C /wt/c status')).length === 0 && toolRead(bash('cd $WT && git -C sub status', 5, '/wt/a')).length === 1 && toolRead(bash('cd ~root/x && git -C /wt/c log')).length === 1 && toolRead(bash('git -C ~root status')).length === 1)
+
+    // ── stage 4 (A11, m-1): a call into another repo does not move the session; the shared lexer reads the `cd`
+    const s4main = join(root, 'park-s4', 'main-tree')
+    const s4other = join(root, 'park-s4', 'other-repo')
+    const s4wt = join(root, 'park-s4', 'main-tree-wt')
+    for (const dir of [s4main, s4other]) repoAt(dir, 'main')
+    git(s4main, 'worktree', 'add', '-q', s4wt, '-b', 'wt-s4')
+    // a main tree that is not `<dir>/.git`: a bare clone with two worktrees, and a `--separate-git-dir` repo with one — the common git dir is what the worktrees share
+    const s4bare = join(root, 'park-s4', 'bare.git')
+    git(s4other, 'clone', '-q', '--bare', s4other, s4bare)
+    const s4bareA = join(root, 'park-s4', 'bare-a')
+    const s4bareB = join(root, 'park-s4', 'bare-b')
+    git(s4bare, 'worktree', 'add', '-q', s4bareA, 'main')
+    git(s4bare, 'worktree', 'add', '-q', s4bareB, '-b', 'b1')
+    const s4sep = join(root, 'park-s4', 'sep-tree')
+    const s4sepWt = join(root, 'park-s4', 'sep-wt')
+    mkdirSync(s4sep, { recursive: true })
+    git(s4sep, 'init', '-q', '-b', 'main', '--separate-git-dir', join(root, 'park-s4', 'sep-gitdir'))
+    git(s4sep, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'i')
+    git(s4sep, 'worktree', 'add', '-q', s4sepWt, '-b', 'sep-b')
+    for (const dir of [s4bareA, s4bareB, s4sep, s4sepWt]) tasks[dir] = info(dir, `S4-${dir.slice(-4)}`)
+    const s4outside = join(root, 'park-s4') // the parent folder: not a checkout
+    for (const dir of [s4main, s4other, s4wt]) tasks[dir] = info(dir, `S4-${dir.slice(-4)}`)
+    const folderList = (text) => toolRead(text).map((item) => item.cwd)
+    check('vt19 AC-4.1: cwd in the main tree, `cd <unrelated repo> && git grep` — the other repo is not a folder of the session', folderList(bash(`cd ${s4other} && git grep x`, 5, s4main)).join() === s4main, folderList(bash(`cd ${s4other} && git grep x`, 5, s4main)).join())
+    check('vt19 AC-4.1: the same for `git -C <other repo>` and a Read of a file in it', folderList(bash(`git -C ${s4other} log`, 5, s4main)).join() === s4main && folderList(tool(s4main, 5, 'Read', { file_path: join(s4other, 'f') })).join() === s4main)
+    check('vt19 AC-4.1: cwd in the main tree, `cd <its worktree> &&` — counted, the worktree first', folderList(bash(`cd ${s4wt} && ls`, 5, s4main)).join() === [s4wt, s4main].join(), folderList(bash(`cd ${s4wt} && ls`, 5, s4main)).join())
+    check('vt19 AC-4.1: cwd in the worktree, a call into the main tree — counted (one repo)', folderList(bash(`cd ${s4main} && ls`, 5, s4wt)).join() === [s4main, s4wt].join())
+    check('vt19 AC-4.2 (M-1): worktrees of a bare clone share the common git dir — \`cd <sibling worktree> &&\` counts, the other repo does not', folderList(bash(`cd ${s4bareB} && ls`, 5, s4bareA)).join() === [s4bareB, s4bareA].join() && folderList(bash(`cd ${s4other} && ls`, 5, s4bareA)).join() === s4bareA, folderList(bash(`cd ${s4bareB} && ls`, 5, s4bareA)).join())
+    check('vt19 AC-4.2 (M-1): a `--separate-git-dir` repo and its worktree are one repo; another repo is not', folderList(bash(`cd ${s4sepWt} && ls`, 5, s4sep)).join() === [s4sepWt, s4sep].join() && folderList(bash(`cd ${s4sep} && ls`, 5, s4sepWt)).join() === [s4sep, s4sepWt].join() && folderList(bash(`cd ${s4other} && ls`, 5, s4sep)).join() === s4sep)
+    check('vt19 m-2: one path rule — `cd ~root/x && git -C y commit` and `cd "$WT" && git -C sub commit` name no folder of the tracker, while git-guard keeps its literal guess', toolRead(bash('cd ~root/x && git -C y commit', 5, '/wt/a')).length === 1 && toolRead(bash('cd "$WT" && git -C sub commit', 5, '/wt/a')).length === 1 && gitInvocations('cd ~root/x && git commit -m x', '/main')[0]?.dir === '/main/~root/x' && gitInvocations('cd ~root/x && git commit -m x', '/main')[0]?.known === false && gitInvocations('cd "$WT" && git commit -m x', '/main')[0]?.dir === '/main/$WT' && gitInvocations('cd /a && git -C b commit -m x', '/main')[0]?.known === true)
+    check('vt19 AC-4.2: cwd outside any checkout (the parent folder), `cd <repo> &&` and a Read in a repo — counted', folderList(bash(`cd ${s4other} && ls`, 5, s4outside)).join() === [s4other, s4outside].join() && folderList(tool(s4outside, 5, 'Read', { file_path: join(s4main, 'f') })).includes(s4main))
+    check('vt19 AC-4.2: the line\'s own cwd is counted whatever repo it is in', folderList(line({ type: 'user', cwd: s4other, timestamp: stamp(5) })).join() === s4other)
+    check('vt19 AC-4.3: `cd "/wt/a b" && x` and `cd /wt/a\\ b && x` give `/wt/a b`', toolRead(bash('cd "/wt/a b" && x'))[0].cwd === '/wt/a b' && toolRead(bash('cd /wt/a\\ b && x'))[0].cwd === '/wt/a b')
+    check('vt19 AC-4.3: `cd /wt/a || exit`, `cd /wt/a | cat`, `cd /wt/a & x` are not taken', ['cd /wt/a || exit', 'cd /wt/a | cat', 'cd /wt/a & ls', 'cd /wt/a'].every((command) => folderList(bash(command)).join() === '/main'))
+    check('vt19 AC-4.3: `cd /wt/a;git -C /wt/b log` takes both', folderList(bash('cd /wt/a;git -C /wt/b log')).join() === '/wt/b,/wt/a,/main')
+
+    // ── M-2: `taskInfo` itself spawns no git for a folder with no config (the page's taskOf is `taskInfo`), and gives the answer it gave before
+    const bareDir = join(root, 'bare-s1')
+    mkdirSync(bareDir, { recursive: true })
+    const shim = join(root, 'shim')
+    mkdirSync(shim, { recursive: true })
+    const gitLog = join(root, 'git-calls.log')
+    writeFileSync(join(shim, 'git'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(gitLog)}\nexit 1\n`, { mode: 0o755 })
+    const savedPath = process.env.PATH
+    process.env.PATH = `${shim}:${savedPath}`
+    try {
+      const direct = hq.taskInfo(bareDir)
+      let throughPage = null
+      const state = mon.makeState({ collectFn: (args) => { throughPage = args.taskOf(bareDir); return { balance: { heavy: [] }, sessions: [], tasks: [] } }, tableOf: () => new Map(), dirsOf: () => [] })
+      state.refresh()
+      check('vt19 M-2: a folder with no config — taskInfo and the page\'s taskOf give the no-task answer with the folder as key and root, and spawn no git', JSON.stringify(direct) === JSON.stringify({ key: bareDir, task: false, root: bareDir, ticket: null, taskDir: null }) && JSON.stringify(throughPage) === JSON.stringify(direct) && !existsSync(gitLog), `${JSON.stringify(direct)} ${existsSync(gitLog) ? readFileSync(gitLog, 'utf8') : ''}`)
+    } finally {
+      process.env.PATH = savedPath
+    }
+  } finally {
+    for (const [name, value] of [['STAGE_PIPELINE_DATA_DIR', saved.data], ['STAGE_PIPELINE_LOCK_DIR', saved.lock]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value }
     rmSync(root, { recursive: true, force: true })
   }
 }

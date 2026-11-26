@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { isMain } from './main-guard.mjs'
 import { claudeOf, survey } from './browser-cleanup.mjs'
 import { alive, descendants, identitiesOf, identityOf, processStats, processTable } from './processes.mjs'
-import { pluginDataDir, readConfig, readPipelineState } from './hooks/pipeline-state.mjs'
+import { findConfigRoot, pluginDataDir, readConfig, readPipelineState } from './hooks/pipeline-state.mjs'
 
 const GB = 1024 ** 3
 const number = (name, fallback) => {
@@ -175,6 +175,8 @@ export function niceFor(order, key) {
  * (null off a pipeline repo). A structured answer, never split from `key`: a repo path may contain `#`. Stage 3 of VT-17 reads all of it, keep it.
  */
 export function taskInfo(cwd) {
+  // no config in reach (no repo, or one without the pipeline): no task, and the file system alone says so — `readPipelineState` would spawn git for nothing
+  if (!findConfigRoot(cwd)) return { key: cwd, task: false, root: cwd, ticket: null, taskDir: null }
   let state = null
   try {
     state = readPipelineState(cwd)
@@ -186,12 +188,40 @@ export function taskInfo(cwd) {
   return { key: task ? `${root}#${task.ticket}` : root, task: Boolean(task), root, ticket: task?.ticket ?? null, taskDir: state?.taskDir ?? null }
 }
 
+/**
+ * The task a Claude session works on, one rule for the tracker's snapshot, the pause of a task's browsers and the browser hook (VT-19). Three sources:
+ * `folders` — the folders of the session's transcript, newest first (`{ cwd, at }`, `at` in epoch ms; the tracker reads them from the transcript's tail), the first that `taskOf` resolves to a task counts, so a session
+ * that came back to a folder with no task for one command stays with its task; `pair` — the `run-check` pair (`readSessionTasks`) with its `at`; `own` — `taskInfo` of the session process's folder (in VS Code always the window's).
+ * Of the two sources that carry a task the newer wins; a source with no task never covers one with a task (AC-8.3 of VT-17); with neither, the pair of a folder with no task, then the process folder.
+ * Returns `{ info, source }`: `info` has the shape of `taskInfo` (null when there is no source at all), `source` is `transcript`, `pair` or `process`.
+ */
+export function pickSessionTask({ folders = [], pair = null, own = null, taskOf = taskInfo } = {}) {
+  let fromFolder = null
+  for (const folder of folders) {
+    let info = null
+    try {
+      info = taskOf(folder.cwd)
+    } catch {
+      // a folder that is not a repo: no task
+    }
+    if (info?.task) {
+      fromFolder = { info, at: Number.isFinite(folder.at) ? folder.at : 0 }
+      break
+    }
+  }
+  const fromPair = pair?.task ? { info: pair, at: Number.isFinite(pair.at) ? pair.at : 0 } : null
+  if (fromFolder && (!fromPair || fromFolder.at >= fromPair.at)) return { info: fromFolder.info, source: 'transcript' }
+  if (fromPair) return { info: fromPair.info, source: 'pair' }
+  if (pair && !own?.task) return { info: pair, source: 'pair' }
+  return { info: own, source: 'process' }
+}
+
 // ── the session ↔ task pairs ─────────────────────────────────────────────────
 
 /**
  * A Claude session may sit in one folder (the main tree) while its commands run in another (a linked worktree of the task): `taskInfo` of the two folders gives two keys. `run-check` therefore
- * writes a pair — the session's `claude` process, its identity, and the task key of the folder the command runs in — into `<data dir>/session-tasks.json`; the tracker (a session's card, the pause
- * of its browsers) and the browser hook take the session's key from it, and from the session's own folder when there is no pair. The last run overwrites the old pair; a pair whose process is gone
+ * writes a pair — the session's `claude` process, its identity, and the task key of the folder the command runs in — into `<data dir>/session-tasks.json`; the pair is one source of `pickSessionTask`, which the
+ * tracker (a session's card, the pause of its browsers) and the browser hook use for the session's key. The last run overwrites the old pair; a pair whose process is gone
  * or no longer the same (a reused PID) is dropped.
  */
 const sessionTasksFile = (data = pluginDataDir()) => join(data, 'session-tasks.json')

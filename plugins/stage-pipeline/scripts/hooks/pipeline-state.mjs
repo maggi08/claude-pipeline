@@ -135,14 +135,10 @@ export function worktreeTwinDataDir() {
   if (process.env.STAGE_PIPELINE_DATA_DIR || process.env.CLAUDE_PLUGIN_DATA) return null
   const here = dirname(fileURLToPath(import.meta.url))
   try {
-    // the worktree root is the nearest directory with a `.git` file; a `.git` directory is a main tree
-    let top = here
-    while (!isFile(join(top, '.git'))) {
-      if (isDir(join(top, '.git')) || dirname(top) === top) return null
-      top = dirname(top)
-    }
-    const main = linkedMainTree(top)
-    const twin = main && dataDirFor(join(main, relative(top, here)))
+    const checkout = nearestCheckout(here)
+    if (!checkout?.linked) return null // a main tree, or off a checkout
+    const main = linkedMainTree(checkout.root)
+    const twin = main && dataDirFor(join(main, relative(checkout.root, here)))
     return twin && twin !== pluginDataDir() ? twin : null
   } catch {
     return null
@@ -970,16 +966,57 @@ export function pluginAgentNames() {
 }
 
 /**
+ * The nearest checkout of a folder: the closest ancestor (itself included) that holds a `.git` — `{ root, dotGit, linked }`, `linked` when `.git` is a file (a linked worktree or a submodule) —
+ * found by the file system alone, no git process; null off a checkout.
+ */
+export function nearestCheckout(folder) {
+  for (let dir = folder; dir; dir = dirname(dir) === dir ? null : dirname(dir)) {
+    const dotGit = join(dir, '.git')
+    try {
+      return { root: dir, dotGit, linked: !statSync(dotGit).isDirectory() }
+    } catch {
+      // no .git here — one level up
+    }
+  }
+  return null
+}
+
+/**
  * The main tree of the linked worktree whose root is `top` (its `.git` is a file `gitdir: <main>/.git/worktrees/<name>`), from the file system alone; null for a submodule,
  * a broken link or a main tree that is not `<dir>/.git`. Both files are one-line pointers: read bounded, as a config is.
  */
-function linkedMainTree(top) {
-  const pointer = readConfigFile(join(top, '.git'))
-  const gitDir = resolve(top, pointer?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim() ?? '')
-  const commondir = pointer === null ? null : readConfigFile(join(gitDir, 'commondir'))
+export function linkedMainTree(top) {
+  const gitDir = gitdirOf(top)
+  const commondir = gitDir === null ? null : readConfigFile(join(gitDir, 'commondir'))
   if (commondir === null) return null
   const common = resolve(gitDir, commondir.trim())
   return basename(common) === '.git' ? dirname(common) : null
+}
+
+/** The git dir a linked checkout's `.git` file points at (`gitdir: <path>`, a relative path from `top`); null when `top/.git` is not such a file. The one reader of that pointer. */
+export function gitdirOf(top) {
+  const target = readConfigFile(join(top, '.git'))?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim()
+  return target ? resolve(top, target) : null
+}
+
+/**
+ * The common git dir of the checkout whose root is `top` — the one thing all worktrees of a repo share, a main tree of any layout (`<dir>/.git`, a bare clone, `--separate-git-dir`) included:
+ * a `.git` directory is its own; a `.git` file points at a gitdir whose `commondir` file leads to it (a gitdir with no `commondir` — a submodule — is its own). Real path; null off a checkout.
+ */
+export function commonGitDir(top) {
+  let common = null
+  if (isDir(join(top, '.git'))) common = join(top, '.git')
+  else {
+    const gitDir = gitdirOf(top)
+    if (gitDir === null) return null
+    const commondir = readConfigFile(join(gitDir, 'commondir'))
+    common = commondir === null ? gitDir : resolve(gitDir, commondir.trim())
+  }
+  try {
+    return realpathSync(common)
+  } catch {
+    return resolve(common)
+  }
 }
 
 /**

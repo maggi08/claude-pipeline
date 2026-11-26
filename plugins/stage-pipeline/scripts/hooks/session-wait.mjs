@@ -1,17 +1,18 @@
 #!/usr/bin/env node
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { claudeOf, isClaude } from '../browser-cleanup.mjs'
 import { alive, commandOf, processTable } from '../processes.mjs'
 import { isMain } from '../main-guard.mjs'
 import { writeJsonAtomic } from '../file-state.mjs'
+import { tailLines } from '../transcript-tail.mjs'
 import { readHookInput } from './hook-input.mjs'
 import { pluginDataDir } from './pipeline-state.mjs'
 
 /**
  * Which session waits for the user and on what (VT-17 stage 4, D11): every event below sets or clears the state of its session in `<data dir>/sessions/<session_id>.json`
  * = { kind, text, options, since, cwd, transcript, claudePid }. `kind` is `turn-ended` (Stop), `question` (AskUserQuestion), `permission` (PermissionRequest, or the
- * Notification `permission_prompt` when nothing is set yet), `elicitation` (Elicitation, or the Notification `elicitation_dialog`), or null (cleared by UserPromptSubmit;
+ * Notification `permission_prompt` when nothing is set yet), `elicitation` (Elicitation, or the Notification `elicitation_dialog`), or null (UserPromptSubmit: clears the state, or creates it for a session that has none, so a new tab has its id from its first prompt;
  * the file stays for its `claudePid`). SessionEnd removes the file. `since` is epoch ms. monitor.mjs reads these files; it drops a state when the transcript changed more
  * than 5 s after `since` or the Claude process is dead.
  *
@@ -34,15 +35,8 @@ const cap = (text) => {
 
 /** The text of the last assistant message of a transcript: a bounded read of its tail, the lines from the end. Null when there is none. */
 export function lastAssistantText(path) {
-  let fd
   try {
-    const size = statSync(path).size
-    fd = openSync(path, 'r')
-    const length = Math.min(size, TAIL_BYTES)
-    const buffer = Buffer.alloc(length)
-    readSync(fd, buffer, 0, length, size - length)
-    const lines = buffer.toString('utf8').split('\n')
-    if (size > length) lines.shift() // the first line is cut
+    const lines = tailLines(path, statSync(path).size, TAIL_BYTES)
     for (let i = lines.length - 1; i >= 0; i--) {
       let entry
       try {
@@ -57,8 +51,6 @@ export function lastAssistantText(path) {
     }
   } catch {
     // no transcript, unreadable: no text
-  } finally {
-    if (fd !== undefined) closeSync(fd)
   }
   return null
 }
@@ -191,7 +183,7 @@ export function record(input, { dir = join(pluginDataDir(), 'sessions'), now = D
   const change = stateFor(input, existing)
   if (change === null) return
   if (change === 'remove') return rmSync(file, { force: true })
-  if (change === 'clear' && !existing) return
+  if (change === 'clear' && !existing && input.hook_event_name !== 'UserPromptSubmit') return // a first prompt of a new tab writes its state at once (kind null): the tracker places the tab by its id during a long first turn
   const set = change === 'clear' ? { kind: null, text: '', options: [] } : change
   const old = existing ? oldPidState(existing.claudePid, { aliveOf, commandOf: commandLine }) : 'dead'
   const kept = old === 'claude'

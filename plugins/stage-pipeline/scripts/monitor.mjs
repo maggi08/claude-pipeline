@@ -18,20 +18,21 @@
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { cpus, homedir, totalmem } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isBrowserMain, isClaude, isMcpServer } from './browser-cleanup.mjs'
 import { isMain } from './main-guard.mjs'
+import { chatFromTail } from './transcript-tail.mjs'
 import { alive, descendants, identityOf, processStats, cwdOf as readCwd } from './processes.mjs'
-import { placeOf, readLoad, readMemory, readPriorities, readRunning, readSessionTasks, readWaiting, setOrder, setPaused, taskInfo } from './heavy-queue.mjs'
+import { pickSessionTask, placeOf, readLoad, readMemory, readPriorities, readRunning, readSessionTasks, readWaiting, setOrder, setPaused, taskInfo } from './heavy-queue.mjs'
 import { writeJsonAtomic } from './file-state.mjs'
 import { STATUS_LINE } from './markers.mjs'
 import { nextAction, resumeState, stageList } from './resume-point.mjs'
 import { WAIT_STATE_MAX_AGE_MS } from './hooks/session-wait.mjs'
-import { devServerConfig, findConfigRoot, forceActive, knownTaskDirs, OPEN_STATUS, pluginDataDir, readPipelineState, taskFile, unreadableMessage } from './hooks/pipeline-state.mjs'
+import { devServerConfig, findConfigRoot, forceActive, gitdirOf, knownTaskDirs, nearestCheckout, OPEN_STATUS, pluginDataDir, readPipelineState, taskFile, unreadableMessage } from './hooks/pipeline-state.mjs'
 
 const GB = 1024 ** 3
 export const SUBAGENT_FRESH_MS = 60_000
@@ -295,43 +296,34 @@ function transcriptOf(sessionId, cwd, projectsDir) {
 }
 
 // The title entries repeat through a transcript (every turn writes them again), so the tail has them; a transcript is up to tens of MB, so only the tail is read,
-// a wider one when the first holds no title (a long tool result at the end), and the answer is kept until the file changes.
-const CHAT_TAILS = [256 * 1024, 4 * 1024 * 1024]
+// a wider one when the first holds no title or no folder (a long tool result at the end), and the answer is kept until the file changes. The same pass reads the checkout roots the session worked in
+// (VT-19): user, assistant and system lines carry `cwd` and `timestamp`, the title lines carry neither.
 const CHAT_TITLE_MAX = 120
 const CHAT_PROMPT_MAX = 200
-const chatCache = new Map() // transcript → { mtimeMs, size, chat }
+const tailCache = new Map() // transcript → { mtimeMs, size, chat, folders }
 const clip = (text, max) => {
   const flat = String(text).replace(/\s+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
 }
 
-function chatFromTail(file, size) {
-  const found = { customTitle: null, aiTitle: null, lastPrompt: null }
-  for (const tail of CHAT_TAILS) {
-    const length = Math.min(size, tail)
-    const buffer = Buffer.alloc(length)
-    const fd = openSync(file, 'r')
-    try {
-      readSync(fd, buffer, 0, length, size - length)
-    } finally {
-      closeSync(fd)
-    }
-    const lines = buffer.toString('utf8').split('\n')
-    if (length < size) lines.shift() // the first line is cut
-    for (let index = lines.length - 1; index >= 0 && !(found.customTitle && found.aiTitle && found.lastPrompt); index -= 1) {
-      const line = lines[index]
-      const key = line.includes('"custom-title"') ? 'customTitle' : line.includes('"ai-title"') ? 'aiTitle' : line.includes('"last-prompt"') ? 'lastPrompt' : null
-      if (!key || found[key]) continue
-      try {
-        const value = JSON.parse(line)?.[key]
-        if (typeof value === 'string' && value.trim()) found[key] = value
-      } catch {
-        // a cut or foreign line
-      }
-    }
-    if (found.customTitle || found.aiTitle || length === size) break
+/** The transcript tail's answer for a session, `{ chat, folders }`, kept by the file's mtime and size; null without a session id or a transcript. */
+function tailOf(sessionId, cwd, projectsDir) {
+  if (!sessionId) return null
+  try {
+    const file = transcriptOf(sessionId, cwd, projectsDir)
+    if (!file) return null
+    const stat = statSync(file)
+    const hit = tailCache.get(file)
+    if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit
+    const { found, folders } = chatFromTail(file, stat.size)
+    const title = found.customTitle ?? found.aiTitle
+    const chat = { title: title ? clip(title, CHAT_TITLE_MAX) : null, lastPrompt: found.lastPrompt ? clip(found.lastPrompt, CHAT_PROMPT_MAX) : null, activeAt: stat.mtimeMs }
+    const entry = { mtimeMs: stat.mtimeMs, size: stat.size, chat, folders }
+    tailCache.set(file, entry)
+    return entry
+  } catch {
+    return null
   }
-  return found
 }
 
 /**
@@ -339,21 +331,12 @@ function chatFromTail(file, size) {
  * Read from the tail of the transcript and cached by its mtime and size; null without a session id or a transcript.
  */
 export function chatOf(sessionId, cwd, { projectsDir = join(homedir(), '.claude', 'projects') } = {}) {
-  if (!sessionId) return null
-  try {
-    const file = transcriptOf(sessionId, cwd, projectsDir)
-    if (!file) return null
-    const stat = statSync(file)
-    const hit = chatCache.get(file)
-    if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.chat
-    const found = chatFromTail(file, stat.size)
-    const title = found.customTitle ?? found.aiTitle
-    const chat = { title: title ? clip(title, CHAT_TITLE_MAX) : null, lastPrompt: found.lastPrompt ? clip(found.lastPrompt, CHAT_PROMPT_MAX) : null, activeAt: stat.mtimeMs }
-    chatCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, chat })
-    return chat
-  } catch {
-    return null
-  }
+  return tailOf(sessionId, cwd, projectsDir)?.chat ?? null
+}
+
+/** The checkout roots a session worked in, newest first (`{ cwd, at }`, `cwd` a checkout root or a folder outside any checkout, `at` the timestamp of the newest line in that folder, epoch ms); from the same cached tail as `chatOf`. Empty without a session id or a transcript. */
+export function foldersOf(sessionId, cwd, { projectsDir = join(homedir(), '.claude', 'projects') } = {}) {
+  return tailOf(sessionId, cwd, projectsDir)?.folders ?? []
 }
 
 /**
@@ -397,18 +380,11 @@ export function guessSessionIds(sessions, { projectsDir = join(homedir(), '.clau
 
 /** The `HEAD` file of the checkout that holds `cwd`: `.git/HEAD`, or, in a linked worktree (`.git` is a file `gitdir: <path>`), the `HEAD` of that gitdir. Null off a checkout. */
 export function headFileOf(cwd) {
-  for (let dir = cwd; dir; dir = dirname(dir) === dir ? null : dirname(dir)) {
-    const dot = join(dir, '.git')
-    try {
-      const stat = statSync(dot)
-      if (stat.isDirectory()) return join(dot, 'HEAD')
-      const target = /^gitdir:\s*(.+)$/m.exec(readFileSync(dot, 'utf8'))?.[1]?.trim()
-      return target ? join(isAbsolute(target) ? target : resolve(dir, target), 'HEAD') : null
-    } catch {
-      // no .git here — one level up
-    }
-  }
-  return null
+  const checkout = nearestCheckout(cwd)
+  if (!checkout) return null
+  if (!checkout.linked) return join(checkout.dotGit, 'HEAD')
+  const gitDir = gitdirOf(checkout.root)
+  return gitDir ? join(gitDir, 'HEAD') : null
 }
 
 /** The branch of a folder, read from `HEAD` (no `git` process); null when detached or not a checkout. Cheap enough per poll; stage 5 may cache it by `headFileOf` mtime. */
@@ -432,12 +408,11 @@ const devPortIn = (cwd) => {
 }
 
 /**
- * Every Claude Code session of a process table (`claude --chrome-native-host` is the browser extension's helper, not a session). `cwdOf` is called once per session — it is the only `lsof`.
- * The seams (`cwdOf`, `taskOf`, `branchOf`, `devPortOf`, `projectsDir`, `now`) let a test run on a fake table without touching the machine.
+ * The task of a session is one rule (`pickSessionTask` of heavy-queue.mjs): the newest folder of its transcript that has a task (with the time of that line), the `run-check` pair (its `at`), the folder of its process
+ * (in VS Code always the window's). `makeAttributor` holds what the passes over one snapshot share: the pairs, the task of a folder (read once per distinct folder) and the seams. `apply(row, { transcript })` sets
+ * `task`, `ticket`, `taskDir` and `root` of a session row; with `transcript` it reads the folders of the session's transcript (`foldersOf`, cached by the file's mtime and size), which needs the session id.
  */
-export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchOf = branchOfCwd, devPortOf = devPortIn, projectsDir, now = Date.now(), platform, pairs = null } = {}) {
-  const rows = []
-  // The task a session works on: the pair `run-check` recorded for it (the folder its commands run in, a linked worktree of the task) beats the task of the session's own folder.
+export function makeAttributor(table, { taskOf = taskInfo, projectsDir, pairs = null } = {}) {
   let known = pairs
   const pairOf = (pid) => {
     if (known === null) {
@@ -449,8 +424,8 @@ export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchO
     }
     return known.get(pid) ?? null
   }
-  const perCwd = new Map() // the task, the branch and the dev port of a folder are read once per distinct folder
-  const about = (cwd) => {
+  const perCwd = new Map() // the task of a folder is read once per distinct folder
+  const taskAt = (cwd) => {
     if (!perCwd.has(cwd)) {
       let task = { key: null, task: false }
       try {
@@ -458,33 +433,83 @@ export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchO
       } catch {
         // a folder that is not a repo: no task
       }
-      perCwd.set(cwd, { task, branch: branchOf(cwd), devPort: devPortOf(cwd) })
+      perCwd.set(cwd, task)
     }
+    return perCwd.get(cwd)
+  }
+  const apply = (row, { transcript = false } = {}) => {
+    const own = row.cwd ? taskAt(row.cwd) : { key: null, task: false }
+    const pair = pairOf(row.pid)
+    let folders = []
+    if (transcript && row.sessionId) {
+      try {
+        folders = foldersOf(row.sessionId, row.cwd, { projectsDir })
+      } catch {
+        // no transcript: the pair and the process folder decide
+      }
+    }
+    const { info, source } = pickSessionTask({ folders, pair, own, taskOf: taskAt })
+    const task = info ?? own
+    const placed = source === 'transcript' || Boolean(pair) || Boolean(row.cwd)
+    row.task = placed && task.task ? task.key : null
+    row.ticket = placed && task.task ? task.ticket ?? null : null
+    row.taskDir = placed && task.task ? task.taskDir ?? null : null
+    row.root = placed ? task.root ?? (task.task ? null : task.key ?? null) : null
+    return row
+  }
+  return { apply }
+}
+
+/**
+ * Every Claude Code session of a process table (`claude --chrome-native-host` is the browser extension's helper, not a session). `cwdOf` is called once per session — it is the only `lsof`.
+ * The seams (`cwdOf`, `taskOf`, `branchOf`, `devPortOf`, `projectsDir`, `now`) let a test run on a fake table without touching the machine. The task here comes from the pair or the process folder: the ids of tabs
+ * without `--resume` are known only after `settleSessions`, which then places the sessions by their transcripts. `attr` (a `makeAttributor`) is shared with that second pass.
+ */
+export function sessionRows(table, { cwdOf = readCwd, taskOf = taskInfo, branchOf = branchOfCwd, devPortOf = devPortIn, projectsDir, now = Date.now(), platform, pairs = null, attr = null } = {}) {
+  const rows = []
+  const attributor = attr ?? makeAttributor(table, { taskOf, projectsDir, pairs })
+  const perCwd = new Map() // the branch and the dev port of a folder are read once per distinct folder
+  const about = (cwd) => {
+    if (!perCwd.has(cwd)) perCwd.set(cwd, { branch: branchOf(cwd), devPort: devPortOf(cwd) })
     return perCwd.get(cwd)
   }
   for (const entry of table.values()) {
     if (!isClaude(entry.args) || /--chrome-native-host\b/.test(entry.args)) continue
     const cwd = cwdOf(entry.pid) ?? null
-    const { task: own, branch, devPort } = cwd ? about(cwd) : { task: { key: null, task: false }, branch: null, devPort: devPortOf(cwd) }
-    const pair = pairOf(entry.pid)
-    const task = pair && (pair.task || !own.task) ? pair : own // a pair of a folder with no task does not cover the task of the session's own folder (AC-8.3)
-    const placed = Boolean(pair) || Boolean(cwd)
+    const { branch, devPort } = cwd ? about(cwd) : { branch: null, devPort: devPortOf(cwd) }
     const sessionId = sessionIdOf(entry.args)
-    rows.push({
+    rows.push(attributor.apply({
       pid: entry.pid,
       cwd,
       branch,
-      task: placed && task.task ? task.key : null,
-      ticket: placed && task.task ? task.ticket ?? null : null,
-      taskDir: placed && task.task ? task.taskDir ?? null : null,
-      root: placed ? task.root ?? (task.task ? null : task.key ?? null) : null,
+      task: null,
+      ticket: null,
+      taskDir: null,
+      root: null,
       sessionId,
       age: entry.age,
       subagents: activeSubagents(sessionId, cwd, { projectsDir, now }),
       load: classifyTree(table, entry.pid, { devPort, platform }),
-    })
+    }))
   }
   return rows.sort((a, b) => a.pid - b.pid)
+}
+
+/**
+ * The passes that need a session's id, in one place for the snapshot and the pause of browsers: the ids of tabs without `--resume` (`attachWaiting` from the hook state, then `guessSessionIds`), then the placement of
+ * every session by its transcript (`attr.apply`). Returns the waiting list, with the task fields of the placed sessions. `guarded(name, fn, fallback)` wraps each step (the snapshot's problem lines).
+ */
+export function settleSessions(sessions, table, attr, { waitStates, now, mtimeOf, projectsDir, data = pluginDataDir() } = {}, guarded = (_name, fn) => fn()) {
+  let waiting = guarded('waiting', () => attachWaiting(sessions, waitStates ?? readWaitStates(join(data, 'sessions')), { now, mtimeOf, table }), [])
+  guarded('session ids', () => guessSessionIds(sessions, { projectsDir, now }), null)
+  // a guessed id (`sessionGuessed`) is a hint for the page, not a fact: it must not move a session into a task's lane, and so under that task's pause (AC-1.5, AC-1.6)
+  guarded('placement', () => sessions.forEach((session) => attr.apply(session, { transcript: !session.sessionGuessed })), null)
+  const byPid = new Map(sessions.map((session) => [session.pid, session]))
+  waiting = waiting.map((item) => {
+    const session = byPid.get(item.pid)
+    return session ? { ...item, task: session.task, ticket: session.ticket, root: session.root } : item
+  })
+  return waiting
 }
 
 /** The state files of the session-wait hook (stage 4): `sessions/<id>.json` of the data dir, each with its `sessionId` (the file name). Unreadable files and files untouched for 7 days are skipped; nothing is deleted here. */
@@ -653,6 +678,7 @@ function unregisteredRows(sessions, tasks, rowOf = (dir, ticket) => taskRows([di
       // the registry lists this task directory under another key (its config root differs from the session's): the session's key is the one heavy commands and priorities use
       same.key = session.task
       same.root = session.root ?? same.root
+      same.repo = basename(same.root) // the label is the key's root, not the parent of the task directory (AC-1.7)
       known.add(session.task)
       continue
     }
@@ -663,6 +689,35 @@ function unregisteredRows(sessions, tasks, rowOf = (dir, ticket) => taskRows([di
     extra.push({ ...row, key: session.task, root: session.root ?? row.root, repo: basename(session.root ?? row.root), registered: false })
   }
   return extra
+}
+
+/**
+ * A registry row whose task directory lies outside any repo (`~/.claude/mycar-tasks/`) and that no live session works on has the key `<parent of the directory>#<TICKET>`, which no heavy command or priority knows (VT-19, D6).
+ * It takes instead the key of `order` (the balancer's priority list, highest first) whose root's `taskInfo` gives the same task directory and the same ticket; the first such key wins (a live session's key, set by
+ * `unregisteredRows`, is stronger and is not touched). Changes the rows in place: `key`, `root` and `repo` (the basename of the root).
+ */
+function keysFromOrder(tasks, sessions, order, taskOf = taskInfo) {
+  const lived = new Set(sessions.filter((session) => session.task && session.taskDir).map((session) => resolve(join(session.taskDir, session.ticket ?? ''))))
+  for (const row of tasks) {
+    if (!row.registered || order.includes(row.key) || lived.has(resolve(row.dir)) || findConfigRoot(row.dir)) continue
+    for (const key of order) {
+      const at = key.lastIndexOf('#') // a repo path may contain `#`: the ticket is after the last one
+      if (at <= 0 || key.slice(at + 1) !== row.ticket) continue
+      // the key's root is the CONFIG root, which for a worktree without a config of its own is the main tree, now maybe on another branch: its current task proves nothing.
+      // The ticket is the key's suffix; the root only gives the task directory.
+      let info = null
+      try {
+        info = taskOf(key.slice(0, at))
+      } catch {
+        continue
+      }
+      if (!info?.taskDir || resolve(info.taskDir) !== resolve(dirname(row.dir))) continue
+      row.key = key
+      row.root = info.root ?? key.slice(0, at)
+      row.repo = basename(row.root)
+      break
+    }
+  }
 }
 
 /** Never throws: a failed part becomes a `problem` line, the rest of the snapshot stays. */
@@ -683,10 +738,10 @@ export function collect({ table, ...seams } = {}) {
   let waiting = []
   if (processes === null) problems.push('ps is missing or did not answer in time: no processes in the snapshot')
   else {
-    sessions = guarded('sessions', () => sessionRows(processes, seams), [])
+    const attr = makeAttributor(processes, { taskOf: seams.taskOf, projectsDir: seams.projectsDir, pairs: seams.pairs })
+    sessions = guarded('sessions', () => sessionRows(processes, { ...seams, attr }), [])
     const known = new Map(sessions.map((session) => [session, session.sessionId]))
-    waiting = guarded('waiting', () => attachWaiting(sessions, seams.waitStates ?? readWaitStates(), { now: seams.now, mtimeOf: seams.mtimeOf, table: processes }), [])
-    guarded('session ids', () => guessSessionIds(sessions, { projectsDir: seams.projectsDir, now: seams.now }), null)
+    waiting = settleSessions(sessions, processes, attr, seams, guarded)
     for (const session of sessions) {
       if (session.sessionId !== known.get(session)) session.subagents = activeSubagents(session.sessionId, session.cwd, { projectsDir: seams.projectsDir, now: seams.now })
       session.chat = guarded('chat', () => chatOf(session.sessionId, session.cwd, { projectsDir: seams.projectsDir }), null) // after attachWaiting: a new tab gets its id from the hook state
@@ -695,6 +750,7 @@ export function collect({ table, ...seams } = {}) {
   }
   tasks.push(...guarded('session tasks', () => unregisteredRows(sessions, tasks, seams.rowOf), []))
   const priorities = guarded('priorities', () => readPriorities(), { version: 1, order: [], paused: [] })
+  guarded('task keys', () => keysFromOrder(tasks, sessions, priorities.order, seams.taskOf), null)
   const noLoad = { load: 0, cores: cpus().length }
   const load = seams.machine && 'load' in seams.machine ? seams.machine.load ?? noLoad : guarded('load', () => readLoad(), noLoad)
   const balance = guarded('balance', () => balanceRows({ running: readRunning(processes, tableAt), waiting: readWaiting(processes, tableAt), priorities, load, sessions, platform: seams.platform }), { heavy: [], paused: [], pauseSupported: true, order: [] })
@@ -713,7 +769,21 @@ export function collect({ table, ...seams } = {}) {
 export function signalTaskBrowsers(key, signal, { table = processStats(), platform = process.platform, kill = process.kill, data = pluginDataDir(), identity = identityOf, ...seams } = {}) {
   if (platform === 'win32' || !['SIGSTOP', 'SIGCONT'].includes(signal)) return []
   const signalled = []
-  for (const session of table ? sessionRows(table, { ...seams, pairs: seams.pairs ?? readSessionTasks(table, data) }) : []) {
+  // The sessions are placed as the page places them: by the pair and the process folder, then (after the ids of tabs without `--resume`) by the transcript.
+  let sessions = []
+  if (table) {
+    const pairs = seams.pairs ?? readSessionTasks(table, data)
+    const attr = makeAttributor(table, { taskOf: seams.taskOf, projectsDir: seams.projectsDir, pairs })
+    sessions = sessionRows(table, { ...seams, pairs, attr })
+    settleSessions(sessions, table, attr, { ...seams, data }, (_name, fn, fallback) => {
+      try {
+        return fn()
+      } catch {
+        return fallback
+      }
+    })
+  }
+  for (const session of sessions) {
     if ((session.task ?? session.root) !== key) continue
     for (const proc of session.load.procs) {
       if (proc.kind !== 'browser') continue
