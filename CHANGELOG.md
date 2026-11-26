@@ -9,7 +9,7 @@ Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
 ### A stage review runs on the agent's own model, not on opus
 
-What changes against 0.31.1: a new hook rule `agent-guard/stage-review-model`. No config key; `review_model` keeps its meaning.
+What changes against 0.31.2: a new hook rule `agent-guard/stage-review-model`. No config key; `review_model` keeps its meaning.
 
 - **A stage-mode `pro-review` with an explicit `model` is refused.** A call that is neither whole-branch nor delta and names a `model` other than the agent's own (`sonnet`) is denied; an alias and a full id match as for `review_model` (`opus`, `Opus`, `claude-opus-5-5`, `opus[1m]` all count as opus). A call with no `model` passes, a fix-round review (`checks/pro-review-<stage>-fix<n>.md`) is an ordinary stage review. The way out is the fresh pass: a prompt that names `checks/pro-review-<stage>-fresh.md` (or `-fresh-2.md`) may carry `model: <review_model>`, and a fresh pass on any other model is refused under the same rule. Whole-branch and delta keep `agent-guard/review-model`.
 - **Why.** 147 stage-mode reviews on opus on two machines, 2026-10-16…11-26, every one with an explicit `model: "opus"` that neither the skill nor the config asked for: median $3.5–4.9 and 12–20 min against $0.28–0.37 and 1–2 min on sonnet.
