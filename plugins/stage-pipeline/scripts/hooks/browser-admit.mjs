@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { survey } from '../browser-cleanup.mjs'
-import { BROWSER_COMMAND, BROWSER_REPO, admit, dropEntries, limits, readPriorities, readRunning, readSessionTasks, registerBrowser, resourceMode, taskInfo } from '../heavy-queue.mjs'
+import { BROWSER_COMMAND, BROWSER_REPO, admit, dropEntries, limits, readPriorities, readRunning, pickSessionTask, readSessionTasks, registerBrowser, resourceMode, taskInfo } from '../heavy-queue.mjs'
 import { processStats } from '../processes.mjs'
 import { isMain } from '../main-guard.mjs'
+import { foldersOfFile } from '../transcript-tail.mjs'
 import { readHookInput } from './hook-input.mjs'
+import { findConfigRoot } from './pipeline-state.mjs'
 
 /**
  * Admission of a new DevTools browser by memory (VT-17 stage 6, D13, D15). PreToolUse on the DevTools MCP tools (the plugin's `chrome-devtools`, the opt-in `stage-pipeline-chrome`,
@@ -25,8 +27,13 @@ export const waitFromEnv = (raw = process.env.STAGE_PIPELINE_BROWSER_WAIT_S) => 
 const WAIT_SECONDS = waitFromEnv()
 
 /** The hook's decision, apart from the input: returns the lines to print (none on the fast path). Exported for the tests. `table`: a fixed process table (tests); otherwise `ps` is read when needed. */
-export async function admitBrowser({ cwd, table = null, say = () => {}, waitSeconds = WAIT_SECONDS } = {}) {
-  const info = taskInfo(cwd)
+export async function admitBrowser({ cwd, transcriptPath = null, folders = null, table = null, say = () => {}, waitSeconds = WAIT_SECONDS } = {}) {
+  const known = new Map() // each folder is read once per call: `taskInfo` spawns git
+  const taskOf = (folder) => {
+    if (!known.has(folder)) known.set(folder, taskInfo(folder))
+    return known.get(folder)
+  }
+  const info = taskOf(cwd)
   const mode = resourceMode(info.root)
   const win = process.platform === 'win32'
   // Nothing is paused and the machine is in `normal` mode: nothing to look at, no process read on this path.
@@ -35,10 +42,12 @@ export async function admitBrowser({ cwd, table = null, say = () => {}, waitSeco
   const rows = read()
   const session = rows ? survey(rows).session : null
   if (!session) return // not a Claude session (or no table): no browser of a session to hold
-  // The session's task is the one its last `run-check` recorded (its commands may run in a linked worktree of the task), else the one of this folder.
-  // A pair of a folder with no task does not cover the task of this folder (the same rule as the tracker's, AC-8.3).
-  const pair = readSessionTasks(rows).get(session.pid)
-  const key = pair && (pair.task || !info.task) ? pair.key : info.key
+  // The session's task is the one `pickSessionTask` gives (the same rule as the tracker's): the last `run-check` pair (its commands may run in a linked worktree of the task) or the hook's own folder,
+  // the newer of the two that carry a task; a pair of a folder with no task does not cover the task of this folder.
+  // The folders come from the tail of the hook input's transcript (the same parser as the snapshot's), so a session that went back to the main tree for a command stays in its task's lane here too (AC-1.4).
+  // Read only here, past the fast return: a bounded tail read, never the whole file.
+  const seen = folders ?? (transcriptPath ? foldersOfFile(transcriptPath) : [])
+  const key = pickSessionTask({ folders: seen, pair: readSessionTasks(rows).get(session.pid) ?? null, taskOf: (folder) => (findConfigRoot(folder) ? taskOf(folder) : null), own: info }).info?.key ?? info.key
   const pausedNow = () => !win && readPriorities().paused.includes(key)
   /** `done`: the session already has a browser (or one admitted a moment ago): nothing to wait for. */
   const look = (now = read()) => {
@@ -72,7 +81,7 @@ if (isMain(import.meta.url)) {
   process.on('SIGINT', cleanup)
   try {
     const input = await readHookInput()
-    await admitBrowser({ cwd: input.cwd ?? process.cwd(), say: (line) => console.log(line) })
+    await admitBrowser({ cwd: input.cwd ?? process.cwd(), transcriptPath: typeof input.transcript_path === 'string' ? input.transcript_path : null, say: (line) => console.log(line) })
   } catch {
     // fail open: an error of the registry or the data files lets the call through
     try {

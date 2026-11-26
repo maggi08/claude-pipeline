@@ -205,6 +205,7 @@ const UNITS = [
   { id: 'vt17f2', weight: 8 }, // VT-17 final-checks fix round 2: an unwritable lock/data dir does not stop run-check, the session ↔ task pair (D9 layout), one ps per snapshot, browsers outside the lower half, no background without taskpolicy, a paused task holds the call of a session that has its browser, the peak key, the card's labels
   { id: 'vt17f4', weight: 4 }, // VT-17 after the run: the open chats of a card (title, last prompt, guessed id of a tab without --resume), the /monitor command (open, stop)
   { id: 'vt17f3', weight: 6 }, // VT-17 final-checks fix round 3: a snapshot with a ready table removes no registry entry, one short file lock with the caller's path and text, a pair with no task does not cover the folder's task, the resume wakes a paused tree when the registry cannot be written, nice 19 without admission
+  { id: 'vt19s1', weight: 3 }, // VT-19 stage 1: a session sits under the task of its current folder (the transcript's tail), one rule for the snapshot, the pause and the hook, the repo label, the key of a task outside the repo
   { id: 'vt17s4', weight: 2 }, // VT-17 stage 4: the session-wait hook (turn-ended, question, permission, elicitation, cleared, subagent, never blocks) and the waiting field of monitor.mjs
 ]
 const UNIT_IDS = new Set(UNITS.map(({ id }) => id))
@@ -13091,7 +13092,7 @@ if (unit('vt17f3')) {
     hq.recordSessionTask(repoPair, { table: table(), identity })
     check('monitor m-4: a pair with a task still wins over the folder\'s task', mon.sessionRows(table(), seams).find((item) => item.pid === SESSION).task === '/m#VT-17')
     const adm = readFileSync(join(PLUGIN, 'hooks', 'browser-admit.mjs'), 'utf8')
-    check('browser-admit m-4: the hook applies the same rule (a pair without a task does not cover the folder\'s task) and its first look uses the table already read', /pair && \(pair\.task \|\| !info\.task\)/.test(adm) && /look\(rows\)/.test(adm))
+    check('browser-admit m-4: the hook applies the same rule (a pair without a task does not cover the folder\'s task) and its first look uses the table already read', /pickSessionTask\(\{[^\n]*pair: [^\n]*own: info \}\)/.test(adm) && /look\(rows\)/.test(adm))
 
     // ── m-6 (AC-8.2): the resume of a paused command wakes its tree when the registry cannot be written
     const ro = join(root, 'ro-queue')
@@ -13208,6 +13209,184 @@ if (unit('vt17f4')) {
       if (first?.pid && alive(first.pid)) process.kill(first.pid, 'SIGKILL')
     }
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+// ── VT-19 stage 1: the task of a session from its transcript ───────────────────────────────────────────────────────────
+// A fake process table, fake transcripts and a temporary data dir: never the real ps, lsof, priorities.json, session-tasks.json or ~/.claude/projects.
+if (unit('vt19s1')) {
+  const mon = await import(join(PLUGIN, 'monitor.mjs'))
+  const hq = await import(join(PLUGIN, 'heavy-queue.mjs'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'hooks-test-vt19-')))
+  const saved = { data: process.env.STAGE_PIPELINE_DATA_DIR, lock: process.env.STAGE_PIPELINE_LOCK_DIR }
+  process.env.STAGE_PIPELINE_DATA_DIR = join(root, 'data')
+  process.env.STAGE_PIPELINE_LOCK_DIR = join(root, 'lock')
+  try {
+    const row = (pid, ppid, args, extra = {}) => [pid, { pid, ppid, uid: 501, cpu: 1, rssKb: 1024, nice: 0, pri: 31, stat: 'S', age: 100, cpuSeconds: 2, args, ...extra }]
+    const projects = join(root, 'projects')
+    mkdirSync(projects, { recursive: true })
+    const line = (value) => `${JSON.stringify(value)}\n`
+    const stamp = (min) => new Date(Date.UTC(2026, 10, 26, 10, min)).toISOString()
+    const transcript = (id, entries) => {
+      const dir = join(projects, '-main-tree')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `${id}.jsonl`), entries.map(([cwd, min]) => (cwd === null ? line({ type: 'ai-title', aiTitle: 't' }) : line({ type: 'user', cwd, timestamp: stamp(min) }))).join(''))
+    }
+    const info = (dir, ticket) => ({ key: `${dir}#${ticket}`, task: true, root: dir, ticket, taskDir: join(dir, '.claude', 'tasks') })
+    const tasks = { '/wt/a': info('/wt/a', 'A-1'), '/wt/a/sub': info('/wt/a', 'A-1'), '/wt/b': info('/wt/b', 'B-1') }
+    const taskOf = (cwd) => tasks[cwd] ?? { key: cwd, task: false, root: cwd, ticket: null, taskDir: null }
+    const seams = { cwdOf: () => '/main', taskOf, branchOf: () => null, devPortOf: () => null, projectsDir: projects, waitStates: [], platform: 'darwin', machine: { memory: null, swap: null, load: null } }
+    const ID = (n) => `0000000${n}-2222-3333-4444-555555555555`
+
+    // ── AC-1.1, AC-1.2, AC-1.4: two sessions of one window folder, one per worktree; one that came back to the main tree for a command; a tab without --resume
+    transcript(ID(1), [['/main', 1], ['/wt/a', 5], ['/wt/a/sub', 6], [null, 7]])
+    transcript(ID(2), [['/main', 1], ['/wt/b', 5]])
+    transcript(ID(3), [['/wt/a', 2], ['/main', 9]])
+    transcript(ID(4), [['/main', 1], ['/wt/b', 8]])
+    const table = new Map([
+      row(100, 1, `/usr/local/bin/claude --resume ${ID(1)}`), row(101, 1, `/usr/local/bin/claude --resume ${ID(2)}`), row(102, 1, `/usr/local/bin/claude --resume ${ID(3)}`), row(103, 1, '/usr/local/bin/claude'),
+      row(110, 100, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(111, 110, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-p'),
+      row(120, 101, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(121, 120, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-q'),
+      row(130, 103, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(131, 130, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-r'),
+    ])
+    const waitStates = [{ sessionId: ID(4), claudePid: 103, since: Date.now() - 10_000, kind: null }] // the hook state gave the tab its id
+    const snap = mon.collect({ table, taskDirs: [], ...seams, waitStates })
+    const taskOfPid = (pid) => snap.sessions.find((item) => item.pid === pid)?.task
+    check('vt19 AC-1.1/1.2: two sessions with one process folder (the window) are in the lanes of their worktrees\' tasks, none in the root\'s lane', taskOfPid(100) === '/wt/a#A-1' && taskOfPid(101) === '/wt/b#B-1' && !snap.sessions.some((item) => item.task === '/main' || item.root === '/main' && item.task !== null), JSON.stringify(snap.sessions.map((item) => [item.pid, item.task, item.root])))
+    check('vt19 AC-1.1: the session keeps the process folder as its cwd, the task key equals taskInfo\'s of the worktree', snap.sessions[0].cwd === '/main' && taskOfPid(100) === taskOf('/wt/a').key && snap.sessions[0].ticket === 'A-1' && snap.sessions[0].root === '/wt/a')
+    check('vt19 AC-1.4: a session that came back to the main tree for one command stays in the lane of its task', taskOfPid(102) === '/wt/a#A-1')
+    check('vt19 AC-1.5/1.2: a tab without --resume gets its id from the hook state and is placed by its transcript too', taskOfPid(103) === '/wt/b#B-1' && snap.sessions.find((item) => item.pid === 103).sessionId === ID(4))
+
+    // ── AC-1.5: the pause stops the browsers of the sessions the snapshot puts under the task, the new tab included, and no others
+    const killed = []
+    const stopB = mon.signalTaskBrowsers('/wt/b#B-1', 'SIGSTOP', { table, kill: (pid) => killed.push(pid), data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    check('vt19 AC-1.5: the pause of a task stops the browsers of its sessions by transcript (101) and of the tab without --resume (103), not the browser of the others', stopB.sort().join() === [121, 131].join() && !killed.includes(111), `${stopB} ${killed}`)
+    const stopA = mon.signalTaskBrowsers('/wt/a#A-1', 'SIGSTOP', { table, kill: () => {}, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    check('vt19 AC-1.5: the other task\'s pause stops only the browser of its session', stopA.join() === '111', String(stopA))
+    check('vt19 AC-1.5: nothing is stopped for the window\'s root key (no session is placed there)', mon.signalTaskBrowsers('/main', 'SIGSTOP', { table, kill: () => {}, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates }).length === 0)
+
+    // ── AC-1.3: the newer of the transcript's folder and the run-check pair wins; a pair with no task never covers a task
+    const t = (min) => Date.parse(stamp(min))
+    const pairA = { key: '/wt/a#A-1', task: true, root: '/wt/a', ticket: 'A-1', taskDir: '/wt/a/.claude/tasks', at: t(3) }
+    const pairNo = { key: '/main', task: false, root: '/main', ticket: null, taskDir: null, at: t(30) }
+    const placed = (pair) => mon.collect({ table: new Map([row(100, 1, `/usr/local/bin/claude --resume ${ID(2)}`)]), taskDirs: [], ...seams, pairs: new Map(pair ? [[100, pair]] : []) }).sessions[0]
+    check('vt19 AC-1.3: the transcript (min 5, worktree B) is newer than the pair (min 3, A) — B wins; a pair at min 9 beats it', placed(pairA).task === '/wt/b#B-1' && placed({ ...pairA, at: t(9) }).task === '/wt/a#A-1')
+    check('vt19 AC-1.3: a pair with no task, however new, does not cover the transcript\'s task', placed(pairNo).task === '/wt/b#B-1')
+    const pick = (args) => hq.pickSessionTask({ taskOf, ...args })
+    const own = info('/own', 'O-1')
+    check('vt19 AC-1.3/1.8: the rule — the process folder only without a task in the two other sources; a pair with no task covers a bare folder; nothing at all gives null', pick({ pair: pairA, own }).info.key === '/wt/a#A-1' && pick({ pair: pairNo, own }).info.key === '/own#O-1' && pick({ pair: pairNo, own: taskOf('/main') }).source === 'pair' && pick({ own }).source === 'process' && pick({}).info === null && pick({ folders: [{ cwd: '/wt/b', at: t(1) }], pair: pairA }).source === 'pair' && pick({ folders: [{ cwd: '/main', at: t(50) }, { cwd: '/wt/b', at: t(1) }] }).info.key === '/wt/b#B-1')
+
+    // ── AC-1.8: no transcript, no id, no folder with a task in the tail — the old rule (pair, then the process folder); the tail is read once while the file is unchanged
+    const bare = mon.collect({ table: new Map([row(100, 1, '/usr/local/bin/claude --resume 99999999-2222-3333-4444-555555555555'), row(101, 1, '/usr/local/bin/claude')]), taskDirs: [], ...seams, cwdOf: () => '/wt/b', pairs: new Map() })
+    check('vt19 AC-1.8: a session with no transcript or no id stays at its process folder\'s task; the snapshot does not fail', bare.sessions.every((item) => item.task === '/wt/b#B-1') && bare.problem === null, bare.problem)
+    transcript(ID(5), [['/main', 1], ['/elsewhere', 2]])
+    const noTask = mon.collect({ table: new Map([row(100, 1, `/usr/local/bin/claude --resume ${ID(5)}`)]), taskDirs: [], ...seams, pairs: new Map([[100, pairA]]) }).sessions[0]
+    check('vt19 AC-1.8: no folder with a task in the transcript — the pair decides', noTask.task === '/wt/a#A-1')
+    check('vt19 AC-1.8: the folders of an unchanged transcript are one cached answer (no second read of the file)', mon.foldersOf(ID(1), '/main', { projectsDir: projects }) === mon.foldersOf(ID(1), '/main', { projectsDir: projects }) && mon.foldersOf(ID(1), '/main', { projectsDir: projects })[0].cwd === '/wt/a/sub')
+    const long = ID(6)
+    writeFileSync(join(projects, '-main-tree', `${long}.jsonl`), line({ type: 'user', cwd: '/wt/b', timestamp: stamp(1) }) + line({ type: 'ai-title', aiTitle: 'late' }) + line({ type: 'assistant', text: 'x'.repeat(300 * 1024) }))
+    check('vt19 D1: a long last entry — the folder is found in the wider tail, the title too', mon.foldersOf(long, '/main', { projectsDir: projects })[0]?.cwd === '/wt/b' && mon.chatOf(long, '/main', { projectsDir: projects })?.title === 'late')
+
+    // AC-1.4: 300 lines in the main tree after the worktree's — with all three titles and without them the session stays under its task
+    for (const [n, titled] of [[7, true], [8, false]]) {
+      const lines = [line({ type: 'user', cwd: '/wt/a', timestamp: stamp(1) })]
+      for (let i = 0; i < 300; i += 1) lines.push(line({ type: 'user', cwd: '/main', timestamp: stamp(2) }))
+      if (titled) lines.push(line({ type: 'custom-title', customTitle: 'c' }), line({ type: 'ai-title', aiTitle: 'a' }), line({ type: 'last-prompt', lastPrompt: 'p' }))
+      writeFileSync(join(projects, '-main-tree', `${ID(n)}.jsonl`), lines.join(''))
+      const kept = mon.collect({ table: new Map([row(100, 1, `/usr/local/bin/claude --resume ${ID(n)}`)]), taskDirs: [], ...seams, pairs: new Map() }).sessions[0]
+      check(`vt19 AC-1.4: 300 main-tree lines after the worktree's (${titled ? 'renamed chat' : 'no title'}) — the session stays under the task of /wt/a`, kept.task === '/wt/a#A-1', String(kept.task))
+    }
+
+    // ── AC-1.6: one function for the three callers — the hook runs on a fake table, a real transcript and real repos, and the key it holds the call under is the one the snapshot puts the session under
+    const ba = await import(join(PLUGIN, 'hooks', 'browser-admit.mjs'))
+    const hkMain = join(root, 'hk-main')
+    const hkTask = join(root, 'hk-task')
+    repoAt(hkMain, 'main')
+    repoAt(hkTask, 'H-1/feat/a')
+    write(hkMain, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n' })
+    write(hkTask, { '.claude/pipeline.config.md': '- task_path: .claude/tasks/\n- main_branch: main\n', '.claude/tasks/H-1/STAGES.md': stages('H-1', 'H-1/feat/a') })
+    const hkKey = `${realpathSync(hkTask)}#H-1`
+    const hkFile = join(root, 'hk-transcript.jsonl')
+    writeFileSync(hkFile, [[realpathSync(hkTask), 2], [realpathSync(hkMain), 9]].map(([cwd, min]) => line({ type: 'user', cwd, timestamp: stamp(min) })).join('')) // the newest line is in the main tree: one command there
+    const hkTable = new Map([row(process.pid, 600, 'node browser-admit.mjs'), row(600, 1, '/usr/local/bin/claude --resume'), row(601, 600, 'npm exec chrome-devtools-mcp@1.6.0 --isolated')])
+    const heldKeys = async (options) => {
+      writeFileSync(join(root, 'data', 'priorities.json'), JSON.stringify({ version: 1, order: [], paused: [hkKey] }))
+      const said = []
+      await ba.admitBrowser({ cwd: realpathSync(hkMain), table: hkTable, say: (text) => said.push(text), waitSeconds: 0, ...options })
+      return { order: JSON.parse(readFileSync(join(root, 'data', 'priorities.json'), 'utf8')).order, said }
+    }
+    const withTranscript = await heldKeys({ transcriptPath: hkFile })
+    check('vt19 AC-1.6/m-3: the hook, given the transcript of a session that is in the main tree for one command, holds the call under its task\'s key (paused) — the key the snapshot uses', withTranscript.order.join() === hkKey && withTranscript.said.some((text) => /resume/.test(text)), JSON.stringify(withTranscript))
+    const without = await heldKeys({})
+    check('vt19 AC-1.6/m-3: without the transcript the hook has only the folder it stands in — the main tree\'s key, not the paused task (the case the transcript fixes)', !without.order.includes(hkKey), JSON.stringify(without))
+    const sources = ['monitor.mjs', join('hooks', 'browser-admit.mjs')].map((name) => readFileSync(join(PLUGIN, name), 'utf8'))
+    check('vt19 AC-1.6: neither the snapshot nor the hook spells the pair rule itself', sources.every((text) => /pickSessionTask\(/.test(text) && !/pair\.task \|\|/.test(text)))
+
+    // ── AC-1.2: each lane has its own place from priorities.json
+    mkdirSync(join(root, 'data'), { recursive: true })
+    writeFileSync(join(root, 'data', 'priorities.json'), JSON.stringify({ version: 1, order: ['/wt/b#B-1', '/wt/a#A-1'], paused: [] }))
+    const placedSnap = mon.collect({ table, taskDirs: [], ...seams, waitStates })
+    const lane = (pid) => placedSnap.sessions.find((item) => item.pid === pid)?.task
+    check('vt19 AC-1.2: two sessions of one window folder have their own places from priorities.json (B first, A second)', mon.placeIn(placedSnap.balance.order, lane(101)) === 1 && mon.placeIn(placedSnap.balance.order, lane(100)) === 2 && lane(101) !== lane(100), JSON.stringify([placedSnap.balance.order, lane(100), lane(101)]))
+    rmSync(join(root, 'data', 'priorities.json'), { force: true })
+
+    // ── AC-1.5: SIGCONT after the placement changed — paused under key A, the session then moves to B; the resume of A still continues the recorded browser
+    const cont = []
+    mon.signalTaskBrowsers('/wt/a#A-1', 'SIGSTOP', { table, kill: () => {}, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    const movedTable = new Map(table)
+    movedTable.set(100, { ...table.get(100), args: `/usr/local/bin/claude --resume ${ID(2)}` }) // session 100 is now placed under B by its other transcript
+    const resumed = mon.signalTaskBrowsers('/wt/a#A-1', 'SIGCONT', { table: movedTable, kill: (pid, signal) => { cont.push([pid, signal]) }, data: join(root, 'data'), identity: () => 'x', ...seams, waitStates })
+    check('vt19 AC-1.5: the resume of A continues the browser the pause of A recorded, though its session is placed under B now', resumed.includes(111) && cont.every(([, signal]) => signal === 'SIGCONT'), JSON.stringify([resumed, cont]))
+
+    // ── AC-1.5/1.6: a GUESSED id (two tabs without ids, one transcript, no hook state) does not place a tab: the pause of that file's task stops no browser, the page shows both tabs where the 0.31.1 rule puts them
+    const gDir = join(projects, '-main')
+    mkdirSync(gDir, { recursive: true })
+    writeFileSync(join(gDir, `${ID(7)}.jsonl`), [['/main', 1], ['/wt/b', 5]].map(([cwd, min]) => line({ type: 'user', cwd, timestamp: stamp(min) })).join(''))
+    const guessTable = new Map([
+      row(700, 1, '/usr/local/bin/claude'), row(701, 1, '/usr/local/bin/claude'),
+      row(710, 700, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(711, 710, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-g1'),
+      row(720, 701, 'npm exec chrome-devtools-mcp@1.6.0 --isolated'), row(721, 720, 'Google Chrome --user-data-dir=/tmp/puppeteer_dev_chrome_profile-g2'),
+    ])
+    const guessSeams = { ...seams, waitStates: [] }
+    const guessSnap = mon.collect({ table: guessTable, taskDirs: [], ...guessSeams })
+    const tabs = guessSnap.sessions.filter((item) => [700, 701].includes(item.pid))
+    check('vt19 AC-1.5: both tabs are on the page, a transcript id was guessed for one, and neither is placed under the task of that file by the guess', tabs.length === 2 && tabs.some((item) => item.sessionGuessed) && tabs.every((item) => item.task === null && item.root === '/main'), JSON.stringify(tabs.map((item) => [item.pid, item.sessionGuessed, item.task, item.root])))
+    const guessStop = []
+    const stopped = mon.signalTaskBrowsers('/wt/b#B-1', 'SIGSTOP', { table: guessTable, kill: (pid) => guessStop.push(pid), data: join(root, 'data'), identity: () => 'x', ...guessSeams })
+    check('vt19 AC-1.5/1.6: the pause of that file\'s task stops no browser of either tab — the page and the pause agree', stopped.length === 0 && guessStop.length === 0, String(stopped))
+
+    // ── AC-1.7 and AC-1.10: a task directory outside the repo
+    const home = join(root, 'home')
+    const mycar = join(home, '.claude', 'mycar-tasks')
+    for (const ticket of ['KC-1', 'KC-713']) write(mycar, { [`${ticket}/STAGES.md`]: '# Task\n## Status: stage 1 of 2\n### Stage 1: a  [status: in-progress]\n### Stage 2: b  [status: todo]\n' })
+    const newCor = join(root, 'new-cor')
+    const core = join(root, 'mycar', 'core')
+    const outside = (dir, ticket) => ({ key: `${dir}#${ticket}`, task: true, root: dir, ticket, taskDir: mycar })
+    const outTasks = { [newCor]: outside(newCor, 'KC-1'), [core]: outside(core, 'KC-713') }
+    const outTaskOf = (cwd) => outTasks[cwd] ?? { key: cwd, task: false, root: cwd }
+    const live = mon.collect({ table: new Map([row(400, 1, '/usr/local/bin/claude')]), taskDirs: [mycar], ...seams, taskOf: outTaskOf, cwdOf: () => newCor })
+    const liveRow = live.tasks.find((item) => item.ticket === 'KC-1')
+    check('vt19 AC-1.7: a task directory outside the repo, key taken from the session — the lane\'s label is the key\'s root (new-cor), not the parent of the directory', liveRow?.key === `${newCor}#KC-1` && liveRow.repo === 'new-cor' && liveRow.root === newCor, JSON.stringify(liveRow))
+    mkdirSync(join(root, 'data'), { recursive: true })
+    const priorities = (order) => writeFileSync(join(root, 'data', 'priorities.json'), JSON.stringify({ version: 1, order, paused: [] }))
+    priorities([`${core}#KC-713`, `${join(root, 'mycar', 'other')}#KC-713`])
+    const idle = mon.collect({ table: new Map(), taskDirs: [mycar], ...seams, taskOf: outTaskOf })
+    const idleRow = idle.tasks.find((item) => item.ticket === 'KC-713')
+    check('vt19 AC-1.10: a task outside the repo with no live session takes the key of priorities.json with the same task directory and ticket, and its root\'s label (core)', idleRow?.key === `${core}#KC-713` && idleRow.repo === 'core' && idleRow.root === core && idleRow.registered === true, JSON.stringify(idleRow))
+    check('vt19 AC-1.10: a task with no such key keeps the registry\'s key (the parent of the directory)', idle.tasks.find((item) => item.ticket === 'KC-1')?.key === `${join(home)}#KC-1`, JSON.stringify(idle.tasks.map((item) => item.key)))
+    priorities([`${join(root, 'mycar', 'other')}#KC-713`, `${core}#KC-713`])
+    const live2 = mon.collect({ table: new Map([row(400, 1, '/usr/local/bin/claude')]), taskDirs: [mycar], ...seams, taskOf: (cwd) => (cwd === newCor ? outside(newCor, 'KC-713') : outTaskOf(cwd)), cwdOf: () => newCor })
+    check('vt19 AC-1.10: a live session\'s key is stronger than the key of the order', live2.tasks.find((item) => item.ticket === 'KC-713')?.key === `${newCor}#KC-713`, JSON.stringify(live2.tasks.map((item) => item.key)))
+    // a key's root is the CONFIG root: for a worktree with no config of its own it is the main tree, maybe on another branch (no task, or another ticket) — the ticket is the key's suffix, only the task directory comes from the root
+    priorities([`${core}#KC-713`])
+    for (const [name, taskOfRoot] of [['no current task', (cwd) => ({ key: cwd, task: false, root: cwd, ticket: null, taskDir: mycar })], ['another ticket', (cwd) => outside(cwd, 'KC-999')]]) {
+      const branchy = mon.collect({ table: new Map(), taskDirs: [mycar], ...seams, taskOf: taskOfRoot })
+      const found = branchy.tasks.find((item) => item.ticket === 'KC-713')
+      check(`vt19 AC-1.10: the root of the key is on ${name} — the row still takes the key`, found?.key === `${core}#KC-713` && found.repo === 'core', JSON.stringify(found))
+    }
+  } finally {
+    for (const [name, value] of [['STAGE_PIPELINE_DATA_DIR', saved.data], ['STAGE_PIPELINE_LOCK_DIR', saved.lock]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value }
     rmSync(root, { recursive: true, force: true })
   }
 }

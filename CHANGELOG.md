@@ -5,6 +5,18 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.31.2 — 2026-11-26
+
+### A session shows under the task of the folder it works in now, not the folder its window opened in
+
+Fixes the tracker (0.31) for several sessions in one VS Code window, each in the worktree of its own task: all of them sat in the lane of the repo root, with one priority and one pause for the lot, because the `claude` process of a VS Code window always stays in the window's folder.
+
+- **The task of a session comes from its transcript.** The tracker reads the folders the session's transcript names (the newest lines of its tail, cached until the file changes) and puts the session under the task of the newest folder that has one. A session that stepped back into the main tree for one command stays in the lane of its task. A tab opened without `--resume` is placed the same way as soon as it has an id from the session-wait hook state; a guessed id deliberately does not place the session.
+- **One rule for three places.** The snapshot, the pause of a task's browsers and the `browser-admit` hook pick a session's task by one function (`pickSessionTask` in `heavy-queue.mjs`): of the transcript's folder and the last `run-check` pair the newer one wins, a source without a task never covers one with a task, and the process's own folder decides only when neither has a task. The pause stops the browsers of the sessions the page shows under the task, including the new tabs, and no other browser of the window.
+- **The lane's label is the repo.** For a task whose directory lies outside the repo (`~/.claude/mycar-tasks/`) the lane carries the name of the key's root (`new-cor`), not the parent of the task directory.
+- **A task outside the repo with no live session keeps its place.** Its lane takes the key from `priorities.json` that has the same task directory and ticket (the highest place if there are several), so dragging it changes that key's place; a live session's key is stronger.
+- A session in a worktree with no pipeline task stays in the lane of the repo, as before. The page itself does not change.
+
 ## 0.31.1 — 2026-11-24
 
 ### The tracker page answers four questions at a glance: who waits for you, whether the machine chokes and who eats it, what each task does, who goes first
