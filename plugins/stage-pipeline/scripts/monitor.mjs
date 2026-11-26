@@ -21,7 +21,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { cpus, homedir, totalmem } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isBrowserMain, isClaude, isMcpServer } from './browser-cleanup.mjs'
 import { isMain } from './main-guard.mjs'
@@ -32,7 +32,7 @@ import { writeJsonAtomic } from './file-state.mjs'
 import { STATUS_LINE } from './markers.mjs'
 import { nextAction, resumeState, stageList } from './resume-point.mjs'
 import { WAIT_STATE_MAX_AGE_MS } from './hooks/session-wait.mjs'
-import { devServerConfig, findConfigRoot, forceActive, knownTaskDirs, OPEN_STATUS, pluginDataDir, readPipelineState, taskFile, unreadableMessage } from './hooks/pipeline-state.mjs'
+import { devServerConfig, findConfigRoot, forceActive, gitdirOf, knownTaskDirs, nearestCheckout, OPEN_STATUS, pluginDataDir, readPipelineState, taskFile, unreadableMessage } from './hooks/pipeline-state.mjs'
 
 const GB = 1024 ** 3
 export const SUBAGENT_FRESH_MS = 60_000
@@ -296,7 +296,7 @@ function transcriptOf(sessionId, cwd, projectsDir) {
 }
 
 // The title entries repeat through a transcript (every turn writes them again), so the tail has them; a transcript is up to tens of MB, so only the tail is read,
-// a wider one when the first holds no title or no folder (a long tool result at the end), and the answer is kept until the file changes. The same pass reads the folders the session worked in
+// a wider one when the first holds no title or no folder (a long tool result at the end), and the answer is kept until the file changes. The same pass reads the checkout roots the session worked in
 // (VT-19): user, assistant and system lines carry `cwd` and `timestamp`, the title lines carry neither.
 const CHAT_TITLE_MAX = 120
 const CHAT_PROMPT_MAX = 200
@@ -334,7 +334,7 @@ export function chatOf(sessionId, cwd, { projectsDir = join(homedir(), '.claude'
   return tailOf(sessionId, cwd, projectsDir)?.chat ?? null
 }
 
-/** The folders a session worked in, newest first (`{ cwd, at }`, `at` the timestamp of the newest line in that folder, epoch ms); from the same cached tail as `chatOf`. Empty without a session id or a transcript. */
+/** The checkout roots a session worked in, newest first (`{ cwd, at }`, `cwd` a checkout root or a folder outside any checkout, `at` the timestamp of the newest line in that folder, epoch ms); from the same cached tail as `chatOf`. Empty without a session id or a transcript. */
 export function foldersOf(sessionId, cwd, { projectsDir = join(homedir(), '.claude', 'projects') } = {}) {
   return tailOf(sessionId, cwd, projectsDir)?.folders ?? []
 }
@@ -380,18 +380,11 @@ export function guessSessionIds(sessions, { projectsDir = join(homedir(), '.clau
 
 /** The `HEAD` file of the checkout that holds `cwd`: `.git/HEAD`, or, in a linked worktree (`.git` is a file `gitdir: <path>`), the `HEAD` of that gitdir. Null off a checkout. */
 export function headFileOf(cwd) {
-  for (let dir = cwd; dir; dir = dirname(dir) === dir ? null : dirname(dir)) {
-    const dot = join(dir, '.git')
-    try {
-      const stat = statSync(dot)
-      if (stat.isDirectory()) return join(dot, 'HEAD')
-      const target = /^gitdir:\s*(.+)$/m.exec(readFileSync(dot, 'utf8'))?.[1]?.trim()
-      return target ? join(isAbsolute(target) ? target : resolve(dir, target), 'HEAD') : null
-    } catch {
-      // no .git here — one level up
-    }
-  }
-  return null
+  const checkout = nearestCheckout(cwd)
+  if (!checkout) return null
+  if (!checkout.linked) return join(checkout.dotGit, 'HEAD')
+  const gitDir = gitdirOf(checkout.root)
+  return gitDir ? join(gitDir, 'HEAD') : null
 }
 
 /** The branch of a folder, read from `HEAD` (no `git` process); null when detached or not a checkout. Cheap enough per poll; stage 5 may cache it by `headFileOf` mtime. */

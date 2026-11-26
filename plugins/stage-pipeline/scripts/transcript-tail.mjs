@@ -1,10 +1,11 @@
 /**
- * The tail of a Claude Code transcript (`<id>.jsonl`): the chat's titles, its last prompt and the folders the session worked in (VT-19). One reader for the tracker's snapshot and the browser hook,
+ * The tail of a Claude Code transcript (`<id>.jsonl`): the chat's titles, its last prompt and the checkout roots the session worked in (VT-19). One reader for the tracker's snapshot and the browser hook,
  * so the two give the same folders. A transcript is up to tens of MB, so only the tail is read.
  */
-import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { closeSync, openSync, readSync, statSync } from 'node:fs'
+import { dirname, isAbsolute } from 'node:path'
+import { commandSegments, shellPath } from './hooks/git-command.mjs'
+import { commonGitDir, nearestCheckout } from './hooks/pipeline-state.mjs'
 
 const CHAT_TAILS = [256 * 1024, 4 * 1024 * 1024]
 const FOLDERS_MAX = 12 // distinct folders kept, newest first
@@ -25,53 +26,45 @@ export function tailLines(file, size, bytes) {
 }
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'Read', 'NotebookEdit'])
-const PATH_ARG = '("([^"]+)"|\'([^\']+)\'|([^\\s;&|"\']+))'
-const LEADING_CD = new RegExp(`^\\s*cd\\s+${PATH_ARG}\\s*(?:&&|;)`)
-const GIT_C = new RegExp(`^\\s*git\\s+-C\\s+${PATH_ARG}(?:\\s|$)`)
+const AFTER_CD = new Set(['&&', ';']) // only these run what follows in the folder `cd` moved to: not `||`, `|`, `&`; a newline does too but is not taken on purpose (as before this stage): a multi-line command is mostly a script whose `cd` is not the session's place
 
-/** An absolute folder from a path of a tool call: `~` against the home dir, a relative one against the line's `cwd`; null when it cannot be told (`-`, `~name`, no `cwd`, and in a Bash command a variable or a substitution — a `file_path` may hold `$`, as `$postId.tsx`). */
+/** An absolute folder from a path of a tool call, by the shared `shellPath`; null when it cannot be told (`-`, `~name`, no `cwd` for a relative path, and in a Bash command a variable or a substitution — a `file_path` may hold `$`, as `$postId.tsx`). Unlike git-guard, which guesses a literal path to guard a commit, a wrong folder here would move a session: an unknown one is dropped. */
 function resolveFolder(path, cwd, shell = false) {
-  if (typeof path !== 'string' || !path || path === '-' || (shell && (path.includes('$') || path.includes('`')))) return null
-  if (path.startsWith('~') && path !== '~' && !path.startsWith('~/')) return null // another user's home
-  if (path === '~') return homedir()
-  if (path.startsWith('~/')) return resolve(homedir(), path.slice(2))
-  if (isAbsolute(path)) return resolve(path)
-  return typeof cwd === 'string' && isAbsolute(cwd) ? resolve(cwd, path) : null
+  if (typeof path !== 'string' || !path || path === '-') return null
+  if (!isAbsolute(path) && !path.startsWith('~') && !(typeof cwd === 'string' && isAbsolute(cwd))) return null
+  const { path: folder, known } = shellPath(path, typeof cwd === 'string' && isAbsolute(cwd) ? cwd : '/', shell)
+  return known ? folder : null
 }
 
-/** The folders a Bash command names at its start: a leading `cd <path>` before `&&` or `;`, and `git -C <path>` as the first word of the command or of what follows that `cd`. Nothing else of the text (VT-19 A9). */
+/** The folders a Bash command names at its start: a leading `cd <path>` before `&&` or `;`, and `git -C <path>` as the first word of the command or of what follows that `cd`. Nothing else of the text (VT-19 A9). Lexed by the shared `commandSegments`. */
 function bashFolders(command, cwd) {
   const out = []
-  let rest = command
+  const operators = []
+  const segments = commandSegments(command, operators)
+  let first = 0
   let base = cwd
-  const cd = LEADING_CD.exec(rest)
-  if (cd) {
-    const folder = resolveFolder(cd[2] ?? cd[3] ?? cd[4], cwd, true)
+  const [head] = segments
+  if (head?.[0] === 'cd' && head.length === 2 && AFTER_CD.has(operators[0])) {
+    const folder = resolveFolder(head[1], cwd, true)
     if (!folder) return out // an unresolved `cd`: what follows runs in a folder that is not known, its `git -C` is relative to it
     out.push(folder)
     base = folder
-    rest = rest.slice(cd[0].length)
+    first = 1
   }
-  const git = GIT_C.exec(rest)
-  if (git) {
-    const folder = resolveFolder(git[2] ?? git[3] ?? git[4], base, true)
+  const git = segments[first]
+  if (git?.[0] === 'git' && git[1] === '-C') {
+    const folder = resolveFolder(git[2], base, true)
     if (folder) out.push(folder)
   }
   return out
 }
 
-/** The checkout a folder belongs to: the nearest ancestor (itself included) with a `.git` directory or file (a linked worktree), found by the file system alone, no git process; a folder outside any checkout stays as it is. `cache` is per read. */
-function checkoutRoot(folder, cache) {
+/** The checkout a folder belongs to and its repo, by the file system alone, no git process: `root` is the nearest ancestor (itself included) with a `.git`, `repo` its common git dir (all worktrees of a repo share it, whatever the main tree's layout); `root` is the folder and `repo` null off any checkout. `cache` is per read. */
+function checkoutOf(folder, cache) {
   const known = cache.get(folder)
   if (known !== undefined) return known
-  let found = folder
-  for (let dir = folder; ; dir = dirname(dir)) {
-    if (existsSync(join(dir, '.git'))) {
-      found = dir
-      break
-    }
-    if (dirname(dir) === dir) break
-  }
+  const checkout = nearestCheckout(folder)
+  const found = checkout ? { root: checkout.root, repo: commonGitDir(checkout.root) ?? checkout.root } : { root: folder, repo: null }
   cache.set(folder, found)
   return found
 }
@@ -126,8 +119,11 @@ export function chatFromTail(file, size, tails = CHAT_TAILS) {
         if (!Number.isFinite(stamped)) continue
         const at = Math.min(stamped, mtime) // a time later than the file's last write is not a time of the transcript (D7)
         const named = typeof entry?.cwd === 'string' && entry.cwd ? [entry.cwd] : []
-        for (const folder of [...toolFolders(entry).reverse(), ...named]) {
-          const cwd = checkoutRoot(folder, roots) // the task key of a folder is its checkout root's: a handful of entries, not a folder per file
+        // a call into another repo does not move the session (A11): a tool folder counts when it is in the repo (the common git dir) of the line's `cwd`, or when that `cwd` is in no checkout
+        const home = named.length ? checkoutOf(named[0], roots).repo : null
+        const called = toolFolders(entry).reverse().filter((folder) => home === null || checkoutOf(folder, roots).repo === home)
+        for (const folder of [...called, ...named]) {
+          const cwd = checkoutOf(folder, roots).root // the task key of a folder is its checkout root's: a handful of entries, not a folder per file
           if (seen.has(cwd) || folders.length >= FOLDERS_MAX) continue
           seen.add(cwd)
           folders.push({ cwd, at })

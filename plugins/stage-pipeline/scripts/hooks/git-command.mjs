@@ -1,4 +1,16 @@
+import { homedir } from 'node:os'
 import { resolve } from 'node:path'
+
+/**
+ * The one rule for a path word of a shell command (`cd <word>`, `git -C <word>`, a tool's path) against the folder `base`: `~` and `~/x` are the home folder, an absolute path stands, anything else is
+ * relative to `base`. `known` is false when the shell would expand the word into something this cannot tell — `~name` (another user's home) and, with `shell`, a `$` or a backtick; `path` is then the
+ * literal word against `base`, the best guess for a caller that must still answer (git-guard), and a caller that must not guess (the tracker) drops the path.
+ */
+export function shellPath(word, base, shell = true) {
+  if (word === '~' || word.startsWith('~/')) return { path: resolve(process.env.HOME || homedir(), word.slice(2)), known: true }
+  const known = !word.startsWith('~') && !(shell && (word.includes('$') || word.includes('`')))
+  return { path: resolve(base, word), known }
+}
 
 /**
  * `git add`/`git commit` calls in a Bash command line — in command position, with global options
@@ -9,24 +21,32 @@ import { resolve } from 'node:path'
 export function gitInvocations(line, cwd) {
   const found = []
   let dir = cwd
+  let known = true // false after a `cd` or `-C` whose path the shell expands (`$WT`, `~name`): `dir` is then a guess, a literal path — git-guard still checks it, the tracker does not use this function
   for (const words of commandSegments(line)) {
     let i = 0
     while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++
     if (['command', 'time', 'nice', 'nohup'].includes(words[i])) i++
     const name = words[i]
     if (name === 'cd' && words[i + 1]) {
-      dir = resolve(dir, words[i + 1].replace(/^~(?=\/|$)/, process.env.HOME ?? '~'))
+      const moved = shellPath(words[i + 1], dir)
+      dir = moved.path
+      known &&= moved.known
       continue
     }
     if (name !== 'git' && !name?.endsWith('/git')) continue
     let target = dir
+    let targetKnown = known
     i++
     while (i < words.length && words[i].startsWith('-')) {
-      if (words[i] === '-C') target = resolve(target, words[++i] ?? '.')
+      if (words[i] === '-C') {
+        const moved = shellPath(words[++i] ?? '.', target)
+        target = moved.path
+        targetKnown &&= moved.known
+      }
       else if (['-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'].includes(words[i])) i++
       i++
     }
-    if (words[i] === 'add' || words[i] === 'commit') found.push({ subcommand: words[i], dir: target, args: words.slice(i + 1) })
+    if (words[i] === 'add' || words[i] === 'commit') found.push({ subcommand: words[i], dir: target, known: targetKnown, args: words.slice(i + 1) })
   }
   return found
 }
@@ -238,7 +258,8 @@ export function commitScope(invocations) {
 }
 
 // A simple shell lexer: quotes, escaping, the operators `&& || ; | & ( )`, newline, heredoc.
-export function commandSegments(line) {
+// `operators`, when given an array, receives for each returned segment the operator that ended it (`&&`, `||`, `;`, `|`, `&`, `(`, `)`, `\n`); the last segment has none, and neither has one that ends the line without an operator or a trailing newline; a trailing operator (`x &`, `cd /a ;`) is recorded for the segment it ends, and the empty segment after it has none.
+export function commandSegments(line, operators = null) {
   const segments = [[]]
   let word = null
   let heredoc = null
@@ -246,9 +267,12 @@ export function commandSegments(line) {
     if (word !== null) segments.at(-1).push(word)
     word = null
   }
-  const split = () => {
+  const split = (operator = '\n') => {
     flush()
-    if (segments.at(-1).length) segments.push([])
+    if (segments.at(-1).length) {
+      operators?.push(operator)
+      segments.push([])
+    }
   }
   for (let i = 0; i < line.length; i++) {
     const c = line[i]
@@ -293,7 +317,7 @@ export function commandSegments(line) {
     } else if (/\s/.test(c)) {
       flush()
     } else if (';&|()'.includes(c)) {
-      split()
+      split((c === '&' || c === '|') && line[i + 1] === c ? c + c : c)
     } else {
       word = (word ?? '') + c
     }
