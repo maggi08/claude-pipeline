@@ -16,6 +16,10 @@ import { AGENTS_DIR, namesRepo, openForceBlock, pluginDataDir, readHookInput, re
  *   as a parameter on the call, and of 13 live whole-branch reviews 5 went to sonnet from the
  *   agent's frontmatter: the first review of a run ran on opus, the second one, on a neighbouring
  *   branch or after a catch-up, did not.
+ * - a stage-mode pro-review (not whole-branch, not delta) runs on the agent's own model: a call with an explicit
+ *   `model` other than it is denied, unless the prompt names a fresh-pass report `checks/pro-review-<stage>-fresh*.md`
+ *   (the fresh pass is held to `review_model`). 147 stage-mode reviews on opus on two machines, 2026-10-16…11-26, each with an
+ *   explicit `model: "opus"` that nothing asked for: median $3.5–4.9 and 12–20 min against $0.28–0.37 and 1–2 min on sonnet.
  * - the security review runs on `security_model` when the config sets it (no key: the agent's own
  *   model, as before). The model is passed as a parameter on the call; a repo whose security review
  *   must stay on a stronger model (hook or permission code) pins it there.
@@ -102,6 +106,31 @@ if (agent === 'pro-review' && (WHOLE_BRANCH.test(toolInput.prompt ?? '') || DELT
       'agent-guard/review-model',
       `stage-pipeline: whole-branch pro-review runs on review_model${delta} — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
         `Repeat the same call with model: "${want}" (stage-check, Step 3.3).`,
+    )
+  }
+}
+
+// A fresh-pass report: `checks/pro-review-3-fresh.md`, `-5a-fresh.md`, `-3.1-fresh.md` (a stage id is `[\w.]+`), `-fresh-2.md`, also by an absolute path (`/Users/me/repo/.claude/tasks/T-7/checks/...`, `~/.claude/x-tasks/KC-1/checks/...`); the directory before `checks/` is not this rule's business. A fix-round report (`-fix<n>`) is an ordinary stage review.
+const FRESH_REPORT = /(?:^|[\s`'"(/])checks\/pro-review-[\w.]+?-fresh(?:-\d+)?\.md(?![\w-]|\.\w)/i
+
+if (agent === 'pro-review' && !WHOLE_BRANCH.test(toolInput.prompt ?? '') && !DELTA_MODE.test(toolInput.prompt ?? '') && toolInput.model) {
+  const own = agentModel('pro-review').toLowerCase()
+  const got = String(toolInput.model).toLowerCase()
+  // `inherit` = the agent file has no readable `model:` — there is no own model to hold the call to, so the rule stays silent
+  const fresh = FRESH_REPORT.test(toolInput.prompt ?? '')
+  const want = reviewModel(state.config)
+  if (fresh && !sameModel(got, want)) {
+    deny(
+      'agent-guard/stage-review-model',
+      `stage-pipeline: a stage-mode pro-review runs on the agent's own model; its fresh pass (its \`checks/pro-review-<stage>-fresh.md\` report is named) is held to review_model — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
+        `Repeat the same call with model: "${want}" (stage-check, Step 3).`,
+    )
+  }
+  if (own !== 'inherit' && !sameModel(got, own) && !fresh) {
+    deny(
+      'agent-guard/stage-review-model',
+      `stage-pipeline: a stage-mode pro-review runs on the agent's own model (\`${own}\`), but the call goes to \`${got}\`. ` +
+        `Repeat the same call without \`model\`: review_model is for whole-branch, delta and the fresh pass (name its \`checks/pro-review-<stage>-fresh.md\` report in the prompt) (stage-check, Step 3).`,
     )
   }
 }

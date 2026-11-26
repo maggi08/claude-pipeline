@@ -34,6 +34,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { configRoot, readConfig } from './hooks/pipeline-state.mjs'
+import { DIFF_FLAGS, parseUnified } from './diff-rows.mjs'
 import { parseRepoRules, repoRuleAppliesAll, testLines } from './markers.mjs'
 
 const args = process.argv.slice(2)
@@ -171,12 +172,11 @@ const fileEntry = (path) => {
   return files.get(path)
 }
 
-// Prefixes and renames are explicit: `diff.mnemonicPrefix`/`diff.noprefix`/`diff.renames` from the developer's config
-// change the headers, and the path stops matching the file.
-const DIFF = ['--no-color', '--no-ext-diff', '-M', '--src-prefix=a/', '--dst-prefix=b/']
+// Prefixes and renames are explicit (DIFF_FLAGS, diff-rows.mjs).
+const DIFF = DIFF_FLAGS
 // An empty scope means no files at all, not "no limit": `git diff --` without paths looks at everything.
 const scoped = (...cmd) => (pathspecs?.length === 0 ? '' : git(...cmd, '--', ...(pathspecs ?? [])))
-parseUnified(scoped('diff', '--unified=0', ...DIFF, base))
+parseUnified(scoped('diff', '--unified=0', ...DIFF, base), fileEntry)
 
 // A regular file, not a directory (a nested repo, a submodule pointer), not a symlink and not a binary.
 const regularFile = (path) => {
@@ -206,40 +206,6 @@ const pythonLinted =
   repoFileHas('setup.cfg', /\[flake8\]/)
 const pythonTyped =
   repoHas('mypy.ini', '.mypy.ini', 'pyrightconfig.json') || repoFileHas('pyproject.toml', /\[tool\.(mypy|pyright)/) || repoFileHas('setup.cfg', /\[mypy\]/)
-
-function parseUnified(diff) {
-  let entry = null
-  let header = false
-  let oldLine = 0
-  let newLine = 0
-  for (const raw of diff.split('\n')) {
-    // A file header runs from `diff --git` to the first `@@`: a content line `-- x` inside a hunk is not a header.
-    if (raw.startsWith('diff --git ')) {
-      entry = null
-      header = true
-    } else if (header && raw.startsWith('+++ ')) {
-      const path = diffPath(raw.slice(4))
-      entry = path === null ? null : fileEntry(path)
-    } else if (header && !raw.startsWith('@@')) continue
-    else if (raw.startsWith('@@')) {
-      header = false
-      const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/)
-      oldLine = Number(m?.[1] ?? 0)
-      newLine = Number(m?.[2] ?? 0)
-    } else if (entry && raw.startsWith('+')) entry.added.push({ line: newLine++, text: raw.slice(1) })
-    else if (entry && raw.startsWith('-')) entry.removed.push({ line: oldLine++, text: raw.slice(1) })
-  }
-}
-
-// `+++ b/my file.ts\t` — git appends a tab to a path with a space; special characters are C-quoted even with quotePath=false.
-function diffPath(raw) {
-  let path = raw.replace(/\t$/, '')
-  if (path === '/dev/null') return null
-  if (path.startsWith('"') && path.endsWith('"')) {
-    path = path.slice(1, -1).replace(/\\([\\"tn])/g, (_, c) => ({ t: '\t', n: '\n' })[c] ?? c)
-  }
-  return path.replace(/^b\//, '')
-}
 
 // ── rules ────────────────────────────────────────────────────────────────────
 const violations = []

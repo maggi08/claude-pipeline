@@ -5,6 +5,22 @@ Each entry records what changes for the person who runs the pipeline, not a list
 
 Update: `claude plugin update stage-pipeline` + restart Claude Code.
 
+## 0.32.0 — 2026-11-26
+
+### A stage review runs on the agent's own model, not on opus
+
+What changes against 0.31.2: a new hook rule `agent-guard/stage-review-model`. No config key; `review_model` keeps its meaning.
+
+- **A stage-mode `pro-review` with an explicit `model` is refused.** A call that is neither whole-branch nor delta and names a `model` other than the agent's own (`sonnet`) is denied; an alias and a full id match as for `review_model` (`opus`, `Opus`, `claude-opus-5-5`, `opus[1m]` all count as opus). A call with no `model` passes, a fix-round review (`checks/pro-review-<stage>-fix<n>.md`) is an ordinary stage review. The way out is the fresh pass: a prompt that names `checks/pro-review-<stage>-fresh.md` (or `-fresh-2.md`) may carry `model: <review_model>`, and a fresh pass on any other model is refused under the same rule. Whole-branch and delta keep `agent-guard/review-model`.
+- **Why.** 147 stage-mode reviews on opus on two machines, 2026-10-16…11-26, every one with an explicit `model: "opus"` that neither the skill nor the config asked for: median $3.5–4.9 and 12–20 min against $0.28–0.37 and 1–2 min on sonnet.
+- Texts: `/stage-check` Step 3 and the README (agent-guard, the model table) say the stage and fix-round reviews are spawned without `model`, and `review_model` is for whole-branch, delta and the fresh pass.
+
+### A delta review counts after a rebase
+
+- **The bound measures the task's own diff after a rebase.** Until now a delta whose base (the full report's `head:`) was not an ancestor of HEAD was refused and a full whole-branch review was asked. Now the hook compares the task's diff outside the task directory before the rebase (the base against its fork point from `origin/<main_branch>`, the PR target) with the one after it (HEAD against its own fork point) and counts the lines found in only one of the two; upstream code the rebase brought in adds nothing. Within 400 lines the delta counts; over it the message names the rebase, the count and the bound, and a full review is asked. Read-only git; an unknown base commit, no `origin/<main_branch>` (or one that already contains HEAD) or a git failure still ask a full review.
+- **Why.** 11 product sessions since 0.24.0 were refused a delta after a rebase onto a moved base and ran a full opus review each time; the 400-line bound never fired there.
+- `pro-review` delta mode: after a rebase the scope is `git range-diff` of the task's own diff, the conflict files in full, and the uncommitted.
+
 ## 0.31.2 — 2026-11-26
 
 ### A session shows under the task of the folder it works in now, not the folder its window opened in
