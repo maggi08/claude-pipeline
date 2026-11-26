@@ -13334,6 +13334,11 @@ if (unit('vt19s1')) {
     }
     const withTranscript = await heldKeys({ transcriptPath: hkFile })
     check('vt19 AC-1.6/m-3: the hook, given the transcript of a session that is in the main tree for one command, holds the call under its task\'s key (paused) — the key the snapshot uses', withTranscript.order.join() === hkKey && withTranscript.said.some((text) => /resume/.test(text)), JSON.stringify(withTranscript))
+    const hkTool = join(root, 'hk-tool.jsonl')
+    writeFileSync(hkTool, line({ parentUuid: 'p', type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'x', name: 'Bash', input: { command: `cd ${realpathSync(hkTask)} && ls` } }] }, cwd: realpathSync(hkMain), timestamp: stamp(5) }))
+    late(hkTool)
+    const viaTool = await heldKeys({ transcriptPath: hkTool })
+    check('vt19 AC-3.5: the hook, given a transcript whose only task signal is a Bash `cd <worktree> &&`, holds the call under that task\'s key — the same parser as the snapshot', viaTool.order.join() === hkKey && viaTool.said.some((text) => /resume/.test(text)), JSON.stringify(viaTool))
     const without = await heldKeys({})
     check('vt19 AC-1.6/m-3: without the transcript the hook has only the folder it stands in — the main tree\'s key, not the paused task (the case the transcript fixes)', !without.order.includes(hkKey), JSON.stringify(without))
     const sources = ['monitor.mjs', join('hooks', 'browser-admit.mjs')].map((name) => readFileSync(join(PLUGIN, name), 'utf8'))
@@ -13414,6 +13419,56 @@ if (unit('vt19s1')) {
     const past = new Date(Date.UTC(2026, 10, 26, 11, 0))
     utimesSync(tailFile, past, past)
     check('vt19 D7: a timestamp later than the file\'s mtime is cut to the mtime', tt.foldersOfFile(tailFile)[0]?.at === past.getTime(), JSON.stringify(tt.foldersOfFile(tailFile)))
+
+    // ── AC-3.1…3.4: folders from the session's own tool calls (A9), parsed in the same pass as the `cwd` folders
+    const tool = (cwd, min, name, input) => line({ parentUuid: 'p', isSidechain: false, type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'x', name, input }] }, cwd, timestamp: stamp(min) })
+    const toolFile = join(projects, 'tool-s3.jsonl')
+    const toolRead = (text) => {
+      writeFileSync(toolFile, text)
+      late(toolFile)
+      return tt.foldersOfFile(toolFile)
+    }
+    const toolTask = (text, options = {}) => {
+      const folders = toolRead(text)
+      return hq.pickSessionTask({ taskOf, folders, ...options }).info?.key ?? null
+    }
+    const bash = (command, min = 5, cwd = '/main') => tool(cwd, min, 'Bash', { command, description: 'd' })
+    check('vt19 AC-3.1: `cd /wt/a && …` at the start of a command, the line\'s cwd in the main tree — the session is under task A', toolTask(line({ type: 'user', cwd: '/main', timestamp: stamp(1) }) + bash('cd /wt/a && git status')) === '/wt/a#A-1')
+    check('vt19 AC-3.1: `cd "/wt/a" ; …` (quoted, `;`) and `cd \'/wt/a\' &&` are taken', toolTask(bash('  cd "/wt/a" ; ls')) === '/wt/a#A-1' && toolTask(bash("cd '/wt/a' && ls")) === '/wt/a#A-1')
+    check('vt19 AC-3.1: `git -C /wt/a status` as the first word is taken; so is `git -C` after a leading `cd /main &&`', toolTask(bash('git -C /wt/a status')) === '/wt/a#A-1' && toolTask(bash('cd /main && git -C /wt/a log')) === '/wt/a#A-1')
+    check('vt19 AC-3.2: Edit, Write, Read, MultiEdit file_path and NotebookEdit notebook_path under /wt/b — the folder of the file, task B', ['Edit', 'Write', 'Read', 'MultiEdit'].every((name) => toolTask(tool('/main', 5, name, { file_path: '/wt/b/x.mjs', content: 'c' })) === '/wt/b#B-1') && toolTask(tool('/main', 5, 'NotebookEdit', { notebook_path: '/wt/b/n.ipynb' })) === '/wt/b#B-1' && toolRead(tool('/main', 5, 'Read', { file_path: '/wt/b/src/x.mjs' }))[0].cwd === '/wt/b/src')
+    const listed = toolRead(line({ type: 'user', cwd: '/main', timestamp: stamp(2) }) + tool('/main', 7, 'Write', { file_path: '/wt/b/y', content: '' }))
+    check('vt19 AC-3.2: the folder\'s time is the line\'s timestamp (the same line\'s cwd has it too)', listed[0].cwd === '/wt/b' && listed[0].at === t(7) && listed.find((item) => item.cwd === '/main').at === t(7) && listed.length === 2, JSON.stringify(listed))
+    check('vt19 AC-3.3: a tool-call folder newer than a cwd folder wins; an older one loses', toolTask(line({ type: 'user', cwd: '/wt/b', timestamp: stamp(3) }) + bash('cd /wt/a && x', 6)) === '/wt/a#A-1' && toolTask(bash('cd /wt/a && x', 2) + line({ type: 'user', cwd: '/wt/b', timestamp: stamp(6) })) === '/wt/b#B-1')
+    check('vt19 AC-3.3: against the run-check pair the newest task-bearing source wins; a tool folder without a task is skipped', toolTask(bash('cd /wt/b && x', 5), { pair: pairA }) === '/wt/b#B-1' && toolTask(bash('cd /wt/b && x', 2), { pair: pairA }) === '/wt/a#A-1' && toolTask(bash('cd /nowhere && x', 9) + tool('/wt/b', 4, 'Read', { file_path: '/wt/b/f' })) === '/wt/b#B-1')
+    check('vt19 AC-3.3: a relative `cd sub && …` is resolved from the line\'s cwd; `~/x` from the home dir', toolRead(bash('cd sub && ls', 5, '/wt/a'))[0].cwd === '/wt/a/sub' && toolRead(bash('cd ~/x && ls'))[0].cwd === join(homedir(), 'x') && toolRead(bash('git -C ~ status'))[0].cwd === homedir() && toolRead(tool('/wt/b', 5, 'Edit', { file_path: 'src/z.mjs' }))[0].cwd === '/wt/b/src')
+    check('vt19 AC-3.3: the folders are deduplicated, newest first', toolRead(bash('cd /wt/a && x', 3) + bash('cd /wt/b && x', 4) + bash('cd /wt/a && x', 5)).map((item) => item.cwd).join() === '/wt/a,/main,/wt/b')
+    const many = Array.from({ length: 30 }, (_, n) => bash(`cd /d/${n} && x`, 1 + n % 50)).join('')
+    check('vt19 AC-3.3: the cap of the folder list holds for tool-call folders', toolRead(many).length === 12 && toolRead(many)[0].cwd === '/d/29')
+    const ignored = (text) => toolRead(text).filter((item) => /\/wt\/c/.test(item.cwd))
+    check('vt19 AC-3.4: a Write whose content has `cd /wt/c && x`, an `echo cd /wt/c && …`, a heredoc with /wt/c, a `cd` not at the start (`ls && cd /wt/c`), `git -C` in the middle — none is a folder', ignored(tool('/main', 5, 'Write', { file_path: '/main/n.txt', content: 'cd /wt/c && x\n' })).length === 0 && ignored(bash('echo cd /wt/c && true')).length === 0 && ignored(bash("cat <<'EOF' > f\ncd /wt/c && x\n/wt/c/file\nEOF")).length === 0 && ignored(bash('ls && cd /wt/c')).length === 0 && ignored(bash('ls && git -C /wt/c status')).length === 0 && ignored(bash('echo "x" ; git status ; cd /wt/c && ls')).length === 0 && ignored(tool('/main', 5, 'Edit', { file_path: '/main/n.txt', new_string: 'cd /wt/c && x', old_string: '/wt/c/a' })).length === 0 && ignored(tool('/main', 5, 'Grep', { path: '/wt/c', pattern: 'x' })).length === 0)
+
+    // ── review round 1: roots of checkouts, `$` in a file_path, ordering inside a line, an unresolved `cd`
+    const checkout = join(root, 'checkout-s3')
+    mkdirSync(join(checkout, '.git'), { recursive: true })
+    const wtLinked = join(root, 'linked-s3')
+    mkdirSync(wtLinked, { recursive: true })
+    writeFileSync(join(wtLinked, '.git'), 'gitdir: x\n')
+    const subs = Array.from({ length: 13 }, (_, n) => join(checkout, 'pkg', `d${n}`))
+    for (const dir of subs) mkdirSync(dir, { recursive: true })
+    mkdirSync(join(wtLinked, 'deep', 'er'), { recursive: true })
+    tasks[checkout] = info(checkout, 'C-1')
+    tasks[wtLinked] = info(wtLinked, 'L-1')
+    const reads = subs.map((dir, n) => tool(checkout, 10 + n, 'Read', { file_path: join(dir, 'f.mjs') })).join('')
+    check('vt19 AC-3.3: the folders of a checkout collapse to its root (13 folders of one checkout, plus the cwd — one entry); a linked worktree\'s `.git` file counts; a folder outside any checkout stays', toolRead(reads).length === 1 && toolRead(reads)[0].cwd === checkout && toolRead(tool('/main', 5, 'Read', { file_path: join(wtLinked, 'deep', 'er', 'x') }))[0].cwd === wtLinked && toolRead(tool('/main', 5, 'Read', { file_path: '/wt/b/src/x' }))[0].cwd === '/wt/b/src', JSON.stringify(toolRead(reads)))
+    const callsRoot = []
+    hq.pickSessionTask({ taskOf: (cwd) => { callsRoot.push(cwd); return taskOf(cwd) }, folders: toolRead(reads) })
+    check('vt19 AC-3.3: a session whose tail names files in 13 folders of one checkout costs one taskOf call for that root', callsRoot.length === 1 && callsRoot[0] === checkout, JSON.stringify(callsRoot))
+    check('vt19 AC-3.1: `cd /wt/a && x` (newest), then Reads in 13 directories of the main checkout — still task A', toolTask(subs.map((dir, n) => tool('/main', 1 + n % 5, 'Read', { file_path: join(dir, 'f') })).join('') + bash('cd /wt/a && x', 20)) === '/wt/a#A-1' && toolRead(subs.map((dir, n) => tool('/main', 1 + n % 5, 'Read', { file_path: join(dir, 'f') })).join('') + bash('cd /wt/a && x', 20)).length === 3)
+    check('vt19 AC-3.1: 13 distinct folders outside any checkout after `cd /wt/a && x` do not push `/wt/a` out of the list when it is newer', toolTask(Array.from({ length: 13 }, (_, n) => tool('/main', 1 + n % 5, 'Read', { file_path: `/out/d${n}/f` })).join('') + bash('cd /wt/a && x', 20)) === '/wt/a#A-1')
+    check('vt19 AC-3.2: a file_path with `$` or a backtick (`/wt/b/app/routes/$postId.tsx`) keeps its folder; the same in a Bash `cd` is dropped', toolRead(tool('/main', 5, 'Edit', { file_path: '/wt/b/app/routes/$postId.tsx' }))[0].cwd === '/wt/b/app/routes' && ignored(bash('cd /wt/c/$x && ls')).length === 0 && toolRead(bash('cd /wt/c/`pwd` && ls')).every((item) => !/wt\/c/.test(item.cwd)))
+    check('vt19 AC-3.3: inside one line the tool call\'s folder wins over the same line\'s top-level cwd (same timestamp)', toolTask(tool('/wt/b', 5, 'Bash', { command: 'cd /wt/a && x' })) === '/wt/a#A-1' && toolRead(tool('/wt/b', 5, 'Bash', { command: 'cd /wt/a && x' })).map((item) => item.cwd).join() === '/wt/a,/wt/b')
+    check('vt19 AC-3.4: after an unresolved leading `cd` (`cd $WT && git -C sub …`, `cd ~root/x && git -C /wt/c`) the `git -C` is not parsed; `~name/…` is not a folder', ignored(bash('cd $WT && git -C /wt/c status')).length === 0 && toolRead(bash('cd $WT && git -C sub status', 5, '/wt/a')).length === 1 && toolRead(bash('cd ~root/x && git -C /wt/c log')).length === 1 && toolRead(bash('git -C ~root status')).length === 1)
 
     // ── M-2: `taskInfo` itself spawns no git for a folder with no config (the page's taskOf is `taskInfo`), and gives the answer it gave before
     const bareDir = join(root, 'bare-s1')
