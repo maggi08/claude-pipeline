@@ -29,7 +29,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { LEGIT_REASON, backendGate, baselineInfo, blockerGate, blockerLines, findingCounts, fingerprint, lastForceBlock, newReports, openBlockers, readTaskFile, releaseGate, reportChecker, skipReasonAfter } from './journal-check.mjs'
 import { PATH_LINE } from './dismissals.mjs'
 import { hasBackendRepos, taskRepos } from './plan-check.mjs'
-import { OPEN_STATUS, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, taskBranches, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
+import { OPEN_STATUS, integrationBase, backendConfig, backendFileMatcher, configRoot, devServerConfig, dirtyPaths, mainRoot, inTaskDir, pathList, patchIds, readConfig, taskBranches, readDataFiles, readDataJsonl, realOr, taskLanguage, taskRelTo } from './hooks/pipeline-state.mjs'
 import { CLOSED_WORD, CONFIRMED_LINE, WITH_BLOCKERS, finalMarker, finalMarkerReports, forceKey, headingDate, logicOnlyTag, ruleAppliesToBlock, blockerFieldApplies, stageBlocksOf, teamReviewSkills } from './markers.mjs'
 
 const UI_FILE = /\.(?:vue|tsx|jsx|svelte|css|scss|html)$/i
@@ -433,12 +433,61 @@ function changedLinesSince(worktree, taskDir, base, head = 'HEAD') {
 }
 
 /**
+ * The diff of one range outside the task directory as `Map<file, Map<"+line"|"-line", count>>` (read-only `git diff -U0 -M`); null when git fails.
+ * Hunk headers, context and `index` lines are not kept, so a shift of line numbers adds nothing.
+ */
+function diffLineSets(worktree, taskDir, from, to) {
+  const taskRel = taskRelPath(worktree, taskDir)
+  const out = gitTry(worktree, 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', '--no-relative', from, to, '--', ...(taskRel ? [`:(top,exclude,literal)${taskRel}`] : []))
+  if (out === null) return null
+  const files = new Map()
+  let key = null
+  let inHunk = false
+  let renamed = null
+  for (const line of out.split('\n')) {
+    if (line.startsWith('diff --git ')) { key = null; inHunk = false; renamed = null; continue }
+    if (!inHunk) {
+      if (line.startsWith('rename to ')) renamed = line.slice(10)
+      else if (line.startsWith('+++ ') && line !== '+++ /dev/null') key = line.slice(6)
+      else if (line.startsWith('--- ') && line !== '--- /dev/null' && key === null) key = line.slice(6)
+      else if (line.startsWith('@@')) { inHunk = true; key = renamed ?? key ?? '?'; if (!files.has(key)) files.set(key, new Map()) }
+      continue
+    }
+    if (line.startsWith('@@') || (line[0] !== '+' && line[0] !== '-')) continue
+    const set = files.get(key)
+    set.set(line, (set.get(line) ?? 0) + 1)
+  }
+  return files
+}
+
+/**
+ * How many lines the task's own diff changed between two versions of the branch: the diff of each version against its own fork point from the integration ref
+ * (`oldBase` and `head` against the merge-base with `integration`), per file the +/- lines compared as multisets; the size is the lines found in only one of the two.
+ * Read-only git, null when any step fails (VT-20).
+ */
+function ownDiffChange(worktree, taskDir, oldBase, head, integration) {
+  const oldFork = git(worktree, 'merge-base', oldBase, integration)
+  const newFork = git(worktree, 'merge-base', head, integration)
+  if (!oldFork || !newFork) return null
+  const before = diffLineSets(worktree, taskDir, oldFork, oldBase)
+  const after = diffLineSets(worktree, taskDir, newFork, head)
+  if (!before || !after) return null
+  let sum = 0
+  for (const file of new Set([...before.keys(), ...after.keys()])) {
+    const a = before.get(file) ?? new Map()
+    const b = after.get(file) ?? new Map()
+    for (const line of new Set([...a.keys(), ...b.keys()])) sum += Math.abs((a.get(line) ?? 0) - (b.get(line) ?? 0))
+  }
+  return sum
+}
+
+/**
  * Why a delta report does not count, or null when it does: `{ why, run }` — the failed condition and the review to run (VT-7, D2–D3).
  * All must hold: the named full report is a whole-branch report of the same checker (`item.match`), in this task's checks/, not a delta itself, and carries `head:` equal
- * to the delta's base (shas compared after rev-parse, S1-D3); the base is an ancestor of HEAD; the range end has HEAD's tree; the delta is newer than HEAD's tree
+ * to the delta's base (shas compared after rev-parse, S1-D3); the base is an ancestor of HEAD, or after a rebase the task's own diff changed by at most DELTA_MAX_LINES (VT-20); the range end has HEAD's tree; the delta is newer than HEAD's tree
  * (`isFresh`); the change since the base is within DELTA_MAX_LINES.
  */
-function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
+function deltaProblem(worktree, taskDir, name, text, since, item, isFresh, configText = '') {
   const head = item.repo ? `refs/heads/${item.repo.branch}` : 'HEAD' // a sibling's task branch, not its checkout's HEAD
   const match = DELTA_LINE.exec(reportHeader(text))
   const redo = `re-run the delta review (${item.pro ? '`pro-review --delta checks/<full report>`' : `the delta mode of the project skill \`${item.checker}\``}) after the last fix`
@@ -454,11 +503,19 @@ function deltaProblem(worktree, taskDir, name, text, since, item, isFresh) {
   const resolve = (sha) => git(worktree, 'rev-parse', '--verify', '--quiet', `${sha}^{commit}`)
   const base = resolve(baseRaw)
   if (!base || base !== resolve(anchor)) return { why: `its base \`${baseRaw}\` is not the \`head:\` of \`${shown}\` (\`${anchor}\`)`, run: fullRun }
-  if (git(worktree, 'merge-base', base, head) !== base) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (the branch was rebased or reset)`, run: fullRun }
   const tree = (rev) => git(worktree, 'rev-parse', '--verify', '--quiet', `${rev}^{tree}`)
   const endTree = resolve(endRaw) && tree(endRaw)
   if (!endTree || endTree !== tree(head)) return { why: `the delta reviewed \`${endRaw}\`, not HEAD (its tree differs from HEAD's or the commit is unknown)`, run: redo }
   if (!isFresh) return { why: `it is older than HEAD's tree (the tree appeared ${new Date(since).toISOString()})`, run: redo }
+  // VT-20: the base is not an ancestor of HEAD (a rebase or a reset) — what counts is how much the task's own diff changed, not the upstream code the rebase brought in.
+  // The cheap checks above come first: the measurement runs two merge-base calls and two diffs.
+  if (git(worktree, 'merge-base', base, head) !== base) {
+    const integration = integrationBase(worktree, configText, head)?.ref
+    const own = integration ? ownDiffChange(worktree, taskDir, base, head, integration) : null
+    if (own === null) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (rebased or reset) and the change of the task's own diff cannot be measured (no integration ref, no fork point, or git diff failed or was too large)`, run: fullRun }
+    if (own > DELTA_MAX_LINES) return { why: `its base \`${base.slice(0, 8)}\` is not an ancestor of HEAD (rebased or reset) and the task's own diff changed by ${own} lines, over the bound of ${DELTA_MAX_LINES}`, run: fullRun }
+    return null
+  }
   const lines = changedLinesSince(worktree, taskDir, base, head)
   if (lines === null) return { why: `could not count the change since the base \`${base.slice(0, 8)}\``, run: fullRun }
   if (lines > DELTA_MAX_LINES) return { why: `${lines} lines changed since the full review's head \`${base.slice(0, 8)}\`, over the bound of ${DELTA_MAX_LINES}`, run: fullRun }
@@ -521,7 +578,7 @@ export function finalReviewViolations(dataDir, worktree, taskDir, { caller = wor
       noteDelta(item.checker, { name, why: 'task-converge has no delta mode', run: `run ${item.how} (a full pass)` })
       return false
     }
-    const problem = deltaProblem(item.repo?.root ?? worktree, taskDir, name, text, item.repo ? item.since : since, item, freshOf(item).has(name))
+    const problem = deltaProblem(item.repo?.root ?? worktree, taskDir, name, text, item.repo ? item.since : since, item, freshOf(item).has(name), readConfig(item.repo?.root ?? root) ?? '')
     if (problem) noteDelta(item.checker, { name, ...problem })
     return !problem
   }

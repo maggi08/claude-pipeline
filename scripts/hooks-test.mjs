@@ -3665,7 +3665,7 @@ if (unit('receipts')) {
   // VT-7 stage 1: a delta review counts only on top of a full whole-branch review that records its commit (`head:`), within DELTA_MAX_LINES since it.
   // Tree timeline: full review of the anchor commit at +4h, the fix commit (the tree HEAD has now) at +6h, the delta report at +8h; each rule has its incident and its legitimate form.
   {
-    const deltaFx = (name, { lines = 5, fullHeader = (anchor) => `head: ${anchor}\n`, fullFile = 'pro-review-branch.md', deltaFile = 'pro-review-branch-delta-1.md', deltaHeader, deltaHours = 8, rewrite = false, skipDelta = false, before = () => ({}), round = null } = {}) => {
+    const deltaFx = (name, { lines = 5, fullHeader = (anchor) => `head: ${anchor}\n`, fullFile = 'pro-review-branch.md', deltaFile = 'pro-review-branch-delta-1.md', deltaHeader, deltaHours = 8, rewrite = false, skipDelta = false, before = () => ({}), round = null, allowEmpty = false } = {}) => {
       const fx = fixture(name, { stages: '' })
       fx.report('pro-review-1.md', 'pro-review', 2)
       const extra = before(fx)
@@ -3683,7 +3683,7 @@ if (unit('receipts')) {
       if (round) round(fx)
       else write(fx.dir, { 'src/a.ts': Array.from({ length: lines }, (_, i) => `export const v${i} = ${i}`).join('\n') + '\n' })
       git(fx.dir, 'add', '-A')
-      gitAt(fx.dir, 6, 'commit', '-qm', 'fix round')
+      gitAt(fx.dir, 6, 'commit', '-qm', 'fix round', ...(allowEmpty ? ['--allow-empty'] : []))
       const newHead = git(fx.dir, 'rev-parse', 'HEAD').trim()
       if (!skipDelta) put(deltaFile, (deltaHeader ?? ((a, n, f) => `head: ${n}\ndelta: ${f} ${a}..${n}\n`))(anchor, newHead, fullFile), deltaHours)
       fx.report('task-converge.md', 'task-converge', 8)
@@ -3721,8 +3721,45 @@ if (unit('receipts')) {
     check('delta m-1: code moved into the task directory — counts whole as deleted, over the bound, denied', verdict(parked) && /over the bound of 400/.test(parked.text), parked.text)
     const insideTask = deltaFx('delta-moved-inside-task', { before: (fx) => ({ [`.claude/tasks/${fx.ticket}/notes/big.ts`]: bigFile }), round: (fx) => { mkdirSync(join(fx.tdir, 'old'), { recursive: true }); git(fx.dir, 'mv', `.claude/tasks/${fx.ticket}/notes/big.ts`, `.claude/tasks/${fx.ticket}/old/big.ts`) } }).close()
     check('delta m-1 legitimate: a move inside the task directory — counts nothing, accepted', !verdict(insideTask), insideTask.text)
+    // VT-20: after a rebase the size is how much the task's own diff changed (each version against its own fork point), not the upstream code the rebase brought in.
+    const upstreamBig = { 'up/big.ts': Array.from({ length: 2200 }, (_, i) => `export const u${i} = ${i}`).join('\n') + '\n' }
+    const rebaseOnto = (upstream, edit = () => {}) => (fx) => {
+      git(fx.dir, 'checkout', '-q', 'main')
+      write(fx.dir, upstream)
+      git(fx.dir, 'add', '-A')
+      git(fx.dir, 'commit', '-qm', 'upstream')
+      git(fx.dir, 'checkout', '-q', `${fx.ticket}/feat/r`)
+      git(fx.dir, 'rebase', '-q', 'main')
+      edit(fx)
+    }
+    const aLines = (n) => ({ 'src/a.ts': Array.from({ length: n }, (_, i) => `export const w${i} = ${i}`).join('\n') + '\n' })
     const rebased = deltaFx('delta-rebased', { rewrite: true }).close()
-    check('delta AC-1.2: the base is not an ancestor of HEAD (a rebase) — denied, named, a full review asked', verdict(rebased) && proReviewOnly(rebased) && /not an ancestor of HEAD/.test(rebased.text) && /full review/.test(rebased.text), rebased.text)
+    check('delta AC-2.4: a reset onto main (the base is not an ancestor of HEAD) with a small change of the task\'s own diff — accepted by the new rule', !verdict(rebased), rebased.text)
+    const rebasedPlain = deltaFx('delta-rebased-plain', { round: rebaseOnto(upstreamBig), allowEmpty: true })
+    check('delta AC-2.1: rebased onto a main that gained 2200 lines, the task\'s own diff unchanged — the delta counts', !verdict(rebasedPlain.close()), rebasedPlain.close().text)
+    const rebasedEdit = deltaFx('delta-rebased-edit', { round: rebaseOnto(upstreamBig, (fx) => write(fx.dir, aLines(50))) })
+    // the objects and refs are snapshotted before the first check of this repo, so a write by the first measurement does not go unnoticed
+    const objectsOf = (dir) => git(dir, 'count-objects', '-v').split('\n').filter((l) => /^(count|in-pack|garbage):/.test(l)).join(',')
+    const refsOf = (dir) => git(dir, 'for-each-ref') + (existsSync(join(dir, '.git', 'packed-refs')) ? readFileSync(join(dir, '.git', 'packed-refs'), 'utf8') : '')
+    const objectsBefore = objectsOf(rebasedEdit.fx.dir)
+    const refsBefore = refsOf(rebasedEdit.fx.dir)
+    const rebasedEditResult = rebasedEdit.close()
+    check('delta AC-2.2: rebased and the task edited by 50 lines — the delta counts', !verdict(rebasedEditResult), rebasedEditResult.text)
+    rebasedEdit.close()
+    check('delta AC-2.6: the measurement after a rebase writes no git objects or refs (count-objects and for-each-ref before and after the checks are equal)', objectsBefore === objectsOf(rebasedEdit.fx.dir) && refsBefore === refsOf(rebasedEdit.fx.dir), `${objectsBefore} vs ${objectsOf(rebasedEdit.fx.dir)}`)
+    const rebasedNoprefix = deltaFx('delta-rebased-noprefix', { round: rebaseOnto(upstreamBig, (fx) => { git(fx.dir, 'config', 'diff.noprefix', 'true'); write(fx.dir, aLines(50)) }) })
+    const noprefixResult = rebasedNoprefix.close()
+    check('delta: the same rebase with diff.noprefix=true in the repo — the same accepted verdict (the measurement does not depend on the user\'s diff config)', !verdict(noprefixResult), noprefixResult.text)
+    // with diff.noprefix=true and without the pinned prefix flags the truncated key `line.slice(6)` of `xa/f.ts` and `ya/f.ts` is the same `/f.ts`, so a file replaced by its twin counted 0
+    const twinLines = Array.from({ length: 450 }, (_, i) => `export const t${i} = ${i}`).join('\n') + '\n'
+    const rebasedTwin = deltaFx('delta-rebased-noprefix-twin', { before: () => ({ 'xa/f.ts': twinLines }), round: rebaseOnto(upstreamBig, (fx) => { git(fx.dir, 'config', 'diff.noprefix', 'true'); git(fx.dir, 'rm', '-q', 'xa/f.ts'); write(fx.dir, { 'ya/f.ts': twinLines }) }) }).close()
+    check('delta: diff.noprefix=true, the task moved 450 lines from xa/f.ts to ya/f.ts after a rebase — counted 900 (the keys of the two files do not collide), denied', verdict(rebasedTwin) && /by 900 lines/.test(rebasedTwin.text), rebasedTwin.text)
+    const rebasedOver = deltaFx('delta-rebased-over', { round: rebaseOnto(upstreamBig, (fx) => write(fx.dir, aLines(450))) }).close()
+    check('delta AC-2.3: rebased and the task\'s own diff changed by more than the bound — denied, the message names the rebase, the count (451) and the bound, a full review asked', verdict(rebasedOver) && proReviewOnly(rebasedOver) && /rebased/.test(rebasedOver.text) && /by 451 lines/.test(rebasedOver.text) && /over the bound of 400/.test(rebasedOver.text) && /a full review, it becomes the new anchor/.test(rebasedOver.text), rebasedOver.text)
+    const unknownBase = deltaFx('delta-rebased-unknown-base', { rewrite: true, fullHeader: () => `head: ${'0'.repeat(40)}\n`, deltaHeader: (a, n, f) => `head: ${n}\ndelta: ${f} ${'0'.repeat(40)}..${n}\n` }).close()
+    check('delta AC-2.5: the old base commit is unknown — denied, a full review asked (fail closed)', verdict(unknownBase) && proReviewOnly(unknownBase) && /full review/.test(unknownBase.text), unknownBase.text)
+    const noIntegration = deltaFx('delta-rebased-no-integration', { rewrite: true, round: (fx) => { git(fx.dir, 'branch', '-D', 'main'); write(fx.dir, aLines(5)) } }).close()
+    check('delta AC-2.5: rebased and the repo has no integration branch — denied, cannot be measured, a full review asked', verdict(noIntegration) && proReviewOnly(noIntegration) && /cannot be measured/.test(noIntegration.text) && /full review/.test(noIntegration.text), noIntegration.text)
     const noHead = deltaFx('delta-full-no-head', { fullHeader: () => '' }).close()
     check('delta AC-1.2: the full report has no `head:` line — denied, named', verdict(noHead) && proReviewOnly(noHead) && /no `head: <sha>` line/.test(noHead.text), noHead.text)
     const missingFull = deltaFx('delta-missing-full', { deltaHeader: (a, n) => `head: ${n}\ndelta: pro-review-branch-0.md ${a}..${n}\n` }).close()
