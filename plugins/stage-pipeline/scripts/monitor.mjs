@@ -436,8 +436,7 @@ export function makeAttributor(table, { taskOf = taskInfo, projectsDir, pairs = 
     if (!perCwd.has(cwd)) {
       let task = { key: null, task: false }
       try {
-        // the real `taskInfo` spawns git: a folder no config is in reach of (no repo, or one without the pipeline) has no task, and the file system alone says so
-        task = taskOf === taskInfo && !findConfigRoot(cwd) ? { key: cwd, task: false, root: cwd, ticket: null, taskDir: null } : taskOf(cwd)
+        task = taskOf(cwd)
       } catch {
         // a folder that is not a repo: no task
       }

@@ -12572,7 +12572,18 @@ if (unit('vt17s4')) {
   check('hook AC-4.4: UserPromptSubmit clears the state (the file stays for the process id)', cleared?.kind === null && cleared.text === '')
   fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'done' })
   fire({ ...base, hook_event_name: 'SessionEnd', reason: 'other' })
-  check('hook AC-4.4: SessionEnd removes the file; a prompt in a session with no file creates none', stateOf(sid) === null && (fire({ session_id: 'nofile', hook_event_name: 'UserPromptSubmit' }), stateOf('nofile') === null))
+  check('hook AC-4.4: SessionEnd removes the file', stateOf(sid) === null)
+  // VT-19 C1: the first prompt of a new tab writes its state (kind null, no text), so the tracker has the tab's id during a long first turn; a tool answer with no state still creates none
+  fire({ ...base, session_id: 'newtab', hook_event_name: 'UserPromptSubmit', prompt: 'go' })
+  const born = stateOf('newtab')
+  check('hook VT-19 C1: UserPromptSubmit with no state writes one (kind null, no text, cwd, transcript, since)', born?.kind === null && born.text === '' && born.cwd === base.cwd && born.transcript === base.transcript_path && Number.isFinite(born.since), JSON.stringify(born))
+  const placedTab = mon.attachWaiting([{ pid: born.claudePid ?? 4242, sessionId: null, age: 600 }], [{ ...born, sessionId: 'newtab', claudePid: born.claudePid ?? 4242 }], { now: Date.now(), mtimeOf: () => 0 })
+  check('hook VT-19 C1: attachWaiting gives that tab its id from the state, with waiting null', placedTab.length === 0)
+  const tabSession = { pid: 4242, sessionId: null, age: 600 }
+  mon.attachWaiting([tabSession], [{ ...born, sessionId: 'newtab', claudePid: 4242, since: Date.now() - 1000 }], { now: Date.now(), mtimeOf: () => 0 })
+  check('hook VT-19 C1: the tab session takes the id, waiting is null', tabSession.sessionId === 'newtab' && tabSession.waiting === null)
+  fire({ session_id: 'newtab', hook_event_name: 'SessionEnd', reason: 'other' })
+  check('hook VT-19 C1: SessionEnd removes the state of the new tab; a PostToolUse AskUserQuestion with no state creates none', stateOf('newtab') === null && (fire({ session_id: 'nofile', hook_event_name: 'PostToolUse', tool_name: 'AskUserQuestion' }), stateOf('nofile') === null))
 
   // AC-4.6: a subagent's event changes nothing
   fire({ ...base, hook_event_name: 'Stop', last_assistant_message: 'main' })
@@ -13228,10 +13239,12 @@ if (unit('vt19s1')) {
     mkdirSync(projects, { recursive: true })
     const line = (value) => `${JSON.stringify(value)}\n`
     const stamp = (min) => new Date(Date.UTC(2026, 10, 26, 10, min)).toISOString()
+    const late = (file) => utimesSync(file, new Date(Date.UTC(2026, 10, 27)), new Date(Date.UTC(2026, 10, 27))) // the stamps below are of 26 Nov 10:xx; a transcript's mtime is not earlier than its lines (D7)
     const transcript = (id, entries) => {
       const dir = join(projects, '-main-tree')
       mkdirSync(dir, { recursive: true })
       writeFileSync(join(dir, `${id}.jsonl`), entries.map(([cwd, min]) => (cwd === null ? line({ type: 'ai-title', aiTitle: 't' }) : line({ type: 'user', cwd, timestamp: stamp(min) }))).join(''))
+      late(join(dir, `${id}.jsonl`))
     }
     const info = (dir, ticket) => ({ key: `${dir}#${ticket}`, task: true, root: dir, ticket, taskDir: join(dir, '.claude', 'tasks') })
     const tasks = { '/wt/a': info('/wt/a', 'A-1'), '/wt/a/sub': info('/wt/a', 'A-1'), '/wt/b': info('/wt/b', 'B-1') }
@@ -13286,6 +13299,7 @@ if (unit('vt19s1')) {
     check('vt19 AC-1.8: the folders of an unchanged transcript are one cached answer (no second read of the file)', mon.foldersOf(ID(1), '/main', { projectsDir: projects }) === mon.foldersOf(ID(1), '/main', { projectsDir: projects }) && mon.foldersOf(ID(1), '/main', { projectsDir: projects })[0].cwd === '/wt/a/sub')
     const long = ID(6)
     writeFileSync(join(projects, '-main-tree', `${long}.jsonl`), line({ type: 'user', cwd: '/wt/b', timestamp: stamp(1) }) + line({ type: 'ai-title', aiTitle: 'late' }) + line({ type: 'assistant', text: 'x'.repeat(300 * 1024) }))
+    late(join(projects, '-main-tree', `${long}.jsonl`))
     check('vt19 D1: a long last entry — the folder is found in the wider tail, the title too', mon.foldersOf(long, '/main', { projectsDir: projects })[0]?.cwd === '/wt/b' && mon.chatOf(long, '/main', { projectsDir: projects })?.title === 'late')
 
     // AC-1.4: 300 lines in the main tree after the worktree's — with all three titles and without them the session stays under its task
@@ -13294,6 +13308,7 @@ if (unit('vt19s1')) {
       for (let i = 0; i < 300; i += 1) lines.push(line({ type: 'user', cwd: '/main', timestamp: stamp(2) }))
       if (titled) lines.push(line({ type: 'custom-title', customTitle: 'c' }), line({ type: 'ai-title', aiTitle: 'a' }), line({ type: 'last-prompt', lastPrompt: 'p' }))
       writeFileSync(join(projects, '-main-tree', `${ID(n)}.jsonl`), lines.join(''))
+      late(join(projects, '-main-tree', `${ID(n)}.jsonl`))
       const kept = mon.collect({ table: new Map([row(100, 1, `/usr/local/bin/claude --resume ${ID(n)}`)]), taskDirs: [], ...seams, pairs: new Map() }).sessions[0]
       check(`vt19 AC-1.4: 300 main-tree lines after the worktree's (${titled ? 'renamed chat' : 'no title'}) — the session stays under the task of /wt/a`, kept.task === '/wt/a#A-1', String(kept.task))
     }
@@ -13309,6 +13324,7 @@ if (unit('vt19s1')) {
     const hkKey = `${realpathSync(hkTask)}#H-1`
     const hkFile = join(root, 'hk-transcript.jsonl')
     writeFileSync(hkFile, [[realpathSync(hkTask), 2], [realpathSync(hkMain), 9]].map(([cwd, min]) => line({ type: 'user', cwd, timestamp: stamp(min) })).join('')) // the newest line is in the main tree: one command there
+    late(hkFile)
     const hkTable = new Map([row(process.pid, 600, 'node browser-admit.mjs'), row(600, 1, '/usr/local/bin/claude --resume'), row(601, 600, 'npm exec chrome-devtools-mcp@1.6.0 --isolated')])
     const heldKeys = async (options) => {
       writeFileSync(join(root, 'data', 'priorities.json'), JSON.stringify({ version: 1, order: [], paused: [hkKey] }))
@@ -13384,6 +13400,38 @@ if (unit('vt19s1')) {
       const branchy = mon.collect({ table: new Map(), taskDirs: [mycar], ...seams, taskOf: taskOfRoot })
       const found = branchy.tasks.find((item) => item.ticket === 'KC-713')
       check(`vt19 AC-1.10: the root of the key is on ${name} — the row still takes the key`, found?.key === `${core}#KC-713` && found.repo === 'core', JSON.stringify(found))
+    }
+
+    // ── S-1/m-1: the top-level `cwd` and `timestamp` of a line, not the first ones; a future time is cut to the file's mtime (D7)
+    const tailFile = join(projects, 'tail-s1.jsonl')
+    const nested = (top, other, min) => `{"type":"assistant","serverClassifierContext":{"context":{"git_state":{"cwd":${JSON.stringify(other)},"timestamp":"2099-01-01T00:00:00.000Z"}}},"cwd":${JSON.stringify(top)},"timestamp":"${stamp(min)}"}\n`
+    writeFileSync(tailFile, nested('/wt/b', '/wt/a', 5) + line({ type: 'assistant', message: { content: [{ type: 'tool_use', input: { cwd: '/wt/a', timestamp: '2099-01-01T00:00:00.000Z' } }] }, cwd: '/wt/b', timestamp: stamp(6) }))
+    late(tailFile)
+    const tt = await import(join(PLUGIN, 'transcript-tail.mjs'))
+    const tailFolders = tt.foldersOfFile(tailFile)
+    check('vt19 S-1: a nested git_state.cwd before the top-level cwd, and a tool input with cwd and timestamp, change neither the folder nor the time', tailFolders.length === 1 && tailFolders[0].cwd === '/wt/b' && tailFolders[0].at === Date.parse(stamp(6)), JSON.stringify(tailFolders))
+    writeFileSync(tailFile, line({ type: 'user', cwd: '/wt/b', timestamp: '2099-01-01T00:00:00.000Z' }))
+    const past = new Date(Date.UTC(2026, 10, 26, 11, 0))
+    utimesSync(tailFile, past, past)
+    check('vt19 D7: a timestamp later than the file\'s mtime is cut to the mtime', tt.foldersOfFile(tailFile)[0]?.at === past.getTime(), JSON.stringify(tt.foldersOfFile(tailFile)))
+
+    // ── M-2: `taskInfo` itself spawns no git for a folder with no config (the page's taskOf is `taskInfo`), and gives the answer it gave before
+    const bareDir = join(root, 'bare-s1')
+    mkdirSync(bareDir, { recursive: true })
+    const shim = join(root, 'shim')
+    mkdirSync(shim, { recursive: true })
+    const gitLog = join(root, 'git-calls.log')
+    writeFileSync(join(shim, 'git'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(gitLog)}\nexit 1\n`, { mode: 0o755 })
+    const savedPath = process.env.PATH
+    process.env.PATH = `${shim}:${savedPath}`
+    try {
+      const direct = hq.taskInfo(bareDir)
+      let throughPage = null
+      const state = mon.makeState({ collectFn: (args) => { throughPage = args.taskOf(bareDir); return { balance: { heavy: [] }, sessions: [], tasks: [] } }, tableOf: () => new Map(), dirsOf: () => [] })
+      state.refresh()
+      check('vt19 M-2: a folder with no config — taskInfo and the page\'s taskOf give the no-task answer with the folder as key and root, and spawn no git', JSON.stringify(direct) === JSON.stringify({ key: bareDir, task: false, root: bareDir, ticket: null, taskDir: null }) && JSON.stringify(throughPage) === JSON.stringify(direct) && !existsSync(gitLog), `${JSON.stringify(direct)} ${existsSync(gitLog) ? readFileSync(gitLog, 'utf8') : ''}`)
+    } finally {
+      process.env.PATH = savedPath
     }
   } finally {
     for (const [name, value] of [['STAGE_PIPELINE_DATA_DIR', saved.data], ['STAGE_PIPELINE_LOCK_DIR', saved.lock]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value }

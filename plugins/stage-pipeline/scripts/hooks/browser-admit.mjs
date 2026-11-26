@@ -5,7 +5,6 @@ import { processStats } from '../processes.mjs'
 import { isMain } from '../main-guard.mjs'
 import { foldersOfFile } from '../transcript-tail.mjs'
 import { readHookInput } from './hook-input.mjs'
-import { findConfigRoot } from './pipeline-state.mjs'
 
 /**
  * Admission of a new DevTools browser by memory (VT-17 stage 6, D13, D15). PreToolUse on the DevTools MCP tools (the plugin's `chrome-devtools`, the opt-in `stage-pipeline-chrome`,
@@ -14,7 +13,7 @@ import { findConfigRoot } from './pipeline-state.mjs'
  * - The session already has a browser under its MCP server (`survey`), or a browser of its own was admitted a moment ago: pass at once, no output (AC-6.2). The check runs on every DevTools call, not only the first.
  * - `normal` mode passes without looking at memory. In `low` mode the browser goes through the balancer's admission with kind `browser` and the expected memory of the recorded browser peak
  *   of this machine, 0.8 GB without a history: enough memory → pass at once however many browsers are open; not enough → wait, the higher effective priority first, a minute of waiting is
- *   a place up (AC-6.1). A task on pause holds the call until the resume, in either mode, even when the session already has a browser (that browser is stopped). The task is the one the session's last `run-check` recorded, else the one of the hook's folder.
+ *   a place up (AC-6.1). A task on pause holds the call until the resume, in either mode, even when the session already has a browser (that browser is stopped). The task is the one `pickSessionTask` gives (heavy-queue.mjs): the same rule as the tracker's.
  * - The wait is capped (the host hook timeout forbids an uncapped one) at `STAGE_PIPELINE_BROWSER_WAIT_S` (240 s by default, used when non-empty; under the hook's 300 s timeout): pass with `browser: waited <s> s for memory, starting anyway`, or `browser: waited <s> s for the resume, starting anyway` for a paused task (AC-6.3). The "already has a browser" check repeats on every poll.
  * - An admitted browser is recorded in the running registry as kind `browser` under its Claude session (heavy-queue.mjs `registerBrowser`), live while the session's tree holds a browser main process.
  *
@@ -27,7 +26,7 @@ export const waitFromEnv = (raw = process.env.STAGE_PIPELINE_BROWSER_WAIT_S) => 
 const WAIT_SECONDS = waitFromEnv()
 
 /** The hook's decision, apart from the input: returns the lines to print (none on the fast path). Exported for the tests. `table`: a fixed process table (tests); otherwise `ps` is read when needed. */
-export async function admitBrowser({ cwd, transcriptPath = null, folders = null, table = null, say = () => {}, waitSeconds = WAIT_SECONDS } = {}) {
+export async function admitBrowser({ cwd, transcriptPath = null, table = null, say = () => {}, waitSeconds = WAIT_SECONDS } = {}) {
   const known = new Map() // each folder is read once per call: `taskInfo` spawns git
   const taskOf = (folder) => {
     if (!known.has(folder)) known.set(folder, taskInfo(folder))
@@ -42,12 +41,9 @@ export async function admitBrowser({ cwd, transcriptPath = null, folders = null,
   const rows = read()
   const session = rows ? survey(rows).session : null
   if (!session) return // not a Claude session (or no table): no browser of a session to hold
-  // The session's task is the one `pickSessionTask` gives (the same rule as the tracker's): the last `run-check` pair (its commands may run in a linked worktree of the task) or the hook's own folder,
-  // the newer of the two that carry a task; a pair of a folder with no task does not cover the task of this folder.
-  // The folders come from the tail of the hook input's transcript (the same parser as the snapshot's), so a session that went back to the main tree for a command stays in its task's lane here too (AC-1.4).
-  // Read only here, past the fast return: a bounded tail read, never the whole file.
-  const seen = folders ?? (transcriptPath ? foldersOfFile(transcriptPath) : [])
-  const key = pickSessionTask({ folders: seen, pair: readSessionTasks(rows).get(session.pid) ?? null, taskOf: (folder) => (findConfigRoot(folder) ? taskOf(folder) : null), own: info }).info?.key ?? info.key
+  // The session's task: `pickSessionTask` (heavy-queue.mjs), the rule of the tracker's snapshot; the folders come from the tail of the hook input's transcript (a bounded read, only here, past the fast return).
+  const seen = transcriptPath ? foldersOfFile(transcriptPath) : []
+  const key = pickSessionTask({ folders: seen, pair: readSessionTasks(rows).get(session.pid) ?? null, taskOf, own: info }).info?.key ?? info.key
   const pausedNow = () => !win && readPriorities().paused.includes(key)
   /** `done`: the session already has a browser (or one admitted a moment ago): nothing to wait for. */
   const look = (now = read()) => {

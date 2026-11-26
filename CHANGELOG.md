@@ -15,6 +15,9 @@ Fixes the tracker (0.31) for several sessions in one VS Code window, each in the
 - **One rule for three places.** The snapshot, the pause of a task's browsers and the `browser-admit` hook pick a session's task by one function (`pickSessionTask` in `heavy-queue.mjs`): of the transcript's folder and the last `run-check` pair the newer one wins, a source without a task never covers one with a task, and the process's own folder decides only when neither has a task. The pause stops the browsers of the sessions the page shows under the task, including the new tabs, and no other browser of the window.
 - **The lane's label is the repo.** For a task whose directory lies outside the repo (`~/.claude/mycar-tasks/`) the lane carries the name of the key's root (`new-cor`), not the parent of the task directory.
 - **A task outside the repo with no live session keeps its place.** Its lane takes the key from `priorities.json` that has the same task directory and ticket (the highest place if there are several), so dragging it changes that key's place; a live session's key is stronger.
+- The folders and times are read from the top-level `cwd` and `timestamp` of a transcript line (a nested `git_state.cwd` or a tool call's input is not a folder), and a time later than the file's last write is cut to it.
+- A new tab's id comes from the hook state from its first prompt (`UserPromptSubmit` creates the state), not from the end of its first turn.
+- Limit: a session whose folder returns to the window's folder after every command (`cd <worktree> && …` outside the session's working folders) is placed by its `run-check` pair only.
 - A session in a worktree with no pipeline task stays in the lane of the repo, as before. The page itself does not change.
 
 ## 0.31.1 — 2026-11-24

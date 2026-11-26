@@ -175,6 +175,8 @@ export function niceFor(order, key) {
  * (null off a pipeline repo). A structured answer, never split from `key`: a repo path may contain `#`. Stage 3 of VT-17 reads all of it, keep it.
  */
 export function taskInfo(cwd) {
+  // no config in reach (no repo, or one without the pipeline): no task, and the file system alone says so — `readPipelineState` would spawn git for nothing
+  if (!findConfigRoot(cwd)) return { key: cwd, task: false, root: cwd, ticket: null, taskDir: null }
   let state = null
   try {
     state = readPipelineState(cwd)
@@ -198,7 +200,6 @@ export function pickSessionTask({ folders = [], pair = null, own = null, taskOf 
   for (const folder of folders) {
     let info = null
     try {
-      if (taskOf === taskInfo && !findConfigRoot(folder.cwd)) continue // the real `taskInfo` spawns git: no config in reach, no task
       info = taskOf(folder.cwd)
     } catch {
       // a folder that is not a repo: no task
@@ -219,8 +220,8 @@ export function pickSessionTask({ folders = [], pair = null, own = null, taskOf 
 
 /**
  * A Claude session may sit in one folder (the main tree) while its commands run in another (a linked worktree of the task): `taskInfo` of the two folders gives two keys. `run-check` therefore
- * writes a pair — the session's `claude` process, its identity, and the task key of the folder the command runs in — into `<data dir>/session-tasks.json`; the tracker (a session's card, the pause
- * of its browsers) and the browser hook take the session's key from it, and from the session's own folder when there is no pair. The last run overwrites the old pair; a pair whose process is gone
+ * writes a pair — the session's `claude` process, its identity, and the task key of the folder the command runs in — into `<data dir>/session-tasks.json`; the pair is one source of `pickSessionTask`, which the
+ * tracker (a session's card, the pause of its browsers) and the browser hook use for the session's key. The last run overwrites the old pair; a pair whose process is gone
  * or no longer the same (a reused PID) is dropped.
  */
 const sessionTasksFile = (data = pluginDataDir()) => join(data, 'session-tasks.json')
