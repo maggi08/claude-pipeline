@@ -444,25 +444,29 @@ const UNREAD_DATE = new RegExp(
   'i',
 )
 
-/**
- * The integration refs of a repo, `origin/` first: `main_branch` of the config, then dev, develop, development, main, master — the ones that exist.
- * Not only `main_branch`: in live configs it can be `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
- */
+/** The `main_branch` of a repo's config text, or undefined when the line is absent. */
 const configuredMain = (configText) => (configText ?? '').match(/^[ \t]*-[ \t]*main_branch:[ \t]*[`*]*([\w./-]+)/m)?.[1]
 
-/** The PR target of a repo: `origin/<main_branch>` of its config (`main` when the line is absent), or null when that ref does not exist. */
+/**
+ * The PR target of a repo: `origin/<main_branch>` of its config (`main` when the line is absent), or null when that ref does not exist.
+ * The delta measures only from it: a nearer integration ref may already contain HEAD (a task merged into dev for a stand), and a local main may carry unpushed commits (VT-20 security S-1, S-2).
+ */
 export function prTargetRef(cwd, configText) {
   const ref = `origin/${configuredMain(configText) ?? 'main'}`
   return isCommit(cwd, ref) ? ref : null
 }
 
+/**
+ * The integration refs of a repo, `origin/` first: `main_branch` of the config, then dev, develop, development, main, master — the ones that exist.
+ * Not only `main_branch`: in live configs it can be `main` with PRs into dev, and then other people's merged PRs would fall into "work bypassing the journal".
+ */
 export function integrationRefs(cwd, configText) {
   const configured = configuredMain(configText)
   const names = [...new Set([configured, 'dev', 'develop', 'development', 'main', 'master'].filter(Boolean))]
   return names.flatMap((name) => [`origin/${name}`, name]).filter((ref) => isCommit(cwd, ref))
 }
 
-/** The nearest integration ref to `ref` (the fewest commits `base..ref`; `origin/` wins a tie): `{ ref, ahead }`, or undefined when the repo has none. The one base rule of the hooks and of the retro. */
+/** The nearest integration ref to `ref` (the fewest commits `base..ref`; `origin/` wins a tie): `{ ref, ahead }`, or undefined when the repo has none. The base rule of the hooks and of the retro. */
 export function integrationBase(cwd, configText, ref) {
   return integrationRefs(cwd, configText)
     .map((base) => ({ ref: base, ahead: Number(git(cwd, 'rev-list', '--count', `${base}..${ref}`) ?? Infinity) }))

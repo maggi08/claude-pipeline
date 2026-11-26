@@ -1,5 +1,5 @@
 /**
- * The one parser of `git diff --unified=0` rows, shared by floor-guard (lines with numbers) and receipts (the change of the task's own diff, VT-20).
+ * The parser of `git diff --unified=0` rows shared by floor-guard (lines with numbers) and receipts (the change of the task's own diff, VT-20); `kit-override-scan.mjs` keeps its own parser.
  * The flags are explicit: `diff.mnemonicPrefix`/`diff.noprefix`/`diff.renames` from the developer's config change the headers, and the path stops matching the file.
  */
 export const DIFF_FLAGS = ['--no-color', '--no-ext-diff', '-M', '--src-prefix=a/', '--dst-prefix=b/']

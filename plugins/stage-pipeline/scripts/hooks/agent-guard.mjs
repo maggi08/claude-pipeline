@@ -122,7 +122,7 @@ if (agent === 'pro-review' && !WHOLE_BRANCH.test(toolInput.prompt ?? '') && !DEL
   if (fresh && !sameModel(got, want)) {
     deny(
       'agent-guard/stage-review-model',
-      `stage-pipeline: the fresh pass (its \`checks/pro-review-<stage>-fresh.md\` report is named) is held to review_model — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
+      `stage-pipeline: a stage-mode pro-review runs on the agent's own model; its fresh pass (its \`checks/pro-review-<stage>-fresh.md\` report is named) is held to review_model — \`${want}\` (pipeline.config.md, opus by default), but the call goes to \`${got}\`. ` +
         `Repeat the same call with model: "${want}" (stage-check, Step 3).`,
     )
   }
