@@ -17,6 +17,9 @@ Transcripts 10-16…11-26, both machines ≈ $11.7k at API prices: the force orc
 2. Orchestrator effort `high` against `xhigh`: an A/B on one real task, comparing $ per stage, turns and checker findings. Not measured. Output is 19% of the spend and the rest is the context re-read on each turn, so the possible gain is fewer turns.
 3. Fable 5.2 for rare short spawns only: a plan critic once per task before `Confirmed:`, the third attempt and root-cause. A config key with a per-run budget, agent-guard counts the spawns, fallback to `review_model` when the Fable limit is out. First a blind replay of 3 past cases, Fable against opus, N=1. The other machine's `modelSettings` names `claude-fable-5-1`; Fable 5.2 needs `claude-fable-5-2`.
 
+## Deck design findings (asked 2026-11-26)
+The impeccable Stop hook flags `presentation/stage-pipeline-deck.html` on every session that touches it (a version bump is enough): `impeccable detect` on 0.32.0 finds 221 hits in 9 rules — `undersized-ui-text` 131, `tiny-text` 33, `side-tab` 30, `gray-on-color` 7, `low-contrast` 6, `design-system-color` 6, `design-system-font` 5, `design-system-radius` 2, `design-system-font-size` 1. All predate VT-20 (attribution unknown); nothing was fixed or suppressed. To do: one pass with `/impeccable audit` — fix the contrast and the text sizes that are real problems, keep what is intentional slide design and suppress it per value with a reason, so the hook stops repeating the list.
+
 ## Notifications while working in VS Code (asked 2026-11-10)
 When I work in VS Code on something else, I learn that a session waits for me only by switching to the tracker page. Wanted: a message that reaches me without that switch when a session needs me — its turn ended (a stage or a force run is done, a parked blocker, a fix-loop out of rounds), a question is open (`AskUserQuestion`, a kickoff sign-off) or a permission prompt waits.
 
